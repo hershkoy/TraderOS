@@ -1,0 +1,69 @@
+# Default configuration for backtrader strategies
+# This file contains default parameters for all available strategies
+
+# Global settings
+global:
+  cash: 100000.0          # Initial capital
+  size: 1                 # Default position size
+  fromdate: "2018-01-01"  # Default start date
+  todate: "2069-12-31"    # Default end date
+  quiet: false            # Show trading logs by default
+
+# Strategy-specific configurations
+strategies:
+  
+  # Point & Figure Multi-Timeframe Strategy
+  pnf:
+    description: "Point & Figure Multi-Timeframe Strategy using hourly data with daily/weekly P&F signals"
+    data_requirements:
+      base_timeframe: "hourly"
+      additional_timeframes: ["daily", "weekly"]
+      requires_resampling: true
+    parameters:
+      box_size: 1.50      # Dollars per box
+      reversal: 3         # Boxes to reverse
+      commission: 0.001   # 0.1% commission
+      slippage: 0.0005    # 5 bps slippage model
+    
+  # Simple Mean Reversion Strategy
+  mean_reversion:
+    description: "Simple Mean Reversion Strategy using Bollinger Bands on daily data"
+    data_requirements:
+      base_timeframe: "daily"
+      additional_timeframes: []
+      requires_resampling: false
+    parameters:
+      period: 20          # Moving average period
+      devfactor: 2.0      # Standard deviation factor for bands
+      commission: 0.001   # 0.1% commission
+      
+  # Example: RSI Strategy (template for adding new strategies)
+  rsi:
+    description: "RSI Oversold/Overbought Strategy on daily data"
+    data_requirements:
+      base_timeframe: "daily"
+      additional_timeframes: []
+      requires_resampling: false
+    parameters:
+      period: 14          # RSI period
+      oversold: 30        # Oversold threshold
+      overbought: 70      # Overbought threshold
+      commission: 0.001   # 0.1% commission
+
+# Data settings
+data:
+  min_data_points: 30     # Minimum data points required for backtest
+  edge_trim: 5            # Number of rows to remove from end to avoid edge issues
+  
+# Reporting settings
+reports:
+  generate_html: true     # Generate HTML report
+  generate_csv: true      # Generate CSV trade log
+  generate_json: true     # Generate JSON statistics
+  generate_chart: true    # Generate chart PNG
+  
+# Backtrader settings
+backtrader:
+  timezone: "UTC"         # Default timezone
+  plot_style: "candlestick"  # Chart style
+  plot_volume: true       # Show volume in charts
