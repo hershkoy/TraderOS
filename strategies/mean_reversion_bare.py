@@ -1,8 +1,10 @@
-# Simple Mean Reversion Strategy on Daily Timeframe
+# Bare Mean Reversion Strategy - Minimal Backtrader Interface
 import backtrader as bt
 from custom_tracking import CustomTrackingMixin
 
-class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
+class MeanReversionBareStrategy(CustomTrackingMixin):
+    """Bare strategy that implements minimal Backtrader interface"""
+    
     params = dict(
         period=20,          # Moving average period
         devfactor=2.0,      # Standard deviation factor for bands
@@ -11,6 +13,18 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
         printlog=True,
         log_level='INFO',   # Logging level
     )
+
+    def __init__(self):
+        # Initialize the custom tracking mixin first
+        CustomTrackingMixin.__init__(self)
+        
+        # These will be set by Backtrader
+        self.datas = None
+        self.broker = None
+        self.position = None
+        self.order = None
+        
+        self.debug_log("Initializing MeanReversionBareStrategy")
 
     def log(self, txt, level='INFO'):
         if self.p.printlog:
@@ -21,11 +35,9 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
         if self.p.log_level == 'DEBUG':
             self.log(txt, 'DEBUG')
 
-    def __init__(self):
-        # Initialize the custom tracking mixin first
-        CustomTrackingMixin.__init__(self)
-        
-        self.debug_log("Initializing MeanReversionStrategy")
+    def set_data(self, datas):
+        """Set data feeds (called by Backtrader)"""
+        self.datas = datas
         self.debug_log(f"Number of data feeds: {len(self.datas)}")
         
         # Use the first (and only) data feed
@@ -48,59 +60,34 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
         self.upper_band = self.sma + (self.stddev * self.p.devfactor)
         self.lower_band = self.sma - (self.stddev * self.p.devfactor)
         self.debug_log(f"Bollinger bands calculated")
-        
-        # Track order to avoid duplicate orders
-        self.order = None
-        
-        # Broker settings
+
+    def set_broker(self, broker):
+        """Set broker (called by Backtrader)"""
+        self.broker = broker
         self.broker.setcommission(commission=self.p.commission)
-        
-        self.debug_log("MeanReversionStrategy initialization complete")
 
-    def notify_order(self, order):
-        try:
-            self.debug_log(f"notify_order called - Status: {order.getstatusname()}")
-            
-            if order.status in [order.Submitted, order.Accepted]:
-                # Order submitted/accepted - nothing to do
-                self.debug_log("Order submitted/accepted - returning")
-                return
+    def set_position(self, position):
+        """Set position (called by Backtrader)"""
+        self.position = position
 
-            # Check if an order has been completed
-            if order.status in [order.Completed]:
-                self.debug_log("Order completed - getting current date")
-                current_date = self.datas[0].datetime.datetime(0)
-                self.debug_log(f"Current date: {current_date}")
-                
-                if order.isbuy():
-                    self.log(f"BUY EXECUTED @ {order.executed.price:.2f}, Size: {order.executed.size}")
-                    # Use custom tracking mixin
-                    self.track_trade_entry(order.executed.price, order.executed.size)
-                    self.debug_log("Buy order tracking completed")
-                    
-                elif order.issell():
-                    self.log(f"SELL EXECUTED @ {order.executed.price:.2f}, Size: {order.executed.size}")
-                    # Use custom tracking mixin
-                    self.track_trade_exit(order.executed.price, order.executed.size)
-                    self.debug_log("Trade tracking completed")
-                        
-            elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-                self.log(f"ORDER {order.getstatusname()}")
+    def buy(self, size=None, price=None):
+        """Place buy order"""
+        if size is None:
+            size = self.p.size
+        # This is a simplified version - in practice you'd need to implement order management
+        self.debug_log(f"BUY order placed: size={size}, price={price}")
+        return None  # No order object returned
 
-            # Reset order
-            self.order = None
-            self.debug_log("Order reset")
-            
-        except Exception as e:
-            self.debug_log(f"ERROR in notify_order: {e}")
-            self.debug_log(f"Error type: {type(e)}")
-            import traceback
-            self.debug_log(f"Traceback: {traceback.format_exc()}")
-            raise
-
-    # notify_trade removed - using custom tracking instead
+    def sell(self, size=None, price=None):
+        """Place sell order"""
+        if size is None:
+            size = self.p.size
+        # This is a simplified version - in practice you'd need to implement order management
+        self.debug_log(f"SELL order placed: size={size}, price={price}")
+        return None  # No order object returned
 
     def next(self):
+        """Main strategy logic - called by Backtrader"""
         try:
             self.debug_log("Entering next() method")
             
@@ -143,21 +130,24 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
                 if current_price <= lower:
                     # Price hit lower band - buy (mean reversion up)
                     self.log(f"BUY SIGNAL - Price {current_price:.2f} <= Lower Band {lower:.2f}")
-                    self.order = self.buy(size=self.p.size)
-                    self.debug_log("Buy order placed")
+                    # Simulate trade entry for tracking
+                    self.track_trade_entry(current_price, self.p.size)
+                    self.debug_log("Buy signal tracked")
             else:
                 # In position - look for exit signals
                 self.debug_log("In position, checking for exit signals")
                 if current_price >= upper:
                     # Price hit upper band - sell (mean reversion down)
                     self.log(f"SELL SIGNAL - Price {current_price:.2f} >= Upper Band {upper:.2f}")
-                    self.order = self.sell(size=self.p.size)
-                    self.debug_log("Sell order placed (upper band)")
+                    # Simulate trade exit for tracking
+                    self.track_trade_exit(current_price, self.p.size)
+                    self.debug_log("Sell signal tracked (upper band)")
                 elif current_price >= sma:
                     # Price back to mean - take profit
                     self.log(f"PROFIT TAKING - Price {current_price:.2f} >= SMA {sma:.2f}")
-                    self.order = self.sell(size=self.p.size)
-                    self.debug_log("Sell order placed (profit taking)")
+                    # Simulate trade exit for tracking
+                    self.track_trade_exit(current_price, self.p.size)
+                    self.debug_log("Sell signal tracked (profit taking)")
                     
             self.debug_log("next() method completed successfully")
             
@@ -169,11 +159,16 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
             raise
 
     def stop(self):
+        """Called when strategy stops"""
         self.log(f"Final Portfolio Value: {self.broker.getvalue():.2f}")
         
-        # Save strategy state for reporting
-        self._final_value = self.broker.getvalue()
-        self._trades_executed = len(self._trades)
+        # Print custom tracking results
+        stats = self.get_trade_statistics()
+        self.log(f"Custom Tracking Results:")
+        self.log(f"  Total Trades: {stats['total_trades']}")
+        self.log(f"  Win Rate: {stats['win_rate']:.1f}%")
+        self.log(f"  Total P&L: ${stats['total_pnl']:.2f}")
+        self.log(f"  Max Drawdown: {stats['max_drawdown_pct']:.2f}%")
 
     @staticmethod
     def get_data_requirements():
@@ -187,4 +182,5 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
     @staticmethod
     def get_description():
         """Return strategy description"""
-        return "Simple Mean Reversion Strategy using Bollinger Bands on daily data"
+        return "Bare Mean Reversion Strategy using Bollinger Bands on daily data (minimal Backtrader interface)"
+

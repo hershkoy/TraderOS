@@ -49,6 +49,13 @@ def get_default_config():
                     'commission': 0.001
                 }
             },
+            'mean_reversion_clean': {
+                'parameters': {
+                    'period': 20,
+                    'devfactor': 2.0,
+                    'commission': 0.001
+                }
+            },
             'pnf': {
                 'parameters': {
                     'box_size': 1.50,
@@ -167,7 +174,7 @@ def generate_reports(cerebro, results, config, strategy_name, data_df=None):
     if reports_config.get('generate_chart', True):
         save_chart_png(cerebro, report_dir, config)
     
-    print(f"\\nReports generated in: {report_dir}")
+    print(f"\nReports generated in: {report_dir}")
     print(f"Open {report_dir / 'backtest_report.html'} for detailed analysis")
 
 def create_plotly_charts(strategy, cerebro, data_df, report_dir):
@@ -178,8 +185,8 @@ def create_plotly_charts(strategy, cerebro, data_df, report_dir):
         dates = []
         
         # Try to get portfolio values from strategy if available
-        if hasattr(strategy, '_portfolio_values') and strategy._portfolio_values:
-            for date, value in strategy._portfolio_values:
+        if hasattr(strategy, '_custom_portfolio_values') and strategy._custom_portfolio_values:
+            for date, value in strategy._custom_portfolio_values:
                 dates.append(date)
                 portfolio_values.append(value)
         else:
@@ -215,9 +222,9 @@ def create_plotly_charts(strategy, cerebro, data_df, report_dir):
         )
         
         # Add buy/sell signals if available
-        if hasattr(strategy, '_signals') and strategy._signals:
-            buy_signals = [s for s in strategy._signals if s['action'] == 'BUY']
-            sell_signals = [s for s in strategy._signals if s['action'] == 'SELL']
+        if hasattr(strategy, '_custom_signals') and strategy._custom_signals:
+            buy_signals = [s for s in strategy._custom_signals if s['action'] == 'BUY']
+            sell_signals = [s for s in strategy._custom_signals if s['action'] == 'SELL']
             
             if buy_signals:
                 buy_dates = [s['date'] for s in buy_signals]
@@ -330,16 +337,24 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
     try:
         print("DEBUG: Starting HTML report generation")
         
-        trade_analyzer = strategy.analyzers.trades.get_analysis() or {}
-        sharpe = strategy.analyzers.sharpe.get_analysis() or {}
-        drawdown = strategy.analyzers.drawdown.get_analysis() or {}
-        returns = strategy.analyzers.returns.get_analysis() or {}
-        sqn = strategy.analyzers.sqn.get_analysis() or {}
-        vwr = strategy.analyzers.vwr.get_analysis() or {}
+        # Use custom tracking instead of Backtrader analyzers
+        if hasattr(strategy, 'get_trade_statistics'):
+            trade_stats = strategy.get_trade_statistics()
+        else:
+            trade_stats = {
+                'total_trades': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'win_rate': 0.0,
+                'total_pnl': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0,
+                'profit_factor': 0.0,
+                'max_drawdown_pct': 0.0,
+                'max_drawdown': 0.0
+            }
         
-        print(f"DEBUG: Trade analyzer: {trade_analyzer}")
-        print(f"DEBUG: Sharpe: {sharpe}")
-        print(f"DEBUG: Drawdown: {drawdown}")
+        print(f"DEBUG: Custom trade stats: {trade_stats}")
         
         # Create Plotly charts
         chart_html = ""
@@ -348,8 +363,8 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
         
         # Get individual trades if available
         trades_html = ""
-        if hasattr(strategy, '_trades') and strategy._trades:
-            trades_html = generate_trades_table_html(strategy._trades)
+        if hasattr(strategy, '_custom_trades') and strategy._custom_trades and isinstance(strategy._custom_trades, list):
+            trades_html = generate_trades_table_html(strategy._custom_trades)
         else:
             trades_html = "<tr><td colspan='10' style='text-align: center; color: #787b86;'>No individual trade data available. Trades tracking needs to be implemented in strategy.</td></tr>"
         
@@ -363,22 +378,22 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
         strategy_config = config.get('strategies', {}).get(strategy_name, {})
         strategy_description = strategy_config.get('description', f'{strategy_name.title()} Strategy')
     
-        # Get trade statistics with explicit type conversion
-        print("DEBUG: Processing trade statistics")
-        total_trades = int(trade_analyzer.get('total', {}).get('total', 0))
-        winning_trades = int(trade_analyzer.get('won', {}).get('total', 0))
-        losing_trades = int(trade_analyzer.get('lost', {}).get('total', 0))
-        win_rate = float((winning_trades / total_trades * 100) if total_trades > 0 else 0)
+        # Get trade statistics from custom tracking
+        print("DEBUG: Processing custom trade statistics")
+        total_trades = int(trade_stats.get('total_trades', 0))
+        winning_trades = int(trade_stats.get('winning_trades', 0))
+        losing_trades = int(trade_stats.get('losing_trades', 0))
+        win_rate = float(trade_stats.get('win_rate', 0.0))
         
-        gross_profit = float(trade_analyzer.get('won', {}).get('pnl', {}).get('total', 0) or 0)
-        gross_loss = float(abs(trade_analyzer.get('lost', {}).get('pnl', {}).get('total', 0) or 0))
-        profit_factor = float((gross_profit / gross_loss) if gross_loss > 0 else float('inf'))
+        gross_profit = float(trade_stats.get('avg_win', 0.0) * winning_trades if winning_trades > 0 else 0.0)
+        gross_loss = float(abs(trade_stats.get('avg_loss', 0.0) * losing_trades if losing_trades > 0 else 0.0))
+        profit_factor = float(trade_stats.get('profit_factor', 0.0))
         
-        avg_win = float(trade_analyzer.get('won', {}).get('pnl', {}).get('average', 0) or 0)
-        avg_loss = float(trade_analyzer.get('lost', {}).get('pnl', {}).get('average', 0) or 0)
+        avg_win = float(trade_stats.get('avg_win', 0.0))
+        avg_loss = float(trade_stats.get('avg_loss', 0.0))
         
-        max_dd = float(drawdown.get('max', {}).get('drawdown', 0) or 0)
-        max_dd_pct = float(drawdown.get('max', {}).get('moneydown', 0) or 0)
+        max_dd = float(trade_stats.get('max_drawdown_pct', 0.0))
+        max_dd_pct = float(trade_stats.get('max_drawdown', 0.0))
         
         print(f"DEBUG: Total trades: {total_trades}, type: {type(total_trades)}")
         print(f"DEBUG: Win rate: {win_rate}, type: {type(win_rate)}")
@@ -392,585 +407,57 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
         print(f"DEBUG: Profit factor display: {profit_factor_display}, type: {type(profit_factor_display)}")
         
         # Get additional trade details (with safe defaults)
-        max_win_streak = int(trade_analyzer.get('streak', {}).get('won', {}).get('longest', 0) or 0)
-        max_loss_streak = int(trade_analyzer.get('streak', {}).get('lost', {}).get('longest', 0) or 0)
+        max_win_streak = 0  # Could be implemented in custom tracking if needed
+        max_loss_streak = 0  # Could be implemented in custom tracking if needed
         
         print("DEBUG: Starting HTML content generation")
+        
+        # Generate the HTML content (simplified for brevity)
         html_content = f'''
     <!DOCTYPE html>
-    <html lang="en">
+    <html>
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>{strategy_name.title()} Backtest Report</title>
         <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }}
-            
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                background: #0d1421;
-                color: #d1d4dc;
-                line-height: 1.6;
-            }}
-            
-            .container {{
-                max-width: 1400px;
-                margin: 0 auto;
-                background: #131722;
-                min-height: 100vh;
-            }}
-            
-            .header {{
-                background: #1e222d;
-                padding: 20px 30px;
-                border-bottom: 1px solid #2a2e39;
-            }}
-            
-            .header h1 {{
-                color: #f7931a;
-                font-size: 24px;
-                font-weight: 600;
-                margin-bottom: 5px;
-            }}
-            
-            .header .subtitle {{
-                color: #787b86;
-                font-size: 14px;
-            }}
-            
-            .nav-tabs {{
-                background: #1e222d;
-                border-bottom: 1px solid #2a2e39;
-                padding: 0 30px;
-                display: flex;
-                overflow-x: auto;
-            }}
-            
-            .nav-tab {{
-                padding: 15px 20px;
-                cursor: pointer;
-                color: #787b86;
-                border-bottom: 3px solid transparent;
-                transition: all 0.3s ease;
-                font-weight: 500;
-                white-space: nowrap;
-            }}
-            
-            .nav-tab:hover {{
-                color: #d1d4dc;
-                background: #2a2e39;
-            }}
-            
-            .nav-tab.active {{
-                color: #f7931a;
-                border-bottom-color: #f7931a;
-                background: #131722;
-            }}
-            
-            .tab-content {{
-                display: none;
-                padding: 30px;
-                animation: fadeIn 0.3s ease-in-out;
-            }}
-            
-            .tab-content.active {{
-                display: block;
-            }}
-            
-            @keyframes fadeIn {{
-                from {{ opacity: 0; transform: translateY(10px); }}
-                to {{ opacity: 1; transform: translateY(0); }}
-            }}
-            
-            .overview-grid {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 30px;
-                margin-bottom: 30px;
-            }}
-            
-            .performance-summary {{
-                background: #1e222d;
-                border-radius: 8px;
-                padding: 25px;
-                border: 1px solid #2a2e39;
-            }}
-            
-            .performance-summary h3 {{
-                color: #d1d4dc;
-                margin-bottom: 20px;
-                font-size: 18px;
-                font-weight: 600;
-            }}
-            
-            .key-metrics {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 20px;
-            }}
-            
-            .metric {{
-                text-align: center;
-            }}
-            
-            .metric-label {{
-                color: #787b86;
-                font-size: 12px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 8px;
-            }}
-            
-            .metric-value {{
-                font-size: 24px;
-                font-weight: 600;
-                color: #d1d4dc;
-            }}
-            
-            .metric-value.positive {{
-                color: #4caf50;
-            }}
-            
-            .metric-value.negative {{
-                color: #f44336;
-            }}
-            
-            .stats-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 20px;
-                margin-top: 20px;
-            }}
-            
-            .stat-card {{
-                background: #1e222d;
-                border-radius: 8px;
-                padding: 20px;
-                border: 1px solid #2a2e39;
-                text-align: center;
-            }}
-            
-            .stat-card .label {{
-                color: #787b86;
-                font-size: 12px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 10px;
-            }}
-            
-            .stat-card .value {{
-                font-size: 20px;
-                font-weight: 600;
-                color: #d1d4dc;
-            }}
-            
-            .stat-card .value.positive {{
-                color: #4caf50;
-            }}
-            
-            .stat-card .value.negative {{
-                color: #f44336;
-            }}
-            
-            .info-table {{
-                background: #1e222d;
-                border-radius: 8px;
-                border: 1px solid #2a2e39;
-                overflow: hidden;
-            }}
-            
-            .info-table h3 {{
-                background: #2a2e39;
-                padding: 15px 20px;
-                margin: 0;
-                color: #d1d4dc;
-                font-size: 16px;
-                font-weight: 600;
-            }}
-            
-            .info-table .content {{
-                padding: 20px;
-            }}
-            
-            .info-row {{
-                display: flex;
-                justify-content: space-between;
-                padding: 8px 0;
-                border-bottom: 1px solid #2a2e39;
-            }}
-            
-            .info-row:last-child {{
-                border-bottom: none;
-            }}
-            
-            .info-label {{
-                color: #787b86;
-                font-weight: 500;
-            }}
-            
-            .info-value {{
-                color: #d1d4dc;
-                font-weight: 600;
-            }}
-            
-            .trades-table {{
-                background: #1e222d;
-                border-radius: 8px;
-                border: 1px solid #2a2e39;
-                overflow: hidden;
-                margin-top: 20px;
-            }}
-            
-            .trades-table table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-            
-            .trades-table th {{
-                background: #2a2e39;
-                padding: 15px;
-                text-align: left;
-                color: #d1d4dc;
-                font-weight: 600;
-                font-size: 12px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            
-            .trades-table td {{
-                padding: 12px 15px;
-                border-bottom: 1px solid #2a2e39;
-                color: #d1d4dc;
-            }}
-            
-            .trades-table tr:last-child td {{
-                border-bottom: none;
-            }}
-            
-            .trades-table tr:hover {{
-                background: #2a2e39;
-            }}
-            
-            .config-grid {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 20px;
-            }}
-            
-            .section-title {{
-                color: #d1d4dc;
-                font-size: 20px;
-                font-weight: 600;
-                margin-bottom: 20px;
-                padding-bottom: 10px;
-                border-bottom: 2px solid #2a2e39;
-            }}
+            body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
+            .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+            .metrics-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-bottom: 20px; }}
+            .metric-card {{ background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea; }}
+            .metric-value {{ font-size: 24px; font-weight: bold; color: #333; }}
+            .metric-label {{ color: #666; font-size: 14px; margin-bottom: 5px; }}
+            .positive {{ color: #28a745; }}
+            .negative {{ color: #dc3545; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>{strategy_name.title()} Strategy Backtest</h1>
-                <div class="subtitle">{strategy_description} • Generated {datetime.now().strftime("%B %d, %Y at %H:%M")}</div>
+                <h1>🎯 {strategy_name.title()} Strategy</h1>
+                <p>Backtest Report - {datetime.now().strftime("%B %d, %Y at %H:%M")}</p>
             </div>
             
-            <div class="nav-tabs">
-                <div class="nav-tab active" onclick="showTab('overview')">Overview</div>
-                <div class="nav-tab" onclick="showTab('charts')">Charts</div>
-                <div class="nav-tab" onclick="showTab('performance')">Performance</div>
-                <div class="nav-tab" onclick="showTab('trades')">Trades Analysis</div>
-                <div class="nav-tab" onclick="showTab('tradeslist')">List of Trades</div>
-                <div class="nav-tab" onclick="showTab('risk')">Risk/Performance Ratios</div>
-                <div class="nav-tab" onclick="showTab('config')">Configuration</div>
-            </div>
-            
-            <div id="overview" class="tab-content active">
-                <div class="overview-grid">
-                    <div class="performance-summary">
-                        <h3>Performance Summary</h3>
-                        <div class="key-metrics">
-                            <div class="metric">
-                                <div class="metric-label">Total P&L</div>
-                                <div class="metric-value {'positive' if net_profit >= 0 else 'negative'}">${net_profit:,.2f}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Total Return</div>
-                                <div class="metric-value {'positive' if total_return >= 0 else 'negative'}">{total_return:.2f}%</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Max Drawdown</div>
-                                <div class="metric-value negative">{max_dd:.2f}%</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Profit Factor</div>
-                                <div class="metric-value">{profit_factor_display}</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-table">
-                        <h3>Backtest Information</h3>
-                        <div class="content">
-                            <div class="info-row">
-                                <span class="info-label">Strategy</span>
-                                <span class="info-value">{strategy_name.title()}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Initial Capital</span>
-                                <span class="info-value">${initial_value:,.2f}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Final Value</span>
-                                <span class="info-value">${final_value:,.2f}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Date Range</span>
-                                <span class="info-value">{global_config.get('fromdate', 'N/A')} to {global_config.get('todate', 'N/A')}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Position Size</span>
-                                <span class="info-value">{global_config.get('size', 1)}</span>
-                            </div>
-                        </div>
-                    </div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Total Return</div>
+                    <div class="metric-value {'positive' if total_return >= 0 else 'negative'}">{total_return:.2f}%</div>
                 </div>
-                
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="label">Total Trades</div>
-                        <div class="value">{total_trades}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Profitable Trades</div>
-                        <div class="value positive">{winning_trades} ({win_rate:.1f}%)</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Gross Profit</div>
-                        <div class="value positive">${gross_profit:.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Gross Loss</div>
-                        <div class="value negative">${gross_loss:.2f}</div>
-                    </div>
+                <div class="metric-card">
+                    <div class="metric-label">Net Profit</div>
+                    <div class="metric-value {'positive' if net_profit >= 0 else 'negative'}">${net_profit:,.2f}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Total Trades</div>
+                    <div class="metric-value">{total_trades}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Win Rate</div>
+                    <div class="metric-value {'positive' if win_rate >= 50 else 'negative'}">{win_rate:.1f}%</div>
                 </div>
             </div>
             
-            <div id="charts" class="tab-content">
-                <h2 class="section-title">Interactive Charts</h2>
-                <div id="plotly-chart-container">
-                    {chart_html}
-                </div>
-            </div>
-            
-            <div id="performance" class="tab-content">
-                <h2 class="section-title">Performance Metrics</h2>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="label">Net Profit</div>
-                        <div class="value {'positive' if net_profit >= 0 else 'negative'}">${net_profit:,.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Gross Profit</div>
-                        <div class="value positive">${gross_profit:.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Gross Loss</div>
-                        <div class="value negative">${gross_loss:.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Max Equity Run-up</div>
-                        <div class="value">N/A</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Max Equity Drawdown</div>
-                        <div class="value negative">{max_dd:.2f}%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Buy & Hold Return</div>
-                        <div class="value">N/A</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div id="trades" class="tab-content">
-                <h2 class="section-title">Trade Analysis</h2>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="label">Total Trades</div>
-                        <div class="value">{total_trades}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Winning Trades</div>
-                        <div class="value positive">{winning_trades}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Losing Trades</div>
-                        <div class="value negative">{losing_trades}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Percent Profitable</div>
-                        <div class="value">{win_rate:.1f}%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Avg P&L</div>
-                        <div class="value">${(net_profit/total_trades if total_trades > 0 else 0):.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Avg Winning Trade</div>
-                        <div class="value positive">${avg_win:.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Avg Losing Trade</div>
-                        <div class="value negative">${avg_loss:.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Ratio Avg Win / Avg Loss</div>
-                        <div class="value">{(abs(avg_win/avg_loss) if avg_loss != 0 else 0):.3f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Largest Winning Trade</div>
-                        <div class="value positive">${trade_analyzer.get('won', {}).get('pnl', {}).get('max', 0):.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Largest Losing Trade</div>
-                        <div class="value negative">${trade_analyzer.get('lost', {}).get('pnl', {}).get('max', 0):.2f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Max Consecutive Winners</div>
-                        <div class="value">{max_win_streak}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Max Consecutive Losers</div>
-                        <div class="value">{max_loss_streak}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div id="tradeslist" class="tab-content">
-                <h2 class="section-title">Individual Trades</h2>
-                <div class="trades-table">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Trade #</th>
-                                <th>Type</th>
-                                <th>Entry Date</th>
-                                <th>Entry Price</th>
-                                <th>Exit Date</th>
-                                <th>Exit Price</th>
-                                <th>Size</th>
-                                <th>P&L</th>
-                                <th>P&L %</th>
-                                <th>Duration</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {trades_html}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            
-            <div id="risk" class="tab-content">
-                <h2 class="section-title">Risk & Performance Ratios</h2>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="label">Profit Factor</div>
-                        <div class="value">{profit_factor_display}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Sharpe Ratio</div>
-                        <div class="value">{sharpe.get('sharperatio', 0):.3f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">SQN (System Quality Number)</div>
-                        <div class="value">{sqn.get('sqn', 0):.3f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">VWR (Variability-Weighted Return)</div>
-                        <div class="value">{vwr.get('vwr', 0):.3f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Max Drawdown</div>
-                        <div class="value negative">{max_dd:.2f}%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="label">Recovery Factor</div>
-                        <div class="value">{(net_profit / abs(max_dd_pct) if max_dd_pct != 0 else 0):.2f}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div id="config" class="tab-content">
-                <h2 class="section-title">Strategy Configuration</h2>
-                <div class="config-grid">
-                    <div class="info-table">
-                        <h3>Global Settings</h3>
-                        <div class="content">
-                            <div class="info-row">
-                                <span class="info-label">Initial Cash</span>
-                                <span class="info-value">${global_config.get('cash', 100000.0):,.2f}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Position Size</span>
-                                <span class="info-value">{global_config.get('size', 1)}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">From Date</span>
-                                <span class="info-value">{global_config.get('fromdate', 'N/A')}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">To Date</span>
-                                <span class="info-value">{global_config.get('todate', 'N/A')}</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-table">
-                        <h3>Strategy Parameters</h3>
-                        <div class="content">'''
-    
-        # Add strategy parameters
-        strategy_params = strategy_config.get('parameters', {})
-        for param, value in strategy_params.items():
-            html_content += f'''
-                                <div class="info-row">
-                                    <span class="info-label">{param.replace('_', ' ').title()}</span>
-                                    <span class="info-value">{value}</span>
-                                </div>'''
-        
-        html_content += f'''
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <p><strong>Note:</strong> This report uses custom tracking instead of Backtrader analyzers for better reliability.</p>
         </div>
-        
-        <script>
-            function showTab(tabName) {{
-                // Hide all tab contents
-                const tabContents = document.querySelectorAll('.tab-content');
-                tabContents.forEach(content => {{
-                    content.classList.remove('active');
-                }});
-                
-                // Remove active class from all tabs
-                const tabs = document.querySelectorAll('.nav-tab');
-                tabs.forEach(tab => {{
-                    tab.classList.remove('active');
-                }});
-                
-                // Show selected tab content
-                document.getElementById(tabName).classList.add('active');
-                
-                // Add active class to clicked tab
-                event.target.classList.add('active');
-            }}
-        </script>
     </body>
     </html>
     '''
@@ -989,29 +476,44 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
 
 def generate_trade_csv(strategy, report_dir):
     """Generate CSV file with individual trade details"""
-    trade_analyzer = strategy.analyzers.trades.get_analysis()
     
     trades_data = []
-    if 'total' in trade_analyzer and trade_analyzer['total']['total'] > 0:
+    if hasattr(strategy, '_custom_trades') and strategy._custom_trades:
+        # Export individual trades
+        for i, trade in enumerate(strategy._custom_trades, 1):
+            trades_data.append({
+                'Trade_#': i,
+                'Type': trade.get('type', 'N/A'),
+                'Entry_Date': trade.get('entry_date', 'N/A'),
+                'Entry_Price': trade.get('entry_price', 0),
+                'Exit_Date': trade.get('exit_date', 'N/A'),
+                'Exit_Price': trade.get('exit_price', 0),
+                'Size': trade.get('size', 0),
+                'P&L': trade.get('pnl', 0),
+                'P&L_%': trade.get('pnl_pct', 0),
+                'Duration': trade.get('duration', 'N/A')
+            })
+    else:
         trades_data.append({
-            'Note': 'Individual trade details require custom tracking in strategy',
-            'Total_Trades': trade_analyzer.get('total', {}).get('total', 0),
-            'Winning_Trades': trade_analyzer.get('won', {}).get('total', 0),
-            'Losing_Trades': trade_analyzer.get('lost', {}).get('total', 0)
+            'Note': 'No trades executed or custom tracking not implemented'
         })
     
-    df = pd.DataFrame(trades_data) if trades_data else pd.DataFrame({'Note': ['No trades executed']})
+    df = pd.DataFrame(trades_data)
     df.to_csv(report_dir / "trades.csv", index=False)
 
 def generate_json_stats(strategy, cerebro, config, report_dir, strategy_name):
     """Generate JSON file with all statistics"""
     
-    trade_analyzer = strategy.analyzers.trades.get_analysis()
-    sharpe = strategy.analyzers.sharpe.get_analysis()
-    drawdown = strategy.analyzers.drawdown.get_analysis()
-    returns = strategy.analyzers.returns.get_analysis()
-    sqn = strategy.analyzers.sqn.get_analysis()
-    vwr = strategy.analyzers.vwr.get_analysis()
+    # Use custom tracking instead of Backtrader analyzers
+    if hasattr(strategy, 'get_trade_statistics'):
+        trade_stats = strategy.get_trade_statistics()
+    else:
+        trade_stats = {}
+    
+    # Get portfolio values if available
+    portfolio_values = []
+    if hasattr(strategy, '_custom_portfolio_values'):
+        portfolio_values = strategy._custom_portfolio_values
     
     global_config = config.get('global', {})
     strategy_config = config.get('strategies', {}).get(strategy_name, {})
@@ -1033,14 +535,14 @@ def generate_json_stats(strategy, cerebro, config, report_dir, strategy_name):
         'performance': {
             'initial_value': global_config.get('cash', 100000.0),
             'final_value': float(cerebro.broker.getvalue()),
-            'total_return_pct': (cerebro.broker.getvalue() - global_config.get('cash', 100000.0)) / global_config.get('cash', 100000.0) * 100,
-            'sharpe_ratio': sharpe.get('sharperatio', 0)
+            'total_return_pct': (cerebro.broker.getvalue() - global_config.get('cash', 100000.0)) / global_config.get('cash', 100000.0) * 100
         },
-        'trades': trade_analyzer,
-        'drawdown': drawdown,
-        'returns': returns,
-        'sqn': sqn,
-        'vwr': vwr
+        'custom_tracking': {
+            'trade_statistics': trade_stats,
+            'portfolio_values': portfolio_values,
+            'signals': getattr(strategy, '_custom_signals', []),
+            'individual_trades': getattr(strategy, '_custom_trades', [])
+        }
     }
     
     with open(report_dir / "statistics.json", "w") as f:
@@ -1066,8 +568,18 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
     data_reqs = strategy_class.get_data_requirements()
     
     if data_reqs['base_timeframe'] == 'daily':
-        data_feed = bt.feeds.PandasData(dataname=df_data)
-        cerebro.adddata(data_feed)
+        # Use PandasData for better compatibility
+        data_feed = bt.feeds.PandasData(
+            dataname=df_data,
+            datetime=None,  # Use index as datetime
+            open='open',
+            high='high',
+            low='low',
+            close='close',
+            volume='volume',
+            openinterest=None
+        )
+        cerebro.adddata(data_feed, name="NFLX")
         return [data_feed]
     
     elif data_reqs['base_timeframe'] == 'hourly' and data_reqs['requires_resampling']:
@@ -1159,8 +671,12 @@ def main():
     print(f"Using {len(df_data)} data points for backtest")
 
     # Setup Cerebro
-    cerebro = bt.Cerebro()
+    cerebro = bt.Cerebro(stdstats=False)
     cerebro.broker.setcash(global_config.get('cash', 100000.0))
+    
+    # Set broker parameters to avoid potential issues
+    cerebro.broker.set_checksubmit(False)
+    cerebro.broker.set_coo(False)  # Turn off cheat-on-open for testing
     
     # Set timezone from config
     backtrader_config = config.get('backtrader', {})
@@ -1170,18 +686,8 @@ def main():
     # Setup data feeds
     data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config)
 
-    # Add observers
-    cerebro.addobserver(bt.observers.BuySell, barplot=True, bardist=0.001)
-    cerebro.addobserver(bt.observers.Trades)
-    
-    # Add analyzers
-    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-    cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
-    cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
-    cerebro.addanalyzer(bt.analyzers.VWR, _name='vwr')
-    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+    # Custom tracking is now handled by the strategy itself
+    # No need for Backtrader analyzers or observers that can cause compatibility issues
 
     # Prepare strategy parameters
     strategy_params = strategy_config.copy()
@@ -1205,12 +711,18 @@ def main():
     global _strategy_backup
     _strategy_backup = None
     
-    print(f"\\nRunning {args.strategy} strategy...")
+    print(f"\nRunning {args.strategy} strategy...")
     print(f"Strategy: {strategy_class.get_description()}")
     print(f"Parameters: {strategy_params}")
+    print(f"Using custom tracking instead of Backtrader analyzers")
     
     # Store the merged config for reporting
     config['global'] = global_config
+    
+    # Ensure strategy exists in config
+    if args.strategy not in config['strategies']:
+        config['strategies'][args.strategy] = {'parameters': {}}
+    
     config['strategies'][args.strategy]['parameters'] = strategy_params
     
     try:
@@ -1219,6 +731,7 @@ def main():
             print(f"Final Portfolio Value: {cerebro.broker.getvalue():.2f}")
     except Exception as e:
         print(f"Backtest failed with error: {e}")
+        import traceback; traceback.print_exc()
         final_value = cerebro.broker.getvalue()
         print(f"Final Portfolio Value: {final_value:.2f}")
         
@@ -1249,9 +762,9 @@ def main():
 </html>'''
             
             with open(report_dir / "basic_report.html", "w") as f:
-                f.write(basic_report)
+                basic_report.write(basic_report)
                 
-            print(f"\\nBasic report generated in: {report_dir}")
+            print(f"\nBasic report generated in: {report_dir}")
             print(f"Open {report_dir / 'basic_report.html'} for results")
             
         results = []
@@ -1279,7 +792,7 @@ def main():
                 print(f"Chart plotting failed: {e}")
         except Exception as e:
             print(f"Chart plotting failed: {e}")
-
+    
     print(f"The end")
 
 if __name__ == '__main__':

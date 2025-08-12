@@ -1,8 +1,8 @@
-# Simple Mean Reversion Strategy on Daily Timeframe
+# Clean Mean Reversion Strategy - No Backtrader Trade Tracking
 import backtrader as bt
 from custom_tracking import CustomTrackingMixin
 
-class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
+class MeanReversionCleanStrategy(CustomTrackingMixin, bt.Strategy):
     params = dict(
         period=20,          # Moving average period
         devfactor=2.0,      # Standard deviation factor for bands
@@ -25,7 +25,7 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
         # Initialize the custom tracking mixin first
         CustomTrackingMixin.__init__(self)
         
-        self.debug_log("Initializing MeanReversionStrategy")
+        self.debug_log("Initializing MeanReversionCleanStrategy")
         self.debug_log(f"Number of data feeds: {len(self.datas)}")
         
         # Use the first (and only) data feed
@@ -55,7 +55,7 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
         # Broker settings
         self.broker.setcommission(commission=self.p.commission)
         
-        self.debug_log("MeanReversionStrategy initialization complete")
+        self.debug_log("MeanReversionCleanStrategy initialization complete")
 
     def notify_order(self, order):
         try:
@@ -97,8 +97,6 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
             import traceback
             self.debug_log(f"Traceback: {traceback.format_exc()}")
             raise
-
-    # notify_trade removed - using custom tracking instead
 
     def next(self):
         try:
@@ -171,9 +169,13 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
     def stop(self):
         self.log(f"Final Portfolio Value: {self.broker.getvalue():.2f}")
         
-        # Save strategy state for reporting
-        self._final_value = self.broker.getvalue()
-        self._trades_executed = len(self._trades)
+        # Print custom tracking results
+        stats = self.get_trade_statistics()
+        self.log(f"Custom Tracking Results:")
+        self.log(f"  Total Trades: {stats['total_trades']}")
+        self.log(f"  Win Rate: {stats['win_rate']:.1f}%")
+        self.log(f"  Total P&L: ${stats['total_pnl']:.2f}")
+        self.log(f"  Max Drawdown: {stats['max_drawdown_pct']:.2f}%")
 
     @staticmethod
     def get_data_requirements():
@@ -187,4 +189,5 @@ class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
     @staticmethod
     def get_description():
         """Return strategy description"""
-        return "Simple Mean Reversion Strategy using Bollinger Bands on daily data"
+        return "Clean Mean Reversion Strategy using Bollinger Bands on daily data (no Backtrader trade tracking)"
+

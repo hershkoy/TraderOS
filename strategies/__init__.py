@@ -1,11 +1,13 @@
 # Strategies package
 from .pnf_strategy import PnF_MTF_Strategy
 from .mean_reversion_strategy import MeanReversionStrategy
+from .mean_reversion_clean import MeanReversionCleanStrategy
 
 # Strategy registry
 STRATEGIES = {
     'pnf': PnF_MTF_Strategy,
     'mean_reversion': MeanReversionStrategy,
+    'mean_reversion_clean': MeanReversionCleanStrategy,
 }
 
 def get_strategy(name):

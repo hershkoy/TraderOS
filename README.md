@@ -18,3 +18,9 @@ python backtrader_runner_yaml.py ^
   --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" ^
   --strategy mean_reversion ^
   --log-level DEBUG
+
+
+  --config default.yaml --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --strategy mean_reversion
+
+
+python mean_reversion_simple.py --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --lookback 30 --std 1.5 --size 2
