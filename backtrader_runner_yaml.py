@@ -433,7 +433,7 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
     <body>
         <div class="container">
             <div class="header">
-                <h1>🎯 {strategy_name.title()} Strategy</h1>
+                <h1>{strategy_name.title()} Strategy</h1>
                 <p>Backtest Report - {datetime.now().strftime("%B %d, %Y at %H:%M")}</p>
             </div>
             
@@ -463,7 +463,7 @@ def generate_html_report(strategy, cerebro, config, report_dir, strategy_name, d
     '''
         
         print("DEBUG: Writing HTML file")
-        with open(report_dir / "backtest_report.html", "w") as f:
+        with open(report_dir / "backtest_report.html", "w", encoding='utf-8') as f:
             f.write(html_content)
         print("DEBUG: HTML file written successfully")
     
