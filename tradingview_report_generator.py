@@ -253,9 +253,6 @@ def create_tradingview_html(strategy_data):
     chart_data = strategy_data['chart_data']
     generated_at = strategy_data['generated_at']
     
-    # Generate trade rows for the table
-    trade_rows_html = generate_trade_rows_html(trades_data)
-    
     # Calculate additional metrics
     open_trades = len([t for t in trades_data if t['status'] == 'Open'])
     closed_trades = len([t for t in trades_data if t['status'] == 'Closed'])
@@ -264,45 +261,50 @@ def create_tradingview_html(strategy_data):
     net_profit_class = "positive" if net_profit >= 0 else "negative"
     net_profit_sign = "+" if net_profit >= 0 else ""
     
-    # Prepare chart data for JavaScript
-    chart_js_data = json.dumps(chart_data) if chart_data else 'null'
-    
     # Read the template HTML file
-    template_path = Path("tradingview_style_report.html")
+    template_path = Path("docs/tradingview_style_report.html")
     if template_path.exists():
         print(f"DEBUG: Template file found at {template_path}")
         with open(template_path, "r", encoding="utf-8") as f:
             html_template = f.read()
         print(f"DEBUG: Template loaded, size: {len(html_template)} characters")
         
-        # Replace placeholders with actual data
-        html_content = html_template.replace("Academy Sports and Outdoors, Inc. - 1W NASDAQ", f"{strategy_name.title()} Strategy - Backtest Results")
-        html_content = html_content.replace("050.24 H52.87 L49.58 C52.02 +2.39 (+4.82%)", f"Initial: ${initial_cash:,.2f} | Final: ${final_value:,.2f} | P&L: {net_profit_sign}${net_profit:,.2f} ({net_profit_sign}{total_return:.2f}%)")
-        html_content = html_content.replace("Bollinger Bands Strategy report", f"{strategy_name.title()} Strategy Report")
-        html_content = html_content.replace("Sep 28, 2020 - Aug 11, 2025", f"{fromdate} - {todate}")
-        html_content = html_content.replace("+42.97 USD", f"{net_profit_sign}${net_profit:,.2f}")
-        html_content = html_content.replace("27.21 USD", f"{performance_metrics['max_drawdown']:.2f}%")
-        html_content = html_content.replace("6", str(performance_metrics['total_trades']))
-        html_content = html_content.replace("66.67%", f"{performance_metrics['win_rate']:.1f}%")
-        html_content = html_content.replace("4/6", f"{performance_metrics['winning_trades']}/{performance_metrics['total_trades']}")
+        # Prepare data for template update
+        template_data = {
+            'pageTitle': f"{strategy_name.title()} Strategy Report - TradingView Style",
+            'chartTitle': f"{strategy_name.title()} Strategy - Backtest Results",
+            'chartSubtitle': f"Initial: ${initial_cash:,.2f} | Final: ${final_value:,.2f} | P&L: {net_profit_sign}${net_profit:,.2f} ({net_profit_sign}{total_return:.2f}%)",
+            'reportTitle': f"{strategy_name.title()} Strategy Report",
+            'reportSubtitle': f"{fromdate} - {todate} 📅",
+            'indicators': {
+                'totalTrades': str(performance_metrics['total_trades']),
+                'winRate': f"{performance_metrics['win_rate']:.1f}%",
+                'profitFactor': f"{performance_metrics['profit_factor']:.2f}",
+                'maxDD': f"{performance_metrics['max_drawdown']:.2f}%",
+                'netPNL': f"{net_profit_sign}${net_profit:,.2f}"
+            },
+            'overview': {
+                'totalPNL': f"{net_profit_sign}${net_profit:,.2f}",
+                'totalPNLPct': f"{net_profit_sign}{total_return:.2f}%",
+                'maxDD': f"{performance_metrics['max_drawdown']:.2f}%",
+                'maxDDPct': f"{performance_metrics['max_drawdown']:.2f}%",
+                'totalTrades': str(performance_metrics['total_trades']),
+                'tradesStatus': 'Completed',
+                'winRate': f"{performance_metrics['win_rate']:.1f}%",
+                'winRatio': f"{performance_metrics['winning_trades']}/{performance_metrics['total_trades']}"
+            },
+            'performanceTable': generate_performance_table_html(performance_metrics, net_profit, net_profit_sign),
+            'tradesAnalysisTable': generate_trades_analysis_table_html(performance_metrics),
+            'riskRatiosTable': generate_risk_ratios_table_html(performance_metrics),
+            'tradesListTable': generate_trades_list_table_html(trades_data),
+            'chartData': prepare_chart_data_for_js(chart_data, strategy_name)
+        }
         
-        # Update indicators
-        html_content = html_content.replace("BBandSE: 52.90", f"Total Trades: {performance_metrics['total_trades']}")
-        html_content = html_content.replace("BBandLE: 50.25", f"Win Rate: {performance_metrics['win_rate']:.1f}%")
-        html_content = html_content.replace("VRVP: ASO 52.02", f"Profit Factor: {performance_metrics['profit_factor']:.2f}")
-        html_content = html_content.replace("Stoch: 70.68 65.58", f"Max DD: {performance_metrics['max_drawdown']:.2f}%")
-        html_content = html_content.replace("CM_Williams_Vix_Fix: 22 20 2 50 0.85 1.01", f"Net P&L: {net_profit_sign}${net_profit:,.2f}")
+        # Create JavaScript to update the template
+        update_script = create_template_update_script(template_data)
         
-        # Replace chart placeholder with real chart
-        chart_html = create_interactive_chart_html(chart_data, strategy_name)
-        html_content = html_content.replace(
-            '<div class="chart-placeholder">\n                    <h3>Chart Area</h3>\n                    <p>Interactive candlestick chart with Bollinger Bands, Volume Profile, and indicators</p>\n                    <p>Price: $52.02 | Volume: 2.3M | Change: +4.82%</p>\n                </div>',
-            chart_html
-        )
-        
-        # Add Chart.js and chart initialization
-        chart_script = create_chart_script(chart_data, strategy_name)
-        html_content = html_content.replace('</body>', f'{chart_script}\n</body>')
+        # Add the update script to the template
+        html_content = html_template.replace('</body>', f'{update_script}\n</body>')
         
         print("DEBUG: HTML content generated successfully")
         return html_content
@@ -311,165 +313,244 @@ def create_tradingview_html(strategy_data):
         # Fallback to basic HTML if template doesn't exist
         return create_basic_html(strategy_data)
 
-def create_interactive_chart_html(chart_data, strategy_name):
-    """Create HTML for the interactive chart"""
-    if chart_data is None:
-        return '''<div class="chart-placeholder">
-                    <h3>Chart Area</h3>
-                    <p>No data available for chart</p>
-                </div>'''
-    
-    return f'''<div class="chart-container">
-                    <canvas id="priceChart" width="800" height="400"></canvas>
-                    <div class="chart-overlay">
-                        <div class="chart-info">
-                            <span id="currentPrice">Loading...</span>
-                            <span id="currentVolume">Volume: --</span>
-                        </div>
-                    </div>
-                </div>'''
+def generate_performance_table_html(performance_metrics, net_profit, net_profit_sign):
+    """Generate HTML for performance table"""
+    html = '''
+        <div class="table-row header">
+            <div class="table-cell">Metric</div>
+            <div class="table-cell">All</div>
+            <div class="table-cell">Long</div>
+            <div class="table-cell">Short</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Net profit</div>
+            <div class="table-cell positive">{net_profit_sign}${net_profit:,.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Gross profit</div>
+            <div class="table-cell">${gross_profit:,.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Gross loss</div>
+            <div class="table-cell">${gross_loss:,.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Max equity drawdown</div>
+            <div class="table-cell">${max_dd:,.2f}%</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+    '''.format(
+        net_profit_sign=net_profit_sign,
+        net_profit=net_profit,
+        gross_profit=performance_metrics['gross_profit'],
+        gross_loss=performance_metrics['gross_loss'],
+        max_dd=performance_metrics['max_drawdown']
+    )
+    return html
 
-def create_chart_script(chart_data, strategy_name):
-    """Create JavaScript for Chart.js initialization"""
-    if chart_data is None:
-        return ""
+def generate_trades_analysis_table_html(performance_metrics):
+    """Generate HTML for trades analysis table"""
+    html = '''
+        <div class="table-row header">
+            <div class="table-cell">Metric</div>
+            <div class="table-cell">All</div>
+            <div class="table-cell">Long</div>
+            <div class="table-cell">Short</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Total trades</div>
+            <div class="table-cell">{total_trades}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Winning trades</div>
+            <div class="table-cell">{winning_trades}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Losing trades</div>
+            <div class="table-cell">{losing_trades}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Percent profitable</div>
+            <div class="table-cell">{win_rate:.1f}%</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Avg winning trade</div>
+            <div class="table-cell">${avg_win:.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Avg losing trade</div>
+            <div class="table-cell">${avg_loss:.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Profit factor</div>
+            <div class="table-cell">{profit_factor:.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+    '''.format(
+        total_trades=performance_metrics['total_trades'],
+        winning_trades=performance_metrics['winning_trades'],
+        losing_trades=performance_metrics['losing_trades'],
+        win_rate=performance_metrics['win_rate'],
+        avg_win=performance_metrics['avg_win'],
+        avg_loss=performance_metrics['avg_loss'],
+        profit_factor=performance_metrics['profit_factor']
+    )
+    return html
+
+def generate_risk_ratios_table_html(performance_metrics):
+    """Generate HTML for risk ratios table"""
+    html = '''
+        <div class="table-row header">
+            <div class="table-cell">Metric</div>
+            <div class="table-cell">All</div>
+            <div class="table-cell">Long</div>
+            <div class="table-cell">Short</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Profit factor</div>
+            <div class="table-cell">{profit_factor:.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Max drawdown</div>
+            <div class="table-cell">{max_dd:.2f}%</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+        <div class="table-row">
+            <div class="table-cell">Win rate</div>
+            <div class="table-cell">{win_rate:.1f}%</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+        </div>
+    '''.format(
+        profit_factor=performance_metrics['profit_factor'],
+        max_dd=performance_metrics['max_drawdown'],
+        win_rate=performance_metrics['win_rate']
+    )
+    return html
+
+def generate_trades_list_table_html(trades_data):
+    """Generate HTML for trades list table"""
+    if not trades_data:
+        return '<div class="table-row"><div class="table-cell" colspan="10">No trades available</div></div>'
     
+    html = '''
+        <div class="table-row header">
+            <div class="table-cell">Trade #</div>
+            <div class="table-cell">Type</div>
+            <div class="table-cell">Date/Time</div>
+            <div class="table-cell">Signal</div>
+            <div class="table-cell">Price</div>
+            <div class="table-cell">Position size</div>
+            <div class="table-cell">P&L</div>
+            <div class="table-cell">Run-up</div>
+            <div class="table-cell">Drawdown</div>
+            <div class="table-cell">Cumulative P&L</div>
+        </div>
+    '''
+    
+    cumulative_pnl = 0
+    for i, trade in enumerate(trades_data, 1):
+        cumulative_pnl += trade['pnl']
+        pnl_class = "positive" if trade['pnl'] >= 0 else "negative"
+        pnl_sign = "+" if trade['pnl'] >= 0 else ""
+        
+        html += f'''
+        <div class="table-row">
+            <div class="table-cell">{i}</div>
+            <div class="table-cell"><span class="trade-type {trade['type'].lower()}">{trade['type']}</span></div>
+            <div class="table-cell">{trade['entry_date']}</div>
+            <div class="table-cell">{trade['signal']}</div>
+            <div class="table-cell">${trade['entry_price']:.2f}</div>
+            <div class="table-cell">{trade['position_size']}</div>
+            <div class="table-cell {pnl_class}">{pnl_sign}${trade['pnl']:.2f}</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">-</div>
+            <div class="table-cell">${cumulative_pnl:.2f}</div>
+        </div>
+        '''
+    
+    return html
+
+def prepare_chart_data_for_js(chart_data, strategy_name):
+    """Prepare chart data for JavaScript"""
+    if not chart_data:
+        return None
+    
+    # Convert chart data to Chart.js format
+    chart_js_data = {
+        'labels': chart_data.get('labels', []),
+        'datasets': []
+    }
+    
+    # Add price dataset
+    if 'candlestick' in chart_data and chart_data['candlestick']:
+        close_prices = [d['c'] for d in chart_data['candlestick']]
+        dates = [d['x'] for d in chart_data['candlestick']]
+        
+        chart_js_data['datasets'].append({
+            'label': f'{strategy_name} Price',
+            'data': close_prices,
+            'borderColor': '#2962ff',
+            'backgroundColor': 'rgba(41, 98, 255, 0.1)',
+            'borderWidth': 2,
+            'fill': False,
+            'tension': 0.1,
+            'pointRadius': 0,
+            'pointHoverRadius': 4
+        })
+        
+        chart_js_data['labels'] = dates
+    
+    # Add trade markers
+    if 'trades' in chart_data and chart_data['trades']:
+        for trade in chart_data['trades']:
+            chart_js_data['datasets'].append({
+                'label': f"{trade['type']} Trade",
+                'data': [{'x': trade['x'], 'y': trade['y']}],
+                'pointBackgroundColor': '#4caf50' if trade['type'] == 'Long' else '#f44336',
+                'pointBorderColor': '#4caf50' if trade['type'] == 'Long' else '#f44336',
+                'pointRadius': 6,
+                'pointHoverRadius': 8,
+                'showLine': False,
+                'type': 'scatter'
+            })
+    
+    return chart_js_data
+
+def create_template_update_script(template_data):
+    """Create JavaScript to update the template with data"""
     return f'''
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script>
-        // Chart data
-        const chartData = {json.dumps(chart_data)};
-        
-        // Initialize chart when page loads
+        // Update template data when page loads
         document.addEventListener('DOMContentLoaded', function() {{
-            if (chartData && chartData.candlestick) {{
-                createPriceChart();
-            }}
+            const templateData = {json.dumps(template_data)};
+            updateTemplateData(templateData);
         }});
-        
-        function createPriceChart() {{
-            const ctx = document.getElementById('priceChart').getContext('2d');
-            
-            // Prepare data for Chart.js
-            const labels = chartData.labels || [];
-            const candlestickData = chartData.candlestick || [];
-            
-            // Create OHLC dataset
-            const ohlcData = candlestickData.map(d => ({{
-                x: new Date(d.x),
-                o: d.o,
-                h: d.h,
-                l: d.l,
-                c: d.c
-            }}));
-            
-            // Create line chart for simplicity (Chart.js doesn't have built-in candlestick)
-            const closePrices = ohlcData.map(d => d.c);
-            const dates = ohlcData.map(d => d.x);
-            
-            const chart = new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: dates,
-                    datasets: [{{
-                        label: '{strategy_name} Price',
-                        data: closePrices,
-                        borderColor: '#2962ff',
-                        backgroundColor: 'rgba(41, 98, 255, 0.1)',
-                        borderWidth: 2,
-                        fill: false,
-                        tension: 0.1
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
-                            display: false
-                        }},
-                        tooltip: {{
-                            mode: 'index',
-                            intersect: false,
-                            callbacks: {{
-                                label: function(context) {{
-                                    const dataIndex = context.dataIndex;
-                                    const ohlc = ohlcData[dataIndex];
-                                    return [
-                                        `Open: ${{ohlc.o.toFixed(2)}}`,
-                                        `High: ${{ohlc.h.toFixed(2)}}`,
-                                        `Low: ${{ohlc.l.toFixed(2)}}`,
-                                        `Close: ${{ohlc.c.toFixed(2)}}`
-                                    ];
-                                }}
-                            }}
-                        }}
-                    }},
-                    scales: {{
-                        x: {{
-                            type: 'time',
-                            time: {{
-                                unit: 'day'
-                            }},
-                            grid: {{
-                                color: '#2a2e39'
-                            }},
-                            ticks: {{
-                                color: '#787b86'
-                            }}
-                        }},
-                        y: {{
-                            grid: {{
-                                color: '#2a2e39'
-                            }},
-                            ticks: {{
-                                color: '#787b86',
-                                callback: function(value) {{
-                                    return '$' + value.toFixed(2);
-                                }}
-                            }}
-                        }}
-                    }},
-                    interaction: {{
-                        mode: 'nearest',
-                        axis: 'x',
-                        intersect: false
-                    }}
-                }}
-            }});
-            
-            // Add trade markers if available
-            if (chartData.trades && chartData.trades.length > 0) {{
-                chartData.trades.forEach(trade => {{
-                    const tradeDate = new Date(trade.x);
-                    const price = trade.y;
-                    const color = trade.type === 'Long' ? '#4caf50' : '#f44336';
-                    
-                    chart.data.datasets.push({{
-                        label: trade.type + ' Trade',
-                        data: [{{x: tradeDate, y: price}}],
-                        pointBackgroundColor: color,
-                        pointBorderColor: color,
-                        pointRadius: 8,
-                        pointHoverRadius: 10,
-                        showLine: false,
-                        type: 'scatter'
-                    }});
-                }});
-                chart.update();
-            }}
-            
-            // Update price display on hover
-            chart.options.onHover = function(event, elements) {{
-                if (elements.length > 0) {{
-                    const dataIndex = elements[0].index;
-                    const ohlc = ohlcData[dataIndex];
-                    document.getElementById('currentPrice').textContent = `$${{ohlc.c.toFixed(2)}}`;
-                }}
-            }};
-        }}
-    </script>'''
+    </script>
+    '''
 
 def create_basic_html(strategy_data):
     """Create a basic HTML report if template is not available"""
