@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 import os
 
 # Import strategies
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
 from strategies import get_strategy, list_strategies
 
 # Global variable to store strategy backup in case of backtrader failure

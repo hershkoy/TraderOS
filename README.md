@@ -32,22 +32,22 @@ The framework supports fetching historical data from multiple providers. Data is
 #### Alpaca Examples
 ```bash
 # Fetch 5 years of NFLX 1-hour bars (capped to 10,000)
-python fetch_data.py --symbol NFLX --provider alpaca --timeframe 1h --bars 10000
+python utils/fetch_data.py --symbol NFLX --provider alpaca --timeframe 1h --bars 10000
 
 # Fetch 1 year of AAPL daily bars
-python fetch_data.py --symbol AAPL --provider alpaca --timeframe 1d --bars 365
+python utils/fetch_data.py --symbol AAPL --provider alpaca --timeframe 1d --bars 365
 
 # Fetch 6 months of TSLA 1-hour bars
-python fetch_data.py --symbol TSLA --provider alpaca --timeframe 1h --bars 4320
+python utils/fetch_data.py --symbol TSLA --provider alpaca --timeframe 1h --bars 4320
 ```
 
 #### IBKR Examples
 ```bash
 # Fetch 1 year of NFLX daily bars (capped to 3,000)
-python fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars 9999
+python utils/fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars 9999
 
 # Fetch 3 months of AAPL 1-hour bars
-python fetch_data.py --symbol AAPL --provider ib --timeframe 1h --bars 2160
+python utils/fetch_data.py --symbol AAPL --provider ib --timeframe 1h --bars 2160
 ```
 
 ### Data Storage Structure
@@ -112,7 +112,7 @@ python backtrader_runner_yaml.py --config default.yaml --parquet "data\ALPACA\NF
 
 ### Simple Strategy Test
 ```bash
-python mean_reversion_simple.py --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --lookback 30 --std 1.5 --size 2
+python examples/mean_reversion_simple.py --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --lookback 30 --std 1.5 --size 2
 ```
 
 ## Reports
