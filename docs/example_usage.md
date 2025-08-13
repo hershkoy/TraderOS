@@ -73,7 +73,7 @@ Edit `tradingview_style_report.html` to customize:
 - Chart placeholders
 
 ### Add Custom Metrics
-Modify `tradingview_report_generator.py` to include:
+Modify `utils/tradingview_report_generator.py` to include:
 - Additional performance ratios
 - Custom trade analysis
 - Strategy-specific metrics
@@ -82,7 +82,7 @@ Modify `tradingview_report_generator.py` to include:
 ## Troubleshooting
 
 ### Report Not Generated
-- Check that `tradingview_report_generator.py` is in the same directory
+- Check that `utils/tradingview_report_generator.py` is in the utils directory
 - Verify Python imports are working
 - Check console output for error messages
 

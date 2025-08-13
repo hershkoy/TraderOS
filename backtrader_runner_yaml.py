@@ -165,7 +165,7 @@ def generate_reports(cerebro, results, config, strategy_name, data_df=None):
     # Generate TradingView-style report
     try:
         print("DEBUG: Attempting to generate TradingView-style report...")
-        from tradingview_report_generator import generate_tradingview_report
+        from utils.tradingview_report_generator import generate_tradingview_report
         print("DEBUG: TradingView report generator imported successfully")
         tradingview_report_path = generate_tradingview_report(strategy, cerebro, config, report_dir, strategy_name, data_df)
         print(f"TradingView-style report: {tradingview_report_path}")

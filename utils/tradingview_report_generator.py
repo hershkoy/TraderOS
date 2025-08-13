@@ -262,7 +262,7 @@ def create_tradingview_html(strategy_data):
     net_profit_sign = "+" if net_profit >= 0 else ""
     
     # Read the template HTML file
-    template_path = Path("docs/tradingview_style_report.html")
+    template_path = Path("tradingview_style_report.html")
     if template_path.exists():
         print(f"DEBUG: Template file found at {template_path}")
         with open(template_path, "r", encoding="utf-8") as f:
