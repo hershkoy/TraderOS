@@ -162,6 +162,20 @@ def generate_reports(cerebro, results, config, strategy_name, data_df=None):
     # Generate reports based on config
     reports_config = config.get('reports', {})
     
+    # Generate TradingView-style report
+    try:
+        print("DEBUG: Attempting to generate TradingView-style report...")
+        from tradingview_report_generator import generate_tradingview_report
+        print("DEBUG: TradingView report generator imported successfully")
+        tradingview_report_path = generate_tradingview_report(strategy, cerebro, config, report_dir, strategy_name, data_df)
+        print(f"TradingView-style report: {tradingview_report_path}")
+    except ImportError as e:
+        print(f"TradingView report generator not available, skipping... Error: {e}")
+    except Exception as e:
+        print(f"TradingView report generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
     if reports_config.get('generate_html', True):
         generate_html_report(strategy, cerebro, config, report_dir, strategy_name, data_df)
     
@@ -175,6 +189,7 @@ def generate_reports(cerebro, results, config, strategy_name, data_df=None):
         save_chart_png(cerebro, report_dir, config)
     
     print(f"\nReports generated in: {report_dir}")
+    print(f"Open {report_dir / 'tradingview_report.html'} for TradingView-style analysis")
     print(f"Open {report_dir / 'backtest_report.html'} for detailed analysis")
 
 def create_plotly_charts(strategy, cerebro, data_df, report_dir):
@@ -778,20 +793,20 @@ def main():
     else:
         print("No backtest results available for reporting")
 
-    # Show chart if enabled
-    if not global_config.get('quiet', False):
-        try:
-            backtrader_config = config.get('backtrader', {})
-            style = backtrader_config.get('plot_style', 'candlestick')
-            volume = backtrader_config.get('plot_volume', True)
-            cerebro.plot(style=style, volume=volume)
-        except ValueError as e:
-            if "min() arg is an empty sequence" in str(e):
-                print("Note: Chart plotting skipped due to data alignment issue")
-            else:
-                print(f"Chart plotting failed: {e}")
-        except Exception as e:
-            print(f"Chart plotting failed: {e}")
+    # Chart plotting disabled to avoid blocking - use HTML reports instead
+    # if not global_config.get('quiet', False):
+    #     try:
+    #         backtrader_config = config.get('backtrader', {})
+    #         style = backtrader_config.get('plot_style', 'candlestick')
+    #         volume = backtrader_config.get('plot_volume', True)
+    #         cerebro.plot(style=style, volume=volume)
+    #     except ValueError as e:
+    #         if "min() arg is an empty sequence" in str(e):
+    #             print("Note: Chart plotting skipped due to data alignment issue")
+    #         else:
+    #             print(f"Chart plotting failed: {e}")
+    #     except Exception as e:
+    #         print(f"Chart plotting failed: {e}")
     
     print(f"The end")
 

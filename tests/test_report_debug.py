@@ -4,7 +4,7 @@ Debug script to identify the None formatting issue
 """
 
 import sys
-sys.path.append('.')
+sys.path.append(str(Path(__file__).parent.parent))
 
 from backtrader_runner_yaml import load_config, get_strategy, load_daily_data
 from pathlib import Path
@@ -22,7 +22,7 @@ def test_report_generation():
     cerebro.broker.setcash(100000.0)
     
     # Load minimal data
-    df_data = load_daily_data(Path('data/ALPACA/NFLX/1h/nflx_1h.parquet'))
+    df_data = load_daily_data(Path('../data/ALPACA/NFLX/1h/nflx_1h.parquet'))
     df_data = df_data.iloc[:30]  # Use only 30 days to avoid issues
     
     data_feed = bt.feeds.PandasData(dataname=df_data)

@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bollinger Bands Strategy Report - TradingView Style</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0d1421;
+            color: #d1d4dc;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: #131722;
+            min-height: 100vh;
+        }
+        
+        /* Chart Header Section */
+        .chart-header {
+            background: #1e222d;
+            padding: 15px 20px;
+            border-bottom: 1px solid #2a2e39;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .chart-title {
+            color: #d1d4dc;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .chart-subtitle {
+            color: #787b86;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        .chart-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .timeframe-buttons {
+            display: flex;
+            background: #2a2e39;
+            border-radius: 4px;
+            padding: 2px;
+        }
+        
+        .timeframe-btn {
+            padding: 6px 12px;
+            background: transparent;
+            border: none;
+            color: #787b86;
+            cursor: pointer;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .timeframe-btn.active {
+            background: #2962ff;
+            color: white;
+        }
+        
+        .chart-toolbar {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .toolbar-btn {
+            width: 32px;
+            height: 32px;
+            background: #2a2e39;
+            border: none;
+            border-radius: 4px;
+            color: #787b86;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+        
+        .toolbar-btn:hover {
+            background: #3a3e49;
+            color: #d1d4dc;
+        }
+        
+        /* Chart Area */
+        .chart-container {
+            height: 500px;
+            background: #131722;
+            border-bottom: 1px solid #2a2e39;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .chart-main {
+            flex: 1;
+            background: linear-gradient(135deg, #131722 0%, #1a1e2b 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .chart-placeholder {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #787b86;
+        }
+        
+        .chart-placeholder h3 {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #d1d4dc;
+        }
+        
+        .chart-placeholder p {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+                 .chart-container {
+             position: relative;
+             width: 100%;
+             height: 100%;
+             display: flex;
+             align-items: center;
+             justify-content: center;
+         }
+         
+         .chart-main .chart-container {
+             position: relative;
+             width: 100%;
+             height: 100%;
+             padding: 20px;
+         }
+         
+         #priceChart {
+             width: 100% !important;
+             height: 100% !important;
+             max-height: 400px;
+         }
+        
+        .chart-overlay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(30, 34, 45, 0.9);
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #2a2e39;
+        }
+        
+        .chart-info {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #d1d4dc;
+        }
+        
+        #currentPrice {
+            font-weight: 600;
+            color: #2962ff;
+        }
+        
+        #currentVolume {
+            color: #787b86;
+        }
+        
+        .chart-indicators {
+            height: 80px;
+            background: #1e222d;
+            border-top: 1px solid #2a2e39;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 12px;
+            color: #787b86;
+        }
+        
+        .indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .indicator-value {
+            color: #d1d4dc;
+            font-weight: 600;
+        }
+        
+        /* Report Section */
+        .report-section {
+            background: #131722;
+        }
+        
+        .report-header {
+            background: #1e222d;
+            padding: 20px 30px;
+            border-bottom: 1px solid #2a2e39;
+        }
+        
+        .report-title {
+            color: #d1d4dc;
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        
+        .report-subtitle {
+            color: #787b86;
+            font-size: 14px;
+        }
+        
+        .nav-tabs {
+            background: #1e222d;
+            border-bottom: 1px solid #2a2e39;
+            padding: 0 30px;
+            display: flex;
+            overflow-x: auto;
+        }
+        
+        .nav-tab {
+            padding: 15px 20px;
+            cursor: pointer;
+            color: #787b86;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        
+        .nav-tab:hover {
+            color: #d1d4dc;
+            background: #2a2e39;
+        }
+        
+        .nav-tab.active {
+            color: #2962ff;
+            border-bottom-color: #2962ff;
+            background: #131722;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 30px;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Overview Tab */
+        .overview-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .metric-card {
+            background: #1e222d;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #2a2e39;
+            text-align: center;
+        }
+        
+        .metric-label {
+            color: #787b86;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+        }
+        
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #d1d4dc;
+        }
+        
+        .metric-value.positive {
+            color: #4caf50;
+        }
+        
+        .metric-value.negative {
+            color: #f44336;
+        }
+        
+        .overview-chart {
+            background: #1e222d;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #2a2e39;
+            height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #787b86;
+        }
+        
+        /* Performance Tab */
+        .performance-table {
+            background: #1e222d;
+            border-radius: 8px;
+            border: 1px solid #2a2e39;
+            overflow: hidden;
+        }
+        
+        .table-header {
+            background: #2a2e39;
+            padding: 15px 20px;
+            color: #d1d4dc;
+            font-weight: 600;
+        }
+        
+        .table-content {
+            padding: 0;
+        }
+        
+        .table-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            padding: 15px 20px;
+            border-bottom: 1px solid #2a2e39;
+        }
+        
+        .table-row:last-child {
+            border-bottom: none;
+        }
+        
+        .table-row.header {
+            background: #2a2e39;
+            font-weight: 600;
+            color: #d1d4dc;
+        }
+        
+        .table-cell {
+            color: #d1d4dc;
+        }
+        
+        .table-cell.positive {
+            color: #4caf50;
+        }
+        
+        .table-cell.negative {
+            color: #f44336;
+        }
+        
+        /* Trades Analysis Tab */
+        .trades-table {
+            background: #1e222d;
+            border-radius: 8px;
+            border: 1px solid #2a2e39;
+            overflow: hidden;
+        }
+        
+        .trades-table .table-row {
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+        }
+        
+        /* Risk/Performance Ratios Tab */
+        .ratios-table {
+            background: #1e222d;
+            border-radius: 8px;
+            border: 1px solid #2a2e39;
+            overflow: hidden;
+        }
+        
+        .ratios-table .table-row {
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+        }
+        
+        /* List of Trades Tab */
+        .trades-list {
+            background: #1e222d;
+            border-radius: 8px;
+            border: 1px solid #2a2e39;
+            overflow: hidden;
+        }
+        
+        .trades-list .table-row {
+            grid-template-columns: 80px 80px 120px 100px 100px 100px 100px 100px 100px 100px;
+            font-size: 12px;
+        }
+        
+        .trade-type {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-align: center;
+        }
+        
+        .trade-type.long {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .trade-type.short {
+            background: #f44336;
+            color: white;
+        }
+        
+        .section-title {
+            color: #d1d4dc;
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #2a2e39;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .chart-header {
+                flex-direction: column;
+                gap: 15px;
+                align-items: flex-start;
+            }
+            
+            .chart-controls {
+                width: 100%;
+                justify-content: space-between;
+            }
+            
+            .nav-tabs {
+                padding: 0 15px;
+            }
+            
+            .nav-tab {
+                padding: 12px 15px;
+                font-size: 14px;
+            }
+            
+            .tab-content {
+                padding: 20px 15px;
+            }
+            
+            .overview-metrics {
+                grid-template-columns: 1fr;
+            }
+            
+            .table-row {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+            
+            .trades-list .table-row {
+                grid-template-columns: 1fr;
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Chart Section -->
+        <div class="chart-header">
+            <div>
+                <div class="chart-title">Academy Sports and Outdoors, Inc. - 1W NASDAQ</div>
+                <div class="chart-subtitle">050.24 H52.87 L49.58 C52.02 +2.39 (+4.82%)</div>
+            </div>
+            <div class="chart-controls">
+                <div class="timeframe-buttons">
+                    <button class="timeframe-btn">1D</button>
+                    <button class="timeframe-btn">5D</button>
+                    <button class="timeframe-btn">1M</button>
+                    <button class="timeframe-btn">3M</button>
+                    <button class="timeframe-btn">6M</button>
+                    <button class="timeframe-btn">YTD</button>
+                    <button class="timeframe-btn">1Y</button>
+                    <button class="timeframe-btn active">1W</button>
+                    <button class="timeframe-btn">All</button>
+                </div>
+                <div class="chart-toolbar">
+                    <button class="toolbar-btn" title="Settings">⚙️</button>
+                    <button class="toolbar-btn" title="Notifications">🔔</button>
+                    <button class="toolbar-btn" title="Screenshot">📷</button>
+                    <button class="toolbar-btn" title="Export">📤</button>
+                </div>
+            </div>
+        </div>
+        
+                 <div class="chart-container">
+             <div class="chart-main">
+                 <div class="chart-container">
+                     <canvas id="priceChart" width="800" height="400"></canvas>
+                     <div class="chart-overlay">
+                         <div class="chart-info">
+                             <span id="currentPrice">Loading...</span>
+                             <span id="currentVolume">Volume: --</span>
+                         </div>
+                     </div>
+                 </div>
+             </div>
+            <div class="chart-indicators">
+                <div class="indicator">
+                    <span>BBandSE:</span>
+                    <span class="indicator-value">52.90</span>
+                </div>
+                <div class="indicator">
+                    <span>BBandLE:</span>
+                    <span class="indicator-value">50.25</span>
+                </div>
+                <div class="indicator">
+                    <span>VRVP:</span>
+                    <span class="indicator-value">ASO 52.02</span>
+                </div>
+                <div class="indicator">
+                    <span>Stoch:</span>
+                    <span class="indicator-value">70.68 65.58</span>
+                </div>
+                <div class="indicator">
+                    <span>CM_Williams_Vix_Fix:</span>
+                    <span class="indicator-value">22 20 2 50 0.85 1.01</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Report Section -->
+        <div class="report-section">
+            <div class="report-header">
+                <div class="report-title">Bollinger Bands Strategy report</div>
+                <div class="report-subtitle">Sep 28, 2020 - Aug 11, 2025 📅</div>
+            </div>
+            
+            <div class="nav-tabs">
+                <div class="nav-tab active" onclick="showTab('overview')">Overview</div>
+                <div class="nav-tab" onclick="showTab('performance')">Performance</div>
+                <div class="nav-tab" onclick="showTab('trades-analysis')">Trades analysis</div>
+                <div class="nav-tab" onclick="showTab('risk-ratios')">Risk/performance ratios</div>
+                <div class="nav-tab" onclick="showTab('list-trades')">List of trades</div>
+            </div>
+            
+            <!-- Overview Tab -->
+            <div id="overview" class="tab-content active">
+                <div class="overview-metrics">
+                    <div class="metric-card">
+                        <div class="metric-label">Total P&L</div>
+                        <div class="metric-value positive">+42.97 USD</div>
+                        <div class="metric-label">+0.00%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Max equity drawdown</div>
+                        <div class="metric-value negative">27.21 USD</div>
+                        <div class="metric-label">0.00%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Total trades</div>
+                        <div class="metric-value">6</div>
+                        <div class="metric-label">Completed</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Profitable trades</div>
+                        <div class="metric-value positive">66.67%</div>
+                        <div class="metric-label">4/6</div>
+                    </div>
+                </div>
+                
+                <div class="overview-chart">
+                    <div>
+                        <h3>Equity Curve Chart</h3>
+                        <p>Interactive chart showing cumulative P&L over time</p>
+                        <p>Green bars: Run-up periods | Red bars: Drawdown periods</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Performance Tab -->
+            <div id="performance" class="tab-content">
+                <h2 class="section-title">Performance Metrics</h2>
+                <div class="performance-table">
+                    <div class="table-header">Performance Summary</div>
+                    <div class="table-content">
+                        <div class="table-row header">
+                            <div class="table-cell">Metric</div>
+                            <div class="table-cell">All</div>
+                            <div class="table-cell">Long</div>
+                            <div class="table-cell">Short</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Open P&L</div>
+                            <div class="table-cell negative">-1.20 USD</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Net profit</div>
+                            <div class="table-cell positive">+44.17 USD</div>
+                            <div class="table-cell positive">+34.96 USD</div>
+                            <div class="table-cell positive">+9.21 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Gross profit</div>
+                            <div class="table-cell">61.73 USD</div>
+                            <div class="table-cell">34.96 USD</div>
+                            <div class="table-cell">26.77 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Gross loss</div>
+                            <div class="table-cell">17.56 USD</div>
+                            <div class="table-cell">0 USD</div>
+                            <div class="table-cell">17.56 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Commission paid</div>
+                            <div class="table-cell">0 USD</div>
+                            <div class="table-cell">0 USD</div>
+                            <div class="table-cell">0 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Buy & hold return</div>
+                            <div class="table-cell positive">+1,074,981.60 USD</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Max equity run-up</div>
+                            <div class="table-cell">59.60 USD</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Max equity drawdown</div>
+                            <div class="table-cell">27.21 USD</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Max contracts held</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">1</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Trades Analysis Tab -->
+            <div id="trades-analysis" class="tab-content">
+                <h2 class="section-title">Trades Analysis</h2>
+                <div class="trades-table">
+                    <div class="table-header">Trade Statistics</div>
+                    <div class="table-content">
+                        <div class="table-row header">
+                            <div class="table-cell">Metric</div>
+                            <div class="table-cell">All</div>
+                            <div class="table-cell">Long</div>
+                            <div class="table-cell">Short</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Total trades</div>
+                            <div class="table-cell">6</div>
+                            <div class="table-cell">3</div>
+                            <div class="table-cell">3</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Total open trades</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">1</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Winning trades</div>
+                            <div class="table-cell">4</div>
+                            <div class="table-cell">3</div>
+                            <div class="table-cell">1</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Losing trades</div>
+                            <div class="table-cell">2</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">2</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Percent profitable</div>
+                            <div class="table-cell">66.67%</div>
+                            <div class="table-cell">100.00%</div>
+                            <div class="table-cell">33.33%</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Avg P&L</div>
+                            <div class="table-cell">7.36 USD</div>
+                            <div class="table-cell">11.65 USD</div>
+                            <div class="table-cell">3.07 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Avg winning trade</div>
+                            <div class="table-cell">15.43 USD</div>
+                            <div class="table-cell">11.65 USD</div>
+                            <div class="table-cell">26.77 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Avg losing trade</div>
+                            <div class="table-cell">8.78 USD</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">8.78 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Ratio avg win / avg loss</div>
+                            <div class="table-cell">1.758</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">3.049</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Largest winning trade</div>
+                            <div class="table-cell">26.77 USD</div>
+                            <div class="table-cell">13.37 USD</div>
+                            <div class="table-cell">26.77 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Largest losing trade</div>
+                            <div class="table-cell">8.96 USD</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">8.96 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Avg # bars in trades</div>
+                            <div class="table-cell">40</div>
+                            <div class="table-cell">19</div>
+                            <div class="table-cell">60</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Risk/Performance Ratios Tab -->
+            <div id="risk-ratios" class="tab-content">
+                <h2 class="section-title">Risk/Performance Ratios</h2>
+                <div class="ratios-table">
+                    <div class="table-header">Risk Metrics</div>
+                    <div class="table-content">
+                        <div class="table-row header">
+                            <div class="table-cell">Metric</div>
+                            <div class="table-cell">All</div>
+                            <div class="table-cell">Long</div>
+                            <div class="table-cell">Short</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Sharpe ratio</div>
+                            <div class="table-cell negative">-349.053</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Sortino ratio</div>
+                            <div class="table-cell negative">-1</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Profit factor</div>
+                            <div class="table-cell">3.515</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">1.524</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">Margin calls</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">0</div>
+                            <div class="table-cell">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- List of Trades Tab -->
+            <div id="list-trades" class="tab-content">
+                <h2 class="section-title">List of Trades</h2>
+                <div class="trades-list">
+                    <div class="table-header">Individual Trade Details</div>
+                    <div class="table-content">
+                        <div class="table-row header">
+                            <div class="table-cell">Trade #</div>
+                            <div class="table-cell">Type</div>
+                            <div class="table-cell">Date/Time</div>
+                            <div class="table-cell">Signal</div>
+                            <div class="table-cell">Price</div>
+                            <div class="table-cell">Position size</div>
+                            <div class="table-cell">P&L</div>
+                            <div class="table-cell">Run-up</div>
+                            <div class="table-cell">Drawdown</div>
+                            <div class="table-cell">Cumulative P&L</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">7</div>
+                            <div class="table-cell"><span class="trade-type short">Short</span></div>
+                            <div class="table-cell">Aug 11, 2025</div>
+                            <div class="table-cell">Open</div>
+                            <div class="table-cell">52.02 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell negative">-1.20 USD</div>
+                            <div class="table-cell">1.86 USD</div>
+                            <div class="table-cell negative">-2.05 USD</div>
+                            <div class="table-cell">42.97 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">7</div>
+                            <div class="table-cell"><span class="trade-type short">Short</span></div>
+                            <div class="table-cell">Aug 04, 2025</div>
+                            <div class="table-cell">BBandSE</div>
+                            <div class="table-cell">50.82 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">44.17 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">6</div>
+                            <div class="table-cell"><span class="trade-type long">Long</span></div>
+                            <div class="table-cell">Aug 04, 2025</div>
+                            <div class="table-cell">BBandSE</div>
+                            <div class="table-cell">50.82 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell positive">+13.22 USD</div>
+                            <div class="table-cell">19.46 USD</div>
+                            <div class="table-cell negative">-1.65 USD</div>
+                            <div class="table-cell">44.17 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">6</div>
+                            <div class="table-cell"><span class="trade-type long">Long</span></div>
+                            <div class="table-cell">Apr 21, 2025</div>
+                            <div class="table-cell">BBandLE</div>
+                            <div class="table-cell">37.60 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">30.95 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">5</div>
+                            <div class="table-cell"><span class="trade-type short">Short</span></div>
+                            <div class="table-cell">Apr 21, 2025</div>
+                            <div class="table-cell">BBandLE</div>
+                            <div class="table-cell">37.60 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell positive">+26.77 USD</div>
+                            <div class="table-cell">31.03 USD</div>
+                            <div class="table-cell negative">-11.36 USD</div>
+                            <div class="table-cell">30.95 USD</div>
+                        </div>
+                        <div class="table-row">
+                            <div class="table-cell">5</div>
+                            <div class="table-cell"><span class="trade-type short">Short</span></div>
+                            <div class="table-cell">Jan 08, 2024</div>
+                            <div class="table-cell">BBandSE</div>
+                            <div class="table-cell">64.37 USD</div>
+                            <div class="table-cell">1</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">-</div>
+                            <div class="table-cell">4.18 USD</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function showTab(tabName) {
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.nav-tab');
+            tabs.forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        // Timeframe button functionality
+        document.querySelectorAll('.timeframe-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.timeframe-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+            });
+        });
+        
+        // Toolbar button functionality
+        document.querySelectorAll('.toolbar-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                // Add functionality for toolbar buttons
+                console.log('Toolbar button clicked:', this.title);
+            });
+                 });
+     </script>
+     
+     <!-- Chart.js and Chart Initialization -->
+     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+     <script>
+         // Initialize chart when page loads
+         document.addEventListener('DOMContentLoaded', function() {
+             createPriceChart();
+         });
+         
+         function createPriceChart() {
+             const ctx = document.getElementById('priceChart').getContext('2d');
+             
+             // Sample data for demonstration
+             const dates = [];
+             const prices = [];
+             const volumes = [];
+             
+             // Generate sample data for the last 30 days
+             const today = new Date();
+             for (let i = 29; i >= 0; i--) {
+                 const date = new Date(today);
+                 date.setDate(date.getDate() - i);
+                 dates.push(date);
+                 
+                 // Generate realistic price data
+                 const basePrice = 50 + Math.sin(i * 0.3) * 5 + Math.random() * 2;
+                 prices.push(basePrice);
+                 volumes.push(1000000 + Math.random() * 500000);
+             }
+             
+             const chart = new Chart(ctx, {
+                 type: 'line',
+                 data: {
+                     labels: dates,
+                     datasets: [{
+                         label: 'Price',
+                         data: prices,
+                         borderColor: '#2962ff',
+                         backgroundColor: 'rgba(41, 98, 255, 0.1)',
+                         borderWidth: 2,
+                         fill: false,
+                         tension: 0.1,
+                         pointRadius: 0,
+                         pointHoverRadius: 4
+                     }]
+                 },
+                 options: {
+                     responsive: true,
+                     maintainAspectRatio: false,
+                     plugins: {
+                         legend: {
+                             display: false
+                         },
+                         tooltip: {
+                             mode: 'index',
+                             intersect: false,
+                             backgroundColor: 'rgba(30, 34, 45, 0.95)',
+                             titleColor: '#d1d4dc',
+                             bodyColor: '#d1d4dc',
+                             borderColor: '#2a2e39',
+                             borderWidth: 1,
+                             callbacks: {
+                                 label: function(context) {
+                                     const price = context.parsed.y;
+                                     const volume = volumes[context.dataIndex];
+                                     return [
+                                         `Price: $${price.toFixed(2)}`,
+                                         `Volume: ${(volume / 1000000).toFixed(1)}M`
+                                     ];
+                                 }
+                             }
+                         }
+                     },
+                     scales: {
+                         x: {
+                             type: 'time',
+                             time: {
+                                 unit: 'day',
+                                 displayFormats: {
+                                     day: 'MMM dd'
+                                 }
+                             },
+                             grid: {
+                                 color: '#2a2e39'
+                             },
+                             ticks: {
+                                 color: '#787b86',
+                                 maxTicksLimit: 8
+                             }
+                         },
+                         y: {
+                             grid: {
+                                 color: '#2a2e39'
+                             },
+                             ticks: {
+                                 color: '#787b86',
+                                 callback: function(value) {
+                                     return '$' + value.toFixed(0);
+                                 }
+                             }
+                         }
+                     },
+                     interaction: {
+                         mode: 'nearest',
+                         axis: 'x',
+                         intersect: false
+                     },
+                     elements: {
+                         point: {
+                             hoverBackgroundColor: '#2962ff'
+                         }
+                     }
+                 }
+             });
+             
+             // Update price display on hover
+             chart.options.onHover = function(event, elements) {
+                 if (elements.length > 0) {
+                     const dataIndex = elements[0].index;
+                     const price = prices[dataIndex];
+                     const volume = volumes[dataIndex];
+                     document.getElementById('currentPrice').textContent = `$${price.toFixed(2)}`;
+                     document.getElementById('currentVolume').textContent = `Volume: ${(volume / 1000000).toFixed(1)}M`;
+                 }
+             };
+             
+             // Add trade markers if available (sample data)
+             const tradeMarkers = [
+                 { date: new Date(today.getTime() - 15 * 24 * 60 * 60 * 1000), price: 48.5, type: 'Long' },
+                 { date: new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000), price: 52.3, type: 'Short' },
+                 { date: new Date(today.getTime() - 5 * 24 * 60 * 60 * 1000), price: 49.8, type: 'Long' }
+             ];
+             
+             tradeMarkers.forEach(trade => {
+                 chart.data.datasets.push({
+                     label: trade.type + ' Trade',
+                     data: [{x: trade.date, y: trade.price}],
+                     pointBackgroundColor: trade.type === 'Long' ? '#4caf50' : '#f44336',
+                     pointBorderColor: trade.type === 'Long' ? '#4caf50' : '#f44336',
+                     pointRadius: 6,
+                     pointHoverRadius: 8,
+                     showLine: false,
+                     type: 'scatter'
+                 });
+             });
+             
+             chart.update();
+         }
+     </script>
+ </body>
+ </html>

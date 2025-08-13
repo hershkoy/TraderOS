@@ -9,7 +9,7 @@ from pathlib import Path
 
 def run_strategy_test(strategy_name, extra_args=""):
     """Run a strategy test and capture output"""
-    cmd = f"python backtrader_runner.py --parquet data/ALPACA/NFLX/1h/nflx_1h.parquet --strategy {strategy_name} --fromdate 2024-10-01 --todate 2024-11-30 --quiet {extra_args}"
+    cmd = f"python ../backtrader_runner.py --parquet ../data/ALPACA/NFLX/1h/nflx_1h.parquet --strategy {strategy_name} --fromdate 2024-10-01 --todate 2024-11-30 --quiet {extra_args}"
     
     print(f"\n🧪 Testing {strategy_name} strategy...")
     print(f"Command: {cmd}")
