@@ -1,6 +1,6 @@
 # Simple Mean Reversion Strategy on Daily Timeframe
 import backtrader as bt
-from custom_tracking import CustomTrackingMixin
+from utils.custom_tracking import CustomTrackingMixin
 
 class MeanReversionStrategy(CustomTrackingMixin, bt.Strategy):
     params = dict(

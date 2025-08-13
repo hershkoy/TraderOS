@@ -3,7 +3,7 @@ import backtrader as bt
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from custom_tracking import CustomTrackingMixin
+from utils.custom_tracking import CustomTrackingMixin
 import pandas as pd
 from pathlib import Path
 

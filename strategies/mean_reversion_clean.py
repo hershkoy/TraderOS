@@ -1,6 +1,6 @@
 # Clean Mean Reversion Strategy - No Backtrader Trade Tracking
 import backtrader as bt
-from custom_tracking import CustomTrackingMixin
+from utils.custom_tracking import CustomTrackingMixin
 
 class MeanReversionCleanStrategy(CustomTrackingMixin, bt.Strategy):
     params = dict(

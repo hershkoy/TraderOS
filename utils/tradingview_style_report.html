@@ -686,81 +686,107 @@
         document.addEventListener('DOMContentLoaded', function() {
             // Chart will be initialized by the report generator
             console.log('Template loaded, ready for data insertion');
+            
+            // Check if Chart.js is available
+            if (typeof Chart === 'undefined') {
+                console.warn('Chart.js not loaded - charts will not be available');
+            }
         });
         
         // Global function to update chart data
         function updateChartData(chartData) {
-            if (!chartData) return;
+            console.log('updateChartData called with:', chartData);
+            if (!chartData) {
+                console.log('No chart data provided');
+                return;
+            }
             
-            const ctx = document.getElementById('priceChart').getContext('2d');
+            // Check if Chart.js is available
+            if (typeof Chart === 'undefined') {
+                console.warn('Chart.js not available - cannot create chart');
+                return;
+            }
             
-            // Destroy existing chart if it exists
-            if (window.priceChart) {
+            const canvas = document.getElementById('priceChart');
+            if (!canvas) {
+                console.warn('Price chart canvas not found');
+                return;
+            }
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy existing chart if it exists and has destroy method
+            if (window.priceChart && typeof window.priceChart.destroy === 'function') {
                 window.priceChart.destroy();
             }
             
             // Create new chart with provided data
-            window.priceChart = new Chart(ctx, {
-                type: 'line',
-                data: chartData,
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: false
-                        },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false,
-                            backgroundColor: 'rgba(30, 34, 45, 0.95)',
-                            titleColor: '#d1d4dc',
-                            bodyColor: '#d1d4dc',
-                            borderColor: '#2a2e39',
-                            borderWidth: 1
-                        }
-                    },
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'day',
-                                displayFormats: {
-                                    day: 'MMM dd'
-                                }
+            try {
+                console.log('Creating chart with data:', chartData);
+                window.priceChart = new Chart(ctx, {
+                    type: 'line',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
                             },
-                            grid: {
-                                color: '#2a2e39'
-                            },
-                            ticks: {
-                                color: '#787b86',
-                                maxTicksLimit: 8
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: 'rgba(30, 34, 45, 0.95)',
+                                titleColor: '#d1d4dc',
+                                bodyColor: '#d1d4dc',
+                                borderColor: '#2a2e39',
+                                borderWidth: 1
                             }
                         },
-                        y: {
-                            grid: {
-                                color: '#2a2e39'
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    displayFormats: {
+                                        day: 'MMM dd'
+                                    }
+                                },
+                                grid: {
+                                    color: '#2a2e39'
+                                },
+                                ticks: {
+                                    color: '#787b86',
+                                    maxTicksLimit: 8
+                                }
                             },
-                            ticks: {
-                                color: '#787b86',
-                                callback: function(value) {
-                                    return '$' + value.toFixed(0);
+                            y: {
+                                grid: {
+                                    color: '#2a2e39'
+                                },
+                                ticks: {
+                                    color: '#787b86',
+                                    callback: function(value) {
+                                        return '$' + value.toFixed(0);
+                                    }
                                 }
                             }
-                        }
-                    },
-                    interaction: {
-                        mode: 'nearest',
-                        axis: 'x',
-                        intersect: false
-                    },
-                    elements: {
-                        point: {
-                            hoverBackgroundColor: '#2962ff'
+                        },
+                        interaction: {
+                            mode: 'nearest',
+                            axis: 'x',
+                            intersect: false
+                        },
+                        elements: {
+                            point: {
+                                hoverBackgroundColor: '#2962ff'
+                            }
                         }
                     }
-                }
-            });
+                });
+            } catch (error) {
+                console.error('Error creating chart:', error);
+            }
         }
         
         // Global function to update all template data

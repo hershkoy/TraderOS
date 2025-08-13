@@ -1,4 +1,8 @@
 # backtrader_runner_yaml.py - Multi-Strategy Backtrader Runner with YAML Configuration
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.interactive(False)  # Disable interactive mode
+
 import argparse
 from pathlib import Path
 import pandas as pd
@@ -6,6 +10,9 @@ import backtrader as bt
 import json
 from datetime import datetime
 import matplotlib.pyplot as plt
+
+# Completely disable all plotting functionality
+bt.Cerebro.plot = lambda *args, **kwargs: None
 import os
 import yaml
 import plotly.graph_objects as go
@@ -185,8 +192,9 @@ def generate_reports(cerebro, results, config, strategy_name, data_df=None):
     if reports_config.get('generate_json', True):
         generate_json_stats(strategy, cerebro, config, report_dir, strategy_name)
     
-    if reports_config.get('generate_chart', True):
-        save_chart_png(cerebro, report_dir, config)
+    # Chart generation disabled - no PNG files
+    # if reports_config.get('generate_chart', True):
+    #     save_chart_png(cerebro, report_dir, config)
     
     print(f"\nReports generated in: {report_dir}")
     print(f"Open {report_dir / 'tradingview_report.html'} for TradingView-style analysis")
@@ -564,19 +572,8 @@ def generate_json_stats(strategy, cerebro, config, report_dir, strategy_name):
         json.dump(stats, f, indent=2, default=str)
 
 def save_chart_png(cerebro, report_dir, config):
-    """Save the backtest chart as PNG"""
-    try:
-        backtrader_config = config.get('backtrader', {})
-        style = backtrader_config.get('plot_style', 'candlestick')
-        volume = backtrader_config.get('plot_volume', True)
-        
-        figs = cerebro.plot(style=style, volume=volume, show=False)
-        if figs and len(figs) > 0 and len(figs[0]) > 0:
-            fig = figs[0][0]
-            fig.savefig(report_dir / "backtest_chart.png", dpi=150, bbox_inches="tight")
-            plt.close(fig)
-    except Exception as e:
-        print(f"Warning: Could not save chart - {e}")
+    """Chart saving disabled - no PNG files generated"""
+    pass
 
 def setup_data_feeds(cerebro, strategy_class, df_data, config):
     """Setup data feeds based on strategy requirements"""
@@ -792,6 +789,9 @@ def main():
             print(f"Report generation failed: {e}")
     else:
         print("No backtest results available for reporting")
+
+    # Explicitly close any matplotlib figures to prevent blocking
+    plt.close('all')
 
     # Chart plotting disabled to avoid blocking - use HTML reports instead
     # if not global_config.get('quiet', False):

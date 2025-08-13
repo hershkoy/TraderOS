@@ -262,7 +262,7 @@ def create_tradingview_html(strategy_data):
     net_profit_sign = "+" if net_profit >= 0 else ""
     
     # Read the template HTML file
-    template_path = Path("tradingview_style_report.html")
+    template_path = Path(__file__).parent / "tradingview_style_report.html"
     if template_path.exists():
         print(f"DEBUG: Template file found at {template_path}")
         with open(template_path, "r", encoding="utf-8") as f:
@@ -524,14 +524,21 @@ def prepare_chart_data_for_js(chart_data, strategy_name):
         
         chart_js_data['labels'] = dates
     
-    # Add trade markers
+    # Add trade markers (simplified to avoid scatter plot issues)
     if 'trades' in chart_data and chart_data['trades']:
+        trade_data = []
         for trade in chart_data['trades']:
+            trade_data.append({
+                'x': trade['x'],
+                'y': trade['y']
+            })
+        
+        if trade_data:
             chart_js_data['datasets'].append({
-                'label': f"{trade['type']} Trade",
-                'data': [{'x': trade['x'], 'y': trade['y']}],
-                'pointBackgroundColor': '#4caf50' if trade['type'] == 'Long' else '#f44336',
-                'pointBorderColor': '#4caf50' if trade['type'] == 'Long' else '#f44336',
+                'label': 'Trade Points',
+                'data': trade_data,
+                'pointBackgroundColor': '#4caf50',
+                'pointBorderColor': '#4caf50',
                 'pointRadius': 6,
                 'pointHoverRadius': 8,
                 'showLine': False,
@@ -542,11 +549,25 @@ def prepare_chart_data_for_js(chart_data, strategy_name):
 
 def create_template_update_script(template_data):
     """Create JavaScript to update the template with data"""
+    # Convert datetime objects to strings for JSON serialization
+    def convert_datetime(obj):
+        if isinstance(obj, dict):
+            return {key: convert_datetime(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_datetime(item) for item in obj]
+        elif hasattr(obj, 'isoformat'):  # datetime objects
+            return obj.isoformat()
+        else:
+            return obj
+    
+    # Convert the template data
+    serializable_data = convert_datetime(template_data)
+    
     return f'''
     <script>
         // Update template data when page loads
         document.addEventListener('DOMContentLoaded', function() {{
-            const templateData = {json.dumps(template_data)};
+            const templateData = {json.dumps(serializable_data)};
             updateTemplateData(templateData);
         }});
     </script>
