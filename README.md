@@ -65,6 +65,9 @@ The framework supports fetching historical data from multiple providers. Data is
 
 #### Alpaca Examples
 ```bash
+# Fetch maximum available historical data (loops through requests)
+python utils/fetch_data.py --symbol NFLX --provider alpaca --timeframe 1h --bars max
+
 # Fetch 5 years of NFLX 1-hour bars (capped to 10,000)
 python utils/fetch_data.py --symbol NFLX --provider alpaca --timeframe 1h --bars 10000
 
@@ -77,8 +80,11 @@ python utils/fetch_data.py --symbol TSLA --provider alpaca --timeframe 1h --bars
 
 #### IBKR Examples
 ```bash
+# Fetch maximum available historical data (loops through requests)
+python utils/fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars max
+
 # Fetch 1 year of NFLX daily bars (capped to 3,000)
-python utils/fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars 9999
+python utils/fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars 3000
 
 # Fetch 3 months of AAPL 1-hour bars
 python utils/fetch_data.py --symbol AAPL --provider ib --timeframe 1h --bars 2160
@@ -123,11 +129,32 @@ ALPACA_API_KEY_ID=your_alpaca_api_key
 ALPACA_API_SECRET=your_alpaca_secret_key
 ```
 
+### Advanced Features
+
+#### Maximum Data Fetch (`--bars max`)
+The `--bars max` option fetches the maximum available historical data by automatically looping through multiple requests:
+
+- **Automatic Pagination**: Loops through requests until no more data is available
+- **Rate Limiting**: Respects API limits with configurable delays between requests
+- **Error Handling**: Retries failed requests with exponential backoff
+- **Deduplication**: Automatically removes duplicate data points
+- **Safety Limits**: Prevents infinite loops with 1M bar limit
+
+#### Rate Limiting & Throttling
+The script includes built-in protection against API rate limiting:
+
+- **Alpaca**: 100ms delay between requests, 3 retries with 2-second delays
+- **IBKR**: 500ms delay between requests, 3 retries with 2-second delays
+- **Automatic Detection**: Detects rate limit responses (429 errors) and waits accordingly
+- **Logging**: Detailed logging of rate limiting events and retry attempts
+
 ### Troubleshooting
 
 - **Alpaca API Errors**: Verify your API credentials and ensure you have sufficient API quota
 - **IBKR Connection Issues**: Ensure TWS/IB Gateway is running and configured for API connections on port 4001
 - **Data Limits**: Respect provider-specific data caps to avoid API rate limiting
+- **Rate Limiting**: If you encounter rate limits, the script will automatically retry with delays
+- **Large Data Sets**: For maximum data fetches, expect longer execution times due to rate limiting delays
 
 ## Run Backtests
 

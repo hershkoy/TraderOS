@@ -34,6 +34,10 @@ def load_timescaledb_data(symbol: str, timeframe: str, provider: Optional[str] =
     try:
         client = get_timescaledb_client()
         
+        # Connect to the database before querying
+        if not client.connect():
+            raise ValueError("Failed to connect to TimescaleDB")
+        
         # Convert date strings to datetime objects
         start_time = None
         end_time = None
@@ -84,10 +88,19 @@ def load_timescaledb_data(symbol: str, timeframe: str, provider: Optional[str] =
             df_bt = df_bt[~df_bt.index.duplicated(keep='first')]
         
         logger.info(f"Loaded {len(df_bt)} data points from {df_bt.index.min()} to {df_bt.index.max()}")
+        
+        # Disconnect from database
+        client.disconnect()
+        
         return df_bt
         
     except Exception as e:
         logger.error(f"Failed to load data from TimescaleDB: {e}")
+        # Make sure to disconnect even on error
+        try:
+            client.disconnect()
+        except:
+            pass
         raise
 
 def load_timescaledb_1h(symbol: str, provider: Optional[str] = None,
@@ -124,7 +137,19 @@ def load_timescaledb_daily(symbol: str, provider: Optional[str] = None,
     Returns:
         DataFrame with daily OHLCV data
     """
-    return load_timescaledb_data(symbol, '1d', provider, start_date, end_date, limit)
+    try:
+        # Try to get daily data directly first
+        logger.info(f"Attempting to load daily data for {symbol}")
+        return load_timescaledb_data(symbol, '1d', provider, start_date, end_date, limit)
+    except ValueError as e:
+        if "No data found" in str(e):
+            # If daily data not available, resample from hourly
+            logger.info(f"Daily data not available for {symbol}, resampling from hourly data")
+            df_1h = load_timescaledb_1h(symbol, provider, start_date, end_date, limit)
+            return resample_hourly_to_daily(df_1h)
+        else:
+            # Re-raise other ValueError exceptions
+            raise
 
 def resample_hourly_to_daily(df_1h: pd.DataFrame) -> pd.DataFrame:
     """
@@ -156,10 +181,17 @@ def get_available_data() -> dict:
     """
     try:
         client = get_timescaledb_client()
+        # Connect to the database before querying
+        if not client.connect():
+            logger.error("Failed to connect to TimescaleDB")
+            return {'summary': {}, 'symbols': []}
+            
         summary = client.get_data_summary()
         
         # Get available symbols
         symbols = client.get_available_symbols()
+        
+        client.disconnect()
         
         return {
             'summary': summary,
@@ -182,7 +214,14 @@ def list_available_symbols(provider: Optional[str] = None, timeframe: Optional[s
     """
     try:
         client = get_timescaledb_client()
-        return client.get_available_symbols(provider, timeframe)
+        # Connect to the database before querying
+        if not client.connect():
+            logger.error("Failed to connect to TimescaleDB")
+            return []
+            
+        symbols = client.get_available_symbols(provider, timeframe)
+        client.disconnect()
+        return symbols
     except Exception as e:
         logger.error(f"Failed to list symbols: {e}")
         return []

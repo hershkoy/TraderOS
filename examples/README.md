@@ -8,6 +8,7 @@ This directory contains example scripts and alternative implementations for the 
 - **pnf_backtrader.py** - Point & Figure strategy implementation (alternative to the main runner)
 - **backtrader_runner.py** - Alternative backtrader runner without YAML configuration
 - **simple_test.py** - Basic test script for verifying the framework setup
+- **fetch_data_examples.py** - Examples demonstrating data fetching with `--bars max` functionality
 
 ## Usage
 
@@ -22,7 +23,9 @@ python examples/backtrader_runner.py --parquet data/ALPACA/NFLX/1h/nflx_1h.parqu
 
 # Run PnF strategy
 python examples/pnf_backtrader.py --parquet data/ALPACA/NFLX/1h/nflx_1h.parquet --strategy pnf
-```
+
+# View fetch data examples (demonstration only)
+python examples/fetch_data_examples.py
 
 ## Note
 

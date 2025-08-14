@@ -100,14 +100,6 @@ class TimescaleDBClient:
                 INSERT INTO market_data 
                 (ts_event, symbol, provider, timeframe, open, high, low, close, volume)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ts_event, symbol, provider, timeframe) 
-                DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume,
-                    created_at = NOW()
             """, data_to_insert)
             
             self.connection.commit()

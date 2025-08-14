@@ -20,3 +20,6 @@ PyYAML==6.0.1
 six==1.17.0
 tenacity==9.1.2
 tzdata==2025.2
+python-dotenv==1.0.0
+alpaca-py==0.13.1
+ib_insync==0.9.85
