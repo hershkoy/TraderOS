@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backtrader Charting Server</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #4a5568;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            align-items: end;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #4a5568;
+        }
+
+        .control-group select, .control-group input {
+            padding: 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .control-group select:focus, .control-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+            height: calc(100vh - 200px);
+        }
+
+        .sidebar {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            position: relative;
+        }
+
+        .indicator-section {
+            margin-bottom: 25px;
+        }
+
+        .indicator-section h3 {
+            color: #4a5568;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 5px;
+        }
+
+        .indicator-item {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .indicator-item:hover {
+            background: #edf2f7;
+            border-color: #667eea;
+            transform: translateX(5px);
+        }
+
+        .indicator-item.selected {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
+
+        .indicator-params {
+            margin-top: 10px;
+            display: none;
+        }
+
+        .indicator-params.show {
+            display: block;
+        }
+
+        .param-group {
+            margin-bottom: 10px;
+        }
+
+        .param-group label {
+            display: block;
+            font-size: 0.9em;
+            margin-bottom: 3px;
+        }
+
+        .param-group input {
+            width: 100%;
+            padding: 5px;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2em;
+            color: #667eea;
+        }
+
+        .error {
+            background: #fed7d7;
+            color: #c53030;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #c53030;
+        }
+
+        .success {
+            background: #c6f6d5;
+            color: #2f855a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2f855a;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .controls {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📈 Backtrader Charting Server</h1>
+            <div class="controls">
+                <div class="control-group">
+                    <label for="symbol">Symbol</label>
+                    <select id="symbol">
+                        <option value="">Select Symbol</option>
+                        {% for symbol in symbols %}
+                        <option value="{{ symbol }}">{{ symbol }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="timeframe">Timeframe</label>
+                    <select id="timeframe">
+                        <option value="1m">1 Minute</option>
+                        <option value="5m">5 Minutes</option>
+                        <option value="15m">15 Minutes</option>
+                        <option value="30m">30 Minutes</option>
+                        <option value="1h" selected>1 Hour</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1d">1 Day</option>
+                        <option value="1w">1 Week</option>
+                        <option value="1M">1 Month</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn" onclick="loadChart()">Load Chart</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="indicator-section">
+                    <h3>📊 Technical Indicators</h3>
+                    <div id="indicators-list">
+                        {% for indicator_name, indicator_info in indicators.items() %}
+                        <div class="indicator-item" onclick="toggleIndicator('{{ indicator_name }}')">
+                            <strong>{{ indicator_info.name }}</strong>
+                            <div class="indicator-params" id="params-{{ indicator_name }}">
+                                {% for param in indicator_info.params %}
+                                <div class="param-group">
+                                    <label for="{{ indicator_name }}-{{ param }}">{{ param.title() }}:</label>
+                                    <input type="number" 
+                                           id="{{ indicator_name }}-{{ param }}" 
+                                           value="{{ indicator_info.defaults.get(param, '') }}"
+                                           placeholder="{{ param }}">
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <div id="chart"></div>
+                <div id="loading" class="loading" style="display: none;">Loading chart data...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedIndicators = [];
+        let currentChart = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load available timeframes when symbol changes
+            document.getElementById('symbol').addEventListener('change', function() {
+                const symbol = this.value;
+                if (symbol) {
+                    loadTimeframes(symbol);
+                }
+            });
+        });
+
+        function toggleIndicator(indicatorName) {
+            const indicatorItem = event.currentTarget;
+            const paramsDiv = document.getElementById(`params-${indicatorName}`);
+            
+            if (indicatorItem.classList.contains('selected')) {
+                // Remove indicator
+                indicatorItem.classList.remove('selected');
+                paramsDiv.classList.remove('show');
+                selectedIndicators = selectedIndicators.filter(ind => ind.name !== indicatorName);
+            } else {
+                // Add indicator
+                indicatorItem.classList.add('selected');
+                paramsDiv.classList.add('show');
+                
+                // Get parameters
+                const params = {};
+                const paramInputs = paramsDiv.querySelectorAll('input');
+                paramInputs.forEach(input => {
+                    const paramName = input.id.split('-')[1];
+                    params[paramName] = parseFloat(input.value) || 0;
+                });
+                
+                selectedIndicators.push({
+                    name: indicatorName,
+                    params: params
+                });
+            }
+        }
+
+        async function loadTimeframes(symbol) {
+            try {
+                const response = await fetch(`/api/timeframes/${symbol}`);
+                const timeframes = await response.json();
+                
+                const timeframeSelect = document.getElementById('timeframe');
+                timeframeSelect.innerHTML = '';
+                
+                timeframes.forEach(tf => {
+                    const option = document.createElement('option');
+                    option.value = tf;
+                    option.textContent = tf;
+                    timeframeSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading timeframes:', error);
+            }
+        }
+
+        async function loadChart() {
+            const symbol = document.getElementById('symbol').value;
+            const timeframe = document.getElementById('timeframe').value;
+            
+            if (!symbol) {
+                showError('Please select a symbol');
+                return;
+            }
+            
+            showLoading(true);
+            
+            try {
+                const response = await fetch(`/api/data?symbol=${symbol}&timeframe=${timeframe}&indicators=${JSON.stringify(selectedIndicators)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                renderChart(data);
+                showSuccess(`Chart loaded for ${symbol} (${timeframe})`);
+                
+            } catch (error) {
+                showError('Error loading chart data: ' + error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function renderChart(data) {
+            const chartData = data.chart_data;
+            const indicators = data.indicators;
+            
+            // Prepare candlestick data
+            const candlestick = {
+                x: chartData.datetime,
+                open: chartData.open,
+                high: chartData.high,
+                low: chartData.low,
+                close: chartData.close,
+                type: 'candlestick',
+                name: 'OHLC',
+                decreasing: {line: {color: '#ff4444'}},
+                increasing: {line: {color: '#44ff44'}}
+            };
+            
+            const traces = [candlestick];
+            
+            // Add indicators
+            Object.keys(indicators).forEach(indicatorName => {
+                const indicatorData = indicators[indicatorName];
+                
+                if (indicatorName.includes('SMA') || indicatorName.includes('EMA') || indicatorName.includes('WMA')) {
+                    traces.push({
+                        x: chartData.datetime,
+                        y: indicatorData,
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: indicatorName,
+                        line: {color: '#ff6b6b', width: 2}
+                    });
+                } else if (indicatorName.includes('BB_')) {
+                    const color = indicatorName.includes('upper') ? '#ff9ff3' : 
+                                indicatorName.includes('lower') ? '#ff9ff3' : '#feca57';
+                    traces.push({
+                        x: chartData.datetime,
+                        y: indicatorData,
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: indicatorName,
+                        line: {color: color, width: 1, dash: 'dash'}
+                    });
+                } else if (indicatorName.includes('MACD')) {
+                    const color = indicatorName.includes('histogram') ? '#54a0ff' : 
+                                indicatorName.includes('signal') ? '#ff9ff3' : '#5f27cd';
+                    traces.push({
+                        x: chartData.datetime,
+                        y: indicatorData,
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: indicatorName,
+                        line: {color: color, width: 2},
+                        yaxis: 'y2'
+                    });
+                } else if (indicatorName.includes('RSI')) {
+                    traces.push({
+                        x: chartData.datetime,
+                        y: indicatorData,
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: indicatorName,
+                        line: {color: '#ff9ff3', width: 2},
+                        yaxis: 'y3'
+                    });
+                } else if (indicatorName.includes('Volume')) {
+                    traces.push({
+                        x: chartData.datetime,
+                        y: indicatorData,
+                        type: 'bar',
+                        name: 'Volume',
+                        marker: {color: '#54a0ff', opacity: 0.7},
+                        yaxis: 'y4'
+                    });
+                }
+            });
+            
+            const layout = {
+                title: `${data.symbol} - ${data.timeframe}`,
+                xaxis: {
+                    title: 'Date',
+                    rangeslider: {visible: false}
+                },
+                yaxis: {
+                    title: 'Price',
+                    side: 'right'
+                },
+                yaxis2: {
+                    title: 'MACD',
+                    overlaying: 'y',
+                    side: 'left',
+                    visible: false
+                },
+                yaxis3: {
+                    title: 'RSI',
+                    overlaying: 'y',
+                    side: 'left',
+                    visible: false,
+                    range: [0, 100]
+                },
+                yaxis4: {
+                    title: 'Volume',
+                    overlaying: 'y',
+                    side: 'left',
+                    visible: false
+                },
+                height: 600,
+                showlegend: true,
+                legend: {
+                    x: 0,
+                    y: 1,
+                    orientation: 'h'
+                }
+            };
+            
+            Plotly.newPlot('chart', traces, layout, {responsive: true});
+        }
+
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            loading.style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            const container = document.querySelector('.container');
+            const existingError = container.querySelector('.error');
+            if (existingError) {
+                existingError.remove();
+            }
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            errorDiv.textContent = message;
+            container.insertBefore(errorDiv, container.firstChild);
+            
+            setTimeout(() => {
+                errorDiv.remove();
+            }, 5000);
+        }
+
+        function showSuccess(message) {
+            const container = document.querySelector('.container');
+            const existingSuccess = container.querySelector('.success');
+            if (existingSuccess) {
+                existingSuccess.remove();
+            }
+            
+            const successDiv = document.createElement('div');
+            successDiv.className = 'success';
+            successDiv.textContent = message;
+            container.insertBefore(successDiv, container.firstChild);
+            
+            setTimeout(() => {
+                successDiv.remove();
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
