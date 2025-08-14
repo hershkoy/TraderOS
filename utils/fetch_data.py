@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import pandas as pd
+from utils.timescaledb_client import get_timescaledb_client
 
 # ─────────────────────────────
 # CONFIG
@@ -58,17 +59,19 @@ def prepare_nautilus_dataframe(df, symbol, provider, timeframe):
     
     return df[required_columns]
 
-def save_nautilus_parquet(df, symbol, provider, timeframe):
-    """Save DataFrame in Nautilus-compatible directory structure."""
-    # Create directory structure: data/PROVIDER/SYMBOL/TIMEFRAME/
-    save_path = SAVE_DIR / provider.upper() / symbol.upper() / timeframe
-    save_path.mkdir(parents=True, exist_ok=True)
-    
-    # Save file
-    file_path = save_path / f"{symbol.lower()}_{timeframe}.parquet"
-    df.to_parquet(file_path, index=False)
-    print(f"✔ Saved to {file_path.absolute()}")
-    return file_path
+def save_to_timescaledb(df, symbol, provider, timeframe):
+    """Save DataFrame to TimescaleDB."""
+    try:
+        client = get_timescaledb_client()
+        if client.insert_market_data(df, symbol, provider, timeframe):
+            print(f"✔ Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
+            return True
+        else:
+            print(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+            return False
+    except Exception as e:
+        print(f"✗ Error saving to TimescaleDB: {e}")
+        return False
 
 # ─────────────────────────────
 # ALPACA LOGIC
@@ -113,8 +116,8 @@ def fetch_from_alpaca(symbol, bars, timeframe):
     # Transform to Nautilus format
     df = prepare_nautilus_dataframe(df, symbol, "ALPACA", timeframe)
     
-    # Save in Nautilus-compatible structure
-    save_nautilus_parquet(df, symbol, "ALPACA", timeframe)
+    # Save to TimescaleDB
+    save_to_timescaledb(df, symbol, "ALPACA", timeframe)
 
 # ─────────────────────────────
 # IBKR LOGIC
@@ -154,8 +157,8 @@ def fetch_from_ib(symbol, bars, timeframe):
     # Transform to Nautilus format
     df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
     
-    # Save in Nautilus-compatible structure
-    save_nautilus_parquet(df, symbol, "IB", timeframe)
+    # Save to TimescaleDB
+    save_to_timescaledb(df, symbol, "IB", timeframe)
 
 # ─────────────────────────────
 # MAIN ENTRY

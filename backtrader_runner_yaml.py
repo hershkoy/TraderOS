@@ -21,6 +21,7 @@ from plotly.offline import plot
 
 # Import strategies
 from strategies import get_strategy, list_strategies
+from utils.timescaledb_loader import load_parquet_1h, load_daily_data, load_timescaledb_1h, load_timescaledb_daily
 
 # Global variable to store strategy backup in case of backtrader failure
 _strategy_backup = None
@@ -615,8 +616,14 @@ def main():
     ap = argparse.ArgumentParser(description="Multi-Strategy Backtrader Runner with YAML Configuration")
     ap.add_argument('--config', type=str, default='defaults.yaml',
                    help='Path to YAML configuration file')
-    ap.add_argument('--parquet', type=str, required=True, 
-                   help='Path to Parquet file (e.g. data/ALPACA/NFLX/1h/nflx_1h.parquet)')
+    ap.add_argument('--parquet', type=str, 
+                   help='Path to Parquet file (e.g. data/ALPACA/NFLX/1h/nflx_1h.parquet) - deprecated, use --symbol instead')
+    ap.add_argument('--symbol', type=str, 
+                   help='Stock symbol (e.g. NFLX) - required if not using --parquet')
+    ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
+                   help='Data provider (default: ALPACA)')
+    ap.add_argument('--timeframe', type=str, choices=['1h', '1d'], default='1h',
+                   help='Data timeframe (default: 1h)')
     ap.add_argument('--strategy', type=str, default='mean_reversion',
                    help=f'Strategy to use. Available: {", ".join(list_strategies())}')
     
@@ -658,12 +665,27 @@ def main():
     # Load data based on strategy requirements
     data_reqs = strategy_class.get_data_requirements()
     
-    if data_reqs['base_timeframe'] == 'daily':
-        print(f"Loading daily data for {args.strategy} strategy...")
-        df_data = load_daily_data(Path(args.parquet))
+    # Handle data loading - support both old parquet path and new TimescaleDB parameters
+    if args.parquet:
+        # Legacy parquet path support
+        print(f"Using legacy parquet path: {args.parquet}")
+        if data_reqs['base_timeframe'] == 'daily':
+            print(f"Loading daily data for {args.strategy} strategy...")
+            df_data = load_daily_data(Path(args.parquet))
+        else:
+            print(f"Loading hourly data for {args.strategy} strategy...")
+            df_data = load_parquet_1h(Path(args.parquet))
+    elif args.symbol:
+        # New TimescaleDB support
+        print(f"Loading data from TimescaleDB for {args.symbol} {args.timeframe} from {args.provider}")
+        if data_reqs['base_timeframe'] == 'daily':
+            print(f"Loading daily data for {args.strategy} strategy...")
+            df_data = load_timescaledb_daily(args.symbol, args.provider)
+        else:
+            print(f"Loading hourly data for {args.strategy} strategy...")
+            df_data = load_timescaledb_1h(args.symbol, args.provider)
     else:
-        print(f"Loading hourly data for {args.strategy} strategy...")
-        df_data = load_parquet_1h(Path(args.parquet))
+        raise ValueError("Either --parquet or --symbol must be provided")
     
     # Apply date filter
     fromdate = global_config.get('fromdate', '2018-01-01')

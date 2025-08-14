@@ -1,12 +1,46 @@
 
 # BackTrader Testing Framework
 
-A comprehensive backtesting framework with TradingView-style reporting.
+A comprehensive backtesting framework with TradingView-style reporting and TimescaleDB integration.
 
 ## Setup
 
-1. Install dependencies: `pip install -r requirements.txt`
-2. Activate virtual environment: `venv\Scripts\activate` (Windows) or `source venv/bin/activate` (Linux/Mac)
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Activate Virtual Environment
+```bash
+# Windows
+venv\Scripts\activate
+
+# Linux/Mac
+source venv/bin/activate
+```
+
+### 3. Setup TimescaleDB (Recommended)
+The framework now uses TimescaleDB for efficient time-series data storage instead of Parquet files.
+
+```bash
+# Run the setup script
+python setup_timescaledb.py
+```
+
+This will:
+- Check for Docker and Docker Compose
+- Start TimescaleDB with persistent data storage
+- Test the database connection
+- Show usage examples
+
+**Alternative Manual Setup:**
+```bash
+# Start TimescaleDB manually
+docker-compose up -d
+
+# Test connection
+python -c "from utils.timescaledb_client import test_connection; test_connection()"
+```
 
 ## Data Fetching
 
@@ -50,25 +84,26 @@ python utils/fetch_data.py --symbol NFLX --provider ib --timeframe 1d --bars 999
 python utils/fetch_data.py --symbol AAPL --provider ib --timeframe 1h --bars 2160
 ```
 
-### Data Storage Structure
+### Data Storage
 
-Data is automatically organized in the following structure:
-```
-data/
-├── ALPACA/
-│   ├── NFLX/
-│   │   ├── 1h/
-│   │   │   └── nflx_1h.parquet
-│   │   └── 1d/
-│   │       └── nflx_1d.parquet
-│   └── AAPL/
-│       └── 1d/
-│           └── aapl_1d.parquet
-└── IB/
-    └── NFLX/
-        └── 1d/
-            └── nflx_1d.parquet
-```
+Data is now stored in TimescaleDB, a PostgreSQL extension optimized for time-series data. This provides:
+
+- **Better Performance**: Optimized for time-series queries
+- **Data Integrity**: ACID compliance and data consistency
+- **Scalability**: Handles large datasets efficiently
+- **Query Flexibility**: SQL queries with time-series functions
+- **Persistence**: Data survives container restarts
+
+**Database Schema:**
+- `market_data` table with hypertable for time-series optimization
+- Indexes on symbol, provider, and timeframe for fast queries
+- Automatic data deduplication and conflict resolution
+
+**Data Organization:**
+- Symbol-based queries (e.g., NFLX, AAPL)
+- Provider filtering (ALPACA, IB)
+- Timeframe filtering (1h, 1d)
+- Time-range queries with efficient chunking
 
 ### Data Format
 
@@ -96,8 +131,21 @@ ALPACA_API_SECRET=your_alpaca_secret_key
 
 ## Run Backtests
 
-### Basic Strategy Run
+### New TimescaleDB Commands (Recommended)
 ```bash
+# Run backtest with TimescaleDB
+python backtrader_runner_yaml.py ^
+  --config default.yaml ^
+  --symbol NFLX ^
+  --provider ALPACA ^
+  --timeframe 1h ^
+  --strategy mean_reversion ^
+  --log-level DEBUG
+```
+
+### Legacy Parquet Commands (Still Supported)
+```bash
+# Run backtest with parquet file (legacy)
 python backtrader_runner_yaml.py ^
   --config default.yaml ^
   --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" ^
@@ -105,13 +153,21 @@ python backtrader_runner_yaml.py ^
   --log-level DEBUG
 ```
 
-### Alternative Command Format
+### Alternative Command Formats
 ```bash
-python backtrader_runner_yaml.py --config default.yaml --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --strategy mean_reversion
+# TimescaleDB format
+python backtrader_runner_yaml.py --symbol NFLX --provider ALPACA --timeframe 1h --strategy mean_reversion
+
+# Legacy parquet format
+python backtrader_runner_yaml.py --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --strategy mean_reversion
 ```
 
 ### Simple Strategy Test
 ```bash
+# TimescaleDB format
+python examples/mean_reversion_simple.py --symbol NFLX --provider ALPACA --timeframe 1h --lookback 30 --std 1.5 --size 2
+
+# Legacy parquet format
 python examples/mean_reversion_simple.py --parquet "data\ALPACA\NFLX\1h\nflx_1h.parquet" --lookback 30 --std 1.5 --size 2
 ```
 
@@ -133,3 +189,70 @@ After running a backtest, the system automatically generates:
 4. **JSON Statistics** - Machine-readable performance data
 
 All reports are saved in the `reports/` folder with timestamped directories.
+
+## Database Management
+
+### Accessing TimescaleDB
+
+**Via pgAdmin (Web Interface):**
+- URL: http://localhost:8080
+- Email: admin@backtrader.com
+- Password: admin
+
+**Via Command Line:**
+```bash
+# Connect to TimescaleDB
+docker-compose exec timescaledb psql -U backtrader_user -d backtrader
+
+# List available symbols
+SELECT DISTINCT symbol FROM market_data ORDER BY symbol;
+
+# Get data summary
+SELECT 
+    COUNT(*) as total_records,
+    COUNT(DISTINCT symbol) as unique_symbols,
+    COUNT(DISTINCT provider) as unique_providers,
+    MIN(to_timestamp(ts_event / 1000000000)) as earliest_date,
+    MAX(to_timestamp(ts_event / 1000000000)) as latest_date
+FROM market_data;
+```
+
+### Data Management Commands
+
+**List Available Data:**
+```bash
+python -c "from utils.timescaledb_loader import get_available_data; print(get_available_data())"
+```
+
+**List Available Symbols:**
+```bash
+python -c "from utils.timescaledb_loader import list_available_symbols; print(list_available_symbols())"
+```
+
+**Test Database Connection:**
+```bash
+python -c "from utils.timescaledb_client import test_connection; test_connection()"
+```
+
+### Docker Commands
+
+**Start TimescaleDB:**
+```bash
+docker-compose up -d
+```
+
+**Stop TimescaleDB:**
+```bash
+docker-compose down
+```
+
+**View Logs:**
+```bash
+docker-compose logs timescaledb
+```
+
+**Reset Database (WARNING: This will delete all data):**
+```bash
+docker-compose down -v
+docker-compose up -d
+```
