@@ -36,7 +36,10 @@ class TimescaleDBClient:
                 port=self.port,
                 database=self.database,
                 user=self.user,
-                password=self.password
+                password=self.password,
+                # Add timeout settings to prevent hanging
+                connect_timeout=10,
+                options='-c statement_timeout=300000'  # 5 minutes timeout
             )
             logger.info(f"Connected to TimescaleDB at {self.host}:{self.port}")
             return True
@@ -65,7 +68,7 @@ class TimescaleDBClient:
         Insert market data into TimescaleDB
         
         Args:
-            df: DataFrame with columns: ts_event, open, high, low, close, volume
+            df: DataFrame with columns: timestamp, open, high, low, close, volume
             symbol: Stock symbol
             provider: Data provider (ALPACA, IB, etc.)
             timeframe: Time interval (1h, 1d, etc.)
@@ -81,33 +84,102 @@ class TimescaleDBClient:
             cursor = self.connection.cursor()
             
             # Prepare data for insertion
+            logger.info(f"Preparing {len(df)} records for insertion...")
             data_to_insert = []
-            for _, row in df.iterrows():
-                data_to_insert.append((
-                    int(row['ts_event']),
-                    symbol.upper(),
-                    provider.upper(),
-                    timeframe,
-                    float(row['open']),
-                    float(row['high']),
-                    float(row['low']),
-                    float(row['close']),
-                    int(row['volume'])
-                ))
+            for idx, (_, row) in enumerate(df.iterrows()):
+                try:
+                    # Validate data before insertion
+                    # Convert ts_event (nanoseconds) back to timestamp
+                    ts_event = int(row['ts_event'])
+                    ts = pd.Timestamp(ts_event, unit='ns').isoformat()
+                    open_price = float(row['open'])
+                    high_price = float(row['high'])
+                    low_price = float(row['low'])
+                    close_price = float(row['close'])
+                    volume = int(row['volume'])
+                    
+                    # Basic validation
+                    if not all(isinstance(x, (int, float)) and x > 0 for x in [open_price, high_price, low_price, close_price, volume]):
+                        logger.warning(f"Skipping invalid record at index {idx}: {row.to_dict()}")
+                        continue
+                    
+                    if high_price < low_price:
+                        logger.warning(f"Skipping record with high < low at index {idx}: high={high_price}, low={low_price}")
+                        continue
+                    
+                    data_to_insert.append((
+                        ts,
+                        symbol.upper(),
+                        provider.upper(),
+                        timeframe,
+                        open_price,
+                        high_price,
+                        low_price,
+                        close_price,
+                        volume
+                    ))
+                    
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Skipping invalid record at index {idx}: {e}")
+                    continue
+                
+                # Log progress every 1000 records
+                if (idx + 1) % 1000 == 0:
+                    logger.info(f"Prepared {idx + 1}/{len(df)} records...")
             
-            # Use batch insert for better performance
-            cursor.executemany("""
-                INSERT INTO market_data 
-                (ts_event, symbol, provider, timeframe, open, high, low, close, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, data_to_insert)
+            logger.info(f"Data preparation complete. Starting batch insertion...")
             
+            # Use larger batches since COPY is much more efficient
+            batch_size = 2000  # Increased since COPY is much faster
+            total_inserted = 0
+            
+            for i in range(0, len(data_to_insert), batch_size):
+                batch = data_to_insert[i:i + batch_size]
+                logger.info(f"Inserting batch {i//batch_size + 1}/{(len(data_to_insert) + batch_size - 1)//batch_size} ({len(batch)} records)...")
+                
+                try:
+                    logger.info(f"Inserting batch {i//batch_size + 1} using COPY...")
+                    
+                    # Use COPY for much faster bulk insertion
+                    from io import StringIO
+                    import csv
+                    
+                    # Create a CSV-like string buffer
+                    buffer = StringIO()
+                    writer = csv.writer(buffer)
+                    
+                    # Write data to buffer
+                    for record in batch:
+                        writer.writerow(record)
+                    
+                    buffer.seek(0)
+                    
+                    # Use COPY FROM STDIN for fast bulk insertion
+                    cursor.copy_from(
+                        buffer,
+                        'market_data',
+                        columns=('ts', 'symbol', 'provider', 'timeframe', 'open', 'high', 'low', 'close', 'volume'),
+                        sep=','
+                    )
+                    
+                    logger.info(f"Batch {i//batch_size + 1} completed successfully using COPY")
+                    total_inserted += len(batch)
+                    logger.info(f"Batch {i//batch_size + 1} inserted successfully. Total: {total_inserted}/{len(data_to_insert)}")
+                    
+                except Exception as batch_error:
+                    logger.error(f"Error inserting batch {i//batch_size + 1}: {batch_error}")
+                    logger.error(f"First few records in batch: {batch[:3] if batch else 'No batch data'}")
+                    raise batch_error
+            
+            logger.info(f"Committing transaction...")
             self.connection.commit()
-            logger.info(f"Inserted {len(data_to_insert)} records for {symbol} {timeframe}")
+            logger.info(f"Successfully inserted {total_inserted} records for {symbol} {timeframe}")
             return True
             
         except Exception as e:
             logger.error(f"Failed to insert market data: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             if self.connection:
                 self.connection.rollback()
             return False
@@ -142,7 +214,7 @@ class TimescaleDBClient:
             # Build query
             query = """
                 SELECT 
-                    ts_event,
+                    ts,
                     symbol,
                     provider,
                     timeframe,
@@ -162,14 +234,14 @@ class TimescaleDBClient:
                 params.append(provider.upper())
             
             if start_time:
-                query += " AND ts_event >= %s"
-                params.append(int(start_time.timestamp() * 1_000_000_000))
+                query += " AND ts >= %s"
+                params.append(start_time)
             
             if end_time:
-                query += " AND ts_event <= %s"
-                params.append(int(end_time.timestamp() * 1_000_000_000))
+                query += " AND ts <= %s"
+                params.append(end_time)
             
-            query += " ORDER BY ts_event"
+            query += " ORDER BY ts"
             
             if limit:
                 query += " LIMIT %s"
@@ -184,12 +256,12 @@ class TimescaleDBClient:
             
             # Convert to DataFrame
             df = pd.DataFrame(rows, columns=[
-                'ts_event', 'symbol', 'provider', 'timeframe',
+                'ts', 'symbol', 'provider', 'timeframe',
                 'open', 'high', 'low', 'close', 'volume', 'created_at'
             ])
             
             # Convert timestamp
-            df['timestamp'] = pd.to_datetime(df['ts_event'], unit='ns', utc=True)
+            df['timestamp'] = pd.to_datetime(df['ts'], utc=True)
             
             logger.info(f"Retrieved {len(df)} records for {symbol} {timeframe}")
             return df
@@ -284,8 +356,8 @@ class TimescaleDBClient:
             # Get date range
             cursor.execute("""
                 SELECT 
-                    MIN(to_timestamp(ts_event / 1000000000)) as min_date,
-                    MAX(to_timestamp(ts_event / 1000000000)) as max_date
+                    MIN(ts) as min_date,
+                    MAX(ts) as max_date
                 FROM market_data
             """)
             date_range = cursor.fetchone()
@@ -348,8 +420,8 @@ class TimescaleDBClient:
                 params.append(timeframe)
             
             if before_date:
-                query += " AND ts_event < %s"
-                params.append(int(before_date.timestamp() * 1_000_000_000))
+                query += " AND ts < %s"
+                params.append(before_date)
             
             cursor.execute(query, params)
             deleted_count = cursor.rowcount
@@ -363,6 +435,177 @@ class TimescaleDBClient:
             if self.connection:
                 self.connection.rollback()
             return 0
+        finally:
+            if cursor:
+                cursor.close()
+    
+    def reset_database(self) -> bool:
+        """
+        Reset the database by dropping and recreating the market_data table
+        with proper TIMESTAMPTZ structure
+        """
+        if not self.connection:
+            logger.error("No database connection")
+            return False
+        
+        try:
+            cursor = self.connection.cursor()
+            
+            # Drop existing table and related objects
+            logger.info("Dropping existing market_data table...")
+            cursor.execute("DROP TABLE IF EXISTS market_data CASCADE")
+            cursor.execute("DROP VIEW IF EXISTS market_data_view CASCADE")
+            cursor.execute("DROP FUNCTION IF EXISTS get_market_data CASCADE")
+            cursor.execute("DROP FUNCTION IF EXISTS insert_market_data CASCADE")
+            
+            # Recreate the table with proper TIMESTAMPTZ structure
+            logger.info("Creating new market_data table with TIMESTAMPTZ...")
+            cursor.execute("""
+                CREATE TABLE market_data (
+                    ts TIMESTAMPTZ NOT NULL,
+                    symbol VARCHAR(20) NOT NULL,
+                    provider VARCHAR(20) NOT NULL,
+                    timeframe VARCHAR(10) NOT NULL,
+                    open DECIMAL(15,6) NOT NULL,
+                    high DECIMAL(15,6) NOT NULL,
+                    low DECIMAL(15,6) NOT NULL,
+                    close DECIMAL(15,6) NOT NULL,
+                    volume BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            
+            # Create hypertable for time-series data with proper time partitioning
+            logger.info("Creating hypertable...")
+            cursor.execute("""
+                SELECT create_hypertable('market_data', 'ts', chunk_time_interval => INTERVAL '7 days')
+            """)
+            
+            # Create indexes for optimal query performance
+            logger.info("Creating indexes...")
+            cursor.execute("""
+                CREATE INDEX idx_market_data_symbol_ts ON market_data (symbol, ts DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX idx_market_data_provider_ts ON market_data (provider, ts DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX idx_market_data_timeframe_ts ON market_data (timeframe, ts DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX idx_market_data_symbol_provider_timeframe_ts ON market_data (symbol, provider, timeframe, ts DESC)
+            """)
+            
+            # Create a view for easier data access
+            logger.info("Creating view...")
+            cursor.execute("""
+                CREATE VIEW market_data_view AS
+                SELECT 
+                    ts as timestamp,
+                    symbol,
+                    provider,
+                    timeframe,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    created_at
+                FROM market_data
+                ORDER BY ts
+            """)
+            
+            # Create functions
+            logger.info("Creating functions...")
+            cursor.execute("""
+                CREATE OR REPLACE FUNCTION get_market_data(
+                    p_symbol VARCHAR(20),
+                    p_timeframe VARCHAR(10),
+                    p_provider VARCHAR(20) DEFAULT NULL,
+                    p_start_time TIMESTAMPTZ DEFAULT NULL,
+                    p_end_time TIMESTAMPTZ DEFAULT NULL
+                )
+                RETURNS TABLE (
+                    ts_out TIMESTAMPTZ,
+                    symbol VARCHAR(20),
+                    provider VARCHAR(20),
+                    timeframe VARCHAR(10),
+                    open DECIMAL(15,6),
+                    high DECIMAL(15,6),
+                    low DECIMAL(15,6),
+                    close DECIMAL(15,6),
+                    volume BIGINT
+                ) AS $$
+                BEGIN
+                    RETURN QUERY
+                    SELECT 
+                        md.ts as ts_out,
+                        md.symbol,
+                        md.provider,
+                        md.timeframe,
+                        md.open,
+                        md.high,
+                        md.low,
+                        md.close,
+                        md.volume
+                    FROM market_data md
+                    WHERE md.symbol = p_symbol
+                      AND md.timeframe = p_timeframe
+                      AND (p_provider IS NULL OR md.provider = p_provider)
+                      AND (p_start_time IS NULL OR md.ts >= p_start_time)
+                      AND (p_end_time IS NULL OR md.ts <= p_end_time)
+                    ORDER BY md.ts;
+                END;
+                $$ LANGUAGE plpgsql
+            """)
+            
+            cursor.execute("""
+                CREATE OR REPLACE FUNCTION insert_market_data(
+                    p_ts TIMESTAMPTZ,
+                    p_symbol VARCHAR(20),
+                    p_provider VARCHAR(20),
+                    p_timeframe VARCHAR(10),
+                    p_open DECIMAL(15,6),
+                    p_high DECIMAL(15,6),
+                    p_low DECIMAL(15,6),
+                    p_close DECIMAL(15,6),
+                    p_volume BIGINT
+                )
+                RETURNS VOID AS $$
+                BEGIN
+                    INSERT INTO market_data (
+                        ts, symbol, provider, timeframe, 
+                        open, high, low, close, volume
+                    ) VALUES (
+                        p_ts, p_symbol, p_provider, p_timeframe,
+                        p_open, p_high, p_low, p_close, p_volume
+                    )
+                    ON CONFLICT (ts, symbol, provider, timeframe) 
+                    DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        created_at = NOW();
+                END;
+                $$ LANGUAGE plpgsql
+            """)
+            
+            # Grant permissions
+            cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO backtrader_user")
+            cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO backtrader_user")
+            cursor.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO backtrader_user")
+            
+            self.connection.commit()
+            logger.info("Database reset completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to reset database: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
         finally:
             if cursor:
                 cursor.close()

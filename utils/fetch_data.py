@@ -148,8 +148,22 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
         secret_key=secret_key,
     )
 
+    # Calculate a reasonable time period to get the requested number of bars
+    # For hourly data: account for ~6.5 hours per trading day, weekends, holidays
+    # For daily data: account for weekends and holidays
+    if timeframe == "1h":
+        # Assume ~6.5 trading hours per day, ~5 trading days per week
+        # So we need roughly (bars / 6.5) * 7/5 days to get enough bars
+        days_needed = max(1, int((bars / 6.5) * 7 / 5))
+        start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+    else:  # 1d
+        # For daily data, assume ~5 trading days per week
+        days_needed = max(1, int(bars * 7 / 5))
+        start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+    
     end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(hours=bars if timeframe == "1h" else 24 * bars)
+
+    logger.info(f"Requesting data from {start_time} to {end_time} (expecting ~{bars} bars)")
 
     req = StockBarsRequest(
         feed=DataFeed.IEX,
@@ -157,7 +171,7 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
         timeframe=tf_map[timeframe],
         start=start_time.isoformat(),
         end=end_time.isoformat(),
-        limit=min(bars, ALPACA_BAR_CAP),
+        limit=min(bars * 5, ALPACA_BAR_CAP),  # Request much more than needed to ensure we get enough
     )
 
     # Get raw data with retry logic
@@ -165,6 +179,17 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
         try:
             raw_data = client.get_stock_bars(req)
             df = raw_data.df.reset_index()
+            
+            logger.info(f"Received {len(df)} bars from Alpaca (requested ~{bars})")
+            if not df.empty:
+                logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+            
+            # Take only the most recent 'bars' records
+            if len(df) > bars:
+                df = df.tail(bars).reset_index(drop=True)
+                logger.info(f"Truncated to {len(df)} most recent bars")
+            elif len(df) < bars:
+                logger.warning(f"Only got {len(df)} bars, less than requested {bars}")
             
             # Transform to Nautilus format
             df = prepare_nautilus_dataframe(df, symbol, "ALPACA", timeframe)

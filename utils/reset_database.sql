@@ -1,8 +1,14 @@
--- Initialize TimescaleDB extension
-CREATE EXTENSION IF NOT EXISTS timescaledb;
+-- Reset TimescaleDB database with proper TIMESTAMPTZ structure
+-- This script drops the existing table and recreates it with optimal structure
 
--- Create market data table with proper TIMESTAMPTZ structure
-CREATE TABLE IF NOT EXISTS market_data (
+-- Drop existing table and related objects
+DROP TABLE IF EXISTS market_data CASCADE;
+DROP VIEW IF EXISTS market_data_view CASCADE;
+DROP FUNCTION IF EXISTS get_market_data CASCADE;
+DROP FUNCTION IF EXISTS insert_market_data CASCADE;
+
+-- Recreate the table with proper TIMESTAMPTZ structure
+CREATE TABLE market_data (
     ts TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     provider VARCHAR(20) NOT NULL,
@@ -16,23 +22,23 @@ CREATE TABLE IF NOT EXISTS market_data (
 );
 
 -- Create hypertable for time-series data with proper time partitioning
-SELECT create_hypertable('market_data', 'ts', chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
+SELECT create_hypertable('market_data', 'ts', chunk_time_interval => INTERVAL '7 days');
 
 -- Create indexes for optimal query performance
 -- Primary index for symbol + time range queries (most common)
-CREATE INDEX IF NOT EXISTS idx_market_data_symbol_ts ON market_data (symbol, ts DESC);
+CREATE INDEX idx_market_data_symbol_ts ON market_data (symbol, ts DESC);
 
 -- Index for provider + time range queries
-CREATE INDEX IF NOT EXISTS idx_market_data_provider_ts ON market_data (provider, ts DESC);
+CREATE INDEX idx_market_data_provider_ts ON market_data (provider, ts DESC);
 
 -- Index for timeframe + time range queries
-CREATE INDEX IF NOT EXISTS idx_market_data_timeframe_ts ON market_data (timeframe, ts DESC);
+CREATE INDEX idx_market_data_timeframe_ts ON market_data (timeframe, ts DESC);
 
 -- Composite index for symbol + provider + timeframe queries
-CREATE INDEX IF NOT EXISTS idx_market_data_symbol_provider_timeframe_ts ON market_data (symbol, provider, timeframe, ts DESC);
+CREATE INDEX idx_market_data_symbol_provider_timeframe_ts ON market_data (symbol, provider, timeframe, ts DESC);
 
 -- Create a view for easier data access
-CREATE OR REPLACE VIEW market_data_view AS
+CREATE VIEW market_data_view AS
 SELECT 
     ts as timestamp,
     symbol,
@@ -124,3 +130,9 @@ $$ LANGUAGE plpgsql;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO backtrader_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO backtrader_user;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO backtrader_user;
+
+-- Verify the setup
+SELECT * FROM timescaledb_information.hypertables WHERE hypertable_name = 'market_data';
+SELECT * FROM timescaledb_information.chunks WHERE hypertable_name = 'market_data';
+
+

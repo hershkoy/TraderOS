@@ -1,0 +1,114 @@
+---
+globs: timescale*.py
+alwaysApply: false
+---
+Here’s the condensed **TimescaleDB Read Optimization Cheat-Sheet** for your app:
+
+---
+
+## 📈 TimescaleDB Fast-Read Rules (OHLCV data)
+
+1. **Filter by time (always)**
+
+   ```sql
+   WHERE ts > now() - interval '30 days'
+   ```
+
+   Enables chunk pruning → fewer chunks touched.
+
+2. **Filter by symbol first**
+
+   ```sql
+   WHERE symbol='NFLX' AND ts > ...
+   ```
+
+3. **Use a composite covering index**
+
+   ```sql
+   CREATE INDEX ON market_data (symbol, timeframe, ts DESC)
+   INCLUDE (open, high, low, close, volume);
+   ```
+
+   → Index-Only Scan, minimal disk hits.
+
+4. **Chunk size**
+
+   * ≥ 7 days for 1h bars
+   * ≥ 1 day for 1m bars
+   * Avoid tiny chunks → slow planning.
+
+5. **Compression policy**
+   Keep recent chunks **uncompressed** (e.g., compress older than 7 days).
+
+6. **Update stats after big loads**
+
+   ```sql
+   ANALYZE market_data;
+   ```
+
+7. **No naked `LIMIT`**
+   Always pair `LIMIT` with time/symbol filters.
+
+# Insert side:
+
+Here’s the **super-condensed insert-side cheat sheet** for TimescaleDB (OHLCV):
+
+## ✍️ Write/Insert Rules
+
+1. **Schema & keys**
+
+* `ts TIMESTAMPTZ NOT NULL (UTC)`
+* `PRIMARY KEY (symbol, ts)` (or UNIQUE)
+* Hypertable on `ts`; **chunk\_time\_interval**: `7 days` (1h bars) / `1 day` (1m).
+* Optional: space partition by `symbol` (e.g., 16).
+
+2. **Backfill (historical)**
+
+* Use **COPY** (fastest):
+
+  ```sql
+  \copy market_data(symbol, ts, open, high, low, close, volume) FROM 'file.csv' CSV
+  ```
+* Load into an **unindexed** staging table → `INSERT … ON CONFLICT` into target → then `ANALYZE`.
+* Create indexes **after** huge backfills if rebuilding from scratch.
+
+3. **Live ingestion (streaming)**
+
+* **Batch** 5k–50k rows/txn, **ordered by ts** per symbol.
+* **Prepared INSERT** with **`ON CONFLICT (symbol, ts) DO UPDATE`** for late corrections.
+* Keep only necessary indexes (PK + read path index).
+* Use a **connection pool** (pgBouncer).
+
+4. **Idempotency & dedupe**
+
+```sql
+INSERT INTO market_data(symbol, ts, open, high, low, close, volume)
+VALUES (...)
+ON CONFLICT (symbol, ts) DO UPDATE
+SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+    close=EXCLUDED.close, volume=EXCLUDED.volume;
+```
+
+5. **Compression & retention**
+
+* Keep **recent N days uncompressed**; compress older:
+
+  ```sql
+  SELECT add_compression_policy('market_data', INTERVAL '7 days');
+  ```
+* Optional retention for raw 1m if you only need X years.
+
+6. **Maintenance**
+
+* After big loads: `ANALYZE market_data;`
+* Monitor chunk count; avoid tiny chunks.
+* Timezone: always **UTC**; no gaps/overlaps per symbol.
+
+7. **QA queries** (fast sanity checks)
+
+```sql
+SELECT count(*) FROM market_data WHERE symbol='NFLX' 
+  AND ts >= now() - interval '1 day';
+SELECT min(ts), max(ts) FROM market_data WHERE symbol='NFLX';
+```
+
