@@ -254,14 +254,25 @@ class TimescaleDBClient:
                 logger.warning(f"No data found for {symbol} {timeframe}")
                 return pd.DataFrame()
             
+            logger.info(f"Retrieved {len(rows)} raw rows from database")
+            logger.info(f"Sample raw row: {rows[0] if rows else 'No rows'}")
+            
             # Convert to DataFrame
             df = pd.DataFrame(rows, columns=[
                 'ts', 'symbol', 'provider', 'timeframe',
                 'open', 'high', 'low', 'close', 'volume', 'created_at'
             ])
             
+            logger.info(f"DataFrame created with shape: {df.shape}")
+            logger.info(f"DataFrame columns: {df.columns.tolist()}")
+            logger.info(f"DataFrame data types: {df.dtypes.to_dict()}")
+            logger.info(f"Sample data (first 3 rows):")
+            logger.info(f"  {df.head(3).to_dict('records')}")
+            
             # Convert timestamp
             df['timestamp'] = pd.to_datetime(df['ts'], utc=True)
+            logger.info(f"Timestamp conversion completed")
+            logger.info(f"Timestamp range: {df['timestamp'].min()} to {df['timestamp'].max()}")
             
             logger.info(f"Retrieved {len(df)} records for {symbol} {timeframe}")
             return df
