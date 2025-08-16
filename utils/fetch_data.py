@@ -41,6 +41,23 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────
 # UTILITY FUNCTIONS
 # ─────────────────────────────
+
+def format_timestamp_for_alpaca(dt):
+    """
+    Format timestamp for Alpaca API.
+    Alpaca expects RFC3339 format without microseconds.
+    """
+    # Remove microseconds and format as RFC3339
+    dt_clean = dt.replace(microsecond=0)
+    return dt_clean.isoformat()
+
+def format_date_for_alpaca(dt):
+    """
+    Format date for Alpaca API using simple YYYY-MM-DD format.
+    This avoids timestamp parsing issues.
+    """
+    return dt.strftime("%Y-%m-%d")
+
 def prepare_nautilus_dataframe(df, symbol, provider, timeframe):
     """
     Transform raw DataFrame to NautilusTrader-compatible format.
@@ -112,6 +129,143 @@ def handle_rate_limiting(response, provider):
             return True
     return False
 
+def detect_max_available_bars(symbol, timeframe):
+    """
+    Intelligently detect how many bars are actually available from Alpaca
+    and return the count along with the actual time range.
+    """
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.enums import DataFeed
+    
+    tf_map = {
+        "1h": TimeFrame.Hour,
+        "1d": TimeFrame.Day,
+    }
+    
+    if timeframe not in tf_map:
+        raise ValueError(f"Unsupported timeframe for Alpaca: {timeframe}")
+    
+    client = StockHistoricalDataClient(
+        api_key=api_key,
+        secret_key=secret_key,
+    )
+    
+    try:
+        # Test different data feeds to see which gives more data
+        feeds_to_test = [DataFeed.IEX, DataFeed.SIP]  # Try both IEX and SIP feeds
+        
+        best_result = None
+        best_feed = None
+        
+        for feed in feeds_to_test:
+            logger.info(f"🔍 Testing {feed.value} feed for {symbol} @ {timeframe}...")
+            
+            end_time = datetime.now(timezone.utc)
+            # Go back much further to see what's actually available
+            if timeframe == "1h":
+                start_time = end_time - timedelta(days=2000)  # Try 5+ years
+            else:  # 1d
+                start_time = end_time - timedelta(days=3000)  # Try 8+ years
+            
+            req = StockBarsRequest(
+                feed=feed,
+                symbol_or_symbols=symbol,
+                timeframe=tf_map[timeframe],
+                start=format_date_for_alpaca(start_time),
+                end=format_date_for_alpaca(end_time),
+                limit=ALPACA_BAR_CAP,  # Use the maximum allowed
+            )
+            
+            try:
+                raw_data = client.get_stock_bars(req)
+                df = raw_data.df.reset_index()
+                
+                if not df.empty:
+                    actual_bars = len(df)
+                    logger.info(f"📊 {feed.value} feed: got {actual_bars} bars from {start_time.date()} to {end_time.date()}")
+                    logger.info(f"📅 Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+                    
+                    # Track the best result
+                    if best_result is None or actual_bars > best_result[0]:
+                        best_result = (actual_bars, start_time, end_time)
+                        best_feed = feed
+                        
+                        # If we got the full 10,000 bars, this feed is working well
+                        if actual_bars >= ALPACA_BAR_CAP:
+                            logger.info(f"🎯 {feed.value} feed hit Alpaca's limit of {ALPACA_BAR_CAP} bars!")
+                            break
+                else:
+                    logger.warning(f"❌ {feed.value} feed: No data available")
+                    
+            except Exception as e:
+                logger.warning(f"❌ {feed.value} feed failed: {e}")
+                continue
+        
+        if best_result is None:
+            logger.error("❌ All data feeds failed!")
+            return None
+            
+        actual_bars, start_time, end_time = best_result
+        logger.info(f"🏆 Best result: {best_feed.value} feed with {actual_bars} bars")
+        
+        # If we got the full 10,000 bars, there might be more data available
+        if actual_bars >= ALPACA_BAR_CAP:
+            logger.info(f"🎯 Hit Alpaca's limit of {ALPACA_BAR_CAP} bars. There might be more data available.")
+            logger.info(f"💡 Consider using multiple requests or the old batch method for truly maximum data.")
+            return (ALPACA_BAR_CAP, start_time, end_time)
+        
+        # If we got less than the limit, that's probably all the data available
+        logger.info(f"📈 Got {actual_bars} bars, which appears to be the maximum available for {symbol} @ {timeframe}")
+        
+        # Calculate expected vs actual
+        if timeframe == "1h":
+            expected_per_year = 8.5 * 5 * 52  # 8.5 hours × 5 days × 52 weeks
+            years_covered = (end_time - start_time).days / 365.25
+            expected_total = int(expected_per_year * years_covered)
+            logger.warning(f"⚠️  Expected ~{expected_total} bars for {years_covered:.1f} years, but only got {actual_bars}")
+            logger.warning(f"⚠️  This suggests data filtering or API limitations")
+        
+        return (actual_bars, start_time, end_time)
+            
+    except Exception as e:
+        logger.warning(f"Error detecting max bars for {symbol} @ {timeframe}: {e}")
+        # Return conservative defaults
+        if timeframe == "1h":
+            return (2000, datetime.now(timezone.utc) - timedelta(days=1000), datetime.now(timezone.utc))
+        else:
+            return (1000, datetime.now(timezone.utc) - timedelta(days=1000), datetime.now(timezone.utc))
+
+def detect_max_available_bars_with_range(symbol, timeframe):
+    """
+    Wrapper function that maintains backward compatibility.
+    """
+    return detect_max_available_bars(symbol, timeframe)
+
+def fetch_smart_max_from_alpaca(symbol, timeframe):
+    """
+    Smart version of max bars that first detects what's available
+    then fetches that amount using the reliable single request method.
+    """
+    logger.info(f"🔍 Detecting maximum available bars for {symbol} @ {timeframe}...")
+    
+    # Get both the count and the actual time range from detection
+    detection_result = detect_max_available_bars_with_range(symbol, timeframe)
+    
+    if detection_result is None:
+        logger.warning(f"No data available for {symbol} @ {timeframe}")
+        return None
+    
+    max_available, start_time, end_time = detection_result
+    
+    logger.info(f"📊 Detected {max_available} bars available for {symbol} @ {timeframe}")
+    logger.info(f"📅 Time range: {start_time.date()} to {end_time.date()}")
+    logger.info(f"🚀 Fetching {max_available} bars using single request method...")
+    
+    # Use the reliable single request method with the detected amount and time range
+    return fetch_single_alpaca_request_with_range(symbol, max_available, timeframe, start_time, end_time)
+
 # ─────────────────────────────
 # ALPACA LOGIC
 # ─────────────────────────────
@@ -123,10 +277,76 @@ def fetch_from_alpaca(symbol, bars, timeframe):
 
     if bars == "max":
         logger.info(f"→ Fetching maximum available bars from Alpaca for {symbol} @ {timeframe}...")
-        return fetch_max_from_alpaca(symbol, timeframe)
+        return fetch_smart_max_from_alpaca(symbol, timeframe)
     else:
         logger.info(f"→ Fetching {bars} bars from Alpaca for {symbol} @ {timeframe}...")
         return fetch_single_alpaca_request(symbol, bars, timeframe)
+
+def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, end_time):
+    """Fetch a single request from Alpaca using a specific time range."""
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.enums import DataFeed
+
+    tf_map = {
+        "1h": TimeFrame.Hour,
+        "1d": TimeFrame.Day,
+    }
+
+    if timeframe not in tf_map:
+        raise ValueError(f"Unsupported timeframe for Alpaca: {timeframe}")
+
+    client = StockHistoricalDataClient(
+        api_key=api_key,
+        secret_key=secret_key,
+    )
+
+    logger.info(f"Requesting data from {start_time} to {end_time} (expecting ~{bars} bars)")
+
+    req = StockBarsRequest(
+        feed=DataFeed.IEX,
+        symbol_or_symbols=symbol,
+        timeframe=tf_map[timeframe],
+        start=format_date_for_alpaca(start_time),
+        end=format_date_for_alpaca(end_time),
+        limit=min(bars * 2, ALPACA_BAR_CAP),  # Request a bit more than needed
+    )
+
+    # Get raw data with retry logic
+    for attempt in range(MAX_RETRIES):
+        try:
+            raw_data = client.get_stock_bars(req)
+            df = raw_data.df.reset_index()
+            
+            logger.info(f"Received {len(df)} bars from Alpaca (requested ~{bars})")
+            if not df.empty:
+                logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+            
+            # Take only the most recent 'bars' records
+            if len(df) > bars:
+                df = df.tail(bars).reset_index(drop=True)
+                logger.info(f"Truncated to {len(df)} most recent bars")
+            elif len(df) < bars:
+                logger.warning(f"Only got {len(df)} bars, less than requested {bars}")
+            
+            # Transform to Nautilus format
+            df = prepare_nautilus_dataframe(df, symbol, "ALPACA", timeframe)
+            
+            # Save to TimescaleDB
+            save_to_timescaledb(df, symbol, "ALPACA", timeframe)
+            return df
+            
+        except Exception as e:
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                logger.warning(f"Rate limited by Alpaca. Waiting {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
+            elif attempt < MAX_RETRIES - 1:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"Failed to fetch data from Alpaca after {MAX_RETRIES} attempts: {e}")
+                raise
 
 def fetch_single_alpaca_request(symbol, bars, timeframe):
     """Fetch a single request from Alpaca."""
@@ -169,8 +389,8 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
         feed=DataFeed.IEX,
         symbol_or_symbols=symbol,
         timeframe=tf_map[timeframe],
-        start=start_time.isoformat(),
-        end=end_time.isoformat(),
+        start=format_date_for_alpaca(start_time),
+        end=format_date_for_alpaca(end_time),
         limit=min(bars * 5, ALPACA_BAR_CAP),  # Request much more than needed to ensure we get enough
     )
 
@@ -246,8 +466,8 @@ def fetch_max_from_alpaca(symbol, timeframe):
             feed=DataFeed.IEX,
             symbol_or_symbols=symbol,
             timeframe=tf_map[timeframe],
-            start=start_time.isoformat(),
-            end=end_time.isoformat(),
+            start=format_date_for_alpaca(start_time),
+            end=format_date_for_alpaca(end_time),
             limit=ALPACA_BAR_CAP,
         )
 

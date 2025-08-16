@@ -19,8 +19,13 @@ import argparse
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.ticker_universe import TickerUniverseManager
-from utils.fetch_data import fetch_from_alpaca, fetch_from_ib
+try:
+    from utils.ticker_universe import TickerUniverseManager
+    from utils.fetch_data import fetch_from_alpaca, fetch_from_ib
+except ImportError:
+    # Fallback for when running from utils directory
+    from ticker_universe import TickerUniverseManager
+    from fetch_data import fetch_from_alpaca, fetch_from_ib
 
 # Configure logging
 logging.basicConfig(
@@ -91,10 +96,15 @@ class UniverseDataUpdater:
         try:
             logger.info(f"Fetching {self.timeframe} data for {symbol} from {self.provider}...")
             
+            # Use large fixed numbers instead of "max" to avoid complex logic issues
             if self.provider == "alpaca":
-                result = fetch_from_alpaca(symbol, "max", self.timeframe)
+                # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
+                bars = 1260 if self.timeframe == "1d" else 8760
+                result = fetch_from_alpaca(symbol, bars, self.timeframe)
             elif self.provider == "ib":
-                result = fetch_from_ib(symbol, "max", self.timeframe)
+                # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
+                bars = 1260 if self.timeframe == "1d" else 8760
+                result = fetch_from_ib(symbol, bars, self.timeframe)
             else:
                 logger.error(f"Unknown provider: {self.provider}")
                 return False

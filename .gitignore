@@ -13,6 +13,7 @@ __pycache__
 
 data
 reports
+logs
 
 *.log
 
