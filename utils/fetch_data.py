@@ -38,6 +38,21 @@ SAVE_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Filter out unwanted IBKR messages
+ib_logger = logging.getLogger('ib_insync.wrapper')
+ib_logger.setLevel(logging.WARNING)  # Only show warnings and errors, not info
+
+# Filter out position messages specifically
+class PositionFilter(logging.Filter):
+    def filter(self, record):
+        return not (record.getMessage().startswith('position:') or 
+                   'Position(...)' in record.getMessage() or
+                   'Market data farm connection is OK' in record.getMessage() or
+                   'HMDS data farm connection is OK' in record.getMessage() or
+                   'Sec-def data farm connection is OK' in record.getMessage())
+
+ib_logger.addFilter(PositionFilter())
+
 # ─────────────────────────────
 # UTILITY FUNCTIONS
 # ─────────────────────────────
@@ -559,7 +574,17 @@ def fetch_single_ib_request(symbol, bars, timeframe):
 
     contract = Stock(symbol, "SMART", "USD")
     bar_size = "1 hour" if timeframe == "1h" else "1 day"
-    dur_unit = f"{min(bars, IB_BAR_CAP)} {'H' if timeframe == '1h' else 'D'}"
+    # Ensure proper spacing for IBKR duration format
+    # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+    # For hourly data, convert to days: 1 hour = 1/24 day
+    if timeframe == '1h':
+        # Convert hours to days (1 hour = 1/24 day)
+        hours_to_days = min(bars, IB_BAR_CAP) / 24
+        dur_unit = f"{int(hours_to_days)} D"
+    else:
+        dur_unit = f"{min(bars, IB_BAR_CAP)} D"
+    
+    logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -578,7 +603,17 @@ def fetch_single_ib_request(symbol, bars, timeframe):
             # Convert to DataFrame
             df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
             df.rename(columns={"date": "timestamp"}, inplace=True)
-            df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S").dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+            
+            # Handle timezone conversion properly
+            df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
+            
+            # Check if timestamp is already timezone-aware
+            if df["timestamp"].dt.tz is None:
+                # Not timezone-aware, localize to US/Eastern then convert to UTC
+                df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+            else:
+                # Already timezone-aware, just convert to UTC
+                df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
 
             # Transform to Nautilus format
             df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
@@ -619,7 +654,17 @@ def fetch_max_from_ib(symbol, timeframe):
 
         contract = Stock(symbol, "SMART", "USD")
         bar_size = "1 hour" if timeframe == "1h" else "1 day"
-        dur_unit = f"{IB_BAR_CAP} {'H' if timeframe == '1h' else 'D'}"
+        # Ensure proper spacing for IBKR duration format
+        # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+        # For hourly data, convert to days: 1 hour = 1/24 day
+        if timeframe == '1h':
+            # Convert hours to days (1 hour = 1/24 day)
+            hours_to_days = IB_BAR_CAP / 24
+            dur_unit = f"{int(hours_to_days)} D"
+        else:
+            dur_unit = f"{IB_BAR_CAP} D"
+        
+        logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
         # Get data with retry logic
         batch_data = None
@@ -642,7 +687,17 @@ def fetch_max_from_ib(symbol, timeframe):
                 # Convert to DataFrame
                 batch_df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
                 batch_df.rename(columns={"date": "timestamp"}, inplace=True)
-                batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S").dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+                
+                # Handle timezone conversion properly
+                batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S")
+                
+                # Check if timestamp is already timezone-aware
+                if batch_df["timestamp"].dt.tz is None:
+                    # Not timezone-aware, localize to US/Eastern then convert to UTC
+                    batch_df["timestamp"] = batch_df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+                else:
+                    # Already timezone-aware, just convert to UTC
+                    batch_df["timestamp"] = batch_df["timestamp"].dt.tz_convert("UTC")
                 
                 batch_data = batch_df
                 break
