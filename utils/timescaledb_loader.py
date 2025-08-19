@@ -34,8 +34,8 @@ def load_timescaledb_data(symbol: str, timeframe: str, provider: Optional[str] =
     try:
         client = get_timescaledb_client()
         
-        # Connect to the database before querying
-        if not client.connect():
+        # Ensure connection to the database before querying
+        if not client.ensure_connection():
             raise ValueError("Failed to connect to TimescaleDB")
         
         # Convert date strings to datetime objects

@@ -31,6 +31,21 @@ class TimescaleDBClient:
     def connect(self):
         """Establish database connection"""
         try:
+            # If we already have a connection, check if it's still valid
+            if self.connection:
+                try:
+                    # Test the connection with a simple query
+                    cursor = self.connection.cursor()
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+                    cursor.close()
+                    logger.debug("Existing connection is still valid")
+                    return True
+                except Exception:
+                    logger.info("Existing connection is invalid, creating new connection")
+                    self.connection = None
+            
+            # Create new connection
             self.connection = psycopg2.connect(
                 host=self.host,
                 port=self.port,
@@ -45,14 +60,35 @@ class TimescaleDBClient:
             return True
         except Exception as e:
             logger.error(f"Failed to connect to TimescaleDB: {e}")
+            self.connection = None
             return False
     
     def disconnect(self):
         """Close database connection"""
         if self.connection:
-            self.connection.close()
-            self.connection = None
-            logger.info("Disconnected from TimescaleDB")
+            try:
+                self.connection.close()
+                logger.debug("Disconnected from TimescaleDB")
+            except Exception as e:
+                logger.warning(f"Error closing connection: {e}")
+            finally:
+                self.connection = None
+    
+    def ensure_connection(self):
+        """Ensure we have a valid connection, reconnect if necessary"""
+        if not self.connection:
+            return self.connect()
+        
+        try:
+            # Test the connection
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception:
+            logger.info("Connection lost, reconnecting...")
+            return self.connect()
     
     def __enter__(self):
         """Context manager entry"""
@@ -76,7 +112,7 @@ class TimescaleDBClient:
         Returns:
             bool: True if successful, False otherwise
         """
-        if not self.connection:
+        if not self.ensure_connection():
             logger.error("No database connection")
             return False
         
@@ -204,7 +240,7 @@ class TimescaleDBClient:
         Returns:
             DataFrame with market data or None if error
         """
-        if not self.connection:
+        if not self.ensure_connection():
             logger.error("No database connection")
             return None
         
@@ -639,6 +675,15 @@ def get_timescaledb_client() -> TimescaleDBClient:
         _timescaledb_client = TimescaleDBClient(host, port, database, user, password)
     
     return _timescaledb_client
+
+def close_timescaledb_client():
+    """Close the global TimescaleDB client instance"""
+    global _timescaledb_client
+    
+    if _timescaledb_client is not None:
+        _timescaledb_client.disconnect()
+        _timescaledb_client = None
+        logger.info("Global TimescaleDB client closed")
 
 def test_connection() -> bool:
     """Test TimescaleDB connection"""

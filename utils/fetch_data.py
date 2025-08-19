@@ -161,20 +161,16 @@ def save_to_timescaledb(df, symbol, provider, timeframe):
     """Save DataFrame to TimescaleDB."""
     try:
         client = get_timescaledb_client()
-        # Connect to the database before inserting data
-        if not client.connect():
+        # Ensure connection to the database before inserting data
+        if not client.ensure_connection():
             logger.error(f"✗ Failed to connect to TimescaleDB")
             return False
         
-
-            
         if client.insert_market_data(df, symbol, provider, timeframe):
             logger.info(f"✔ Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
-            client.disconnect()
             return True
         else:
             logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
-            client.disconnect()
             return False
     except Exception as e:
         logger.error(f"✗ Error saving to TimescaleDB: {e}")

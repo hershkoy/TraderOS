@@ -126,33 +126,30 @@ class DatabaseWorker:
             from utils.timescaledb_client import get_timescaledb_client
             
             client = get_timescaledb_client()
-            if not client.connect():
+            if not client.ensure_connection():
                 logger.error(f"✗ Failed to connect to TimescaleDB for {symbol}")
                 return False
             
-            try:
-                # Use the client's insert_market_data method
-                if hasattr(client, 'insert_market_data'):
-                    if client.insert_market_data(df, symbol, provider, timeframe):
+            # Use the client's insert_market_data method
+            if hasattr(client, 'insert_market_data'):
+                if client.insert_market_data(df, symbol, provider, timeframe):
+                    logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
+                    return True
+                else:
+                    logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+                    return False
+            else:
+                # Fallback: use the client's save_market_data method if available
+                if hasattr(client, 'save_market_data'):
+                    if client.save_market_data(df, symbol, provider, timeframe):
                         logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                         return True
                     else:
                         logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
                         return False
                 else:
-                    # Fallback: use the client's save_market_data method if available
-                    if hasattr(client, 'save_market_data'):
-                        if client.save_market_data(df, symbol, provider, timeframe):
-                            logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
-                            return True
-                        else:
-                            logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
-                            return False
-                    else:
-                        logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method")
-                        return False
-            finally:
-                client.disconnect()
+                    logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method")
+                    return False
                 
         except Exception as e:
             logger.error(f"✗ Error saving to TimescaleDB for {symbol}: {e}")
@@ -230,36 +227,32 @@ class UniverseDataUpdater:
             from utils.timescaledb_client import get_timescaledb_client
             
             client = get_timescaledb_client()
-            if not client.connect():
+            if not client.ensure_connection():
                 logger.warning(f"Could not connect to TimescaleDB to check {symbol}, will fetch data anyway")
                 return False
             
-            try:
-                # Check if data exists for this symbol, provider, and timeframe
-                query = """
-                    SELECT COUNT(*) as count 
-                    FROM market_data 
-                    WHERE symbol = %s 
-                    AND provider = %s 
-                    AND timeframe = %s
-                """
-                
-                provider_upper = self.provider.upper()
-                # Use cursor directly since the client doesn't have execute_query method
-                cursor = client.connection.cursor()
-                cursor.execute(query, (symbol, provider_upper, self.timeframe))
-                result = cursor.fetchone()
-                cursor.close()
-                
-                if result and result[0] > 0:
-                    logger.info(f"📊 {symbol} already has {result[0]} bars for {self.timeframe} from {self.provider}")
-                    return True
-                else:
-                    logger.info(f"📊 {symbol} has no existing data for {self.timeframe} from {self.provider}")
-                    return False
-                    
-            finally:
-                client.disconnect()
+            # Check if data exists for this symbol, provider, and timeframe
+            query = """
+                SELECT COUNT(*) as count 
+                FROM market_data 
+                WHERE symbol = %s 
+                AND provider = %s 
+                AND timeframe = %s
+            """
+            
+            provider_upper = self.provider.upper()
+            # Use cursor directly since the client doesn't have execute_query method
+            cursor = client.connection.cursor()
+            cursor.execute(query, (symbol, provider_upper, self.timeframe))
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if result and result[0] > 0:
+                logger.info(f"📊 {symbol} already has {result[0]} bars for {self.timeframe} from {self.provider}")
+                return True
+            else:
+                logger.info(f"📊 {symbol} has no existing data for {self.timeframe} from {self.provider}")
+                return False
                 
         except Exception as e:
             logger.warning(f"Error checking existing data for {symbol}: {e}, will fetch data anyway")
@@ -741,6 +734,14 @@ Examples:
                 logger.info("🧹 Cleaned up IBKR connection in finally block")
             except Exception as cleanup_error:
                 logger.warning(f"Error cleaning up IBKR connection in finally block: {cleanup_error}")
+        
+        # Ensure TimescaleDB client is cleaned up
+        try:
+            from utils.timescaledb_client import close_timescaledb_client
+            close_timescaledb_client()
+            logger.info("🧹 Cleaned up TimescaleDB client in finally block")
+        except Exception as cleanup_error:
+            logger.warning(f"Error cleaning up TimescaleDB client in finally block: {cleanup_error}")
 
 
 if __name__ == "__main__":

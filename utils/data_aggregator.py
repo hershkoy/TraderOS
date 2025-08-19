@@ -44,10 +44,9 @@ class DataAggregator:
         try:
             from utils.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
-            if client.connect():
+            if client.ensure_connection():
                 db_symbols = client.get_available_symbols()
                 symbols.update(db_symbols)
-                client.disconnect()
         except Exception as e:
             logger.warning(f"Could not connect to TimescaleDB: {e}")
         
@@ -69,7 +68,7 @@ class DataAggregator:
         try:
             from utils.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
-            if client.connect():
+            if client.ensure_connection():
                 # Get timeframes for this symbol from database
                 query = "SELECT DISTINCT timeframe FROM market_data WHERE symbol = %s ORDER BY timeframe"
                 cursor = client.connection.cursor()
@@ -77,7 +76,6 @@ class DataAggregator:
                 db_timeframes = [row[0] for row in cursor.fetchall()]
                 timeframes.update(db_timeframes)
                 cursor.close()
-                client.disconnect()
         except Exception as e:
             logger.warning(f"Could not get timeframes from TimescaleDB: {e}")
         
@@ -120,7 +118,7 @@ class DataAggregator:
         try:
             from utils.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
-            if client.connect():
+            if client.ensure_connection():
                 db_df = client.get_market_data(symbol, timeframe)
                 if not db_df.empty:
                     logger.info(f"Raw TimescaleDB data info:")
@@ -139,7 +137,6 @@ class DataAggregator:
                     else:
                         logger.warning(f"No timestamp column found in TimescaleDB data. Columns: {db_df.columns.tolist()}")
                         db_df = None
-                        client.disconnect()
                     
                     # Create a new DataFrame with the correct format
                     logger.info(f"Creating DataFrame with columns: open, high, low, close, volume")
@@ -174,8 +171,6 @@ class DataAggregator:
                     
                     logger.info(f"Found {len(db_df)} records in TimescaleDB for {symbol} {timeframe}")
                     logger.info(f"DB date range: {db_df.index.min()} to {db_df.index.max()}")
-                
-                client.disconnect()
         except Exception as e:
             logger.warning(f"Could not load data from TimescaleDB: {e}")
             import traceback
