@@ -18,7 +18,13 @@ A comprehensive script to fetch maximum available bars for all tickers in the ti
 
 ### 1. Basic Usage
 
+
+
 ```bash
+
+# normal usage
+python utils/update_universe_data.py --provider ib -timeframe 1h --max-bars --skip-existing
+
 # Update all tickers with Alpaca daily data
 python utils/update_universe_data.py --provider alpaca --timeframe 1d
 

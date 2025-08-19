@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import time
 import logging
+import random
+import threading
 try:
     from utils.timescaledb_client import get_timescaledb_client
 except ImportError:
@@ -22,14 +24,62 @@ load_dotenv()
 api_key    = os.getenv("ALPACA_API_KEY_ID")
 secret_key = os.getenv("ALPACA_API_SECRET")
 
-ALPACA_BAR_CAP = 10_000
-IB_BAR_CAP     = 3_000
-
-# Rate limiting and throttling settings
-ALPACA_REQUEST_DELAY = 0.1  # 100ms between requests
-IB_REQUEST_DELAY = 0.5      # 500ms between requests
+# Constants
+ALPACA_BAR_CAP = 10000  # Alpaca's limit per request
+IB_BAR_CAP = 3000       # IBKR's limit per request
 MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
+RETRY_DELAY = 5
+IB_REQUEST_DELAY = 1     # Delay between IBKR requests
+
+# Global IBKR connection manager
+_ib_connection = None
+_ib_lock = threading.Lock()
+
+def get_ib_connection():
+    """Get or create a shared IBKR connection"""
+    global _ib_connection
+    
+    with _ib_lock:
+        if _ib_connection is None or not _ib_connection.isConnected():
+            from ib_insync import IB
+            _ib_connection = IB()
+            client_id = random.randint(1000, 9999)
+            logger.info(f"Creating new IBKR connection with client ID {client_id}")
+            
+            # Try to connect with retry logic
+            max_connection_attempts = 3
+            for attempt in range(max_connection_attempts):
+                try:
+                    _ib_connection.connect("127.0.0.1", 4001, clientId=client_id)
+                    logger.info(f"IBKR connection established with client ID {client_id}")
+                    break
+                except Exception as e:
+                    if attempt < max_connection_attempts - 1:
+                        logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying...")
+                        time.sleep(2)
+                    else:
+                        logger.error(f"Failed to connect to IBKR after {max_connection_attempts} attempts: {e}")
+                        raise
+        
+        return _ib_connection
+
+def close_ib_connection():
+    """Close the global IBKR connection"""
+    global _ib_connection
+    
+    with _ib_lock:
+        if _ib_connection and _ib_connection.isConnected():
+            try:
+                _ib_connection.disconnect()
+                logger.info("Global IBKR connection closed")
+            except Exception as e:
+                logger.warning(f"Error closing IBKR connection: {e}")
+            finally:
+                _ib_connection = None
+
+def cleanup_ib_connection():
+    """Cleanup function to be called when done with IBKR operations"""
+    close_ib_connection()
 
 SAVE_DIR = Path("./data")
 SAVE_DIR.mkdir(exist_ok=True)
@@ -348,8 +398,8 @@ def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, 
             # Transform to Nautilus format
             df = prepare_nautilus_dataframe(df, symbol, "ALPACA", timeframe)
             
-            # Save to TimescaleDB
-            save_to_timescaledb(df, symbol, "ALPACA", timeframe)
+            # Note: Database saving is now handled by the caller
+            # save_to_timescaledb(df, symbol, "ALPACA", timeframe)
             return df
             
         except Exception as e:
@@ -429,8 +479,8 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
             # Transform to Nautilus format
             df = prepare_nautilus_dataframe(df, symbol, "ALPACA", timeframe)
             
-            # Save to TimescaleDB
-            save_to_timescaledb(df, symbol, "ALPACA", timeframe)
+            # Note: Database saving is now handled by the caller
+            # save_to_timescaledb(df, symbol, "ALPACA", timeframe)
             return df
             
         except Exception as e:
@@ -544,8 +594,8 @@ def fetch_max_from_alpaca(symbol, timeframe):
     # Transform to Nautilus format
     df = prepare_nautilus_dataframe(combined_df, symbol, "ALPACA", timeframe)
     
-    # Save to TimescaleDB
-    save_to_timescaledb(df, symbol, "ALPACA", timeframe)
+    # Note: Database saving is now handled by the caller
+    # save_to_timescaledb(df, symbol, "ALPACA", timeframe)
     
     return df
 
@@ -553,87 +603,87 @@ def fetch_max_from_alpaca(symbol, timeframe):
 # IBKR LOGIC
 # ─────────────────────────────
 def fetch_from_ib(symbol, bars, timeframe):
-    from ib_insync import IB, Stock
-
-    if bars == "max":
-        logger.info(f"→ Fetching maximum available bars from IBKR for {symbol} @ {timeframe}...")
-        return fetch_max_from_ib(symbol, timeframe)
-    else:
-        logger.info(f"→ Fetching {bars} bars from IBKR for {symbol} @ {timeframe}...")
-        return fetch_single_ib_request(symbol, bars, timeframe)
-
-def fetch_single_ib_request(symbol, bars, timeframe):
-    """Fetch a single request from IBKR."""
+    """Fetch historical bars from IBKR."""
     from ib_insync import IB, Stock
 
     if timeframe not in ["1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
-    ib = IB()
-    ib.connect("127.0.0.1", 4001, clientId=42)
-
-    contract = Stock(symbol, "SMART", "USD")
-    bar_size = "1 hour" if timeframe == "1h" else "1 day"
-    # Ensure proper spacing for IBKR duration format
-    # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
-    # For hourly data, convert to days: 1 hour = 1/24 day
-    if timeframe == '1h':
-        # Convert hours to days (1 hour = 1/24 day)
-        hours_to_days = min(bars, IB_BAR_CAP) / 24
-        dur_unit = f"{int(hours_to_days)} D"
-    else:
-        dur_unit = f"{min(bars, IB_BAR_CAP)} D"
+    if bars == "max":
+        return fetch_max_from_ib(symbol, timeframe)
     
-    logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
+    # For fixed number of bars
+    ib = get_ib_connection()
+    
+    try:
+        contract = Stock(symbol, "SMART", "USD")
+        bar_size = "1 hour" if timeframe == "1h" else "1 day"
+        
+        # Ensure proper spacing for IBKR duration format
+        # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+        # For hourly data, convert to days: 1 hour = 1/24 day
+        if timeframe == '1h':
+            # Convert hours to days (1 hour = 1/24 day)
+            hours_to_days = bars / 24
+            dur_unit = f"{int(hours_to_days)} D"
+        else:
+            dur_unit = f"{bars} D"
+        
+        logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            bars_data = ib.reqHistoricalData(
-                contract,
-                endDateTime="",
-                durationStr=dur_unit,
-                barSizeSetting=bar_size,
-                whatToShow="TRADES",
-                useRTH=True,
-                formatDate=1,
-            )
-            
-            ib.disconnect()
+        # Get data with retry logic
+        for attempt in range(MAX_RETRIES):
+            try:
+                bars_data = ib.reqHistoricalData(
+                    contract,
+                    endDateTime="",
+                    durationStr=dur_unit,
+                    barSizeSetting=bar_size,
+                    whatToShow="TRADES",
+                    useRTH=True,
+                    formatDate=1,
+                )
+                
+                if not bars_data:
+                    logger.warning(f"No data returned from IBKR for {symbol}")
+                    return None
+                
+                # Convert to DataFrame
+                df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
+                df.rename(columns={"date": "timestamp"}, inplace=True)
+                
+                # Handle timezone conversion properly
+                df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
+                
+                # Check if timestamp is already timezone-aware
+                if df["timestamp"].dt.tz is None:
+                    # Not timezone-aware, localize to US/Eastern then convert to UTC
+                    df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+                else:
+                    # Already timezone-aware, just convert to UTC
+                    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
 
-            # Convert to DataFrame
-            df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
-            df.rename(columns={"date": "timestamp"}, inplace=True)
-            
-            # Handle timezone conversion properly
-            df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
-            
-            # Check if timestamp is already timezone-aware
-            if df["timestamp"].dt.tz is None:
-                # Not timezone-aware, localize to US/Eastern then convert to UTC
-                df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
-            else:
-                # Already timezone-aware, just convert to UTC
-                df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
-
-            # Transform to Nautilus format
-            df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
-            
-            # Save to TimescaleDB
-            save_to_timescaledb(df, symbol, "IB", timeframe)
-            
-            return df
-            
-        except Exception as e:
-            ib.disconnect()
-            if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
-                logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
-                time.sleep(RETRY_DELAY)
-            elif attempt < MAX_RETRIES - 1:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error(f"Failed to fetch data from IBKR after {MAX_RETRIES} attempts: {e}")
-                raise
+                # Transform to Nautilus format
+                df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
+                
+                # Note: Database saving is now handled by the caller
+                # save_to_timescaledb(df, symbol, "IB", timeframe)
+                
+                return df
+                
+            except Exception as e:
+                if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
+                    logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
+                    time.sleep(RETRY_DELAY)
+                elif attempt < MAX_RETRIES - 1:
+                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                    time.sleep(RETRY_DELAY)
+                else:
+                    logger.error(f"Failed to fetch data from IBKR after {MAX_RETRIES} attempts: {e}")
+                    raise
+    finally:
+        # Don't disconnect - we want to reuse the connection
+        pass
 
 def fetch_max_from_ib(symbol, timeframe):
     """Fetch maximum available historical data from IBKR by looping through requests."""
@@ -649,72 +699,72 @@ def fetch_max_from_ib(symbol, timeframe):
     logger.info(f"Starting maximum data fetch for {symbol} @ {timeframe}")
     
     while True:
-        ib = IB()
-        ib.connect("127.0.0.1", 4001, clientId=42)
-
-        contract = Stock(symbol, "SMART", "USD")
-        bar_size = "1 hour" if timeframe == "1h" else "1 day"
-        # Ensure proper spacing for IBKR duration format
-        # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
-        # For hourly data, convert to days: 1 hour = 1/24 day
-        if timeframe == '1h':
-            # Convert hours to days (1 hour = 1/24 day)
-            hours_to_days = IB_BAR_CAP / 24
-            dur_unit = f"{int(hours_to_days)} D"
-        else:
-            dur_unit = f"{IB_BAR_CAP} D"
+        ib = get_ib_connection()
         
-        logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
+        try:
+            contract = Stock(symbol, "SMART", "USD")
+            bar_size = "1 hour" if timeframe == "1h" else "1 day"
+            # Ensure proper spacing for IBKR duration format
+            # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+            # For hourly data, convert to days: 1 hour = 1/24 day
+            if timeframe == '1h':
+                # Convert hours to days (1 hour = 1/24 day)
+                hours_to_days = IB_BAR_CAP / 24
+                dur_unit = f"{int(hours_to_days)} D"
+            else:
+                dur_unit = f"{IB_BAR_CAP} D"
+            
+            logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
-        # Get data with retry logic
-        batch_data = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                bars_data = ib.reqHistoricalData(
-                    contract,
-                    endDateTime=end_date,
-                    durationStr=dur_unit,
-                    barSizeSetting=bar_size,
-                    whatToShow="TRADES",
-                    useRTH=True,
-                    formatDate=1,
-                )
-                
-                if not bars_data:
-                    logger.info(f"No more data available. Total bars fetched: {total_bars_fetched}")
+            # Get data with retry logic
+            batch_data = None
+            for attempt in range(MAX_RETRIES):
+                try:
+                    bars_data = ib.reqHistoricalData(
+                        contract,
+                        endDateTime=end_date,
+                        durationStr=dur_unit,
+                        barSizeSetting=bar_size,
+                        whatToShow="TRADES",
+                        useRTH=True,
+                        formatDate=1,
+                    )
+                    
+                    if not bars_data:
+                        logger.info(f"No more data available. Total bars fetched: {total_bars_fetched}")
+                        break
+                    
+                    # Convert to DataFrame
+                    batch_df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
+                    batch_df.rename(columns={"date": "timestamp"}, inplace=True)
+                    
+                    # Handle timezone conversion properly
+                    batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S")
+                    
+                    # Check if timestamp is already timezone-aware
+                    if batch_df["timestamp"].dt.tz is None:
+                        # Not timezone-aware, localize to US/Eastern then convert to UTC
+                        batch_df["timestamp"] = batch_df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+                    else:
+                        # Already timezone-aware, just convert to UTC
+                        batch_df["timestamp"] = batch_df["timestamp"].dt.tz_convert("UTC")
+                    
+                    batch_data = batch_df
                     break
-                
-                # Convert to DataFrame
-                batch_df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
-                batch_df.rename(columns={"date": "timestamp"}, inplace=True)
-                
-                # Handle timezone conversion properly
-                batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S")
-                
-                # Check if timestamp is already timezone-aware
-                if batch_df["timestamp"].dt.tz is None:
-                    # Not timezone-aware, localize to US/Eastern then convert to UTC
-                    batch_df["timestamp"] = batch_df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
-                else:
-                    # Already timezone-aware, just convert to UTC
-                    batch_df["timestamp"] = batch_df["timestamp"].dt.tz_convert("UTC")
-                
-                batch_data = batch_df
-                break
-                
-            except Exception as e:
-                if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
-                    logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
-                    time.sleep(RETRY_DELAY)
-                elif attempt < MAX_RETRIES - 1:
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(RETRY_DELAY)
-                else:
-                    logger.error(f"Failed to fetch batch from IBKR after {MAX_RETRIES} attempts: {e}")
-                    ib.disconnect()
-                    raise
-        
-        ib.disconnect()
+                    
+                except Exception as e:
+                    if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
+                        logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
+                        time.sleep(RETRY_DELAY)
+                    elif attempt < MAX_RETRIES - 1:
+                        logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                        time.sleep(RETRY_DELAY)
+                    else:
+                        logger.error(f"Failed to fetch batch from IBKR after {MAX_RETRIES} attempts: {e}")
+                        raise
+        finally:
+            # Don't disconnect - we want to reuse the connection
+            pass
         
         if batch_data is None or batch_data.empty:
             break
@@ -750,10 +800,17 @@ def fetch_max_from_ib(symbol, timeframe):
     # Transform to Nautilus format
     df = prepare_nautilus_dataframe(combined_df, symbol, "IB", timeframe)
     
-    # Save to TimescaleDB
-    save_to_timescaledb(df, symbol, "IB", timeframe)
+    # Note: Database saving is now handled by the caller
+    # save_to_timescaledb(df, symbol, "IB", timeframe)
     
     return df
+
+def get_unique_client_id():
+    """Generate a unique client ID for IBKR connections"""
+    # Use timestamp + random number to ensure uniqueness
+    timestamp = int(time.time() * 1000) % 10000  # Last 4 digits of timestamp
+    random_num = random.randint(100, 999)
+    return timestamp + random_num
 
 # ─────────────────────────────
 # MAIN ENTRY
