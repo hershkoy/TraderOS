@@ -49,6 +49,45 @@ strategies:
       oversold: 30        # Oversold threshold
       overbought: 70      # Overbought threshold
       commission: 0.001   # 0.1% commission
+      
+  # VCP AVWAP Breakout Strategy
+  vcp_avwap_breakout:
+    description: "52w-high + VCP base + AVWAP trigger on 1h with daily/weekly context"
+    data_requirements:
+      base_timeframe: "hourly"
+      additional_timeframes: ["daily", "weekly"]
+      requires_resampling: true
+    parameters:
+      # Base/vcp detection (daily)
+      vcp_min_weeks: 6
+      vcp_max_weeks: 12
+      vcp_max_depth_pct: 25.0
+      vcp_min_contractions: 2
+      vcp_volume_dryup_window: 20
+      zigzag_pct: 3.0
+      
+      # 52w high (daily)
+      near_52w_threshold: 0.92
+      
+      # AVWAP
+      avwap_anchor: "base_start"
+      
+      # Volume condition (1h)
+      rvol_window_days: 20
+      bars_per_day: 7
+      breakout_rvol_min: 1.5
+      
+      # Risk & exits
+      atr_period_days: 14
+      atr_mult_stop: 1.0
+      take_profit_ext_mult: 0.25
+      weekly_ma_period: 10
+      
+      # Backtrader settings
+      size: 1
+      commission: 0.001
+      printlog: true
+      log_level: "DEBUG"
 
 # Data settings
 data:

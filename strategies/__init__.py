@@ -2,12 +2,14 @@
 from .pnf_strategy import PnF_MTF_Strategy
 from .mean_reversion_strategy import MeanReversionStrategy
 from .mean_reversion_clean import MeanReversionCleanStrategy
+from .vcp_avwap_breakout import VcpAvwapBreakoutStrategy
 
 # Strategy registry
 STRATEGIES = {
     'pnf': PnF_MTF_Strategy,
     'mean_reversion': MeanReversionStrategy,
     'mean_reversion_clean': MeanReversionCleanStrategy,
+    'vcp_avwap_breakout': VcpAvwapBreakoutStrategy,
 }
 
 def get_strategy(name):
