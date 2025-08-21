@@ -89,6 +89,21 @@ strategies:
       printlog: true
       log_level: "DEBUG"
 
+  liquidity_sweep:
+    module: strategies.liquidity_sweep
+    class: LiquiditySweep
+    parameters:
+      atr_period: 14
+      vol_lookback: 20
+      vol_mult: 1.5
+      body_frac: 0.4
+      sweep_atr_frac: 0.2
+      stop_atr_frac: 0.1
+      max_bars_after_sweep: 3
+      rr: 2.0
+      trend_sma: 50
+      use_trend: true
+
 # Data settings
 data:
   min_data_points: 30     # Minimum data points required for backtest

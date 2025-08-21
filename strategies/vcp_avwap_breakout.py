@@ -42,11 +42,15 @@ class VcpAvwapBreakoutStrategy(CustomTrackingMixin, bt.Strategy):
 
     def log(self, txt, level='INFO'):
         if self.p.printlog:
-            print(f'{self.datetime.datetime(0)} [{level}] {txt}')
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f'[{timestamp}] {self.datetime.datetime(0)} [{level}] {txt}')
 
     def debug_log(self, txt):
         if self.p.log_level.upper() == 'DEBUG' and self.p.printlog:
-            print(f'{self.datetime.datetime(0)} [DEBUG] {txt}')
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f'[{timestamp}] {self.datetime.datetime(0)} [DEBUG] {txt}')
 
     @staticmethod
     def get_data_requirements():

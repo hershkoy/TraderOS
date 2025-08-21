@@ -50,6 +50,43 @@ class DatabaseWorker:
         self.running = False
         self.stats = {"saved": 0, "failed": 0, "errors": []}
         
+        # Initialize shared database connection
+        self.db_client = None
+        self.db_cursor = None
+        self._init_database_connection()
+        
+    def _init_database_connection(self):
+        """Initialize a single database connection and cursor for reuse"""
+        try:
+            logger.info("🔍 DatabaseWorker: Initializing database connection...")
+            from utils.timescaledb_client import get_timescaledb_client
+            
+            self.db_client = get_timescaledb_client()
+            if not self.db_client.ensure_connection():
+                logger.error("DatabaseWorker: Failed to establish database connection")
+                return False
+            
+            self.db_cursor = self.db_client.connection.cursor()
+            logger.info("✅ DatabaseWorker: Database connection and cursor initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"DatabaseWorker: Failed to initialize database connection: {e}")
+            return False
+    
+    def _ensure_database_connection(self):
+        """Ensure database connection is still valid, reconnect if needed"""
+        try:
+            if self.db_client and self.db_cursor:
+                # Test the connection with a simple query
+                self.db_cursor.execute("SELECT 1")
+                return True
+            else:
+                return self._init_database_connection()
+        except Exception:
+            logger.warning("DatabaseWorker: Database connection lost, reconnecting...")
+            return self._init_database_connection()
+        
     def start(self):
         """Start the database worker thread"""
         if not self.running:
@@ -65,11 +102,26 @@ class DatabaseWorker:
             self.queue.put(None)  # Signal to stop
             self.worker_thread.join(timeout=5)
             logger.info("🛑 Database worker thread stopped")
+        
+        # Cleanup database connections
+        self._cleanup_database_connection()
+    
+    def _cleanup_database_connection(self):
+        """Cleanup database connections"""
+        try:
+            if self.db_cursor:
+                self.db_cursor.close()
+                self.db_cursor = None
+            if self.db_client and hasattr(self.db_client, 'connection'):
+                self.db_client.connection.close()
+                self.db_client = None
+            logger.info("🧹 DatabaseWorker: Database connections cleaned up")
+        except Exception as e:
+            logger.warning(f"DatabaseWorker: Error during cleanup: {e}")
     
     def save_data(self, df, symbol, provider, timeframe):
         """Queue data for saving (non-blocking)"""
         if self.running:
-            logger.info(f"🔍 Queueing data for {symbol}: {len(df)} bars, provider: {provider}, timeframe: {timeframe}")
             self.queue.put((df, symbol, provider, timeframe))
             logger.info(f"✅ Data queued for {symbol}, queue size: {self.queue.qsize()}")
         else:
@@ -80,20 +132,30 @@ class DatabaseWorker:
     def _worker_loop(self):
         """Main worker loop that processes database operations"""
         logger.info("🔄 Database worker loop started")
+        loop_count = 0
         while self.running:
+            loop_count += 1
             item = None  # Initialize item variable
             try:
-                logger.debug(f"🔍 Waiting for data in queue (size: {self.queue.qsize()})...")
+                # Only log every 10th iteration to reduce noise
+                if loop_count % 10 == 0:
+                    logger.info(f"🔄 Worker loop iteration {loop_count} - Queue size: {self.queue.qsize()}")
+                
                 item = self.queue.get(timeout=1)
+                
                 if item is None:  # Stop signal
                     logger.info("🛑 Received stop signal, exiting worker loop")
                     break
                 
                 df, symbol, provider, timeframe = item
+                logger.info(f"📊 Processing item: symbol={symbol}, provider={provider}, timeframe={timeframe}, df_shape={df.shape if df is not None else 'None'}")
+                
                 process_start_time = datetime.now()
                 logger.info(f"📥 STARTING database processing for {symbol}: {len(df)} bars at {process_start_time.strftime('%H:%M:%S')}")
                 
-                if self._save_data_sync(df, symbol, provider, timeframe):
+                save_result = self._save_data_sync(df, symbol, provider, timeframe)
+                
+                if save_result:
                     self.stats["saved"] += 1
                     process_end_time = datetime.now()
                     process_duration = process_end_time - process_start_time
@@ -108,31 +170,36 @@ class DatabaseWorker:
                 
             except queue.Empty:
                 # This is normal when the queue is empty, just continue
-                logger.debug("⏳ Queue is empty, continuing...")
                 continue
             except Exception as e:
-                logger.error(f"Database worker error: {e}")
+                logger.error(f"❌ Database worker error at iteration {loop_count}: {e}")
                 import traceback
-                logger.error(f"Database worker traceback: {traceback.format_exc()}")
+                logger.error(f"❌ Database worker traceback: {traceback.format_exc()}")
                 self.stats["errors"].append(str(e))
                 if item:  # Now item is always defined
-                    self.queue.task_done()
+                    try:
+                        self.queue.task_done()
+                    except Exception as task_done_error:
+                        logger.error(f"❌ Failed to call queue.task_done() after error: {task_done_error}")
         
-        logger.info("🔄 Database worker loop ended")
+        logger.info(f"🔄 Database worker loop ended after {loop_count} iterations")
     
     def _save_data_sync(self, df, symbol, provider, timeframe):
         """Synchronous data saving (fallback method)"""
         try:
-            from utils.timescaledb_client import get_timescaledb_client
-            
-            client = get_timescaledb_client()
-            if not client.ensure_connection():
+            # Ensure database connection is valid
+            if not self._ensure_database_connection():
                 logger.error(f"✗ Failed to connect to TimescaleDB for {symbol}")
                 return False
             
             # Use the client's insert_market_data method
-            if hasattr(client, 'insert_market_data'):
-                if client.insert_market_data(df, symbol, provider, timeframe):
+            if hasattr(self.db_client, 'insert_market_data'):
+                insert_start_time = datetime.now()
+                insert_result = self.db_client.insert_market_data(df, symbol, provider, timeframe)
+                insert_end_time = datetime.now()
+                insert_duration = insert_end_time - insert_start_time
+                
+                if insert_result:
                     logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                     return True
                 else:
@@ -140,15 +207,15 @@ class DatabaseWorker:
                     return False
             else:
                 # Fallback: use the client's save_market_data method if available
-                if hasattr(client, 'save_market_data'):
-                    if client.save_market_data(df, symbol, provider, timeframe):
+                if hasattr(self.db_client, 'save_market_data'):
+                    if self.db_client.save_market_data(df, symbol, provider, timeframe):
                         logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                         return True
                     else:
                         logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
                         return False
                 else:
-                    logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method")
+                    logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method for {symbol}")
                     return False
                 
         except Exception as e:
@@ -159,9 +226,17 @@ class DatabaseWorker:
     
     def wait_for_completion(self):
         """Wait for all queued operations to complete"""
+        logger.info(f"🔍 wait_for_completion called, worker running: {self.running}")
         if self.running:
+            logger.info(f"🔍 About to call queue.join()...")
+            logger.info(f"🔍 Current queue size: {self.queue.qsize()}")
+            
             self.queue.join()
+            
+            logger.info(f"🔍 queue.join() returned")
             logger.info(f"📊 Database operations completed: {self.stats['saved']} saved, {self.stats['failed']} failed")
+        else:
+            logger.warning("⚠️ Worker not running, cannot wait for completion")
     
     def get_stats(self):
         """Get current database worker statistics"""
@@ -183,6 +258,11 @@ class UniverseDataUpdater:
         self.ticker_manager = TickerUniverseManager()
         self.db_worker = DatabaseWorker()
         
+        # Initialize single database connection and cursor for reuse
+        self.db_client = None
+        self.db_cursor = None
+        self._init_database_connection()
+        
         # Validation
         if self.provider not in ['alpaca', 'ib']:
             raise ValueError("Provider must be 'alpaca' or 'ib'")
@@ -190,6 +270,61 @@ class UniverseDataUpdater:
             raise ValueError("Timeframe must be '1h' or '1d'")
         
         logger.info(f"Initialized UniverseDataUpdater for {self.provider} @ {self.timeframe}")
+    
+    def _init_database_connection(self):
+        """Initialize a single database connection and cursor for reuse"""
+        try:
+            logger.info("🔍 Initializing database connection...")
+            from utils.timescaledb_client import get_timescaledb_client
+            
+            self.db_client = get_timescaledb_client()
+            if not self.db_client.ensure_connection():
+                logger.error("Failed to establish database connection")
+                return False
+            
+            self.db_cursor = self.db_client.connection.cursor()
+            logger.info("✅ Database connection and cursor initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize database connection: {e}")
+            return False
+    
+    def _ensure_database_connection(self):
+        """Ensure database connection is still valid, reconnect if needed"""
+        try:
+            if self.db_client and self.db_cursor:
+                # Test the connection with a simple query
+                self.db_cursor.execute("SELECT 1")
+                return True
+            else:
+                return self._init_database_connection()
+        except Exception:
+            logger.warning("Database connection lost, reconnecting...")
+            return self._init_database_connection()
+    
+    def _cleanup_database_connection(self):
+        """Cleanup database connections"""
+        try:
+            if self.db_cursor:
+                self.db_cursor.close()
+                self.db_cursor = None
+            if self.db_client and hasattr(self.db_client, 'connection'):
+                self.db_client.connection.close()
+                self.db_client = None
+            logger.info("🧹 UniverseDataUpdater: Database connections cleaned up")
+        except Exception as e:
+            logger.warning(f"UniverseDataUpdater: Error during cleanup: {e}")
+    
+    def __del__(self):
+        """Cleanup database connections when object is destroyed"""
+        try:
+            if self.db_cursor:
+                self.db_cursor.close()
+            if self.db_client and hasattr(self.db_client, 'connection'):
+                self.db_client.connection.close()
+        except Exception:
+            pass
     
     def get_universe_tickers(self, force_refresh: bool = False) -> List[str]:
         """Get all tickers from the universe"""
@@ -224,10 +359,8 @@ class UniverseDataUpdater:
             bool: True if data exists, False otherwise
         """
         try:
-            from utils.timescaledb_client import get_timescaledb_client
-            
-            client = get_timescaledb_client()
-            if not client.ensure_connection():
+            # Ensure database connection is valid
+            if not self._ensure_database_connection():
                 logger.warning(f"Could not connect to TimescaleDB to check {symbol}, will fetch data anyway")
                 return False
             
@@ -241,11 +374,10 @@ class UniverseDataUpdater:
             """
             
             provider_upper = self.provider.upper()
-            # Use cursor directly since the client doesn't have execute_query method
-            cursor = client.connection.cursor()
-            cursor.execute(query, (symbol, provider_upper, self.timeframe))
-            result = cursor.fetchone()
-            cursor.close()
+            
+            # Use the existing cursor
+            self.db_cursor.execute(query, (symbol, provider_upper, self.timeframe))
+            result = self.db_cursor.fetchone()
             
             if result and result[0] > 0:
                 logger.info(f"📊 {symbol} already has {result[0]} bars for {self.timeframe} from {self.provider}")
@@ -300,8 +432,8 @@ class UniverseDataUpdater:
                 
                 # Queue data for immediate database saving (non-blocking)
                 queue_start_time = datetime.now()
-                logger.info(f"🔍 QUEUEING data for {symbol}: {len(result)} bars, provider: {self.provider.upper()}, timeframe: {self.timeframe}")
                 self.db_worker.save_data(result, symbol, self.provider.upper(), self.timeframe)
+                
                 queue_end_time = datetime.now()
                 queue_duration = queue_end_time - queue_start_time
                 logger.info(f"✅ Data queued for {symbol} in {queue_duration}, queue size: {self.db_worker.queue.qsize()}")
@@ -313,6 +445,8 @@ class UniverseDataUpdater:
                 
         except Exception as e:
             logger.error(f"❌ Failed to fetch data for {symbol}: {e}")
+            import traceback
+            logger.error(f"❌ Exception traceback: {traceback.format_exc()}")
             return False
     
     def update_universe_data(self, 
@@ -367,6 +501,7 @@ class UniverseDataUpdater:
         skipped_symbols = []
         
         start_time = datetime.now()
+        logger.info(f"🔍 Starting main processing loop at {start_time}")
         
         try:
             for i, symbol in enumerate(tickers):
@@ -376,29 +511,50 @@ class UniverseDataUpdater:
                 logger.info(f"🔄 PROCESSING {symbol} ({i+1}/{total_tickers}, overall index: {current_index})")
                 
                 # Check if we should skip this ticker
-                if skip_existing and self.ticker_has_data(symbol):
-                    logger.info(f"⏭️ Skipping {symbol} - already has data")
-                    skipped += 1
-                    skipped_symbols.append(symbol)
-                    continue
-                
-                # Fetch data for this ticker
-                logger.info(f"📡 Starting data fetch for {symbol}...")
-                if self.fetch_ticker_data(symbol, use_max_bars):
-                    successful += 1
-                    ticker_end_time = datetime.now()
-                    ticker_duration = ticker_end_time - ticker_start_time
-                    logger.info(f"🎯 COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
+                if skip_existing:
+                    has_data = self.ticker_has_data(symbol)
+                    
+                    if has_data:
+                        logger.info(f"⏭️ Skipping {symbol} - already has data")
+                        skipped += 1
+                        skipped_symbols.append(symbol)
+                        continue
+                    else:
+                        logger.info(f"✅ {symbol} doesn't have data, will fetch...")
                 else:
+                    logger.info(f"✅ Skip existing disabled, will fetch data for {symbol}")
+                
+                # Fetch data for this ticker with timeout protection
+                logger.info(f"📡 Starting data fetch for {symbol}...")
+                try:
+                    # Add a simple timeout check
+                    fetch_start = time.time()
+                    fetch_timeout = 300  # 5 minutes per ticker
+                    
+                    fetch_result = self.fetch_ticker_data(symbol, use_max_bars)
+                    
+                    if fetch_result:
+                        successful += 1
+                        ticker_end_time = datetime.now()
+                        ticker_duration = ticker_end_time - ticker_start_time
+                        logger.info(f"🎯 COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
+                    else:
+                        failed += 1
+                        failed_symbols.append(symbol)
+                        ticker_end_time = datetime.now()
+                        ticker_duration = ticker_end_time - ticker_start_time
+                        logger.info(f"❌ FAILED {symbol} in {ticker_duration}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Exception during processing {symbol}: {e}")
+                    import traceback
+                    logger.error(f"❌ Exception traceback: {traceback.format_exc()}")
                     failed += 1
                     failed_symbols.append(symbol)
-                    ticker_end_time = datetime.now()
-                    ticker_duration = ticker_end_time - ticker_start_time
-                    logger.info(f"❌ FAILED {symbol} in {ticker_duration}")
+                    continue
                 
                 # Delay between tickers (except for the last one)
                 if i < total_tickers - 1:
-                    logger.info(f"⏱️ Waiting {delay_between_tickers}s before next ticker...")
                     time.sleep(delay_between_tickers)
                 
                 # Batch processing with delays
@@ -414,6 +570,7 @@ class UniverseDataUpdater:
         
         end_time = datetime.now()
         duration = end_time - start_time
+        logger.info(f"🔍 Main processing loop completed in {duration}")
         
         # Wait for all database operations to complete
         logger.info("=" * 60)
@@ -426,10 +583,13 @@ class UniverseDataUpdater:
         logger.info(f"⏳ Starting to wait for database operations to complete...")
         
         db_wait_start = datetime.now()
+        logger.info(f"🔍 About to call db_worker.wait_for_completion() at {db_wait_start}")
+        
         self.db_worker.wait_for_completion()
+        
         db_wait_end = datetime.now()
         db_wait_duration = db_wait_end - db_wait_start
-        
+        logger.info(f"🔍 db_worker.wait_for_completion() returned at {db_wait_end}")
         logger.info(f"💾 Database operations completed in {db_wait_duration}")
         
         # Calculate time breakdown
@@ -446,6 +606,9 @@ class UniverseDataUpdater:
         
         # Stop database worker
         self.db_worker.stop()
+        
+        # Cleanup database connections
+        self._cleanup_database_connection()
         
         # Cleanup IBKR connection if using IB provider
         if self.provider == "ib":

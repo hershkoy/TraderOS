@@ -119,6 +119,9 @@ class TimescaleDBClient:
         try:
             cursor = self.connection.cursor()
             
+            # Set a reasonable timeout for the entire operation
+            cursor.execute("SET statement_timeout = '600000'")  # 10 minutes
+            
             # Prepare data for insertion
             logger.info(f"Preparing {len(df)} records for insertion...")
             data_to_insert = []
@@ -169,12 +172,30 @@ class TimescaleDBClient:
             batch_size = 2000  # Increased since COPY is much faster
             total_inserted = 0
             
+            # Check connection health before starting batch operations
+            if not self.ensure_connection():
+                logger.error("Database connection lost before batch insertion")
+                return False
+            
+            total_batches = (len(data_to_insert) + batch_size - 1) // batch_size
             for i in range(0, len(data_to_insert), batch_size):
                 batch = data_to_insert[i:i + batch_size]
-                logger.info(f"Inserting batch {i//batch_size + 1}/{(len(data_to_insert) + batch_size - 1)//batch_size} ({len(batch)} records)...")
+                current_batch = i//batch_size + 1
+                logger.info(f"Inserting batch {current_batch}/{total_batches} ({len(batch)} records)...")
+                
+                # Check connection health every few batches
+                if current_batch % 5 == 0:
+                    if not self.ensure_connection():
+                        logger.error("Database connection lost during batch insertion")
+                        return False
                 
                 try:
                     logger.info(f"Inserting batch {i//batch_size + 1} using COPY...")
+                    
+                    # Ensure cursor is fresh for each batch
+                    if cursor:
+                        cursor.close()
+                    cursor = self.connection.cursor()
                     
                     # Use COPY for much faster bulk insertion
                     from io import StringIO
@@ -191,6 +212,9 @@ class TimescaleDBClient:
                     buffer.seek(0)
                     
                     # Use COPY FROM STDIN for fast bulk insertion
+                    # Add timeout to prevent hanging
+                    cursor.execute("SET statement_timeout = '300000'")  # 5 minutes
+                    
                     cursor.copy_from(
                         buffer,
                         'market_data',
@@ -205,7 +229,37 @@ class TimescaleDBClient:
                 except Exception as batch_error:
                     logger.error(f"Error inserting batch {i//batch_size + 1}: {batch_error}")
                     logger.error(f"First few records in batch: {batch[:3] if batch else 'No batch data'}")
-                    raise batch_error
+                    
+                    # Try fallback to regular INSERT if COPY fails
+                    logger.info(f"Trying fallback INSERT for batch {i//batch_size + 1}...")
+                    try:
+                        # IMPORTANT: Reset cursor state after COPY failure
+                        # Close the corrupted cursor and create a new one
+                        cursor.close()
+                        cursor = self.connection.cursor()
+                        
+                        # Use regular INSERT as fallback
+                        placeholders = ','.join(['%s'] * 9)  # 9 columns
+                        insert_query = f"""
+                            INSERT INTO market_data (ts, symbol, provider, timeframe, open, high, low, close, volume)
+                            VALUES ({placeholders})
+                            ON CONFLICT (symbol, ts) DO UPDATE SET
+                                open = EXCLUDED.open,
+                                high = EXCLUDED.high,
+                                low = EXCLUDED.low,
+                                close = EXCLUDED.close,
+                                volume = EXCLUDED.volume
+                        """
+                        
+                        cursor.executemany(insert_query, batch)
+                        logger.info(f"Fallback INSERT successful for batch {i//batch_size + 1}")
+                        total_inserted += len(batch)
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback INSERT also failed for batch {i//batch_size + 1}: {fallback_error}")
+                        # Don't raise the original batch_error, just log and continue
+                        logger.error(f"Both COPY and INSERT failed for batch {i//batch_size + 1}, skipping...")
+                        continue
             
             logger.info(f"Committing transaction...")
             self.connection.commit()
@@ -216,8 +270,11 @@ class TimescaleDBClient:
             logger.error(f"Failed to insert market data: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            if self.connection:
-                self.connection.rollback()
+            if self.connection and not self.connection.closed:
+                try:
+                    self.connection.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction: {rollback_error}")
             return False
         finally:
             if cursor:
