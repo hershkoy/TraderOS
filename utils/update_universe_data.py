@@ -53,7 +53,7 @@ class DatabaseWorker:
         # Initialize shared database connection
         self.db_client = None
         self.db_cursor = None
-        self._init_database_connection()
+        # Don't initialize connection here - do it in the worker thread
         
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
@@ -86,15 +86,15 @@ class DatabaseWorker:
                 else:
                     return self._init_database_connection()
             except Exception as e:
-                logger.warning(f"Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"DatabaseWorker: Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    logger.info("Reconnecting to database...")
+                    logger.info("DatabaseWorker: Reconnecting to database...")
                     self._cleanup_database_connection()
                     time.sleep(1)  # Wait before retry
                     if not self._init_database_connection():
                         continue
                 else:
-                    logger.error("Failed to reconnect to database after all retries")
+                    logger.error("DatabaseWorker: Failed to reconnect to database after all retries")
                     return False
         return False
         
@@ -121,10 +121,17 @@ class DatabaseWorker:
         """Cleanup database connections"""
         try:
             if self.db_cursor:
-                self.db_cursor.close()
+                try:
+                    self.db_cursor.close()
+                except Exception:
+                    pass
                 self.db_cursor = None
             if self.db_client and hasattr(self.db_client, 'connection'):
-                self.db_client.connection.close()
+                try:
+                    if self.db_client.connection and not self.db_client.connection.closed:
+                        self.db_client.connection.close()
+                except Exception:
+                    pass
                 self.db_client = None
             logger.info("🧹 DatabaseWorker: Database connections cleaned up")
         except Exception as e:
@@ -149,6 +156,12 @@ class DatabaseWorker:
     def _worker_loop(self):
         """Main worker loop that processes database operations"""
         logger.info("🔄 Database worker loop started")
+        
+        # Initialize database connection in this thread
+        if not self._init_database_connection():
+            logger.error("❌ Failed to initialize database connection in worker thread")
+            return
+        
         loop_count = 0
         last_activity_time = time.time()
         
@@ -211,6 +224,8 @@ class DatabaseWorker:
                     except Exception as task_done_error:
                         logger.error(f"❌ Failed to call queue.task_done() after error: {task_done_error}")
         
+        # Cleanup database connection when worker loop ends
+        self._cleanup_database_connection()
         logger.info(f"🔄 Database worker loop ended after {loop_count} iterations")
     
     def _save_data_sync(self, df, symbol, provider, timeframe):
@@ -230,9 +245,28 @@ class DatabaseWorker:
                 # Use the client's insert_market_data method
                 if hasattr(self.db_client, 'insert_market_data'):
                     insert_start_time = datetime.now()
-                    insert_result = self.db_client.insert_market_data(df, symbol, provider, timeframe)
+                    
+                    # Create a fresh connection for this operation to avoid conflicts
+                    from utils.timescaledb_client import get_timescaledb_client
+                    fresh_client = get_timescaledb_client()
+                    if not fresh_client.ensure_connection():
+                        logger.error(f"✗ Failed to create fresh connection for {symbol}")
+                        if attempt < max_retries - 1:
+                            logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                            time.sleep(2)  # Wait before retry
+                            continue
+                        return False
+                    
+                    insert_result = fresh_client.insert_market_data(df, symbol, provider, timeframe)
                     insert_end_time = datetime.now()
                     insert_duration = insert_end_time - insert_start_time
+                    
+                    # Clean up the fresh connection
+                    try:
+                        if fresh_client.connection:
+                            fresh_client.connection.close()
+                    except Exception:
+                        pass
                     
                     if insert_result:
                         logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
@@ -377,10 +411,17 @@ class UniverseDataUpdater:
         """Cleanup database connections"""
         try:
             if self.db_cursor:
-                self.db_cursor.close()
+                try:
+                    self.db_cursor.close()
+                except Exception:
+                    pass
                 self.db_cursor = None
             if self.db_client and hasattr(self.db_client, 'connection'):
-                self.db_client.connection.close()
+                try:
+                    if self.db_client.connection and not self.db_client.connection.closed:
+                        self.db_client.connection.close()
+                except Exception:
+                    pass
                 self.db_client = None
             logger.info("🧹 UniverseDataUpdater: Database connections cleaned up")
         except Exception as e:
@@ -388,13 +429,7 @@ class UniverseDataUpdater:
     
     def __del__(self):
         """Cleanup database connections when object is destroyed"""
-        try:
-            if self.db_cursor:
-                self.db_cursor.close()
-            if self.db_client and hasattr(self.db_client, 'connection'):
-                self.db_client.connection.close()
-        except Exception:
-            pass
+        self._cleanup_database_connection()
     
     def get_universe_tickers(self, force_refresh: bool = False) -> List[str]:
         """Get all tickers from the universe"""
