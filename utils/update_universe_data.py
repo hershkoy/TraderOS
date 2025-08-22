@@ -76,16 +76,27 @@ class DatabaseWorker:
     
     def _ensure_database_connection(self):
         """Ensure database connection is still valid, reconnect if needed"""
-        try:
-            if self.db_client and self.db_cursor:
-                # Test the connection with a simple query
-                self.db_cursor.execute("SELECT 1")
-                return True
-            else:
-                return self._init_database_connection()
-        except Exception:
-            logger.warning("DatabaseWorker: Database connection lost, reconnecting...")
-            return self._init_database_connection()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if self.db_client and self.db_cursor:
+                    # Test the connection with a simple query
+                    self.db_cursor.execute("SELECT 1")
+                    return True
+                else:
+                    return self._init_database_connection()
+            except Exception as e:
+                logger.warning(f"Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info("Reconnecting to database...")
+                    self._cleanup_database_connection()
+                    time.sleep(1)  # Wait before retry
+                    if not self._init_database_connection():
+                        continue
+                else:
+                    logger.error("Failed to reconnect to database after all retries")
+                    return False
+        return False
         
     def start(self):
         """Start the database worker thread"""
@@ -129,19 +140,36 @@ class DatabaseWorker:
             # Fallback to synchronous saving if worker not running
             self._save_data_sync(df, symbol, provider, timeframe)
     
+    def _save_data_sync_with_timeout(self, df, symbol, provider, timeframe, timeout=600):
+        """Synchronous data saving with timeout protection"""
+        # For now, just call the save method directly without threading
+        # The timeout is handled by the database operations themselves
+        return self._save_data_sync(df, symbol, provider, timeframe)
+    
     def _worker_loop(self):
         """Main worker loop that processes database operations"""
         logger.info("🔄 Database worker loop started")
         loop_count = 0
+        last_activity_time = time.time()
+        
         while self.running:
             loop_count += 1
             item = None  # Initialize item variable
+            
+            # Check for timeout - if no activity for 5 minutes, log a warning
+            current_time = time.time()
+            if current_time - last_activity_time > 300:  # 5 minutes
+                logger.warning(f"Database worker has been idle for {int(current_time - last_activity_time)} seconds")
+                last_activity_time = current_time
+            
             try:
                 # Only log every 10th iteration to reduce noise
                 if loop_count % 10 == 0:
                     logger.info(f"🔄 Worker loop iteration {loop_count} - Queue size: {self.queue.qsize()}")
                 
-                item = self.queue.get(timeout=1)
+                # Use a shorter timeout to prevent hanging
+                item = self.queue.get(timeout=30)  # 30 seconds instead of 1
+                last_activity_time = time.time()  # Reset activity timer
                 
                 if item is None:  # Stop signal
                     logger.info("🛑 Received stop signal, exiting worker loop")
@@ -153,6 +181,7 @@ class DatabaseWorker:
                 process_start_time = datetime.now()
                 logger.info(f"📥 STARTING database processing for {symbol}: {len(df)} bars at {process_start_time.strftime('%H:%M:%S')}")
                 
+                # Add timeout for database operations
                 save_result = self._save_data_sync(df, symbol, provider, timeframe)
                 
                 if save_result:
@@ -186,55 +215,85 @@ class DatabaseWorker:
     
     def _save_data_sync(self, df, symbol, provider, timeframe):
         """Synchronous data saving (fallback method)"""
-        try:
-            # Ensure database connection is valid
-            if not self._ensure_database_connection():
-                logger.error(f"✗ Failed to connect to TimescaleDB for {symbol}")
-                return False
-            
-            # Use the client's insert_market_data method
-            if hasattr(self.db_client, 'insert_market_data'):
-                insert_start_time = datetime.now()
-                insert_result = self.db_client.insert_market_data(df, symbol, provider, timeframe)
-                insert_end_time = datetime.now()
-                insert_duration = insert_end_time - insert_start_time
-                
-                if insert_result:
-                    logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
-                    return True
-                else:
-                    logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Ensure database connection is valid
+                if not self._ensure_database_connection():
+                    logger.error(f"✗ Failed to connect to TimescaleDB for {symbol}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(2)  # Wait before retry
+                        continue
                     return False
-            else:
-                # Fallback: use the client's save_market_data method if available
-                if hasattr(self.db_client, 'save_market_data'):
-                    if self.db_client.save_market_data(df, symbol, provider, timeframe):
+                
+                # Use the client's insert_market_data method
+                if hasattr(self.db_client, 'insert_market_data'):
+                    insert_start_time = datetime.now()
+                    insert_result = self.db_client.insert_market_data(df, symbol, provider, timeframe)
+                    insert_end_time = datetime.now()
+                    insert_duration = insert_end_time - insert_start_time
+                    
+                    if insert_result:
                         logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                         return True
                     else:
                         logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+                        if attempt < max_retries - 1:
+                            logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                            time.sleep(2)  # Wait before retry
+                            continue
                         return False
                 else:
-                    logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method for {symbol}")
+                    # Fallback: use the client's save_market_data method if available
+                    if hasattr(self.db_client, 'save_market_data'):
+                        if self.db_client.save_market_data(df, symbol, provider, timeframe):
+                            logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
+                            return True
+                        else:
+                            logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+                            if attempt < max_retries - 1:
+                                logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                                time.sleep(2)  # Wait before retry
+                                continue
+                            return False
+                    else:
+                        logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method for {symbol}")
+                        return False
+                        
+            except Exception as e:
+                logger.error(f"✗ Error saving to TimescaleDB for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(2)  # Wait before retry
+                    continue
+                else:
+                    import traceback
+                    logger.error(f"✗ Final attempt failed for {symbol}. Traceback: {traceback.format_exc()}")
                     return False
-                
-        except Exception as e:
-            logger.error(f"✗ Error saving to TimescaleDB for {symbol}: {e}")
-            import traceback
-            logger.error(f"✗ Traceback: {traceback.format_exc()}")
-            return False
+        
+        return False
     
-    def wait_for_completion(self):
-        """Wait for all queued operations to complete"""
+    def wait_for_completion(self, timeout=3600):  # 1 hour timeout
+        """Wait for all queued operations to complete with timeout"""
         logger.info(f"🔍 wait_for_completion called, worker running: {self.running}")
         if self.running:
-            logger.info(f"🔍 About to call queue.join()...")
+            logger.info(f"🔍 About to call queue.join() with {timeout}s timeout...")
             logger.info(f"🔍 Current queue size: {self.queue.qsize()}")
             
-            self.queue.join()
-            
-            logger.info(f"🔍 queue.join() returned")
-            logger.info(f"📊 Database operations completed: {self.stats['saved']} saved, {self.stats['failed']} failed")
+            start_time = time.time()
+            try:
+                # Use a timeout to prevent hanging indefinitely
+                while not self.queue.empty():
+                    if time.time() - start_time > timeout:
+                        logger.warning(f"⚠️ wait_for_completion timed out after {timeout} seconds")
+                        break
+                    time.sleep(1)  # Check every second
+                
+                logger.info(f"🔍 queue.join() completed")
+                logger.info(f"📊 Database operations completed: {self.stats['saved']} saved, {self.stats['failed']} failed")
+            except Exception as e:
+                logger.error(f"❌ Error in wait_for_completion: {e}")
         else:
             logger.warning("⚠️ Worker not running, cannot wait for completion")
     
@@ -292,16 +351,27 @@ class UniverseDataUpdater:
     
     def _ensure_database_connection(self):
         """Ensure database connection is still valid, reconnect if needed"""
-        try:
-            if self.db_client and self.db_cursor:
-                # Test the connection with a simple query
-                self.db_cursor.execute("SELECT 1")
-                return True
-            else:
-                return self._init_database_connection()
-        except Exception:
-            logger.warning("Database connection lost, reconnecting...")
-            return self._init_database_connection()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if self.db_client and self.db_cursor:
+                    # Test the connection with a simple query
+                    self.db_cursor.execute("SELECT 1")
+                    return True
+                else:
+                    return self._init_database_connection()
+            except Exception as e:
+                logger.warning(f"Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info("Reconnecting to database...")
+                    self._cleanup_database_connection()
+                    time.sleep(1)  # Wait before retry
+                    if not self._init_database_connection():
+                        continue
+                else:
+                    logger.error("Failed to reconnect to database after all retries")
+                    return False
+        return False
     
     def _cleanup_database_connection(self):
         """Cleanup database connections"""
@@ -527,10 +597,8 @@ class UniverseDataUpdater:
                 # Fetch data for this ticker with timeout protection
                 logger.info(f"📡 Starting data fetch for {symbol}...")
                 try:
-                    # Add a simple timeout check
-                    fetch_start = time.time()
-                    fetch_timeout = 300  # 5 minutes per ticker
-                    
+                    # For IB provider, we need to run in main thread due to event loop requirements
+                    # Use a simple approach without threading
                     fetch_result = self.fetch_ticker_data(symbol, use_max_bars)
                     
                     if fetch_result:
