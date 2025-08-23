@@ -621,7 +621,11 @@ def fetch_from_ib(symbol, bars, timeframe):
         if timeframe == '1h':
             # Convert hours to days (1 hour = 1/24 day)
             hours_to_days = bars / 24
-            dur_unit = f"{int(hours_to_days)} D"
+            if hours_to_days < 1:
+                # For less than 1 day, use hours instead
+                dur_unit = f"{bars} H"
+            else:
+                dur_unit = f"{int(hours_to_days)} D"
         else:
             dur_unit = f"{bars} D"
         

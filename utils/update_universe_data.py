@@ -76,20 +76,20 @@ class DatabaseWorker:
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
         try:
-            logger.info("DatabaseWorker: Initializing database connection...")
+            logger.info("[INIT] Initializing database connection...")
             from utils.timescaledb_client import get_timescaledb_client
             
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
-                logger.error("DatabaseWorker: Failed to establish database connection")
+                logger.error("[ERROR] Failed to connect to database")
                 return False
             
             self.db_cursor = self.db_client.connection.cursor()
-            logger.info("✅ DatabaseWorker: Database connection and cursor initialized successfully")
+            logger.info("[SUCCESS] Database connection and cursor initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"DatabaseWorker: Failed to initialize database connection: {e}")
+            logger.error(f"[ERROR] Failed to initialize database connection: {e}")
             return False
     
     def _ensure_database_connection(self):
@@ -104,7 +104,7 @@ class DatabaseWorker:
                 else:
                     return self._init_database_connection()
             except Exception as e:
-                logger.warning(f"DatabaseWorker: Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Database connection test failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     logger.info("DatabaseWorker: Reconnecting to database...")
                     self._cleanup_database_connection()
@@ -310,28 +310,28 @@ class DatabaseWorker:
         
         return False
     
-    def wait_for_completion(self, timeout=3600):  # 1 hour timeout
+    def wait_for_completion(self, timeout=3600):
         """Wait for all queued operations to complete with timeout"""
-        logger.info(f"🔍 wait_for_completion called, worker running: {self.running}")
+        logger.info(f"[WAIT] wait_for_completion called, worker running: {self.running}")
         if self.running:
-            logger.info(f"🔍 About to call queue.join() with {timeout}s timeout...")
-            logger.info(f"🔍 Current queue size: {self.queue.qsize()}")
+            logger.info(f"[WAIT] About to call queue.join() with {timeout}s timeout...")
+            logger.info(f"[WAIT] Current queue size: {self.queue.qsize()}")
             
             start_time = time.time()
             try:
                 # Use a timeout to prevent hanging indefinitely
                 while not self.queue.empty():
                     if time.time() - start_time > timeout:
-                        logger.warning(f"⚠️ wait_for_completion timed out after {timeout} seconds")
+                        logger.warning(f"[WARN] wait_for_completion timed out after {timeout} seconds")
                         break
                     time.sleep(1)  # Check every second
                 
-                logger.info(f"🔍 queue.join() completed")
-                logger.info(f"📊 Database operations completed: {self.stats['saved']} saved, {self.stats['failed']} failed")
+                logger.info(f"[COMPLETE] queue.join() completed")
+                logger.info(f"[STATS] Database operations completed: {self.stats['saved']} saved, {self.stats['failed']} failed")
             except Exception as e:
-                logger.error(f"❌ Error in wait_for_completion: {e}")
+                logger.error(f"[ERROR] Error in wait_for_completion: {e}")
         else:
-            logger.warning("⚠️ Worker not running, cannot wait for completion")
+            logger.warning("[WARN] Worker not running, cannot wait for completion")
     
     def get_stats(self):
         """Get current database worker statistics"""
@@ -358,6 +358,9 @@ class UniverseDataUpdater:
         self.db_cursor = None
         self._init_database_connection()
         
+        # Create symbol mapping table if it doesn't exist
+        self._create_symbol_mapping_table()
+        
         # Validation
         if self.provider not in ['alpaca', 'ib']:
             raise ValueError("Provider must be 'alpaca' or 'ib'")
@@ -369,20 +372,20 @@ class UniverseDataUpdater:
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
         try:
-            logger.info("🔍 Initializing database connection...")
+            logger.info("[INIT] Initializing database connection...")
             from utils.timescaledb_client import get_timescaledb_client
             
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
-                logger.error("Failed to establish database connection")
+                logger.error("[ERROR] Failed to connect to database")
                 return False
             
             self.db_cursor = self.db_client.connection.cursor()
-            logger.info("✅ Database connection and cursor initialized successfully")
+            logger.info("[SUCCESS] Database connection and cursor initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize database connection: {e}")
+            logger.error(f"[ERROR] Failed to initialize database connection: {e}")
             return False
     
     def _ensure_database_connection(self):
@@ -513,6 +516,31 @@ class UniverseDataUpdater:
             logger.warning(f"Error checking existing data for {symbol}: {e}, will fetch data anyway")
             return False
     
+    def _convert_symbol_for_ib(self, symbol: str) -> str:
+        """Intelligent symbol conversion for IB compatibility with caching and discovery"""
+        if self.provider != "ib":
+            return symbol
+        
+        # Step 1: Check if we have a cached mapping
+        cached_symbol = self._get_cached_symbol_mapping(symbol)
+        if cached_symbol:
+            return cached_symbol
+        
+        # Step 2: Try the original symbol first (it might work)
+        if self._test_ib_symbol(symbol):
+            logger.info(f"[CONVERT] Original symbol {symbol} works with IB")
+            self._cache_symbol_mapping(symbol, symbol, True)
+            return symbol
+        
+        # Step 3: Discover the correct symbol by testing variations
+        discovered_symbol = self._discover_ib_symbol(symbol)
+        if discovered_symbol:
+            return discovered_symbol
+        
+        # Step 4: If no valid symbol found, return original (will fail gracefully)
+        logger.warning(f"[CONVERT] No valid IB symbol found for {symbol}, using original")
+        return symbol
+    
     def fetch_ticker_data(self, symbol: str, use_max_bars: bool = False) -> bool:
         """
         Fetch data for a single ticker
@@ -542,7 +570,11 @@ class UniverseDataUpdater:
             if self.provider == "alpaca":
                 result = fetch_from_alpaca(symbol, bars, self.timeframe)
             elif self.provider == "ib":
-                result = fetch_from_ib(symbol, bars, self.timeframe)
+                # Convert symbol format for IB compatibility
+                ib_symbol = self._convert_symbol_for_ib(symbol)
+                if ib_symbol != symbol:
+                    logger.info(f"[CONVERT] Converting symbol {symbol} -> {ib_symbol} for IB compatibility")
+                result = fetch_from_ib(ib_symbol, bars, self.timeframe)
             else:
                 logger.error(f"Unknown provider: {self.provider}")
                 return False
@@ -823,6 +855,322 @@ class UniverseDataUpdater:
         logger.info(f"Resuming update from index {start_index}")
         return self.update_universe_data(start_from_index=start_index, **kwargs)
 
+    def _create_symbol_mapping_table(self):
+        """Create the symbol mapping table if it doesn't exist"""
+        try:
+            if not self._ensure_database_connection():
+                logger.error("[ERROR] Cannot create symbol mapping table - no database connection")
+                return False
+            
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS symbol_mappings (
+                id SERIAL PRIMARY KEY,
+                original_symbol VARCHAR(20) NOT NULL,
+                ib_symbol VARCHAR(20) NOT NULL,
+                provider VARCHAR(10) DEFAULT 'IB',
+                is_valid BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                last_used TIMESTAMPTZ DEFAULT NOW(),
+                use_count INTEGER DEFAULT 1,
+                UNIQUE(original_symbol, provider)
+            );
+            
+            -- Create index for faster lookups
+            CREATE INDEX IF NOT EXISTS idx_symbol_mappings_original_symbol 
+            ON symbol_mappings(original_symbol, provider);
+            
+            CREATE INDEX IF NOT EXISTS idx_symbol_mappings_ib_symbol 
+            ON symbol_mappings(ib_symbol, provider);
+            """
+            
+            self.db_cursor.execute(create_table_sql)
+            logger.info("[SUCCESS] Symbol mapping table created/verified successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to create symbol mapping table: {e}")
+            return False
+
+    def _get_cached_symbol_mapping(self, original_symbol: str) -> Optional[str]:
+        """Get cached IB symbol mapping from database"""
+        try:
+            if not self._ensure_database_connection():
+                return None
+            
+            query = """
+                SELECT ib_symbol, is_valid 
+                FROM symbol_mappings 
+                WHERE original_symbol = %s AND provider = 'IB'
+                ORDER BY last_used DESC 
+                LIMIT 1
+            """
+            
+            self.db_cursor.execute(query, (original_symbol,))
+            result = self.db_cursor.fetchone()
+            
+            if result:
+                ib_symbol, is_valid = result
+                if is_valid:
+                    # Update usage statistics
+                    self._update_symbol_mapping_usage(original_symbol)
+                    logger.info(f"[CACHE] Found cached mapping: {original_symbol} -> {ib_symbol}")
+                    return ib_symbol
+                else:
+                    logger.info(f"[CACHE] Found invalid cached mapping: {original_symbol} -> {ib_symbol}")
+                    return None
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"[WARN] Error looking up cached symbol mapping for {original_symbol}: {e}")
+            return None
+    
+    def _update_symbol_mapping_usage(self, original_symbol: str):
+        """Update usage statistics for a symbol mapping"""
+        try:
+            query = """
+                UPDATE symbol_mappings 
+                SET last_used = NOW(), use_count = use_count + 1
+                WHERE original_symbol = %s AND provider = 'IB'
+            """
+            self.db_cursor.execute(query, (original_symbol,))
+            
+        except Exception as e:
+            logger.warning(f"[WARN] Error updating symbol mapping usage for {original_symbol}: {e}")
+    
+    def _cache_symbol_mapping(self, original_symbol: str, ib_symbol: str, is_valid: bool = True):
+        """Cache a symbol mapping in the database"""
+        try:
+            if not self._ensure_database_connection():
+                return False
+            
+            # Use UPSERT to handle duplicates
+            query = """
+                INSERT INTO symbol_mappings (original_symbol, ib_symbol, provider, is_valid, created_at, last_used, use_count)
+                VALUES (%s, %s, 'IB', %s, NOW(), NOW(), 1)
+                ON CONFLICT (original_symbol, provider) 
+                DO UPDATE SET 
+                    ib_symbol = EXCLUDED.ib_symbol,
+                    is_valid = EXCLUDED.is_valid,
+                    last_used = NOW(),
+                    use_count = symbol_mappings.use_count + 1
+            """
+            
+            self.db_cursor.execute(query, (original_symbol, ib_symbol, is_valid))
+            logger.info(f"[CACHE] Cached symbol mapping: {original_symbol} -> {ib_symbol} (valid: {is_valid})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Error caching symbol mapping for {original_symbol}: {e}")
+            return False
+    
+    def _discover_ib_symbol(self, original_symbol: str) -> Optional[str]:
+        """Discover the correct IB symbol by testing variations"""
+        if self.provider != "ib":
+            return original_symbol
+        
+        logger.info(f"[DISCOVER] Discovering IB symbol for: {original_symbol}")
+        
+        # Generate symbol variations to test
+        variations = self._generate_symbol_variations(original_symbol)
+        
+        # Test each variation with IB
+        for variation in variations:
+            if self._test_ib_symbol(variation):
+                logger.info(f"[DISCOVER] Found valid IB symbol: {original_symbol} -> {variation}")
+                # Cache the successful mapping
+                self._cache_symbol_mapping(original_symbol, variation, True)
+                return variation
+        
+        # If no valid symbol found, cache the original as invalid
+        logger.warning(f"[DISCOVER] No valid IB symbol found for: {original_symbol}")
+        self._cache_symbol_mapping(original_symbol, original_symbol, False)
+        return None
+    
+    def _generate_symbol_variations(self, symbol: str) -> List[str]:
+        """Generate possible IB symbol variations"""
+        variations = [
+            symbol,                    # Original: BF.B
+            symbol.replace('.', ' '), # BF B (space - most common for Class B)
+            symbol.replace('.', '-'), # BF-B
+            symbol.replace('.', ''),  # BFB
+            symbol.replace('.', '/'), # BF/B
+            symbol.replace('.', '_'), # BF_B
+        ]
+        
+        # Add Class B specific variations
+        if '.' in symbol and symbol.endswith('.B'):
+            base = symbol.split('.')[0]
+            variations.extend([
+                f"{base} B",           # BF B
+                f"{base}-B",           # BF-B
+                f"{base}B",            # BFB
+                f"{base}/B",           # BF/B
+            ])
+        
+        # Remove duplicates and None values
+        variations = list(dict.fromkeys([v for v in variations if v]))
+        logger.info(f"[DISCOVER] Testing variations for {symbol}: {variations}")
+        return variations
+    
+    def _test_ib_symbol(self, symbol: str) -> bool:
+        """Test if a symbol exists and has data in IB"""
+        try:
+            from utils.fetch_data import get_ib_connection
+            from ib_insync import Stock
+            
+            # Get IB connection
+            ib = get_ib_connection()
+            if not ib.isConnected():
+                logger.warning(f"[TEST] Cannot test {symbol} - IB not connected")
+                return False
+            
+            # Create contract
+            contract = Stock(symbol=symbol, exchange='SMART', currency='USD')
+            
+            # Try to qualify the contract
+            try:
+                ib.qualifyContracts(contract)
+                logger.info(f"[TEST] Symbol {symbol} is recognized by IB")
+                
+                # Try to get a small amount of historical data to confirm it's tradeable
+                try:
+                    bars = ib.reqHistoricalData(
+                        contract,
+                        endDateTime='',
+                        durationStr='1 D',
+                        barSizeSetting='1 hour',
+                        whatToShow='TRADES',
+                        useRTH=True,
+                        formatDate=1
+                    )
+                    
+                    if bars and len(bars) > 0:
+                        logger.info(f"[TEST] Symbol {symbol} is tradeable with {len(bars)} bars")
+                        return True
+                    else:
+                        logger.info(f"[TEST] Symbol {symbol} exists but has no data")
+                        return False
+                        
+                except Exception as data_error:
+                    logger.info(f"[TEST] Symbol {symbol} exists but data fetch failed: {data_error}")
+                    return False
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                if "no security definition" in error_str:
+                    logger.info(f"[TEST] Symbol {symbol} - no security definition")
+                elif "contract not found" in error_str:
+                    logger.info(f"[TEST] Symbol {symbol} - contract not found")
+                else:
+                    logger.info(f"[TEST] Symbol {symbol} - error: {e}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"[TEST] Error testing symbol {symbol}: {e}")
+            return False
+
+    def get_symbol_mapping_stats(self) -> Dict[str, Any]:
+        """Get statistics about symbol mappings"""
+        try:
+            if not self._ensure_database_connection():
+                return {"error": "No database connection"}
+            
+            # Get total mappings
+            self.db_cursor.execute("SELECT COUNT(*) FROM symbol_mappings WHERE provider = 'IB'")
+            total_mappings = self.db_cursor.fetchone()[0]
+            
+            # Get valid mappings
+            self.db_cursor.execute("SELECT COUNT(*) FROM symbol_mappings WHERE provider = 'IB' AND is_valid = TRUE")
+            valid_mappings = self.db_cursor.fetchone()[0]
+            
+            # Get invalid mappings
+            self.db_cursor.execute("SELECT COUNT(*) FROM symbol_mappings WHERE provider = 'IB' AND is_valid = FALSE")
+            invalid_mappings = self.db_cursor.fetchone()[0]
+            
+            # Get most used mappings
+            self.db_cursor.execute("""
+                SELECT original_symbol, ib_symbol, use_count, last_used 
+                FROM symbol_mappings 
+                WHERE provider = 'IB' AND is_valid = TRUE 
+                ORDER BY use_count DESC 
+                LIMIT 10
+            """)
+            most_used = self.db_cursor.fetchall()
+            
+            # Get recent mappings
+            self.db_cursor.execute("""
+                SELECT original_symbol, ib_symbol, is_valid, created_at 
+                FROM symbol_mappings 
+                WHERE provider = 'IB' 
+                ORDER BY created_at DESC 
+                LIMIT 10
+            """)
+            recent_mappings = self.db_cursor.fetchall()
+            
+            return {
+                "total_mappings": total_mappings,
+                "valid_mappings": valid_mappings,
+                "invalid_mappings": invalid_mappings,
+                "success_rate": (valid_mappings / total_mappings * 100) if total_mappings > 0 else 0,
+                "most_used": most_used,
+                "recent_mappings": recent_mappings
+            }
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Error getting symbol mapping stats: {e}")
+            return {"error": str(e)}
+    
+    def view_symbol_mappings(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """View all symbol mappings"""
+        try:
+            if not self._ensure_database_connection():
+                return []
+            
+            query = """
+                SELECT original_symbol, ib_symbol, is_valid, use_count, created_at, last_used
+                FROM symbol_mappings 
+                WHERE provider = 'IB' 
+                ORDER BY last_used DESC 
+                LIMIT %s
+            """
+            
+            self.db_cursor.execute(query, (limit,))
+            results = self.db_cursor.fetchall()
+            
+            mappings = []
+            for row in results:
+                mappings.append({
+                    "original_symbol": row[0],
+                    "ib_symbol": row[1],
+                    "is_valid": row[2],
+                    "use_count": row[3],
+                    "created_at": row[4],
+                    "last_used": row[5]
+                })
+            
+            return mappings
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Error viewing symbol mappings: {e}")
+            return []
+    
+    def clear_invalid_mappings(self) -> int:
+        """Clear all invalid symbol mappings"""
+        try:
+            if not self._ensure_database_connection():
+                return 0
+            
+            self.db_cursor.execute("DELETE FROM symbol_mappings WHERE provider = 'IB' AND is_valid = FALSE")
+            deleted_count = self.db_cursor.rowcount
+            
+            logger.info(f"[CLEANUP] Cleared {deleted_count} invalid symbol mappings")
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Error clearing invalid mappings: {e}")
+            return 0
+
 
 def main():
     """Main entry point"""
@@ -941,6 +1289,24 @@ Examples:
         help="Load tickers from this custom universe file instead of default"
     )
     
+    parser.add_argument(
+        "--view-mappings", 
+        action="store_true",
+        help="View symbol mappings and exit"
+    )
+    
+    parser.add_argument(
+        "--mapping-stats", 
+        action="store_true",
+        help="Show symbol mapping statistics and exit"
+    )
+    
+    parser.add_argument(
+        "--clear-invalid-mappings", 
+        action="store_true",
+        help="Clear all invalid symbol mappings and exit"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -965,6 +1331,38 @@ Examples:
                 print(f"Last 10 tickers: {tickers[-10:]}")
             return 0
         
+        if args.view_mappings:
+            mappings = updater.view_symbol_mappings()
+            if mappings:
+                print("\n--- Symbol Mappings ---")
+                for mapping in mappings:
+                    print(f"Original: {mapping['original_symbol']}, IB: {mapping['ib_symbol']}, Valid: {mapping['is_valid']}, Use Count: {mapping['use_count']}, Created: {mapping['created_at']}, Last Used: {mapping['last_used']}")
+                print("-" * 50)
+            else:
+                print("No symbol mappings found.")
+            return 0
+
+        if args.mapping_stats:
+            stats = updater.get_symbol_mapping_stats()
+            print("\n--- Symbol Mapping Statistics ---")
+            print(f"Total Mappings: {stats['total_mappings']}")
+            print(f"Valid Mappings: {stats['valid_mappings']}")
+            print(f"Invalid Mappings: {stats['invalid_mappings']}")
+            print(f"Success Rate: {stats['success_rate']:.1f}%")
+            print("\nMost Used Mappings:")
+            for mapping in stats['most_used']:
+                print(f"Original: {mapping[0]}, IB: {mapping[1]}, Use Count: {mapping[2]}, Last Used: {mapping[3]}")
+            print("\nRecent Mappings:")
+            for mapping in stats['recent_mappings']:
+                print(f"Original: {mapping[0]}, IB: {mapping[1]}, Valid: {mapping[2]}, Created: {mapping[3]}")
+            print("-" * 50)
+            return 0
+
+        if args.clear_invalid_mappings:
+            deleted_count = updater.clear_invalid_mappings()
+            print(f"\nCleared {deleted_count} invalid symbol mappings.")
+            return 0
+
         # Determine start index
         start_index = args.resume_from if args.resume_from is not None else args.start_index
         
