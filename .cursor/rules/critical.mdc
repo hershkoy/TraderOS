@@ -2,3 +2,4 @@
 alwaysApply: true
 ---
 always use venv when running terminal
+dont use emoji characters in logging

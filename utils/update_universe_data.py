@@ -509,10 +509,10 @@ class UniverseDataUpdater:
             result = self.db_cursor.fetchone()
             
             if result and result[0] > 0:
-                logger.info(f"📊 {symbol} already has {result[0]} bars for {self.timeframe} from {self.provider}")
+                logger.info(f"[DATA] {symbol} already has {result[0]} bars for {self.timeframe} from {self.provider}")
                 return True
             else:
-                logger.info(f"📊 {symbol} has no existing data for {self.timeframe} from {self.provider}")
+                logger.info(f"[DATA] {symbol} has no existing data for {self.timeframe} from {self.provider}")
                 return False
                 
         except Exception as e:
@@ -602,9 +602,9 @@ class UniverseDataUpdater:
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Failed to fetch data for {symbol}: {e}")
+            logger.error(f"[ERROR] Failed to fetch data for {symbol}: {e}")
             import traceback
-            logger.error(f"❌ Exception traceback: {traceback.format_exc()}")
+            logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
             return False
     
     def update_universe_data(self, 
@@ -661,7 +661,7 @@ class UniverseDataUpdater:
         skipped_symbols = []
         
         start_time = datetime.now()
-        logger.info(f"🔍 Starting main processing loop at {start_time}")
+        logger.info(f"[START] Starting main processing loop at {start_time}")
         
         try:
             for i, symbol in enumerate(tickers):
@@ -738,39 +738,39 @@ class UniverseDataUpdater:
         
         end_time = datetime.now()
         duration = end_time - start_time
-        logger.info(f"🔍 Main processing loop completed in {duration}")
+        logger.info(f"[COMPLETE] Main processing loop completed in {duration}")
         
         # Wait for all database operations to complete
         logger.info("=" * 60)
-        logger.info("🔄 ALL TICKERS PROCESSED - NOW WAITING FOR DATABASE OPERATIONS")
+        logger.info("[WAIT] ALL TICKERS PROCESSED - NOW WAITING FOR DATABASE OPERATIONS")
         logger.info("=" * 60)
-        logger.info(f"📊 Total tickers processed: {total_tickers}")
-        logger.info(f"✅ Successful: {successful}")
-        logger.info(f"❌ Failed: {failed}")
-        logger.info(f"⏭️ Skipped: {skipped}")
-        logger.info(f"⏳ Starting to wait for database operations to complete...")
+        logger.info(f"[STATS] Total tickers processed: {total_tickers}")
+        logger.info(f"[SUCCESS] Successful: {successful}")
+        logger.info(f"[FAILED] Failed: {failed}")
+        logger.info(f"[SKIPPED] Skipped: {skipped}")
+        logger.info(f"[WAIT] Starting to wait for database operations to complete...")
         
         db_wait_start = datetime.now()
-        logger.info(f"🔍 About to call db_worker.wait_for_completion() at {db_wait_start}")
+        logger.info(f"[DEBUG] About to call db_worker.wait_for_completion() at {db_wait_start}")
         
         self.db_worker.wait_for_completion()
         
         db_wait_end = datetime.now()
         db_wait_duration = db_wait_end - db_wait_start
-        logger.info(f"🔍 db_worker.wait_for_completion() returned at {db_wait_end}")
-        logger.info(f"💾 Database operations completed in {db_wait_duration}")
+        logger.info(f"[DEBUG] db_worker.wait_for_completion() returned at {db_wait_end}")
+        logger.info(f"[DB] Database operations completed in {db_wait_duration}")
         
         # Calculate time breakdown
         total_duration = end_time - start_time
         data_processing_time = total_duration - db_wait_duration
         
         logger.info("=" * 60)
-        logger.info("⏱️ TIME BREAKDOWN")
+        logger.info("[TIME] TIME BREAKDOWN")
         logger.info("=" * 60)
-        logger.info(f"📊 Data fetching + queuing: {data_processing_time}")
-        logger.info(f"💾 Database operations: {db_wait_duration}")
-        logger.info(f"⏱️ Total time: {total_duration}")
-        logger.info(f"🚀 Non-blocking efficiency: {(data_processing_time / total_duration * 100):.1f}% of time spent on data fetching")
+        logger.info(f"[DATA] Data fetching + queuing: {data_processing_time}")
+        logger.info(f"[DB] Database operations: {db_wait_duration}")
+        logger.info(f"[TIME] Total time: {total_duration}")
+        logger.info(f"[EFFICIENCY] Non-blocking efficiency: {(data_processing_time / total_duration * 100):.1f}% of time spent on data fetching")
         
         # Stop database worker
         self.db_worker.stop()
@@ -783,7 +783,7 @@ class UniverseDataUpdater:
             try:
                 from utils.fetch_data import cleanup_ib_connection
                 cleanup_ib_connection()
-                logger.info("🧹 Cleaned up IBKR connection")
+                logger.info("[CLEANUP] Cleaned up IBKR connection")
             except Exception as e:
                 logger.warning(f"Error cleaning up IBKR connection: {e}")
         
