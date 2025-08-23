@@ -369,6 +369,10 @@ class UniverseDataUpdater:
         # Create symbol mapping table if it doesn't exist
         self._create_symbol_mapping_table()
         
+        # Enhanced IB logging for debugging
+        if self.provider == "ib":
+            self._setup_enhanced_ib_logging()
+        
         # Validation
         if self.provider not in ['alpaca', 'ib']:
             raise ValueError("Provider must be 'alpaca' or 'ib'")
@@ -377,6 +381,26 @@ class UniverseDataUpdater:
         
         logger.info(f"Initialized UniverseDataUpdater for {self.provider} @ {self.timeframe}")
         logger.info(f"Retry configuration: max_retries={max_retries}, base_delay={retry_base_delay}s")
+    
+    def _setup_enhanced_ib_logging(self):
+        """Setup enhanced IB logging to see permission and contract errors"""
+        try:
+            # Set IB wrapper logger to INFO to see detailed error messages
+            ib_wrapper_logger = logging.getLogger('ib_insync.wrapper')
+            ib_wrapper_logger.setLevel(logging.INFO)
+            
+            # Set IB client logger to INFO
+            ib_client_logger = logging.getLogger('ib_insync.client')
+            ib_client_logger.setLevel(logging.INFO)
+            
+            # Set IB logger to INFO
+            ib_logger = logging.getLogger('ib_insync.ib')
+            ib_logger.setLevel(logging.INFO)
+            
+            logger.info("[IB] Enhanced IB logging enabled - will show detailed error messages")
+            
+        except Exception as e:
+            logger.warning(f"[IB] Could not setup enhanced logging: {e}")
     
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
@@ -451,6 +475,37 @@ class UniverseDataUpdater:
         except Exception as e:
             logger.error(f"[IB] Error checking IB connection: {e}")
             return False
+    
+    def _check_market_data_permissions(self, symbol: str):
+        """Check if we have market data permissions for a symbol"""
+        try:
+            from utils.fetch_data import get_ib_connection
+            ib = get_ib_connection()
+            
+            if not ib.isConnected():
+                logger.warning(f"[PERMISSIONS] Cannot check permissions for {symbol} - IB not connected")
+                return False
+            
+            # Try to get account info to check permissions
+            try:
+                # This will fail if we don't have permissions
+                account_info = ib.accountSummary()
+                logger.info(f"[PERMISSIONS] Account info retrieved successfully")
+                return True
+            except Exception as e:
+                error_str = str(e).lower()
+                if "no market data permissions" in error_str:
+                    logger.error(f"[PERMISSIONS] No market data permissions for {symbol}")
+                    logger.error(f"[PERMISSIONS] Check your IB account has US Value Bundle subscription")
+                    logger.error(f"[PERMISSIONS] Go to Client Portal > Settings > Market Data Subscriptions")
+                    return False
+                else:
+                    logger.warning(f"[PERMISSIONS] Could not check permissions: {e}")
+                    return True  # Assume we have permissions if we can't check
+                    
+        except Exception as e:
+            logger.warning(f"[PERMISSIONS] Error checking market data permissions: {e}")
+            return True  # Assume we have permissions if we can't check
     
     def _cleanup_database_connection(self):
         """Cleanup database connections"""
@@ -556,36 +611,37 @@ class UniverseDataUpdater:
             logger.warning(f"Error checking existing data for {symbol}: {e}, will fetch data anyway")
             return False
     
-    def _convert_symbol_for_ib(self, symbol: str) -> str:
+    def _convert_symbol_for_ib(self, symbol: str) -> Dict[str, Any]:
         """Intelligent symbol conversion for IB compatibility with caching and discovery"""
         if self.provider != "ib":
-            return symbol
+            return {'ib_symbol': symbol, 'con_id': None, 'primary_exchange': None}
         
         logger.info(f"[CONVERT] Converting symbol {symbol} for IB compatibility...")
         
-        # Step 1: Check if we have a cached mapping
-        cached_symbol = self._get_cached_symbol_mapping(symbol)
-        if cached_symbol:
-            logger.info(f"[CONVERT] Using cached mapping: {symbol} -> {cached_symbol}")
-            return cached_symbol
+        # Step 1: Check if we have a cached mapping with contract details
+        cached_mapping = self._get_cached_symbol_mapping(symbol)
+        if cached_mapping:
+            logger.info(f"[CONVERT] Using cached mapping: {symbol} -> {cached_mapping['ib_symbol']} (conId: {cached_mapping['con_id']}, exchange: {cached_mapping['primary_exchange']})")
+            return cached_mapping
         
         # Step 2: Try the original symbol first (it might work)
         logger.info(f"[CONVERT] Testing original symbol: {symbol}")
-        if self._test_ib_symbol(symbol):
+        contract_info = self._test_ib_symbol_with_contract(symbol)
+        if contract_info:
             logger.info(f"[CONVERT] Original symbol {symbol} works with IB")
-            self._cache_symbol_mapping(symbol, symbol, True)
-            return symbol
+            self._cache_symbol_mapping(symbol, symbol, True, contract_info['con_id'], contract_info['primary_exchange'])
+            return contract_info
         
         # Step 3: Discover the correct symbol by testing variations
         logger.info(f"[CONVERT] Original symbol failed, discovering variations for {symbol}")
-        discovered_symbol = self._discover_ib_symbol(symbol)
-        if discovered_symbol:
-            logger.info(f"[CONVERT] Discovered valid symbol: {symbol} -> {discovered_symbol}")
-            return discovered_symbol
+        discovered_contract = self._discover_ib_symbol_with_contract(symbol)
+        if discovered_contract:
+            logger.info(f"[CONVERT] Discovered valid symbol: {symbol} -> {discovered_contract['ib_symbol']}")
+            return discovered_contract
         
         # Step 4: If no valid symbol found, return original (will fail gracefully)
         logger.warning(f"[CONVERT] No valid IB symbol found for {symbol}, using original")
-        return symbol
+        return {'ib_symbol': symbol, 'con_id': None, 'primary_exchange': None}
     
     def fetch_ticker_data(self, symbol: str, use_max_bars: bool = False) -> bool:
         """
@@ -618,10 +674,14 @@ class UniverseDataUpdater:
                     result = fetch_from_alpaca(symbol, bars, self.timeframe)
                 elif self.provider == "ib":
                     # Convert symbol format for IB compatibility
-                    ib_symbol = self._convert_symbol_for_ib(symbol)
+                    contract_info = self._convert_symbol_for_ib(symbol)
+                    ib_symbol = contract_info['ib_symbol']
                     if ib_symbol != symbol:
                         logger.info(f"[CONVERT] Converting symbol {symbol} -> {ib_symbol} for IB compatibility")
-                    result = fetch_from_ib(ib_symbol, bars, self.timeframe)
+                    
+                    # Pass contract info to avoid re-qualification
+                    logger.info(f"[CONTRACT] Using cached contract info: conId {contract_info['con_id']}, exchange {contract_info['primary_exchange']}")
+                    result = fetch_from_ib(ib_symbol, bars, self.timeframe, contract_info)
                 else:
                     logger.error(f"Unknown provider: {self.provider}")
                     return False
@@ -945,6 +1005,8 @@ class UniverseDataUpdater:
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 last_used TIMESTAMPTZ DEFAULT NOW(),
                 use_count INTEGER DEFAULT 1,
+                con_id BIGINT,
+                primary_exchange VARCHAR(20),
                 UNIQUE(original_symbol, provider)
             );
             
@@ -954,6 +1016,17 @@ class UniverseDataUpdater:
             
             CREATE INDEX IF NOT EXISTS idx_symbol_mappings_ib_symbol 
             ON symbol_mappings(ib_symbol, provider);
+            
+            -- Add new columns if they don't exist (for existing tables)
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='symbol_mappings' AND column_name='con_id') THEN
+                    ALTER TABLE symbol_mappings ADD COLUMN con_id BIGINT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='symbol_mappings' AND column_name='primary_exchange') THEN
+                    ALTER TABLE symbol_mappings ADD COLUMN primary_exchange VARCHAR(20);
+                END IF;
+            END $$;
             """
             
             self.db_cursor.execute(create_table_sql)
@@ -964,14 +1037,14 @@ class UniverseDataUpdater:
             logger.error(f"[ERROR] Failed to create symbol mapping table: {e}")
             return False
 
-    def _get_cached_symbol_mapping(self, original_symbol: str) -> Optional[str]:
-        """Get cached IB symbol mapping from database"""
+    def _get_cached_symbol_mapping(self, original_symbol: str) -> Optional[Dict[str, Any]]:
+        """Get cached IB symbol mapping from database with contract details"""
         try:
             if not self._ensure_database_connection():
                 return None
             
             query = """
-                SELECT ib_symbol, is_valid 
+                SELECT ib_symbol, is_valid, con_id, primary_exchange
                 FROM symbol_mappings 
                 WHERE original_symbol = %s AND provider = 'IB'
                 ORDER BY last_used DESC 
@@ -982,12 +1055,16 @@ class UniverseDataUpdater:
             result = self.db_cursor.fetchone()
             
             if result:
-                ib_symbol, is_valid = result
+                ib_symbol, is_valid, con_id, primary_exchange = result
                 if is_valid:
                     # Update usage statistics
                     self._update_symbol_mapping_usage(original_symbol)
-                    logger.info(f"[CACHE] Found cached mapping: {original_symbol} -> {ib_symbol}")
-                    return ib_symbol
+                    logger.info(f"[CACHE] Found cached mapping: {original_symbol} -> {ib_symbol} (conId: {con_id}, exchange: {primary_exchange})")
+                    return {
+                        'ib_symbol': ib_symbol,
+                        'con_id': con_id,
+                        'primary_exchange': primary_exchange
+                    }
                 else:
                     logger.info(f"[CACHE] Found invalid cached mapping: {original_symbol} -> {ib_symbol}")
                     return None
@@ -1011,26 +1088,29 @@ class UniverseDataUpdater:
         except Exception as e:
             logger.warning(f"[WARN] Error updating symbol mapping usage for {original_symbol}: {e}")
     
-    def _cache_symbol_mapping(self, original_symbol: str, ib_symbol: str, is_valid: bool = True):
-        """Cache a symbol mapping in the database"""
+    def _cache_symbol_mapping(self, original_symbol: str, ib_symbol: str, is_valid: bool = True, 
+                             con_id: Optional[int] = None, primary_exchange: Optional[str] = None):
+        """Cache a symbol mapping in the database with contract details"""
         try:
             if not self._ensure_database_connection():
                 return False
             
             # Use UPSERT to handle duplicates
             query = """
-                INSERT INTO symbol_mappings (original_symbol, ib_symbol, provider, is_valid, created_at, last_used, use_count)
-                VALUES (%s, %s, 'IB', %s, NOW(), NOW(), 1)
+                INSERT INTO symbol_mappings (original_symbol, ib_symbol, provider, is_valid, created_at, last_used, use_count, con_id, primary_exchange)
+                VALUES (%s, %s, 'IB', %s, NOW(), NOW(), 1, %s, %s)
                 ON CONFLICT (original_symbol, provider) 
                 DO UPDATE SET 
                     ib_symbol = EXCLUDED.ib_symbol,
                     is_valid = EXCLUDED.is_valid,
                     last_used = NOW(),
-                    use_count = symbol_mappings.use_count + 1
+                    use_count = symbol_mappings.use_count + 1,
+                    con_id = EXCLUDED.con_id,
+                    primary_exchange = EXCLUDED.primary_exchange
             """
             
-            self.db_cursor.execute(query, (original_symbol, ib_symbol, is_valid))
-            logger.info(f"[CACHE] Cached symbol mapping: {original_symbol} -> {ib_symbol} (valid: {is_valid})")
+            self.db_cursor.execute(query, (original_symbol, ib_symbol, is_valid, con_id, primary_exchange))
+            logger.info(f"[CACHE] Cached symbol mapping: {original_symbol} -> {ib_symbol} (valid: {is_valid}, conId: {con_id}, exchange: {primary_exchange})")
             return True
             
         except Exception as e:
@@ -1039,8 +1119,13 @@ class UniverseDataUpdater:
     
     def _discover_ib_symbol(self, original_symbol: str) -> Optional[str]:
         """Discover the correct IB symbol by testing variations"""
+        contract_info = self._discover_ib_symbol_with_contract(original_symbol)
+        return contract_info['ib_symbol'] if contract_info else None
+    
+    def _discover_ib_symbol_with_contract(self, original_symbol: str) -> Optional[Dict[str, Any]]:
+        """Discover the correct IB symbol by testing variations, returning contract information"""
         if self.provider != "ib":
-            return original_symbol
+            return {'ib_symbol': original_symbol, 'con_id': None, 'primary_exchange': None}
         
         logger.info(f"[DISCOVER] Discovering IB symbol for: {original_symbol}")
         
@@ -1050,11 +1135,13 @@ class UniverseDataUpdater:
         # Test each variation with IB
         for i, variation in enumerate(variations):
             logger.info(f"[DISCOVER] Testing variation {i+1}/{len(variations)}: {variation}")
-            if self._test_ib_symbol(variation):
+            contract_info = self._test_ib_symbol_with_contract(variation)
+            if contract_info:
                 logger.info(f"[DISCOVER] Found valid IB symbol: {original_symbol} -> {variation}")
-                # Cache the successful mapping
-                self._cache_symbol_mapping(original_symbol, variation, True)
-                return variation
+                # Cache the successful mapping with contract details
+                self._cache_symbol_mapping(original_symbol, variation, True, 
+                                        contract_info['con_id'], contract_info['primary_exchange'])
+                return contract_info
         
         # If no valid symbol found, cache the original as invalid
         logger.warning(f"[DISCOVER] No valid IB symbol found for: {original_symbol}")
@@ -1145,8 +1232,44 @@ class UniverseDataUpdater:
         ]
         return any(indicator in error_str for indicator in timeout_indicators)
     
+    def _create_ib_contract(self, symbol: str):
+        """Create an IB contract with proper primary exchange to avoid ambiguity"""
+        from ib_insync import Stock
+        
+        # Define primary exchanges for common symbols to avoid ambiguity
+        NASDAQ_SYMBOLS = {
+            'STLD', 'STX', 'SWKS', 'TEAM', 'TECH', 'TER', 'ZS',
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA'
+        }
+        
+        NYSE_SYMBOLS = {
+            'STE', 'STT', 'STZ', 'SWK', 'SYF', 'SYK', 'SYY', 'T', 'TAP', 'TDG', 'TDY',
+            'JPM', 'JNJ', 'PG', 'UNH', 'HD', 'MA', 'PFE', 'BAC', 'KO', 'PEP'
+        }
+        
+        # Determine primary exchange
+        if symbol in NASDAQ_SYMBOLS:
+            primary_exchange = 'NASDAQ'
+        elif symbol in NYSE_SYMBOLS:
+            primary_exchange = 'NYSE'
+        else:
+            # For unknown symbols, let IB resolve it
+            primary_exchange = None
+        
+        if primary_exchange:
+            logger.info(f"[CONTRACT] Creating contract for {symbol} with primary exchange {primary_exchange}")
+            return Stock(symbol=symbol, exchange='SMART', currency='USD', primaryExchange=primary_exchange)
+        else:
+            logger.info(f"[CONTRACT] Creating contract for {symbol} without primary exchange (will be resolved by IB)")
+            return Stock(symbol=symbol, exchange='SMART', currency='USD')
+    
     def _test_ib_symbol(self, symbol: str) -> bool:
         """Test if a symbol exists and has data in IB with retry logic for timeouts"""
+        contract_info = self._test_ib_symbol_with_contract(symbol)
+        return contract_info is not None
+    
+    def _test_ib_symbol_with_contract(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Test if a symbol exists and has data in IB, returning contract information"""
         # Use shorter delays for symbol testing
         test_max_retries = min(3, self.max_retries)
         test_base_delay = min(1.0, self.retry_base_delay)
@@ -1160,15 +1283,20 @@ class UniverseDataUpdater:
                 ib = get_ib_connection()
                 if not ib.isConnected():
                     logger.warning(f"[TEST] Cannot test {symbol} - IB not connected")
-                    return False
+                    return None
                 
-                # Create contract
-                contract = Stock(symbol=symbol, exchange='SMART', currency='USD')
+                # Create contract with primary exchange to avoid ambiguity
+                contract = self._create_ib_contract(symbol)
                 
                 # Try to qualify the contract
                 try:
-                    ib.qualifyContracts(contract)
-                    logger.info(f"[TEST] Symbol {symbol} is recognized by IB")
+                    qualified_contracts = ib.qualifyContracts(contract)
+                    if qualified_contracts:
+                        contract = qualified_contracts[0]  # Use the qualified contract
+                        logger.info(f"[TEST] Symbol {symbol} is recognized by IB (conId: {contract.conId}, primaryExchange: {contract.primaryExchange})")
+                    else:
+                        logger.warning(f"[TEST] Symbol {symbol} - no qualified contracts found")
+                        return None
                     
                     # Try to get a small amount of historical data to confirm it's tradeable
                     try:
@@ -1184,10 +1312,14 @@ class UniverseDataUpdater:
                         
                         if bars and len(bars) > 0:
                             logger.info(f"[TEST] Symbol {symbol} is tradeable with {len(bars)} bars")
-                            return True
+                            return {
+                                'ib_symbol': symbol,
+                                'con_id': contract.conId,
+                                'primary_exchange': contract.primaryExchange
+                            }
                         else:
                             logger.info(f"[TEST] Symbol {symbol} exists but has no data")
-                            return False
+                            return None
                             
                     except Exception as data_error:
                         if self._is_timeout_error(data_error) and attempt < test_max_retries - 1:
@@ -1197,7 +1329,7 @@ class UniverseDataUpdater:
                             continue
                         else:
                             logger.info(f"[TEST] Symbol {symbol} exists but data fetch failed: {data_error}")
-                            return False
+                            return None
                         
                 except Exception as e:
                     if self._is_timeout_error(e) and attempt < test_max_retries - 1:
@@ -1211,9 +1343,13 @@ class UniverseDataUpdater:
                             logger.info(f"[TEST] Symbol {symbol} - no security definition")
                         elif "contract not found" in error_str:
                             logger.info(f"[TEST] Symbol {symbol} - contract not found")
+                        elif "no market data permissions" in error_str:
+                            logger.warning(f"[TEST] Symbol {symbol} - no market data permissions (check US Value Bundle subscription)")
+                        elif "contract description" in error_str and "ambiguous" in error_str:
+                            logger.warning(f"[TEST] Symbol {symbol} - contract is ambiguous (primary exchange needed)")
                         else:
                             logger.info(f"[TEST] Symbol {symbol} - error: {e}")
-                        return False
+                        return None
                     
             except Exception as e:
                 if self._is_timeout_error(e) and attempt < test_max_retries - 1:
@@ -1223,11 +1359,19 @@ class UniverseDataUpdater:
                     continue
                 else:
                     logger.warning(f"[TEST] Error testing symbol {symbol}: {e}")
-                    return False
+                    return None
         
-        # If we've exhausted all retries, log and return False
+        # If we've exhausted all retries, log and return None
         logger.warning(f"[TEST] Symbol {symbol} test failed after {test_max_retries} attempts")
-        return False
+        
+        # Provide troubleshooting information
+        logger.info(f"[TROUBLESHOOT] Common issues for {symbol}:")
+        logger.info(f"[TROUBLESHOOT] 1. Check market data permissions (US Value Bundle subscription)")
+        logger.info(f"[TROUBLESHOOT] 2. Verify symbol format and primary exchange")
+        logger.info(f"[TROUBLESHOOT] 3. Check if symbol is tradeable in your IB account")
+        logger.info(f"[TROUBLESHOOT] 4. Try running with --debug-ib flag for detailed error messages")
+        
+        return None
 
     def get_symbol_mapping_stats(self) -> Dict[str, Any]:
         """Get statistics about symbol mappings"""
@@ -1281,13 +1425,13 @@ class UniverseDataUpdater:
             return {"error": str(e)}
     
     def view_symbol_mappings(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """View all symbol mappings"""
+        """View all symbol mappings with contract details"""
         try:
             if not self._ensure_database_connection():
                 return []
             
             query = """
-                SELECT original_symbol, ib_symbol, is_valid, use_count, created_at, last_used
+                SELECT original_symbol, ib_symbol, is_valid, use_count, created_at, last_used, con_id, primary_exchange
                 FROM symbol_mappings 
                 WHERE provider = 'IB' 
                 ORDER BY last_used DESC 
@@ -1305,7 +1449,9 @@ class UniverseDataUpdater:
                     "is_valid": row[2],
                     "use_count": row[3],
                     "created_at": row[4],
-                    "last_used": row[5]
+                    "last_used": row[5],
+                    "con_id": row[6],
+                    "primary_exchange": row[7]
                 })
             
             return mappings
@@ -1370,6 +1516,9 @@ Examples:
   
   # Test a single symbol to debug issues
   python update_universe_data.py --provider ib --timeframe 1d --test-symbol STE
+  
+  # Enable enhanced IB debugging to see permission errors
+  python update_universe_data.py --provider ib --timeframe 1h --debug-ib --test-symbol STE
         """
     )
     
@@ -1495,6 +1644,12 @@ Examples:
         help="Test a single symbol to see what happens (for debugging)"
     )
     
+    parser.add_argument(
+        "--debug-ib", 
+        action="store_true",
+        help="Enable enhanced IB logging for debugging permission and contract issues"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -1505,6 +1660,12 @@ Examples:
             max_retries=args.max_retries,
             retry_base_delay=args.retry_base_delay
         )
+        
+        # Enable enhanced IB debugging if requested
+        if args.debug_ib and args.provider == "ib":
+            logger.info("[DEBUG] Enhanced IB debugging enabled")
+            # Force enhanced logging
+            updater._setup_enhanced_ib_logging()
         
         if args.dry_run:
             # Show what would be processed
@@ -1529,7 +1690,10 @@ Examples:
             if mappings:
                 print("\n--- Symbol Mappings ---")
                 for mapping in mappings:
-                    print(f"Original: {mapping['original_symbol']}, IB: {mapping['ib_symbol']}, Valid: {mapping['is_valid']}, Use Count: {mapping['use_count']}, Created: {mapping['created_at']}, Last Used: {mapping['last_used']}")
+                    print(f"Original: {mapping['original_symbol']}, IB: {mapping['ib_symbol']}, Valid: {mapping['is_valid']}, Use Count: {mapping['use_count']}")
+                    print(f"  ConId: {mapping['con_id']}, Exchange: {mapping['primary_exchange']}")
+                    print(f"  Created: {mapping['created_at']}, Last Used: {mapping['last_used']}")
+                    print()
                 print("-" * 50)
             else:
                 print("No symbol mappings found.")
@@ -1562,13 +1726,15 @@ Examples:
             
             # Test symbol conversion
             if args.provider == "ib":
-                ib_symbol = updater._convert_symbol_for_ib(args.test_symbol)
+                contract_info = updater._convert_symbol_for_ib(args.test_symbol)
                 print(f"Original symbol: {args.test_symbol}")
-                print(f"IB symbol: {ib_symbol}")
+                print(f"IB symbol: {contract_info['ib_symbol']}")
+                print(f"ConId: {contract_info['con_id']}")
+                print(f"Primary Exchange: {contract_info['primary_exchange']}")
                 
                 # Test if symbol works
                 print(f"\nTesting if symbol works with IB...")
-                works = updater._test_ib_symbol(ib_symbol)
+                works = updater._test_ib_symbol(args.test_symbol)
                 print(f"Symbol works: {works}")
                 
                 if works:

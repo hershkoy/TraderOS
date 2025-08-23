@@ -69,6 +69,46 @@ def get_ib_connection():
         
         return _ib_connection
 
+def create_ib_contract_with_primary_exchange(symbol):
+    """Create an IB contract with proper primary exchange to avoid ambiguity"""
+    from ib_insync import Stock
+    
+    # Define primary exchanges for common symbols to avoid ambiguity
+    NASDAQ_SYMBOLS = {
+        'STLD', 'STX', 'SWKS', 'TEAM', 'TECH', 'TER', 'ZS',
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA'
+    }
+    
+    NYSE_SYMBOLS = {
+        'STE', 'STT', 'STZ', 'SWK', 'SYF', 'SYK', 'SYY', 'T', 'TAP', 'TDG', 'TDY',
+        'JPM', 'JNJ', 'PG', 'UNH', 'HD', 'MA', 'PFE', 'BAC', 'KO', 'PEP'
+    }
+    
+    # Determine primary exchange
+    if symbol in NASDAQ_SYMBOLS:
+        primary_exchange = 'NASDAQ'
+    elif symbol in NYSE_SYMBOLS:
+        primary_exchange = 'NYSE'
+    else:
+        # For unknown symbols, let IB resolve it
+        primary_exchange = None
+    
+    if primary_exchange:
+        logger.info(f"Creating contract for {symbol} with primary exchange {primary_exchange}")
+        return Stock(symbol=symbol, exchange='SMART', currency='USD', primaryExchange=primary_exchange)
+    else:
+        logger.info(f"Creating contract for {symbol} without primary exchange (will be resolved by IB)")
+        return Stock(symbol=symbol, exchange='SMART', currency='USD')
+
+def create_ib_contract_from_cache(symbol, con_id, primary_exchange):
+    """Create an IB contract directly from cached information (no qualification needed)"""
+    from ib_insync import Stock
+    
+    logger.info(f"Creating pre-qualified contract for {symbol}: conId {con_id}, exchange {primary_exchange}")
+    contract = Stock(symbol=symbol, exchange='SMART', currency='USD', primaryExchange=primary_exchange)
+    contract.conId = con_id
+    return contract
+
 def close_ib_connection():
     """Close the global IBKR connection"""
     global _ib_connection
@@ -622,7 +662,7 @@ def fetch_max_from_alpaca(symbol, timeframe):
 # ─────────────────────────────
 # IBKR LOGIC
 # ─────────────────────────────
-def fetch_from_ib(symbol, bars, timeframe):
+def fetch_from_ib(symbol, bars, timeframe, contract_info=None):
     """Fetch historical bars from IBKR."""
     from ib_insync import IB, Stock
 
@@ -630,13 +670,35 @@ def fetch_from_ib(symbol, bars, timeframe):
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     if bars == "max":
-        return fetch_max_from_ib(symbol, timeframe)
+        return fetch_max_from_ib(symbol, timeframe, contract_info)
     
     # For fixed number of bars
     ib = get_ib_connection()
     
     try:
-        contract = Stock(symbol, "SMART", "USD")
+        # Use pre-qualified contract info if available, otherwise qualify
+        if contract_info and contract_info.get('con_id') and contract_info.get('primary_exchange'):
+            logger.info(f"Using pre-qualified contract for {symbol}: conId {contract_info['con_id']}, exchange {contract_info['primary_exchange']}")
+            contract = create_ib_contract_from_cache(symbol, contract_info['con_id'], contract_info['primary_exchange'])
+        else:
+            # Fallback: create and qualify contract
+            logger.info(f"No pre-qualified contract info for {symbol}, qualifying contract...")
+            contract = create_ib_contract_with_primary_exchange(symbol)
+            
+            # Qualify the contract to resolve ambiguity and get conId + primaryExchange
+            logger.info(f"Qualifying contract for {symbol} to resolve ambiguity...")
+            qualified_contracts = ib.qualifyContracts(contract)
+            if qualified_contracts:
+                contract = qualified_contracts[0]
+                logger.info(f"Contract qualified: {symbol} -> conId: {contract.conId}, primaryExchange: {contract.primaryExchange}")
+            else:
+                logger.error(f"No qualified contracts found for {symbol}")
+                logger.error(f"This usually means:")
+                logger.error(f"1. Symbol {symbol} doesn't exist in IB")
+                logger.error(f"2. No market data permissions for this symbol")
+                logger.error(f"3. Symbol format is incorrect")
+                return None
+        
         bar_size = "1 hour" if timeframe == "1h" else "1 day"
         
         # Ensure proper spacing for IBKR duration format
@@ -669,7 +731,7 @@ def fetch_from_ib(symbol, bars, timeframe):
         
         bars_data = intelligent_retry_with_backoff(
             fetch_bars_operation, 
-            f"IBKR data fetch for {symbol} ({timeframe})",
+            f"IBKR data fetch for {symbol} ({timeframe}) with qualified contract",
             reset_connection_on_failure=True
         )
         
@@ -707,7 +769,7 @@ def fetch_from_ib(symbol, bars, timeframe):
         # Don't disconnect - we want to reuse the connection
         pass
 
-def fetch_max_from_ib(symbol, timeframe):
+def fetch_max_from_ib(symbol, timeframe, contract_info=None):
     """Fetch maximum available historical data from IBKR by looping through requests."""
     from ib_insync import IB, Stock
 
@@ -720,11 +782,41 @@ def fetch_max_from_ib(symbol, timeframe):
     
     logger.info(f"Starting maximum data fetch for {symbol} @ {timeframe}")
     
+    # Create contract once at the beginning if we have pre-qualified info
+    if contract_info and contract_info.get('con_id') and contract_info.get('primary_exchange'):
+        logger.info(f"Using pre-qualified contract for {symbol}: conId {contract_info['con_id']}, exchange {contract_info['primary_exchange']}")
+        base_contract = create_ib_contract_from_cache(symbol, contract_info['con_id'], contract_info['primary_exchange'])
+        logger.info(f"Pre-qualified contract ready: {symbol} -> conId: {base_contract.conId}, primaryExchange: {base_contract.primaryExchange}")
+    else:
+        logger.info(f"No pre-qualified contract info for {symbol}, will qualify in each batch")
+        base_contract = None
+    
     while True:
         ib = get_ib_connection()
         
         try:
-            contract = Stock(symbol, "SMART", "USD")
+            # Use pre-qualified contract or create/qualify new one
+            if base_contract:
+                contract = base_contract
+                logger.info(f"Reusing pre-qualified contract for {symbol}")
+            else:
+                # Try to create contract with primary exchange first
+                contract = create_ib_contract_with_primary_exchange(symbol)
+                
+                # Qualify the contract to resolve ambiguity and get conId + primaryExchange
+                logger.info(f"Qualifying contract for {symbol} to resolve ambiguity...")
+                qualified_contracts = ib.qualifyContracts(contract)
+                if qualified_contracts:
+                    contract = qualified_contracts[0]
+                    logger.info(f"Contract qualified: {symbol} -> conId: {contract.conId}, primaryExchange: {contract.primaryExchange}")
+                else:
+                    logger.error(f"No qualified contracts found for {symbol}")
+                    logger.error(f"This usually means:")
+                    logger.error(f"1. Symbol {symbol} doesn't exist in IB")
+                    logger.error(f"2. No market data permissions for this symbol")
+                    logger.error(f"3. Symbol format is incorrect")
+                    break
+            
             bar_size = "1 hour" if timeframe == "1h" else "1 day"
             # Ensure proper spacing for IBKR duration format
             # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
@@ -752,7 +844,7 @@ def fetch_max_from_ib(symbol, timeframe):
             
             bars_data = intelligent_retry_with_backoff(
                 fetch_batch_operation,
-                f"IBKR batch fetch for {symbol} ({timeframe}) - batch {len(all_data) + 1}",
+                f"IBKR batch fetch for {symbol} ({timeframe}) - batch {len(all_data) + 1} with qualified contract",
                 reset_connection_on_failure=True
             )
             
