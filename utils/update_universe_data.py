@@ -343,16 +343,21 @@ class DatabaseWorker:
 class UniverseDataUpdater:
     """Updates market data for all tickers in the universe"""
     
-    def __init__(self, provider: str = "alpaca", timeframe: str = "1d"):
+    def __init__(self, provider: str = "alpaca", timeframe: str = "1d", 
+                 max_retries: int = 3, retry_base_delay: float = 2.0):
         """
         Initialize the universe data updater
         
         Args:
             provider: Data provider ('alpaca' or 'ib')
             timeframe: Timeframe to fetch ('1h' or '1d')
+            max_retries: Maximum number of retries for timeout errors (default: 3)
+            retry_base_delay: Base delay in seconds for exponential backoff (default: 2.0)
         """
         self.provider = provider.lower()
         self.timeframe = timeframe
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
         self.ticker_manager = TickerUniverseManager()
         self.db_worker = DatabaseWorker()
         
@@ -371,6 +376,7 @@ class UniverseDataUpdater:
             raise ValueError("Timeframe must be '1h' or '1d'")
         
         logger.info(f"Initialized UniverseDataUpdater for {self.provider} @ {self.timeframe}")
+        logger.info(f"Retry configuration: max_retries={max_retries}, base_delay={retry_base_delay}s")
     
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
@@ -407,13 +413,44 @@ class UniverseDataUpdater:
                 if attempt < max_retries - 1:
                     logger.info("Reconnecting to database...")
                     self._cleanup_database_connection()
-                    time.sleep(1)  # Wait before retry
+                    # Use exponential backoff for database reconnection
+                    delay = 1.0 * (2 ** attempt)
+                    logger.info(f"Waiting {delay}s before retry...")
+                    time.sleep(delay)
                     if not self._init_database_connection():
                         continue
                 else:
                     logger.error("Failed to reconnect to database after all retries")
                     return False
         return False
+    
+    def _ensure_ib_connection(self):
+        """Ensure IB connection is still valid, reconnect if needed"""
+        if self.provider != "ib":
+            return True
+            
+        try:
+            from utils.fetch_data import get_ib_connection
+            logger.info("[IB] Getting IB connection...")
+            ib = get_ib_connection()
+            
+            if not ib.isConnected():
+                logger.warning("[IB] IB connection lost, attempting to reconnect...")
+                # The get_ib_connection function should handle reconnection
+                ib = get_ib_connection()
+                if ib.isConnected():
+                    logger.info("[IB] IB connection restored")
+                    return True
+                else:
+                    logger.error("[IB] Failed to restore IB connection")
+                    return False
+            else:
+                logger.info("[IB] IB connection is active and connected")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[IB] Error checking IB connection: {e}")
+            return False
     
     def _cleanup_database_connection(self):
         """Cleanup database connections"""
@@ -524,20 +561,26 @@ class UniverseDataUpdater:
         if self.provider != "ib":
             return symbol
         
+        logger.info(f"[CONVERT] Converting symbol {symbol} for IB compatibility...")
+        
         # Step 1: Check if we have a cached mapping
         cached_symbol = self._get_cached_symbol_mapping(symbol)
         if cached_symbol:
+            logger.info(f"[CONVERT] Using cached mapping: {symbol} -> {cached_symbol}")
             return cached_symbol
         
         # Step 2: Try the original symbol first (it might work)
+        logger.info(f"[CONVERT] Testing original symbol: {symbol}")
         if self._test_ib_symbol(symbol):
             logger.info(f"[CONVERT] Original symbol {symbol} works with IB")
             self._cache_symbol_mapping(symbol, symbol, True)
             return symbol
         
         # Step 3: Discover the correct symbol by testing variations
+        logger.info(f"[CONVERT] Original symbol failed, discovering variations for {symbol}")
         discovered_symbol = self._discover_ib_symbol(symbol)
         if discovered_symbol:
+            logger.info(f"[CONVERT] Discovered valid symbol: {symbol} -> {discovered_symbol}")
             return discovered_symbol
         
         # Step 4: If no valid symbol found, return original (will fail gracefully)
@@ -546,7 +589,7 @@ class UniverseDataUpdater:
     
     def fetch_ticker_data(self, symbol: str, use_max_bars: bool = False) -> bool:
         """
-        Fetch data for a single ticker
+        Fetch data for a single ticker with retry logic for IB API timeouts
         
         Args:
             symbol: Stock symbol to fetch
@@ -555,57 +598,71 @@ class UniverseDataUpdater:
         Returns:
             bool: True if successful, False otherwise
         """
-        try:
-            fetch_start_time = datetime.now()
-            logger.info(f"[START] STARTING data fetch for {symbol} @ {self.timeframe} from {self.provider}...")
-            
-            # Determine number of bars to fetch
-            if use_max_bars:
-                # Use "max" to get all available data
-                bars = "max"
-                logger.info(f"[INFO] Fetching maximum available bars for {symbol}")
-            else:
-                # Use fixed amounts for reliability
-                # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
-                bars = 1260 if self.timeframe == "1d" else 8760
-                logger.info(f"[INFO] Fetching {bars} bars for {symbol}")
-            
-            if self.provider == "alpaca":
-                result = fetch_from_alpaca(symbol, bars, self.timeframe)
-            elif self.provider == "ib":
-                # Convert symbol format for IB compatibility
-                ib_symbol = self._convert_symbol_for_ib(symbol)
-                if ib_symbol != symbol:
-                    logger.info(f"[CONVERT] Converting symbol {symbol} -> {ib_symbol} for IB compatibility")
-                result = fetch_from_ib(ib_symbol, bars, self.timeframe)
-            else:
-                logger.error(f"Unknown provider: {self.provider}")
-                return False
-            
-            fetch_end_time = datetime.now()
-            fetch_duration = fetch_end_time - fetch_start_time
-            
-            if result is not None and not result.empty:
-                logger.info(f"[SUCCESS] SUCCESSFULLY fetched {len(result)} bars for {symbol} in {fetch_duration}")
+        for attempt in range(self.max_retries):
+            try:
+                fetch_start_time = datetime.now()
+                logger.info(f"[START] STARTING data fetch for {symbol} @ {self.timeframe} from {self.provider} (attempt {attempt + 1}/{self.max_retries})...")
                 
-                # Queue data for immediate database saving (non-blocking)
-                queue_start_time = datetime.now()
-                self.db_worker.save_data(result, symbol, self.provider.upper(), self.timeframe)
+                # Determine number of bars to fetch
+                if use_max_bars:
+                    # Use "max" to get all available data
+                    bars = "max"
+                    logger.info(f"[INFO] Fetching maximum available bars for {symbol}")
+                else:
+                    # Use fixed amounts for reliability
+                    # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
+                    bars = 1260 if self.timeframe == "1d" else 8760
+                    logger.info(f"[INFO] Fetching {bars} bars for {symbol}")
                 
-                queue_end_time = datetime.now()
-                queue_duration = queue_end_time - queue_start_time
-                logger.info(f"[OK] Data queued for {symbol} in {queue_duration}, queue size: {self.db_worker.queue.qsize()}")
+                if self.provider == "alpaca":
+                    result = fetch_from_alpaca(symbol, bars, self.timeframe)
+                elif self.provider == "ib":
+                    # Convert symbol format for IB compatibility
+                    ib_symbol = self._convert_symbol_for_ib(symbol)
+                    if ib_symbol != symbol:
+                        logger.info(f"[CONVERT] Converting symbol {symbol} -> {ib_symbol} for IB compatibility")
+                    result = fetch_from_ib(ib_symbol, bars, self.timeframe)
+                else:
+                    logger.error(f"Unknown provider: {self.provider}")
+                    return False
                 
-                return True
-            else:
-                logger.warning(f"[WARN] No data returned for {symbol}")
-                return False
+                fetch_end_time = datetime.now()
+                fetch_duration = fetch_end_time - fetch_start_time
                 
-        except Exception as e:
-            logger.error(f"[ERROR] Failed to fetch data for {symbol}: {e}")
-            import traceback
-            logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
-            return False
+                if result is not None and not result.empty:
+                    logger.info(f"[SUCCESS] SUCCESSFULLY fetched {len(result)} bars for {symbol} in {fetch_duration}")
+                    
+                    # Queue data for immediate database saving (non-blocking)
+                    queue_start_time = datetime.now()
+                    self.db_worker.save_data(result, symbol, self.provider.upper(), self.timeframe)
+                    
+                    queue_end_time = datetime.now()
+                    queue_duration = queue_end_time - queue_start_time
+                    logger.info(f"[OK] Data queued for {symbol} in {queue_duration}, queue size: {self.db_worker.queue.qsize()}")
+                    
+                    return True
+                else:
+                    logger.warning(f"[WARN] No data returned for {symbol}")
+                    return False
+                    
+            except Exception as e:
+                if self._is_timeout_error(e) and attempt < self.max_retries - 1:
+                    # Calculate exponential backoff delay
+                    delay = self.retry_base_delay * (2 ** attempt) + (attempt * 0.5)  # Exponential + linear component
+                    logger.warning(f"[TIMEOUT] IB API timeout for {symbol} (attempt {attempt + 1}/{self.max_retries}). Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                    continue
+                elif self._is_timeout_error(e) and attempt == self.max_retries - 1:
+                    logger.error(f"[ERROR] Final timeout after {self.max_retries} attempts for {symbol}")
+                    return False
+                else:
+                    # Non-timeout error, log and return
+                    logger.error(f"[ERROR] Failed to fetch data for {symbol}: {e}")
+                    import traceback
+                    logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
+                    return False
+        
+        return False
     
     def update_universe_data(self, 
                            batch_size: int = 10, 
@@ -684,6 +741,14 @@ class UniverseDataUpdater:
                 else:
                     logger.info(f"[OK] Skip existing disabled, will fetch data for {symbol}")
                 
+                # Ensure IB connection is valid before fetching (for IB provider)
+                if self.provider == "ib":
+                    if not self._ensure_ib_connection():
+                        logger.error(f"[ERROR] Cannot proceed with {symbol} - IB connection failed")
+                        failed += 1
+                        failed_symbols.append(symbol)
+                        continue
+                
                 # Fetch data for this ticker with timeout protection
                 logger.info(f"[FETCH] Starting data fetch for {symbol}...")
                 try:
@@ -712,8 +777,13 @@ class UniverseDataUpdater:
                     error_str = str(e).lower()
                     if "no security definition" in error_str or "contract not found" in error_str:
                         logger.warning(f"[WARN] Symbol {symbol} not found in IB - this is normal for some symbols")
-                    elif "timeout" in error_str:
-                        logger.warning(f"[WARN] Timeout for {symbol} - IB API may be slow")
+                    elif self._is_timeout_error(e):
+                        logger.warning(f"[WARN] Timeout for {symbol} - IB API may be slow or experiencing issues")
+                        # Add extra delay for timeout errors to help with rate limiting
+                        if self.provider == "ib":
+                            extra_delay = 3.0
+                            logger.info(f"[WARN] Adding extra {extra_delay}s delay after timeout for {symbol}")
+                            time.sleep(extra_delay)
                     elif "rate limit" in error_str:
                         logger.warning(f"[WARN] Rate limited for {symbol} - IB API throttling")
                     
@@ -978,7 +1048,8 @@ class UniverseDataUpdater:
         variations = self._generate_symbol_variations(original_symbol)
         
         # Test each variation with IB
-        for variation in variations:
+        for i, variation in enumerate(variations):
+            logger.info(f"[DISCOVER] Testing variation {i+1}/{len(variations)}: {variation}")
             if self._test_ib_symbol(variation):
                 logger.info(f"[DISCOVER] Found valid IB symbol: {original_symbol} -> {variation}")
                 # Cache the successful mapping
@@ -992,86 +1063,171 @@ class UniverseDataUpdater:
     
     def _generate_symbol_variations(self, symbol: str) -> List[str]:
         """Generate possible IB symbol variations"""
-        variations = [
-            symbol,                    # Original: BF.B
-            symbol.replace('.', ' '), # BF B (space - most common for Class B)
-            symbol.replace('.', '-'), # BF-B
-            symbol.replace('.', ''),  # BFB
-            symbol.replace('.', '/'), # BF/B
-            symbol.replace('.', '_'), # BF_B
-        ]
+        variations = []
         
-        # Add Class B specific variations
-        if '.' in symbol and symbol.endswith('.B'):
-            base = symbol.split('.')[0]
+        # Handle both dot and hyphen notation
+        if '.' in symbol:
+            # Original is dot notation (e.g., BF.B)
             variations.extend([
-                f"{base} B",           # BF B
-                f"{base}-B",           # BF-B
-                f"{base}B",            # BFB
-                f"{base}/B",           # BF/B
+                symbol,                    # Original: BF.B
+                symbol.replace('.', ' '), # BF B (space - most common for Class B)
+                symbol.replace('.', '-'), # BF-B
+                symbol.replace('.', ''),  # BFB
+                symbol.replace('.', '/'), # BF/B
+                symbol.replace('.', '_'), # BF_B
             ])
+            
+            # Add Class B specific variations
+            if symbol.endswith('.B'):
+                base = symbol.split('.')[0]
+                variations.extend([
+                    f"{base} B",           # BF B
+                    f"{base}-B",           # BF-B
+                    f"{base}B",            # BFB
+                    f"{base}/B",           # BF/B
+                ])
+        elif '-' in symbol:
+            # Original is hyphen notation (e.g., BF-B)
+            variations.extend([
+                symbol,                    # Original: BF-B
+                symbol.replace('-', '.'), # BF.B (most common in IB)
+                symbol.replace('-', ' '), # BF B
+                symbol.replace('-', ''),  # BFB
+                symbol.replace('-', '/'), # BF/B
+                symbol.replace('-', '_'), # BF_B
+            ])
+            
+            # Add Class B specific variations
+            if symbol.endswith('-B'):
+                base = symbol.split('-')[0]
+                variations.extend([
+                    f"{base}.B",           # BF.B
+                    f"{base} B",           # BF B
+                    f"{base}B",            # BFB
+                    f"{base}/B",           # BF/B
+                    f"{base} CLASS B",     # BF CLASS B (sometimes used)
+                    f"{base} CLASS-B",     # BF CLASS-B
+                ])
+        else:
+            # No special characters, just add common variations
+            variations.append(symbol)
+            
+            # For symbols without special characters, try some common IB variations
+            if len(symbol) <= 4:  # Short symbols often have variations
+                variations.extend([
+                    f"{symbol}1",          # Sometimes used for primary shares
+                    f"{symbol}2",          # Sometimes used for secondary shares
+                ])
+            
+            # Add exchange-specific variations for common stocks
+            if symbol in ['STE', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']:
+                variations.extend([
+                    f"{symbol}.US",        # US exchange suffix
+                    f"{symbol}.NYSE",      # NYSE exchange suffix
+                    f"{symbol}.NASDAQ",    # NASDAQ exchange suffix
+                    f"{symbol} US",        # US exchange suffix with space
+                    f"{symbol} NYSE",      # NYSE exchange suffix with space
+                    f"{symbol} NASDAQ",    # NASDAQ exchange suffix with space
+                ])
         
         # Remove duplicates and None values
         variations = list(dict.fromkeys([v for v in variations if v]))
         logger.info(f"[DISCOVER] Testing variations for {symbol}: {variations}")
         return variations
     
+    def _is_timeout_error(self, error: Exception) -> bool:
+        """Check if an error is a timeout-related error"""
+        error_str = str(error).lower()
+        timeout_indicators = [
+            'timeout', 'timed out', 'request timeout', 'connection timeout',
+            'read timeout', 'write timeout', 'operation timeout', 'socket timeout',
+            'timeout error', 'connection timed out', 'request timed out'
+        ]
+        return any(indicator in error_str for indicator in timeout_indicators)
+    
     def _test_ib_symbol(self, symbol: str) -> bool:
-        """Test if a symbol exists and has data in IB"""
-        try:
-            from utils.fetch_data import get_ib_connection
-            from ib_insync import Stock
-            
-            # Get IB connection
-            ib = get_ib_connection()
-            if not ib.isConnected():
-                logger.warning(f"[TEST] Cannot test {symbol} - IB not connected")
-                return False
-            
-            # Create contract
-            contract = Stock(symbol=symbol, exchange='SMART', currency='USD')
-            
-            # Try to qualify the contract
+        """Test if a symbol exists and has data in IB with retry logic for timeouts"""
+        # Use shorter delays for symbol testing
+        test_max_retries = min(3, self.max_retries)
+        test_base_delay = min(1.0, self.retry_base_delay)
+        
+        for attempt in range(test_max_retries):
             try:
-                ib.qualifyContracts(contract)
-                logger.info(f"[TEST] Symbol {symbol} is recognized by IB")
+                from utils.fetch_data import get_ib_connection
+                from ib_insync import Stock
                 
-                # Try to get a small amount of historical data to confirm it's tradeable
-                try:
-                    bars = ib.reqHistoricalData(
-                        contract,
-                        endDateTime='',
-                        durationStr='1 D',
-                        barSizeSetting='1 hour',
-                        whatToShow='TRADES',
-                        useRTH=True,
-                        formatDate=1
-                    )
-                    
-                    if bars and len(bars) > 0:
-                        logger.info(f"[TEST] Symbol {symbol} is tradeable with {len(bars)} bars")
-                        return True
-                    else:
-                        logger.info(f"[TEST] Symbol {symbol} exists but has no data")
-                        return False
-                        
-                except Exception as data_error:
-                    logger.info(f"[TEST] Symbol {symbol} exists but data fetch failed: {data_error}")
+                # Get IB connection
+                ib = get_ib_connection()
+                if not ib.isConnected():
+                    logger.warning(f"[TEST] Cannot test {symbol} - IB not connected")
                     return False
+                
+                # Create contract
+                contract = Stock(symbol=symbol, exchange='SMART', currency='USD')
+                
+                # Try to qualify the contract
+                try:
+                    ib.qualifyContracts(contract)
+                    logger.info(f"[TEST] Symbol {symbol} is recognized by IB")
+                    
+                    # Try to get a small amount of historical data to confirm it's tradeable
+                    try:
+                        bars = ib.reqHistoricalData(
+                            contract,
+                            endDateTime='',
+                            durationStr='1 D',
+                            barSizeSetting='1 hour',
+                            whatToShow='TRADES',
+                            useRTH=True,
+                            formatDate=1
+                        )
+                        
+                        if bars and len(bars) > 0:
+                            logger.info(f"[TEST] Symbol {symbol} is tradeable with {len(bars)} bars")
+                            return True
+                        else:
+                            logger.info(f"[TEST] Symbol {symbol} exists but has no data")
+                            return False
+                            
+                    except Exception as data_error:
+                        if self._is_timeout_error(data_error) and attempt < test_max_retries - 1:
+                            delay = test_base_delay * (2 ** attempt) + (attempt * 0.5)
+                            logger.info(f"[TEST] Symbol {symbol} data fetch timeout (attempt {attempt + 1}/{test_max_retries}). Retrying in {delay:.1f}s...")
+                            time.sleep(delay)
+                            continue
+                        else:
+                            logger.info(f"[TEST] Symbol {symbol} exists but data fetch failed: {data_error}")
+                            return False
+                        
+                except Exception as e:
+                    if self._is_timeout_error(e) and attempt < test_max_retries - 1:
+                        delay = test_base_delay * (2 ** attempt) + (attempt * 0.5)
+                        logger.info(f"[TEST] Symbol {symbol} contract qualification timeout (attempt {attempt + 1}/{test_max_retries}). Retrying in {delay:.1f}s...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        error_str = str(e).lower()
+                        if "no security definition" in error_str:
+                            logger.info(f"[TEST] Symbol {symbol} - no security definition")
+                        elif "contract not found" in error_str:
+                            logger.info(f"[TEST] Symbol {symbol} - contract not found")
+                        else:
+                            logger.info(f"[TEST] Symbol {symbol} - error: {e}")
+                        return False
                     
             except Exception as e:
-                error_str = str(e).lower()
-                if "no security definition" in error_str:
-                    logger.info(f"[TEST] Symbol {symbol} - no security definition")
-                elif "contract not found" in error_str:
-                    logger.info(f"[TEST] Symbol {symbol} - contract not found")
+                if self._is_timeout_error(e) and attempt < test_max_retries - 1:
+                    delay = test_base_delay * (2 ** attempt) + (attempt * 0.5)
+                    logger.warning(f"[TEST] Symbol {symbol} connection timeout (attempt {attempt + 1}/{test_max_retries}). Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                    continue
                 else:
-                    logger.info(f"[TEST] Symbol {symbol} - error: {e}")
-                return False
-                
-        except Exception as e:
-            logger.warning(f"[TEST] Error testing symbol {symbol}: {e}")
-            return False
+                    logger.warning(f"[TEST] Error testing symbol {symbol}: {e}")
+                    return False
+        
+        # If we've exhausted all retries, log and return False
+        logger.warning(f"[TEST] Symbol {symbol} test failed after {test_max_retries} attempts")
+        return False
 
     def get_symbol_mapping_stats(self) -> Dict[str, Any]:
         """Get statistics about symbol mappings"""
@@ -1205,6 +1361,15 @@ Examples:
   
   # Fetch maximum bars and skip existing data for a specific range
   python update_universe_data.py --provider ib --timeframe 1h --max-bars --skip-existing --start-index 200 --max-tickers 50
+  
+  # Use custom retry settings for IB API timeouts
+  python update_universe_data.py --provider ib --timeframe 1d --max-retries 5 --retry-base-delay 3.0
+  
+  # Aggressive retry settings for unstable connections
+  python update_universe_data.py --provider ib --timeframe 1h --max-retries 10 --retry-base-delay 1.0
+  
+  # Test a single symbol to debug issues
+  python update_universe_data.py --provider ib --timeframe 1d --test-symbol STE
         """
     )
     
@@ -1293,6 +1458,20 @@ Examples:
     )
     
     parser.add_argument(
+        "--max-retries", 
+        type=int, 
+        default=3,
+        help="Maximum number of retries for timeout errors (default: 3)"
+    )
+    
+    parser.add_argument(
+        "--retry-base-delay", 
+        type=float, 
+        default=2.0,
+        help="Base delay in seconds for exponential backoff retries (default: 2.0)"
+    )
+    
+    parser.add_argument(
         "--view-mappings", 
         action="store_true",
         help="View symbol mappings and exit"
@@ -1310,11 +1489,22 @@ Examples:
         help="Clear all invalid symbol mappings and exit"
     )
     
+    parser.add_argument(
+        "--test-symbol", 
+        type=str, 
+        help="Test a single symbol to see what happens (for debugging)"
+    )
+    
     args = parser.parse_args()
     
     try:
         # Initialize updater
-        updater = UniverseDataUpdater(provider=args.provider, timeframe=args.timeframe)
+        updater = UniverseDataUpdater(
+            provider=args.provider, 
+            timeframe=args.timeframe,
+            max_retries=args.max_retries,
+            retry_base_delay=args.retry_base_delay
+        )
         
         if args.dry_run:
             # Show what would be processed
@@ -1364,6 +1554,32 @@ Examples:
         if args.clear_invalid_mappings:
             deleted_count = updater.clear_invalid_mappings()
             print(f"\nCleared {deleted_count} invalid symbol mappings.")
+            return 0
+
+        if args.test_symbol:
+            print(f"\nTesting symbol: {args.test_symbol}")
+            print("=" * 50)
+            
+            # Test symbol conversion
+            if args.provider == "ib":
+                ib_symbol = updater._convert_symbol_for_ib(args.test_symbol)
+                print(f"Original symbol: {args.test_symbol}")
+                print(f"IB symbol: {ib_symbol}")
+                
+                # Test if symbol works
+                print(f"\nTesting if symbol works with IB...")
+                works = updater._test_ib_symbol(ib_symbol)
+                print(f"Symbol works: {works}")
+                
+                if works:
+                    print(f"\nFetching data for {args.test_symbol}...")
+                    result = updater.fetch_ticker_data(args.test_symbol, use_max_bars=False)
+                    print(f"Fetch result: {result}")
+                else:
+                    print(f"\nSymbol {args.test_symbol} does not work with IB")
+            else:
+                print(f"Provider is {args.provider}, not testing IB-specific functionality")
+            
             return 0
 
         # Determine start index

@@ -27,9 +27,15 @@ secret_key = os.getenv("ALPACA_API_SECRET")
 # Constants
 ALPACA_BAR_CAP = 10000  # Alpaca's limit per request
 IB_BAR_CAP = 3000       # IBKR's limit per request
-MAX_RETRIES = 3
+MAX_RETRIES = 5          # Increased from 3 to 5
 RETRY_DELAY = 5
 IB_REQUEST_DELAY = 1     # Delay between IBKR requests
+
+# Enhanced retry configuration for timeout handling
+TIMEOUT_RETRY_DELAYS = [2, 5, 10, 20, 30]  # Progressive delays for timeouts
+RATE_LIMIT_RETRY_DELAYS = [5, 10, 20, 30, 60]  # Longer delays for rate limits
+MAX_TIMEOUT_RETRIES = 3  # Specific retries for timeout errors
+MAX_RATE_LIMIT_RETRIES = 3  # Specific retries for rate limit errors
 
 # Global IBKR connection manager
 _ib_connection = None
@@ -80,6 +86,24 @@ def close_ib_connection():
 def cleanup_ib_connection():
     """Cleanup function to be called when done with IBKR operations"""
     close_ib_connection()
+
+def reset_ib_connection():
+    """Reset the IB connection when we encounter persistent issues"""
+    global _ib_connection
+    
+    with _ib_lock:
+        if _ib_connection and _ib_connection.isConnected():
+            try:
+                logger.warning("[CONNECTION] Resetting IBKR connection due to persistent issues")
+                _ib_connection.disconnect()
+                logger.info("[CONNECTION] IBKR connection disconnected")
+            except Exception as e:
+                logger.warning(f"[CONNECTION] Error disconnecting IBKR: {e}")
+            finally:
+                _ib_connection = None
+        
+        # Force creation of new connection on next get_ib_connection() call
+        logger.info("[CONNECTION] IBKR connection will be recreated on next request")
 
 SAVE_DIR = Path("./data")
 SAVE_DIR.mkdir(exist_ok=True)
@@ -631,56 +655,54 @@ def fetch_from_ib(symbol, bars, timeframe):
         
         logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
-        # Get data with retry logic
-        for attempt in range(MAX_RETRIES):
-            try:
-                bars_data = ib.reqHistoricalData(
-                    contract,
-                    endDateTime="",
-                    durationStr=dur_unit,
-                    barSizeSetting=bar_size,
-                    whatToShow="TRADES",
-                    useRTH=True,
-                    formatDate=1,
-                )
-                
-                if not bars_data:
-                    logger.warning(f"No data returned from IBKR for {symbol}")
-                    return None
-                
-                # Convert to DataFrame
-                df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
-                df.rename(columns={"date": "timestamp"}, inplace=True)
-                
-                # Handle timezone conversion properly
-                df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
-                
-                # Check if timestamp is already timezone-aware
-                if df["timestamp"].dt.tz is None:
-                    # Not timezone-aware, localize to US/Eastern then convert to UTC
-                    df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
-                else:
-                    # Already timezone-aware, just convert to UTC
-                    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+        # Get data with intelligent retry logic
+        def fetch_bars_operation():
+            return ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=dur_unit,
+                barSizeSetting=bar_size,
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+        
+        bars_data = intelligent_retry_with_backoff(
+            fetch_bars_operation, 
+            f"IBKR data fetch for {symbol} ({timeframe})",
+            reset_connection_on_failure=True
+        )
+        
+        if bars_data is None:
+            logger.error(f"Failed to fetch data from IBKR for {symbol} after all retries")
+            return None
+        
+        if not bars_data:
+            logger.warning(f"No data returned from IBKR for {symbol}")
+            return None
+        
+        # Convert to DataFrame
+        df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
+        df.rename(columns={"date": "timestamp"}, inplace=True)
+        
+        # Handle timezone conversion properly
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
+        
+        # Check if timestamp is already timezone-aware
+        if df["timestamp"].dt.tz is None:
+            # Not timezone-aware, localize to US/Eastern then convert to UTC
+            df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+        else:
+            # Already timezone-aware, just convert to UTC
+            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
 
-                # Transform to Nautilus format
-                df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
-                
-                # Note: Database saving is now handled by the caller
-                # save_to_timescaledb(df, symbol, "IB", timeframe)
-                
-                return df
-                
-            except Exception as e:
-                if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
-                    logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
-                    time.sleep(RETRY_DELAY)
-                elif attempt < MAX_RETRIES - 1:
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(RETRY_DELAY)
-                else:
-                    logger.error(f"Failed to fetch data from IBKR after {MAX_RETRIES} attempts: {e}")
-                    raise
+        # Transform to Nautilus format
+        df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
+        
+        # Note: Database saving is now handled by the caller
+        # save_to_timescaledb(df, symbol, "IB", timeframe)
+        
+        return df
     finally:
         # Don't disconnect - we want to reuse the connection
         pass
@@ -716,52 +738,49 @@ def fetch_max_from_ib(symbol, timeframe):
             
             logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
-            # Get data with retry logic
-            batch_data = None
-            for attempt in range(MAX_RETRIES):
-                try:
-                    bars_data = ib.reqHistoricalData(
-                        contract,
-                        endDateTime=end_date,
-                        durationStr=dur_unit,
-                        barSizeSetting=bar_size,
-                        whatToShow="TRADES",
-                        useRTH=True,
-                        formatDate=1,
-                    )
-                    
-                    if not bars_data:
-                        logger.info(f"No more data available. Total bars fetched: {total_bars_fetched}")
-                        break
-                    
-                    # Convert to DataFrame
-                    batch_df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
-                    batch_df.rename(columns={"date": "timestamp"}, inplace=True)
-                    
-                    # Handle timezone conversion properly
-                    batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S")
-                    
-                    # Check if timestamp is already timezone-aware
-                    if batch_df["timestamp"].dt.tz is None:
-                        # Not timezone-aware, localize to US/Eastern then convert to UTC
-                        batch_df["timestamp"] = batch_df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
-                    else:
-                        # Already timezone-aware, just convert to UTC
-                        batch_df["timestamp"] = batch_df["timestamp"].dt.tz_convert("UTC")
-                    
-                    batch_data = batch_df
-                    break
-                    
-                except Exception as e:
-                    if "rate limit" in str(e).lower() or "throttle" in str(e).lower():
-                        logger.warning(f"Rate limited by IBKR. Waiting {RETRY_DELAY} seconds...")
-                        time.sleep(RETRY_DELAY)
-                    elif attempt < MAX_RETRIES - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
-                        time.sleep(RETRY_DELAY)
-                    else:
-                        logger.error(f"Failed to fetch batch from IBKR after {MAX_RETRIES} attempts: {e}")
-                        raise
+            # Get data with intelligent retry logic
+            def fetch_batch_operation():
+                return ib.reqHistoricalData(
+                    contract,
+                    endDateTime=end_date,
+                    durationStr=dur_unit,
+                    barSizeSetting=bar_size,
+                    whatToShow="TRADES",
+                    useRTH=True,
+                    formatDate=1,
+                )
+            
+            bars_data = intelligent_retry_with_backoff(
+                fetch_batch_operation,
+                f"IBKR batch fetch for {symbol} ({timeframe}) - batch {len(all_data) + 1}",
+                reset_connection_on_failure=True
+            )
+            
+            if bars_data is None:
+                logger.error(f"Failed to fetch batch from IBKR for {symbol} after all retries")
+                # Continue to next batch instead of failing completely
+                break
+            
+            if not bars_data:
+                logger.info(f"No more data available. Total bars fetched: {total_bars_fetched}")
+                break
+            
+            # Convert to DataFrame
+            batch_df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
+            batch_df.rename(columns={"date": "timestamp"}, inplace=True)
+            
+            # Handle timezone conversion properly
+            batch_df["timestamp"] = pd.to_datetime(batch_df["timestamp"], format="%Y%m%d  %H:%M:%S")
+            
+            # Check if timestamp is already timezone-aware
+            if batch_df["timestamp"].dt.tz is None:
+                # Not timezone-aware, localize to US/Eastern then convert to UTC
+                batch_df["timestamp"] = batch_df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+            else:
+                # Already timezone-aware, just convert to UTC
+                batch_df["timestamp"] = batch_df["timestamp"].dt.tz_convert("UTC")
+            
+            batch_data = batch_df
         finally:
             # Don't disconnect - we want to reuse the connection
             pass
@@ -811,6 +830,86 @@ def get_unique_client_id():
     timestamp = int(time.time() * 1000) % 10000  # Last 4 digits of timestamp
     random_num = random.randint(100, 999)
     return timestamp + random_num
+
+def intelligent_retry_with_backoff(operation_func, operation_name, max_retries=None, 
+                                 timeout_retries=None, rate_limit_retries=None,
+                                 reset_connection_on_failure=False):
+    """
+    Intelligent retry function with different strategies for different error types.
+    
+    Args:
+        operation_func: Function to retry
+        operation_name: Name of the operation for logging
+        max_retries: Maximum total retries (default: MAX_RETRIES)
+        timeout_retries: Maximum timeout-specific retries (default: MAX_TIMEOUT_RETRIES)
+        rate_limit_retries: Maximum rate-limit-specific retries (default: MAX_RATE_LIMIT_RETRIES)
+        reset_connection_on_failure: Whether to reset IB connection after all retries fail
+    
+    Returns:
+        Result of operation_func or None if all retries exhausted
+    """
+    if max_retries is None:
+        max_retries = MAX_RETRIES
+    if timeout_retries is None:
+        timeout_retries = MAX_TIMEOUT_RETRIES
+    if rate_limit_retries is None:
+        rate_limit_retries = MAX_RATE_LIMIT_RETRIES
+    
+    timeout_attempts = 0
+    rate_limit_attempts = 0
+    total_attempts = 0
+    
+    while total_attempts < max_retries:
+        try:
+            return operation_func()
+        except Exception as e:
+            total_attempts += 1
+            error_str = str(e).lower()
+            
+            # Handle timeout errors specifically
+            if "timeout" in error_str or "timed out" in error_str:
+                if timeout_attempts < timeout_retries:
+                    timeout_attempts += 1
+                    delay = TIMEOUT_RETRY_DELAYS[min(timeout_attempts - 1, len(TIMEOUT_RETRY_DELAYS) - 1)]
+                    logger.warning(f"[TIMEOUT] {operation_name} attempt {timeout_attempts}/{timeout_retries} failed. "
+                                f"Retrying in {delay}s... (Error: {e})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"[TIMEOUT] {operation_name} failed after {timeout_attempts} timeout retries: {e}")
+                    if reset_connection_on_failure:
+                        reset_ib_connection()
+                    return None
+            
+            # Handle rate limit errors specifically
+            elif "rate limit" in error_str or "throttle" in error_str or "too many requests" in error_str:
+                if rate_limit_attempts < rate_limit_retries:
+                    rate_limit_attempts += 1
+                    delay = RATE_LIMIT_RETRY_DELAYS[min(rate_limit_attempts - 1, len(RATE_LIMIT_RETRY_DELAYS) - 1)]
+                    logger.warning(f"[RATE_LIMIT] {operation_name} attempt {rate_limit_attempts}/{rate_limit_retries} failed. "
+                                f"Retrying in {delay}s... (Error: {e})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"[RATE_LIMIT] {operation_name} failed after {rate_limit_attempts} rate limit retries: {e}")
+                    if reset_connection_on_failure:
+                        reset_ib_connection()
+                    return None
+            
+            # Handle other errors with standard retry logic
+            elif total_attempts < max_retries:
+                delay = RETRY_DELAY * total_attempts  # Progressive delay
+                logger.warning(f"[RETRY] {operation_name} attempt {total_attempts}/{max_retries} failed: {e}. "
+                            f"Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            else:
+                logger.error(f"[FAILED] {operation_name} failed after {max_retries} total attempts: {e}")
+                if reset_connection_on_failure:
+                    reset_ib_connection()
+                return None
+    
+    return None
 
 # ─────────────────────────────
 # MAIN ENTRY
