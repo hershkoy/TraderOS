@@ -35,7 +35,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('universe_update.log'),
+        logging.FileHandler('logs/universe_update.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -45,8 +45,11 @@ logger = logging.getLogger(__name__)
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
+# Create logs directory if it doesn't exist
+os.makedirs('logs', exist_ok=True)
+
 # Create file handler for root logger to capture all logs
-file_handler = logging.FileHandler('universe_update_complete.log')
+file_handler = logging.FileHandler('logs/universe_update_complete.log')
 file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
