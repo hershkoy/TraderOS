@@ -112,12 +112,23 @@ class TimescaleDBClient:
         Returns:
             bool: True if successful, False otherwise
         """
-        if not self.ensure_connection():
-            logger.error("No database connection")
-            return False
+        # Create a fresh connection for this operation to avoid conflicts
+        fresh_connection = None
+        cursor = None
         
         try:
-            cursor = self.connection.cursor()
+            # Create a new connection specifically for this operation
+            fresh_connection = psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password,
+                connect_timeout=10,
+                options='-c statement_timeout=600000'  # 10 minutes timeout
+            )
+            
+            cursor = fresh_connection.cursor()
             
             # Set a reasonable timeout for the entire operation
             cursor.execute("SET statement_timeout = '600000'")  # 10 minutes
@@ -172,22 +183,11 @@ class TimescaleDBClient:
             batch_size = 2000  # Increased since COPY is much faster
             total_inserted = 0
             
-            # Check connection health before starting batch operations
-            if not self.ensure_connection():
-                logger.error("Database connection lost before batch insertion")
-                return False
-            
             total_batches = (len(data_to_insert) + batch_size - 1) // batch_size
             for i in range(0, len(data_to_insert), batch_size):
                 batch = data_to_insert[i:i + batch_size]
                 current_batch = i//batch_size + 1
                 logger.info(f"Inserting batch {current_batch}/{total_batches} ({len(batch)} records)...")
-                
-                # Check connection health every few batches
-                if current_batch % 5 == 0:
-                    if not self.ensure_connection():
-                        logger.error("Database connection lost during batch insertion")
-                        return False
                 
                 try:
                     logger.info(f"Inserting batch {i//batch_size + 1} using COPY...")
@@ -195,7 +195,7 @@ class TimescaleDBClient:
                     # Ensure cursor is fresh for each batch
                     if cursor:
                         cursor.close()
-                    cursor = self.connection.cursor()
+                    cursor = fresh_connection.cursor()
                     
                     # Use COPY for much faster bulk insertion
                     from io import StringIO
@@ -236,7 +236,7 @@ class TimescaleDBClient:
                         # IMPORTANT: Reset cursor state after COPY failure
                         # Close the corrupted cursor and create a new one
                         cursor.close()
-                        cursor = self.connection.cursor()
+                        cursor = fresh_connection.cursor()
                         
                         # Use regular INSERT as fallback
                         placeholders = ','.join(['%s'] * 9)  # 9 columns
@@ -262,7 +262,7 @@ class TimescaleDBClient:
                         continue
             
             logger.info(f"Committing transaction...")
-            self.connection.commit()
+            fresh_connection.commit()
             logger.info(f"Successfully inserted {total_inserted} records for {symbol} {timeframe}")
             return True
             
@@ -270,15 +270,23 @@ class TimescaleDBClient:
             logger.error(f"Failed to insert market data: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            if self.connection and not self.connection.closed:
+            if fresh_connection and not fresh_connection.closed:
                 try:
-                    self.connection.rollback()
+                    fresh_connection.rollback()
                 except Exception as rollback_error:
                     logger.error(f"Failed to rollback transaction: {rollback_error}")
             return False
         finally:
             if cursor:
-                cursor.close()
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if fresh_connection:
+                try:
+                    fresh_connection.close()
+                except Exception:
+                    pass
     
     def get_market_data(self, symbol: str, timeframe: str, provider: Optional[str] = None,
                        start_time: Optional[datetime] = None, end_time: Optional[datetime] = None,

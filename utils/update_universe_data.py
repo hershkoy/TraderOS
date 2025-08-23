@@ -246,27 +246,10 @@ class DatabaseWorker:
                 if hasattr(self.db_client, 'insert_market_data'):
                     insert_start_time = datetime.now()
                     
-                    # Create a fresh connection for this operation to avoid conflicts
-                    from utils.timescaledb_client import get_timescaledb_client
-                    fresh_client = get_timescaledb_client()
-                    if not fresh_client.ensure_connection():
-                        logger.error(f"✗ Failed to create fresh connection for {symbol}")
-                        if attempt < max_retries - 1:
-                            logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
-                            time.sleep(2)  # Wait before retry
-                            continue
-                        return False
-                    
-                    insert_result = fresh_client.insert_market_data(df, symbol, provider, timeframe)
+                    # The TimescaleDB client now creates its own fresh connection
+                    insert_result = self.db_client.insert_market_data(df, symbol, provider, timeframe)
                     insert_end_time = datetime.now()
                     insert_duration = insert_end_time - insert_start_time
-                    
-                    # Clean up the fresh connection
-                    try:
-                        if fresh_client.connection:
-                            fresh_client.connection.close()
-                    except Exception:
-                        pass
                     
                     if insert_result:
                         logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
