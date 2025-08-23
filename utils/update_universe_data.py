@@ -33,13 +33,31 @@ except ImportError:
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('universe_update.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Also configure root logger to capture all logs
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Create file handler for root logger to capture all logs
+file_handler = logging.FileHandler('universe_update_complete.log')
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+root_logger.addHandler(file_handler)
+
+# Create console handler for root logger
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+root_logger.addHandler(console_handler)
 
 class DatabaseWorker:
     """Handles database operations in a separate thread to avoid blocking data fetching"""
@@ -58,7 +76,7 @@ class DatabaseWorker:
     def _init_database_connection(self):
         """Initialize a single database connection and cursor for reuse"""
         try:
-            logger.info("🔍 DatabaseWorker: Initializing database connection...")
+            logger.info("DatabaseWorker: Initializing database connection...")
             from utils.timescaledb_client import get_timescaledb_client
             
             self.db_client = get_timescaledb_client()
@@ -104,7 +122,7 @@ class DatabaseWorker:
             self.running = True
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker_thread.start()
-            logger.info("🚀 Database worker thread started")
+            logger.info("[START] Database worker thread started")
     
     def stop(self):
         """Stop the database worker thread"""
@@ -112,7 +130,7 @@ class DatabaseWorker:
         if self.worker_thread:
             self.queue.put(None)  # Signal to stop
             self.worker_thread.join(timeout=5)
-            logger.info("🛑 Database worker thread stopped")
+            logger.info("[STOP] Database worker thread stopped")
         
         # Cleanup database connections
         self._cleanup_database_connection()
@@ -133,17 +151,17 @@ class DatabaseWorker:
                 except Exception:
                     pass
                 self.db_client = None
-            logger.info("🧹 DatabaseWorker: Database connections cleaned up")
+            logger.info("[CLEANUP] DatabaseWorker: Database connections cleaned up")
         except Exception as e:
-            logger.warning(f"DatabaseWorker: Error during cleanup: {e}")
+            logger.warning(f"[WARN] DatabaseWorker: Error during cleanup: {e}")
     
     def save_data(self, df, symbol, provider, timeframe):
         """Queue data for saving (non-blocking)"""
         if self.running:
             self.queue.put((df, symbol, provider, timeframe))
-            logger.info(f"✅ Data queued for {symbol}, queue size: {self.queue.qsize()}")
+            logger.info(f"[OK] Data queued for {symbol}, queue size: {self.queue.qsize()}")
         else:
-            logger.warning(f"⚠️ Database worker not running, using synchronous save for {symbol}")
+            logger.warning(f"[WARN] Database worker not running, using synchronous save for {symbol}")
             # Fallback to synchronous saving if worker not running
             self._save_data_sync(df, symbol, provider, timeframe)
     
@@ -155,11 +173,11 @@ class DatabaseWorker:
     
     def _worker_loop(self):
         """Main worker loop that processes database operations"""
-        logger.info("🔄 Database worker loop started")
+        logger.info("[WORKER] Database worker loop started")
         
         # Initialize database connection in this thread
         if not self._init_database_connection():
-            logger.error("❌ Failed to initialize database connection in worker thread")
+            logger.error("[ERROR] Failed to initialize database connection in worker thread")
             return
         
         loop_count = 0
@@ -172,27 +190,27 @@ class DatabaseWorker:
             # Check for timeout - if no activity for 5 minutes, log a warning
             current_time = time.time()
             if current_time - last_activity_time > 300:  # 5 minutes
-                logger.warning(f"Database worker has been idle for {int(current_time - last_activity_time)} seconds")
+                logger.warning(f"[WARN] Database worker has been idle for {int(current_time - last_activity_time)} seconds")
                 last_activity_time = current_time
             
             try:
                 # Only log every 10th iteration to reduce noise
                 if loop_count % 10 == 0:
-                    logger.info(f"🔄 Worker loop iteration {loop_count} - Queue size: {self.queue.qsize()}")
+                    logger.info(f"[WORKER] Worker loop iteration {loop_count} - Queue size: {self.queue.qsize()}")
                 
                 # Use a shorter timeout to prevent hanging
                 item = self.queue.get(timeout=30)  # 30 seconds instead of 1
                 last_activity_time = time.time()  # Reset activity timer
                 
                 if item is None:  # Stop signal
-                    logger.info("🛑 Received stop signal, exiting worker loop")
+                    logger.info("[STOP] Received stop signal, exiting worker loop")
                     break
                 
                 df, symbol, provider, timeframe = item
-                logger.info(f"📊 Processing item: symbol={symbol}, provider={provider}, timeframe={timeframe}, df_shape={df.shape if df is not None else 'None'}")
+                logger.info(f"[DATA] Processing item: symbol={symbol}, provider={provider}, timeframe={timeframe}, df_shape={df.shape if df is not None else 'None'}")
                 
                 process_start_time = datetime.now()
-                logger.info(f"📥 STARTING database processing for {symbol}: {len(df)} bars at {process_start_time.strftime('%H:%M:%S')}")
+                logger.info(f"[START] STARTING database processing for {symbol}: {len(df)} bars at {process_start_time.strftime('%H:%M:%S')}")
                 
                 # Add timeout for database operations
                 save_result = self._save_data_sync(df, symbol, provider, timeframe)
@@ -201,12 +219,12 @@ class DatabaseWorker:
                     self.stats["saved"] += 1
                     process_end_time = datetime.now()
                     process_duration = process_end_time - process_start_time
-                    logger.info(f"✅ SUCCESSFULLY saved data for {symbol} in {process_duration}")
+                    logger.info(f"[SUCCESS] SUCCESSFULLY saved data for {symbol} in {process_duration}")
                 else:
                     self.stats["failed"] += 1
                     process_end_time = datetime.now()
                     process_duration = process_end_time - process_start_time
-                    logger.error(f"❌ FAILED to save data for {symbol} in {process_duration}")
+                    logger.error(f"[FAILED] FAILED to save data for {symbol} in {process_duration}")
                 
                 self.queue.task_done()
                 
@@ -214,19 +232,20 @@ class DatabaseWorker:
                 # This is normal when the queue is empty, just continue
                 continue
             except Exception as e:
-                logger.error(f"❌ Database worker error at iteration {loop_count}: {e}")
+                logger.error(f"[ERROR] Database worker error at iteration {loop_count}: {e}")
                 import traceback
-                logger.error(f"❌ Database worker traceback: {traceback.format_exc()}")
+                logger.error(f"[ERROR] Database worker traceback: {traceback.format_exc()}")
                 self.stats["errors"].append(str(e))
                 if item:  # Now item is always defined
                     try:
                         self.queue.task_done()
                     except Exception as task_done_error:
-                        logger.error(f"❌ Failed to call queue.task_done() after error: {task_done_error}")
+                        logger.error(f"[ERROR] Failed to call queue.task_done() after error: {task_done_error}")
+                        logger.error(f"[ERROR] task_done error traceback: {traceback.format_exc()}")
         
         # Cleanup database connection when worker loop ends
         self._cleanup_database_connection()
-        logger.info(f"🔄 Database worker loop ended after {loop_count} iterations")
+        logger.info(f"[WORKER] Database worker loop ended after {loop_count} iterations")
     
     def _save_data_sync(self, df, symbol, provider, timeframe):
         """Synchronous data saving (fallback method)"""
@@ -252,12 +271,12 @@ class DatabaseWorker:
                     insert_duration = insert_end_time - insert_start_time
                     
                     if insert_result:
-                        logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
+                        logger.info(f"[SAVE] Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                         return True
                     else:
-                        logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+                        logger.error(f"[FAILED] Failed to save to TimescaleDB for {symbol} {timeframe}")
                         if attempt < max_retries - 1:
-                            logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                            logger.info(f"[RETRY] Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
                             time.sleep(2)  # Wait before retry
                             continue
                         return False
@@ -265,28 +284,28 @@ class DatabaseWorker:
                     # Fallback: use the client's save_market_data method if available
                     if hasattr(self.db_client, 'save_market_data'):
                         if self.db_client.save_market_data(df, symbol, provider, timeframe):
-                            logger.info(f"💾 Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
+                            logger.info(f"[SAVE] Saved {len(df)} records to TimescaleDB for {symbol} {timeframe}")
                             return True
                         else:
-                            logger.error(f"✗ Failed to save to TimescaleDB for {symbol} {timeframe}")
+                            logger.error(f"[FAILED] Failed to save to TimescaleDB for {symbol} {timeframe}")
                             if attempt < max_retries - 1:
-                                logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                                logger.info(f"[RETRY] Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
                                 time.sleep(2)  # Wait before retry
                                 continue
                             return False
                     else:
-                        logger.error(f"✗ TimescaleDB client doesn't have insert_market_data or save_market_data method for {symbol}")
+                        logger.error(f"[ERROR] TimescaleDB client doesn't have insert_market_data or save_market_data method for {symbol}")
                         return False
                         
             except Exception as e:
-                logger.error(f"✗ Error saving to TimescaleDB for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.error(f"[ERROR] Error saving to TimescaleDB for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    logger.info(f"Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
+                    logger.info(f"[RETRY] Retrying database save for {symbol} (attempt {attempt + 1}/{max_retries})")
                     time.sleep(2)  # Wait before retry
                     continue
                 else:
                     import traceback
-                    logger.error(f"✗ Final attempt failed for {symbol}. Traceback: {traceback.format_exc()}")
+                    logger.error(f"[ERROR] Final attempt failed for {symbol}. Traceback: {traceback.format_exc()}")
                     return False
         
         return False
@@ -406,23 +425,39 @@ class UniverseDataUpdater:
                 except Exception:
                     pass
                 self.db_client = None
-            logger.info("🧹 UniverseDataUpdater: Database connections cleaned up")
+            logger.info("[CLEANUP] UniverseDataUpdater: Database connections cleaned up")
         except Exception as e:
-            logger.warning(f"UniverseDataUpdater: Error during cleanup: {e}")
+            logger.warning(f"[WARN] UniverseDataUpdater: Error during cleanup: {e}")
     
     def __del__(self):
         """Cleanup database connections when object is destroyed"""
         self._cleanup_database_connection()
     
-    def get_universe_tickers(self, force_refresh: bool = False) -> List[str]:
-        """Get all tickers from the universe"""
+    def get_universe_tickers(self, force_refresh: bool = False, universe_file: Optional[str] = None) -> List[str]:
+        """Get all tickers from the universe or from a custom file"""
         try:
+            # If universe_file is specified, load tickers from that file
+            if universe_file:
+                logger.info(f"Loading tickers from custom universe file: {universe_file}")
+                try:
+                    with open(universe_file, 'r') as f:
+                        custom_tickers = [line.strip() for line in f if line.strip()]
+                    logger.info(f"Loaded {len(custom_tickers)} tickers from {universe_file}")
+                    return custom_tickers
+                except FileNotFoundError:
+                    logger.error(f"Universe file not found: {universe_file}")
+                    return []
+                except Exception as e:
+                    logger.error(f"Error reading universe file {universe_file}: {e}")
+                    return []
+            
+            # Use default universe
             if force_refresh:
                 logger.info("Force refreshing ticker universe...")
                 self.ticker_manager.refresh_all_indices()
             
             universe = self.ticker_manager.get_combined_universe()
-            logger.info(f"Retrieved {len(universe)} tickers from universe")
+            logger.info(f"Retrieved {len(universe)} tickers from default universe")
             return universe
             
         except Exception as e:
@@ -491,18 +526,18 @@ class UniverseDataUpdater:
         """
         try:
             fetch_start_time = datetime.now()
-            logger.info(f"🚀 STARTING data fetch for {symbol} @ {self.timeframe} from {self.provider}...")
+            logger.info(f"[START] STARTING data fetch for {symbol} @ {self.timeframe} from {self.provider}...")
             
             # Determine number of bars to fetch
             if use_max_bars:
                 # Use "max" to get all available data
                 bars = "max"
-                logger.info(f"📊 Fetching maximum available bars for {symbol}")
+                logger.info(f"[INFO] Fetching maximum available bars for {symbol}")
             else:
                 # Use fixed amounts for reliability
                 # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
                 bars = 1260 if self.timeframe == "1d" else 8760
-                logger.info(f"📊 Fetching {bars} bars for {symbol}")
+                logger.info(f"[INFO] Fetching {bars} bars for {symbol}")
             
             if self.provider == "alpaca":
                 result = fetch_from_alpaca(symbol, bars, self.timeframe)
@@ -516,7 +551,7 @@ class UniverseDataUpdater:
             fetch_duration = fetch_end_time - fetch_start_time
             
             if result is not None and not result.empty:
-                logger.info(f"✅ SUCCESSFULLY fetched {len(result)} bars for {symbol} in {fetch_duration}")
+                logger.info(f"[SUCCESS] SUCCESSFULLY fetched {len(result)} bars for {symbol} in {fetch_duration}")
                 
                 # Queue data for immediate database saving (non-blocking)
                 queue_start_time = datetime.now()
@@ -524,11 +559,11 @@ class UniverseDataUpdater:
                 
                 queue_end_time = datetime.now()
                 queue_duration = queue_end_time - queue_start_time
-                logger.info(f"✅ Data queued for {symbol} in {queue_duration}, queue size: {self.db_worker.queue.qsize()}")
+                logger.info(f"[OK] Data queued for {symbol} in {queue_duration}, queue size: {self.db_worker.queue.qsize()}")
                 
                 return True
             else:
-                logger.warning(f"⚠️ No data returned for {symbol}")
+                logger.warning(f"[WARN] No data returned for {symbol}")
                 return False
                 
         except Exception as e:
@@ -544,7 +579,8 @@ class UniverseDataUpdater:
                            max_tickers: Optional[int] = None,
                            start_from_index: int = 0,
                            use_max_bars: bool = False,
-                           skip_existing: bool = False) -> Dict[str, Any]:
+                           skip_existing: bool = False,
+                           universe_file: Optional[str] = None) -> Dict[str, Any]:
         """
         Update market data for all tickers in the universe
         
@@ -556,12 +592,13 @@ class UniverseDataUpdater:
             start_from_index: Index to start processing from (for resuming)
             use_max_bars: If True, fetch maximum available bars, otherwise use fixed amounts
             skip_existing: If True, skip tickers that already have data for the timeframe
+            universe_file: Optional custom universe file to load tickers from
             
         Returns:
             Dict with update statistics
         """
         # Get universe tickers
-        tickers = self.get_universe_tickers()
+        tickers = self.get_universe_tickers(universe_file=universe_file)
         if not tickers:
             return {"error": "No tickers available"}
         
@@ -596,24 +633,24 @@ class UniverseDataUpdater:
                 ticker_start_time = datetime.now()
                 current_index = start_from_index + i
                 
-                logger.info(f"🔄 PROCESSING {symbol} ({i+1}/{total_tickers}, overall index: {current_index})")
+                logger.info(f"[PROCESSING] {symbol} ({i+1}/{total_tickers}, overall index: {current_index})")
                 
                 # Check if we should skip this ticker
                 if skip_existing:
                     has_data = self.ticker_has_data(symbol)
                     
                     if has_data:
-                        logger.info(f"⏭️ Skipping {symbol} - already has data")
+                        logger.info(f"[SKIP] {symbol} - already has data")
                         skipped += 1
                         skipped_symbols.append(symbol)
                         continue
                     else:
-                        logger.info(f"✅ {symbol} doesn't have data, will fetch...")
+                        logger.info(f"[OK] {symbol} doesn't have data, will fetch...")
                 else:
-                    logger.info(f"✅ Skip existing disabled, will fetch data for {symbol}")
+                    logger.info(f"[OK] Skip existing disabled, will fetch data for {symbol}")
                 
                 # Fetch data for this ticker with timeout protection
-                logger.info(f"📡 Starting data fetch for {symbol}...")
+                logger.info(f"[FETCH] Starting data fetch for {symbol}...")
                 try:
                     # For IB provider, we need to run in main thread due to event loop requirements
                     # Use a simple approach without threading
@@ -623,18 +660,28 @@ class UniverseDataUpdater:
                         successful += 1
                         ticker_end_time = datetime.now()
                         ticker_duration = ticker_end_time - ticker_start_time
-                        logger.info(f"🎯 COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
+                        logger.info(f"[SUCCESS] COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
                     else:
                         failed += 1
                         failed_symbols.append(symbol)
                         ticker_end_time = datetime.now()
                         ticker_duration = ticker_end_time - ticker_start_time
-                        logger.info(f"❌ FAILED {symbol} in {ticker_duration}")
+                        logger.info(f"[FAILED] FAILED {symbol} in {ticker_duration}")
                         
                 except Exception as e:
-                    logger.error(f"❌ Exception during processing {symbol}: {e}")
+                    logger.error(f"[ERROR] Exception during processing {symbol}: {e}")
                     import traceback
-                    logger.error(f"❌ Exception traceback: {traceback.format_exc()}")
+                    logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
+                    
+                    # Check if it's a common IB error
+                    error_str = str(e).lower()
+                    if "no security definition" in error_str or "contract not found" in error_str:
+                        logger.warning(f"[WARN] Symbol {symbol} not found in IB - this is normal for some symbols")
+                    elif "timeout" in error_str:
+                        logger.warning(f"[WARN] Timeout for {symbol} - IB API may be slow")
+                    elif "rate limit" in error_str:
+                        logger.warning(f"[WARN] Rate limited for {symbol} - IB API throttling")
+                    
                     failed += 1
                     failed_symbols.append(symbol)
                     continue
@@ -645,9 +692,9 @@ class UniverseDataUpdater:
                 
                 # Batch processing with delays
                 if (i + 1) % batch_size == 0 and i < total_tickers - 1:
-                    logger.info(f"📦 Completed batch {i//batch_size + 1}. Taking {delay_between_batches}s break...")
-                    logger.info(f"📊 Progress: {i+1}/{total_tickers} tickers processed")
-                    logger.info(f"📈 Success: {successful}, Failed: {failed}, Skipped: {skipped}")
+                    logger.info(f"[BATCH] Completed batch {i//batch_size + 1}. Taking {delay_between_batches}s break...")
+                    logger.info(f"[PROGRESS] Progress: {i+1}/{total_tickers} tickers processed")
+                    logger.info(f"[STATS] Success: {successful}, Failed: {failed}, Skipped: {skipped}")
                     time.sleep(delay_between_batches)
                 
         except KeyboardInterrupt:
@@ -888,6 +935,12 @@ Examples:
         help="Show what would be processed without actually fetching data"
     )
     
+    parser.add_argument(
+        "--universe-file", 
+        type=str, 
+        help="Load tickers from this custom universe file instead of default"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -896,7 +949,7 @@ Examples:
         
         if args.dry_run:
             # Show what would be processed
-            tickers = updater.get_universe_tickers(force_refresh=args.force_refresh)
+            tickers = updater.get_universe_tickers(force_refresh=args.force_refresh, universe_file=args.universe_file)
             if args.max_tickers:
                 tickers = tickers[:args.max_tickers]
             if args.resume_from:
@@ -923,7 +976,8 @@ Examples:
             max_tickers=args.max_tickers,
             start_from_index=start_index,
             use_max_bars=args.max_bars,
-            skip_existing=args.skip_existing
+            skip_existing=args.skip_existing,
+            universe_file=args.universe_file
         )
         
         if "error" in results:
@@ -980,17 +1034,17 @@ Examples:
             try:
                 from utils.fetch_data import cleanup_ib_connection
                 cleanup_ib_connection()
-                logger.info("🧹 Cleaned up IBKR connection in finally block")
+                logger.info("[CLEANUP] Cleaned up IBKR connection in finally block")
             except Exception as cleanup_error:
-                logger.warning(f"Error cleaning up IBKR connection in finally block: {cleanup_error}")
+                logger.warning(f"[WARN] Error cleaning up IBKR connection in finally block: {cleanup_error}")
         
         # Ensure TimescaleDB client is cleaned up
         try:
             from utils.timescaledb_client import close_timescaledb_client
             close_timescaledb_client()
-            logger.info("🧹 Cleaned up TimescaleDB client in finally block")
+            logger.info("[CLEANUP] Cleaned up TimescaleDB client in finally block")
         except Exception as cleanup_error:
-            logger.warning(f"Error cleaning up TimescaleDB client in finally block: {cleanup_error}")
+            logger.warning(f"[WARN] Error cleaning up TimescaleDB client in finally block: {cleanup_error}")
 
 
 if __name__ == "__main__":

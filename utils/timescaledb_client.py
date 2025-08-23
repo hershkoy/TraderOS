@@ -149,7 +149,7 @@ class TimescaleDBClient:
                     volume = int(row['volume'])
                     
                     # Basic validation
-                    if not all(isinstance(x, (int, float)) and x > 0 for x in [open_price, high_price, low_price, close_price, volume]):
+                    if not all(isinstance(x, (int, float)) and x >= 0 for x in [open_price, high_price, low_price, close_price, volume]):
                         logger.warning(f"Skipping invalid record at index {idx}: {row.to_dict()}")
                         continue
                     
