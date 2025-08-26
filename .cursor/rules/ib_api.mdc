@@ -1,0 +1,67 @@
+---
+description: How to connent to ib api. use this rule whenever the code deals with ib api connection
+globs:
+alwaysApply: false
+---
+Looking at your `fetch_data.py` file, I can see how you've implemented IB API connection management. Here's brief documentation for an AI agent:
+
+## IB API Connection Management Documentation
+
+### Connection Architecture
+The system uses a **shared global connection** with thread-safe management:
+
+```python
+# Global connection with thread lock
+_ib_connection = None
+_ib_lock = threading.Lock()
+```
+
+### Key Functions
+
+#### `get_ib_connection()`
+- **Purpose**: Get or create a shared IBKR connection
+- **Behavior**: 
+  - Returns existing connection if valid
+  - Creates new connection with random client ID (1000-9999) if needed
+  - Uses retry logic (3 attempts) with 2-second delays
+  - Connects to `127.0.0.1:4001` (IB Gateway default)
+- **Thread Safety**: Uses `_ib_lock` for thread-safe access
+
+#### `close_ib_connection()`
+- **Purpose**: Close the global IBKR connection
+- **Behavior**: Disconnects and sets `_ib_connection = None`
+
+#### `cleanup_ib_connection()`
+- **Purpose**: Cleanup function (alias for `close_ib_connection()`)
+
+#### `reset_ib_connection()`
+- **Purpose**: Force reset when encountering persistent issues
+- **Behavior**: Disconnects current connection and forces recreation on next `get_ib_connection()` call
+
+### Connection Details
+- **Host**: `127.0.0.1` (localhost)
+- **Port**: `4001` (IB Gateway default)
+- **Client ID**: Random 4-digit number (1000-9999) for each new connection
+- **Retry Logic**: 3 attempts with 2-second delays between attempts
+
+### Usage Pattern
+```python
+# Get connection (creates if needed)
+ib = get_ib_connection()
+
+# Use connection for operations
+# ... IB operations ...
+
+# Cleanup when done
+cleanup_ib_connection()
+```
+
+### Error Handling
+- Connection failures trigger retry logic
+- Persistent issues can be resolved with `reset_ib_connection()`
+- Thread-safe operations prevent connection conflicts
+
+### Integration Notes
+- Used by `update_universe_data.py` and `screener_zero_cost_collar_enhanced.py`
+- Provides consistent connection management across the project
+- Supports both paper trading and live trading environments

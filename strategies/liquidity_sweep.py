@@ -1,4 +1,4 @@
-liquidity_sweep.pya# strategies/liquidity_sweep.py
+# strategies/liquidity_sweep.py
 import backtrader as bt
 import math
 from datetime import datetime, date
@@ -15,14 +15,17 @@ class LiquiditySweep(bt.Strategy):
         rr=2.0,
         trend_sma=50,
         use_trend=True,
-        rth_only=False          # if your data includes AH, you can later add a session filter
+        rth_only=False,          # if your data includes AH, you can later add a session filter
+        size=1,                  # position size (added for compatibility)
+        printlog=False,          # enable logging (added for compatibility)
+        log_level='INFO'         # log level (added for compatibility)
     )
 
     def __init__(self):
         d = self.data
         self.atr = bt.ind.ATR(d, period=self.p.atr_period)
         self.sma = bt.ind.SMA(d.close, period=self.p.trend_sma)
-        self.median_vol = bt.ind.Quantile(d.volume, period=self.p.vol_lookback, q=0.5)
+        self.median_vol = bt.ind.SMA(d.volume, period=self.p.vol_lookback)  # Use SMA instead of Quantile
 
         # Track prior day high/low updated once per calendar day
         self.pdh = bt.LineNum(0.0)
@@ -129,3 +132,17 @@ class LiquiditySweep(bt.Strategy):
         if self.position.size == 0 and self.order:
             # Bracket after fill in notify_trade is safer, but for brevity:
             pass
+
+    @staticmethod
+    def get_data_requirements():
+        """Return the data requirements for this strategy"""
+        return {
+            'base_timeframe': '1h',
+            'additional_timeframes': [],
+            'requires_resampling': False
+        }
+
+    @staticmethod
+    def get_description():
+        """Return strategy description"""
+        return "Liquidity Sweep Strategy using ATR and volume analysis on hourly data"

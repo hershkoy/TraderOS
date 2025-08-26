@@ -1,0 +1,73 @@
+---
+description: How to connect to the database to get ticker universe 
+globs:
+alwaysApply: false
+---
+Looking at your `update_universe_data.py` file, I can see how you connect to the database to get the ticker universe. Here's a brief Cursor AI rule for database connection:
+
+## Database Connection for Ticker Universe - Cursor AI Rule
+
+### **Database Connection Pattern**
+The system uses a **shared TimescaleDB client** with connection management:
+
+```python
+# Get shared database client
+from utils.timescaledb_client import get_timescaledb_client
+db_client = get_timescaledb_client()
+
+# Ensure connection is active
+if not db_client.ensure_connection():
+    logger.error("Failed to connect to database")
+    return False
+
+# Use connection cursor for queries
+db_cursor = db_client.connection.cursor()
+```
+
+### **Key Functions**
+
+#### **`_init_database_connection()`**
+- **Purpose**: Initialize database connection and cursor
+- **Returns**: `True` if successful, `False` if failed
+- **Usage**: Called during class initialization
+
+#### **`_ensure_database_connection()`**
+- **Purpose**: Verify connection is valid, reconnect if needed
+- **Retry Logic**: 3 attempts with exponential backoff
+- **Test Query**: `SELECT 1` to verify connection health
+
+#### **`_cleanup_database_connection()`**
+- **Purpose**: Close cursor and connection properly
+- **Called**: During cleanup and object destruction
+
+### **Connection Details**
+- **Client**: `get_timescaledb_client()` from `utils.timescaledb_client`
+- **Connection Test**: Simple `SELECT 1` query
+- **Retry Strategy**: Exponential backoff (1s, 2s, 4s delays)
+- **Error Handling**: Graceful fallback with logging
+
+### **Usage Pattern**
+```python
+# Initialize connection
+if not self._ensure_database_connection():
+    return False
+
+# Execute queries
+self.db_cursor.execute("SELECT * FROM ticker_universe")
+results = self.db_cursor.fetchall()
+
+# Cleanup when done
+self._cleanup_database_connection()
+```
+
+### **Integration Notes**
+- Used by `UniverseDataUpdater` and `DatabaseWorker` classes
+- Provides consistent database access across the project
+- Supports both synchronous and asynchronous operations
+- Handles connection failures gracefully with retry logic
+
+### **Error Handling**
+- Connection failures trigger automatic reconnection
+- Failed queries are logged with detailed error messages
+- Graceful degradation when database is unavailable
+- Proper cleanup ensures no connection leaks

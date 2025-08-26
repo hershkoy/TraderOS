@@ -7,10 +7,11 @@ from .moving_averages import SMA, EMA, WMA
 from .momentum import RSI, MACD, Stochastic
 from .volume import Volume, OBV, VWAP
 from .trend import BollingerBands, ATR
+from .supertrend import SuperTrend
 
 __all__ = [
     'SMA', 'EMA', 'WMA',
     'RSI', 'MACD', 'Stochastic',
     'Volume', 'OBV', 'VWAP',
-    'BollingerBands', 'ATR'
+    'BollingerBands', 'ATR', 'SuperTrend'
 ]

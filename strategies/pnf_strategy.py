@@ -56,6 +56,7 @@ class PnF_MTF_Strategy(bt.Strategy):
         commission=0.001,   # 0.1%
         slippage=0.0005,    # 5 bps model (applied via price adjustment below if desired)
         printlog=True,
+        log_level='INFO',   # log level (added for compatibility)
     )
 
     def log(self, txt):

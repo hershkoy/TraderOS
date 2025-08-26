@@ -1,0 +1,74 @@
+# Zero-Cost Collar Screener Configuration
+# This file allows you to customize the screener parameters without editing the main script
+
+# Interactive Brokers Connection Settings
+ib_connection:
+  host: "127.0.0.1"
+  port: 7497  # 7497 for paper trading, 7496 for live
+  client_id: 19
+  readonly: true  # Set to false for live trading
+
+# Capital and Budget Settings
+capital:
+  budget: 30000  # Maximum capital to use per position (USD)
+  min_position_size: 5000  # Minimum position size to consider (USD)
+
+# Option Parameters
+options:
+  min_dte: 30  # Minimum days to expiry
+  max_dte: 60  # Maximum days to expiry
+  put_delta_range: [-0.35, -0.20]  # Target put delta range
+  call_delta_range: [0.20, 0.35]   # Target call delta range
+
+# Risk Tolerance
+risk:
+  floor_tolerance: -25.0  # Allow small negative floor (e.g., -$25)
+  max_spread_percent: 0.15  # Maximum bid-ask spread as % of mid price
+
+# Universe of Symbols to Scan
+universe:
+  # Major Tech Stocks
+  - "AAPL"
+  - "MSFT" 
+  - "NVDA"
+  - "AMZN"
+  - "META"
+  - "GOOGL"
+  - "TSLA"
+  - "NFLX"
+  
+  # Major ETFs
+  - "SPY"
+  - "QQQ"
+  - "IWM"
+  - "DIA"
+  - "VTI"
+  - "VOO"
+  
+  # Additional stocks (uncomment to add)
+  # - "AMD"
+  # - "CRM"
+  # - "ADBE"
+  # - "PYPL"
+  # - "INTC"
+  # - "ORCL"
+
+# Output Settings
+output:
+  max_results: 25  # Maximum number of results to display
+  save_to_csv: true
+  csv_filename: "reports/collar_opportunities.csv"
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+# Advanced Settings
+advanced:
+  # Option chain sampling
+  max_strikes_per_expiry: 16  # Maximum strikes to sample around current price
+  
+  # Data quality filters
+  require_model_greeks: true  # Require IB model greeks for delta calculation
+  min_volume: 0  # Minimum option volume (0 = no filter)
+  
+  # Performance settings
+  request_timeout: 5.0  # Timeout for market data requests (seconds)
+  sleep_between_requests: 0.25  # Sleep between API requests (seconds)

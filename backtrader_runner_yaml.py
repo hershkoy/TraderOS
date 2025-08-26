@@ -576,6 +576,40 @@ def save_chart_png(cerebro, report_dir, config):
     """Chart saving disabled - no PNG files generated"""
     pass
 
+def _strategy_requests_4h(strategy_class) -> bool:
+    """
+    Returns True if the strategy appears to want a higher timeframe feed.
+    Heuristic: the strategy defines a 'params' dict with key 'higher_tf_idx'
+    OR it exposes a static 'get_data_requirements' that includes '4h'.
+    """
+    # 1) Params-based detection - check if higher_tf_idx is defined in params
+    try:
+        # Check if the strategy has a higher_tf_idx parameter defined
+        if hasattr(strategy_class, 'params'):
+            # For backtrader params, we need to check if higher_tf_idx is defined
+            # We can do this by looking at the params tuple/list structure
+            params_attr = getattr(strategy_class, 'params', None)
+            if params_attr:
+                # Convert params to string and check if higher_tf_idx is mentioned
+                params_str = str(params_attr)
+                if 'higher_tf_idx' in params_str:
+                    return True
+    except Exception:
+        pass
+
+    # 2) Data_requirements-based detection (more reliable)
+    try:
+        if hasattr(strategy_class, 'get_data_requirements'):
+            dr = strategy_class.get_data_requirements()
+            # accept both '4h' or '240m' or 'hours_4' conventions if you use them later
+            addl = [x.lower() for x in dr.get('additional_timeframes', [])]
+            if any(x in addl for x in ('4h', '240m', 'hours_4')):
+                return True
+    except Exception:
+        pass
+
+    return False
+
 def setup_data_feeds(cerebro, strategy_class, df_data, config):
     """Setup data feeds based on strategy requirements"""
     data_reqs = strategy_class.get_data_requirements()
@@ -603,6 +637,19 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
         wfeed = cerebro.resampledata(data_1h, timeframe=bt.TimeFrame.Weeks, compression=1)
         
         return [data_1h, dfeed, wfeed]
+    
+    # NEW BRANCH: Auto-add 4h resample when strategy requests it
+    elif data_reqs['base_timeframe'] == 'hourly' and _strategy_requests_4h(strategy_class):
+        # Base 1h feed (PandasData is fine for IB dataframes)
+        data_1h = bt.feeds.PandasData(dataname=df_data)
+        cerebro.adddata(data_1h)
+
+        # Auto-add 4h resample as data1
+        # 4 hours = 240 minutes
+        data_4h = cerebro.resampledata(data_1h, timeframe=bt.TimeFrame.Minutes, compression=240)
+
+        # Return both feeds in order; strategy will access self.datas[1]
+        return [data_1h, data_4h]
     
     else:
         data_feed = bt.feeds.PandasData(dataname=df_data)
