@@ -467,7 +467,7 @@ class CollarScreener:
     def pick_by_moneyness(self, strikes: List[Tuple], stock_price: float, 
                           target_moneyness_range: Tuple[float, float], 
                           option_type: str = 'put') -> List[Tuple]:
-        """Pick options by moneyness (K/spot) when delta is not available"""
+        """Pick options by moneyness (K/spot) when delta is not available - ADAPTIVE VERSION"""
         candidates = []
         for contract, delta, mid_price, strike in strikes:
             if mid_price is None:
@@ -490,10 +490,86 @@ class CollarScreener:
         candidates.sort(key=lambda x: abs(x[4] - center))  # x[4] is moneyness
         
         return [(c[0], c[1], c[2], c[3]) for c in candidates[:4]]  # Remove moneyness from result
+
+    def pick_by_moneyness_adaptive(self, strikes: List[Tuple], stock_price: float, 
+                                  option_type: str = 'put', min_candidates: int = 2) -> List[Tuple]:
+        """
+        ADAPTIVE moneyness-based selection with tiered widening to ensure we get candidates.
+        Returns at least min_candidates if available, with progressive widening of moneyness bands.
+        """
+        candidates = []
+        
+        # Define tiered moneyness ranges for adaptive selection
+        if option_type == 'put':
+            # Tier 1: Preferred OTM range (15-35% OTM)
+            tiers = [
+                (0.65, 0.95),   # Tier 1: 15-35% OTM
+                (0.80, 1.02),   # Tier 2: Allow ATM/near-ITM
+                (0.75, 1.10),   # Tier 3: Wider range
+                (0.70, 1.15),   # Tier 4: Very wide
+            ]
+        else:  # call
+            # Tier 1: Preferred OTM range (15-35% OTM)
+            tiers = [
+                (1.05, 1.35),   # Tier 1: 15-35% OTM
+                (0.98, 1.10),   # Tier 2: Allow ATM/near-ITM
+                (0.95, 1.20),   # Tier 3: Wider range
+                (0.90, 1.25),   # Tier 4: Very wide
+            ]
+        
+        # Try each tier until we have enough candidates
+        for tier_idx, (min_moneyness, max_moneyness) in enumerate(tiers):
+            tier_candidates = []
+            
+            for contract, delta, mid_price, strike in strikes:
+                if mid_price is None:
+                    continue
+                    
+                moneyness = strike / stock_price
+                if self.in_range(moneyness, min_moneyness, max_moneyness):
+                    tier_candidates.append((contract, delta, mid_price, strike, moneyness))
+            
+            # Sort by distance from center of this tier's range
+            center = (min_moneyness + max_moneyness) / 2
+            tier_candidates.sort(key=lambda x: abs(x[4] - center))
+            
+            # Add candidates from this tier
+            for candidate in tier_candidates:
+                if len(candidates) >= min_candidates * 2:  # Get more than minimum to have choices
+                    break
+                candidates.append(candidate)
+            
+            # If we have enough candidates, stop
+            if len(candidates) >= min_candidates:
+                break
+        
+        # If we still don't have enough, take the nearest strikes to spot
+        if len(candidates) < min_candidates:
+            self.logger.debug(f"Adaptive moneyness selection for {option_type}s: only {len(candidates)} candidates, taking nearest to spot")
+            
+            # Get all strikes with valid mid prices
+            all_valid = [(contract, delta, mid_price, strike, abs(strike - stock_price)) 
+                        for contract, delta, mid_price, strike in strikes 
+                        if mid_price is not None]
+            
+            # Sort by distance from spot
+            all_valid.sort(key=lambda x: x[4])  # x[4] is distance from spot
+            
+            # Add the nearest ones
+            for candidate in all_valid:
+                if len(candidates) >= min_candidates * 2:
+                    break
+                # Convert back to (contract, delta, mid_price, strike, moneyness) format
+                contract, delta, mid_price, strike, _ = candidate
+                moneyness = strike / stock_price
+                candidates.append((contract, delta, mid_price, strike, moneyness))
+        
+        # Remove moneyness from result and return
+        return [(c[0], c[1], c[2], c[3]) for c in candidates[:min_candidates * 2]]
     
     def pick_by_delta(self, strikes: List[Tuple], target_range: Tuple[float, float], 
                       option_type: str = 'put', stock_price: float = None) -> List[Tuple]:
-        """Pick options closest to target delta range, with fallback to moneyness"""
+        """Pick options closest to target delta range, with adaptive fallback to moneyness"""
         # First try to pick by delta if available
         delta_candidates = []
         no_delta_strikes = []
@@ -517,15 +593,10 @@ class CollarScreener:
             delta_candidates.sort(key=lambda x: abs(x[1] - center))
             return delta_candidates[:4]
         
-        # Fallback to moneyness-based selection if no delta candidates
+        # Fallback to adaptive moneyness-based selection if no delta candidates
         if no_delta_strikes and stock_price:
-            self.logger.debug(f"Falling back to moneyness-based selection for {option_type}s (no delta data)")
-            if option_type == 'put':
-                # Target 0.65-0.95 moneyness for puts (15-35% OTM)
-                return self.pick_by_moneyness(no_delta_strikes, stock_price, (0.65, 0.95), option_type)
-            else:
-                # Target 1.05-1.35 moneyness for calls (15-35% OTM)
-                return self.pick_by_moneyness(no_delta_strikes, stock_price, (1.05, 1.35), option_type)
+            self.logger.debug(f"Falling back to adaptive moneyness-based selection for {option_type}s (no delta data)")
+            return self.pick_by_moneyness_adaptive(no_delta_strikes, stock_price, option_type, min_candidates=2)
         
         return []
     
@@ -635,19 +706,19 @@ class CollarScreener:
                 dte = self.dte(expiry)
                 self.logger.debug(f"Processing {symbol} expiry {expiry} (DTE: {dte})")
                 
-                # Get strikes around current stock price
+                # Get strikes around current stock price - INCREASED TO 6-8 STRIKES
                 approx_strikes = sorted([float(s) for s in p.strikes if s and s != '0'])
                 
                 # If we have a valid stock price, filter strikes around it
                 if stock_price and stock_price > 0 and not math.isnan(stock_price):
                     band = [K for K in approx_strikes if 0.5 * stock_price <= K <= 1.5 * stock_price]
-                    # Sample strikes nearest to current price - reduce to speed up
-                    band = sorted(band, key=lambda K: abs(K - stock_price))[:4]  # Reduced from 8 to 4
+                    # Sample strikes nearest to current price - increased to 6-8 strikes
+                    band = sorted(band, key=lambda K: abs(K - stock_price))[:8]  # Increased from 4 to 8
                 else:
                     # Fallback: use strikes around the middle of the available range
                     if approx_strikes:
                         mid_strike = (min(approx_strikes) + max(approx_strikes)) / 2
-                        band = sorted(approx_strikes, key=lambda K: abs(K - mid_strike))[:4]  # Reduced from 8 to 4
+                        band = sorted(approx_strikes, key=lambda K: abs(K - mid_strike))[:8]  # Increased from 4 to 8
                         self.logger.debug(f"Using fallback strike selection for {symbol} {expiry} (mid_strike=${mid_strike:.2f})")
                     else:
                         band = []
@@ -672,11 +743,12 @@ class CollarScreener:
                     # Create both contracts with correct expiry format and smart fallbacks
                     expiry_ib = expiry.replace('-', '')  # '2025-10-17' -> '20251017'
                     
-                    put = resolve_option_smart(self.ib, symbol, expiry_ib, K, 'P', timeout=12.0)
-                    call = resolve_option_smart(self.ib, symbol, expiry_ib, K, 'C', timeout=12.0)
+                    # Use fallback strike resolution to handle non-existent strikes
+                    put = self.resolve_strike_with_fallback(symbol, expiry_ib, K, 'P', timeout=12.0)
+                    call = self.resolve_strike_with_fallback(symbol, expiry_ib, K, 'C', timeout=12.0)
                     
                     if not put or not call:
-                        self.logger.debug(f"    Could not resolve/qualify {symbol} {K} {expiry} on SMART")
+                        self.logger.debug(f"    Could not resolve/qualify {symbol} {K} {expiry} on SMART (with fallback)")
                         continue
                     
                     self.logger.debug(f"    Qualified {put.symbol} {K} {put.right} and {call.symbol} {K} {call.right}")
@@ -717,6 +789,14 @@ class CollarScreener:
                         if put_delta_timeout:
                             self.logger.debug(f"    Put delta timeout for {symbol} {K} {expiry}")
                             p_delta = None
+                        
+                        # If no OPRA delta, try to calculate implied delta
+                        if p_delta is None and p_mid is not None:
+                            self.logger.debug(f"    Calculating implied delta for put {symbol} {K} {expiry}")
+                            p_delta = self.calculate_implied_delta(stock_price, K, dte, p_mid, 'put')
+                            if p_delta is not None:
+                                self.logger.debug(f"    Implied put delta: {p_delta:.3f}")
+                        
                         self.logger.debug(f"    Put delta: {p_delta}")
                     finally:
                         put_delta_timer.cancel()
@@ -764,6 +844,14 @@ class CollarScreener:
                         if call_delta_timeout:
                             self.logger.debug(f"    Call delta timeout for {symbol} {K} {expiry}")
                             c_delta = None
+                        
+                        # If no OPRA delta, try to calculate implied delta
+                        if c_delta is None and c_mid is not None:
+                            self.logger.debug(f"    Calculating implied delta for call {symbol} {K} {expiry}")
+                            c_delta = self.calculate_implied_delta(stock_price, K, dte, c_mid, 'call')
+                            if c_delta is not None:
+                                self.logger.debug(f"    Implied call delta: {c_delta:.3f}")
+                        
                         self.logger.debug(f"    Call delta: {c_delta}")
                     finally:
                         call_delta_timer.cancel()
@@ -795,10 +883,16 @@ class CollarScreener:
                 
                 self.logger.debug(f"Selected {len(put_candidates)} put candidates and {len(call_candidates)} call candidates for {symbol} {expiry}")
                 
-                # Skip this expiry if we have no candidates
+                # Always form at least one pairing if we have candidates on both sides
                 if len(put_candidates) == 0 or len(call_candidates) == 0:
                     self.logger.debug(f"Skipping {symbol} {expiry} - insufficient candidates (puts: {len(put_candidates)}, calls: {len(call_candidates)})")
                     continue
+                
+                # If we have very few candidates, ensure we use them all
+                if len(put_candidates) < 2:
+                    self.logger.debug(f"Using all {len(put_candidates)} put candidates for {symbol} {expiry}")
+                if len(call_candidates) < 2:
+                    self.logger.debug(f"Using all {len(call_candidates)} call candidates for {symbol} {expiry}")
                 
                 # Pair puts and calls
                 for pc in put_candidates:
@@ -856,10 +950,12 @@ class CollarScreener:
                         else:
                             filters_failed.append(f"capital_used (${capital_used:.2f}) < min (${self.config.MIN_CAPITAL_USED})")
                         
-                        if floor >= self.config.FLOOR_TOLERANCE:
-                            filters_passed.append(f"floor (${floor:.2f}) >= tolerance (${self.config.FLOOR_TOLERANCE})")
+                        # More lenient floor tolerance for near-zero-loss opportunities
+                        floor_tolerance = max(self.config.FLOOR_TOLERANCE, -25.0)  # Allow up to $25 loss
+                        if floor >= floor_tolerance:
+                            filters_passed.append(f"floor (${floor:.2f}) >= tolerance (${floor_tolerance})")
                         else:
-                            filters_failed.append(f"floor (${floor:.2f}) < tolerance (${self.config.FLOOR_TOLERANCE})")
+                            filters_failed.append(f"floor (${floor:.2f}) < tolerance (${floor_tolerance})")
                         
                         if put_spread <= self.config.MAX_SPREAD_PCT:
                             filters_passed.append(f"put_spread ({put_spread*100:.1f}%) <= max ({self.config.MAX_SPREAD_PCT*100:.1f}%)")
@@ -884,11 +980,24 @@ class CollarScreener:
                             
                             capital_at_risk = max(0, C0 - 100 * Kp)
                             
-                            # Scoring: prioritize zero-risk opportunities
+                            # Scoring: prioritize zero-risk opportunities with spread penalty
                             score_risk_reward = max_gain / max(1.0, capital_at_risk + 1e-6)
                             score_gain_per_capital = max_gain / max(1.0, capital_used)
                             
+                            # Apply spread penalty for illiquid options
+                            spread_penalty = 1.0
+                            if put_spread > 0.25 or call_spread > 0.25:  # >25% spread
+                                spread_penalty = 0.5  # Reduce score by 50%
+                                self.logger.debug(f"  Applying spread penalty (put: {put_spread*100:.1f}%, call: {call_spread*100:.1f}%)")
+                            
+                            score_risk_reward *= spread_penalty
+                            score_gain_per_capital *= spread_penalty
+                            
                             self.logger.debug(f"  Final scores: risk_reward={score_risk_reward:.2f}, gain_per_capital={score_gain_per_capital:.2f}")
+                            
+                            # Determine if this is true zero-loss or near-zero-loss
+                            is_true_zero_loss = floor >= 0
+                            loss_tolerance = "ZERO" if is_true_zero_loss else "NEAR_ZERO"
                             
                             results.append({
                                 'symbol': symbol,
@@ -910,6 +1019,7 @@ class CollarScreener:
                                 'dte': self.dte(expiry),
                                 'score_risk_reward': round(score_risk_reward, 2),
                                 'score_gain_per_capital': round(score_gain_per_capital, 2),
+                                'loss_tolerance': loss_tolerance,
                                 'timestamp': datetime.now().isoformat()
                             })
                         else:
@@ -919,8 +1029,8 @@ class CollarScreener:
                             for filter_msg in filters_passed:
                                 self.logger.debug(f"  PASS: {filter_msg}")
             
-            # Rank results
-            results.sort(key=lambda r: (-r['score_risk_reward'], -r['score_gain_per_capital'], r['dte']))
+            # Rank results: prioritize true zero-loss, then by score
+            results.sort(key=lambda r: (r['loss_tolerance'] != 'ZERO', -r['score_risk_reward'], -r['score_gain_per_capital'], r['dte']))
             
             if results:
                 self.logger.info(f"Found {len(results)} collar opportunities for {symbol}")
@@ -939,17 +1049,57 @@ class CollarScreener:
             # Cancel the timer
             timer.cancel()
     
+    def resolve_strike_with_fallback(self, symbol: str, expiry_ib: str, target_strike: float, 
+                                    right: str, timeout: float = 8.0) -> Optional[Contract]:
+        """
+        Resolve a strike with fallback to nearby strikes if the target doesn't exist.
+        Handles cases where half-dollar strikes don't exist for certain expiries.
+        """
+        # Try the target strike first
+        contract = resolve_option_smart(self.ib, symbol, expiry_ib, target_strike, right, timeout)
+        if contract:
+            return contract
+        
+        # If target strike fails, try nearby strikes
+        # Determine strike increment based on price level
+        if target_strike >= 200:
+            increment = 5.0  # $5 increments for high-priced stocks
+        elif target_strike >= 100:
+            increment = 2.5  # $2.5 increments for mid-priced stocks
+        else:
+            increment = 1.0  # $1 increments for low-priced stocks
+        
+        # Try strikes above and below the target
+        fallback_strikes = [
+            target_strike + increment,
+            target_strike - increment,
+            target_strike + 2 * increment,
+            target_strike - 2 * increment,
+        ]
+        
+        for fallback_strike in fallback_strikes:
+            if fallback_strike <= 0:
+                continue
+                
+            self.logger.debug(f"  Trying fallback strike ${fallback_strike:.2f} for {symbol} {right} {expiry_ib}")
+            contract = resolve_option_smart(self.ib, symbol, expiry_ib, fallback_strike, right, timeout)
+            if contract:
+                self.logger.debug(f"  Successfully resolved fallback strike ${fallback_strike:.2f}")
+                return contract
+        
+        return None
+    
     def print_results(self, results: List[Dict]):
         """Print results in a formatted table"""
         if not results:
             print("\nNo collar opportunities found matching criteria.")
             return
         
-        print(f"\n{'='*120}")
+        print(f"\n{'='*130}")
         print(f"ZERO-COST COLLAR OPPORTUNITIES (Budget: ${self.config.CAPITAL_BUDGET:,})")
-        print(f"{'='*120}")
-        print(f"{'SYM':<6} {'EXP':<10} {'PX':>7} {'P_K':>6} {'P_mid':>7} {'P_delta':>7} {'C_K':>6} {'C_mid':>7} {'C_delta':>7} {'C0':>9} {'FLOOR':>8} {'MAXG':>8} {'DTE':>4} {'SCORE':>8}")
-        print(f"{'-'*120}")
+        print(f"{'='*130}")
+        print(f"{'SYM':<6} {'EXP':<10} {'PX':>7} {'P_K':>6} {'P_mid':>7} {'P_delta':>7} {'C_K':>6} {'C_mid':>7} {'C_delta':>7} {'C0':>9} {'FLOOR':>8} {'MAXG':>8} {'DTE':>4} {'TYPE':>8} {'SCORE':>8}")
+        print(f"{'-'*130}")
         
         for r in results[:self.config.MAX_RESULTS]:
             put_delta_str = f"{r['put_delta']:.2f}" if r['put_delta'] is not None else "N/A"
@@ -959,12 +1109,12 @@ class CollarScreener:
                   f"{r['put_K']:>6.2f} {r['put_mid']:>7.2f} {put_delta_str:>5} "
                   f"{r['call_K']:>6.2f} {r['call_mid']:>7.2f} {call_delta_str:>5} "
                   f"{r['net_cost_C0']:>9.2f} {r['floor_$']:>8.2f} {r['max_gain_$']:>8.2f} "
-                  f"{r['dte']:>4} {r['score_risk_reward']:>8.2f}")
+                  f"{r['dte']:>4} {r['loss_tolerance']:>8} {r['score_risk_reward']:>8.2f}")
         
         print(f"\nFound {len(results)} opportunities, showing top {min(self.config.MAX_RESULTS, len(results))}")
         print(f"Legend: PX=Stock Price, P_K/C_K=Put/Call Strike, P_mid/C_mid=Put/Call Mid Price")
         print(f"        P_delta/C_delta=Put/Call Delta, C0=Net Cost, FLOOR=Loss Floor, MAXG=Max Gain")
-        print(f"        DTE=Days to Expiry, SCORE=Risk-Reward Score")
+        print(f"        DTE=Days to Expiry, TYPE=ZERO/NEAR_ZERO, SCORE=Risk-Reward Score")
     
     def save_to_csv(self, results: List[Dict]):
         """Save results to CSV file"""
@@ -1024,8 +1174,8 @@ class CollarScreener:
                     self.logger.error(f"Error processing {symbol}: {e}")
                     continue
             
-            # Sort all results
-            all_results.sort(key=lambda r: (-r['score_risk_reward'], -r['score_gain_per_capital'], r['dte']))
+            # Sort all results: prioritize true zero-loss, then by score
+            all_results.sort(key=lambda r: (r['loss_tolerance'] != 'ZERO', -r['score_risk_reward'], -r['score_gain_per_capital'], r['dte']))
             
             self.logger.info(f"Scan complete! Found {len(all_results)} total opportunities across {total_symbols} symbols")
             
@@ -1036,6 +1186,99 @@ class CollarScreener:
         finally:
             # Always disconnect
             self.disconnect_ib()
+
+    def calculate_implied_delta(self, stock_price: float, strike: float, time_to_expiry: float, 
+                               option_price: float, option_type: str = 'call', 
+                               risk_free_rate: float = 0.045) -> Optional[float]:
+        """
+        Calculate implied delta using Black-Scholes approximation when OPRA is not available.
+        Uses bisection to find implied volatility, then calculates delta.
+        """
+        try:
+            import math
+            
+            def normal_cdf(x):
+                """Approximate normal CDF"""
+                return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+            
+            def normal_pdf(x):
+                """Normal PDF"""
+                return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+            
+            def black_scholes_call(S, K, T, r, sigma):
+                """Black-Scholes call option price"""
+                if T <= 0 or sigma <= 0:
+                    return None
+                    
+                d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+                d2 = d1 - sigma * math.sqrt(T)
+                
+                call_price = S * normal_cdf(d1) - K * math.exp(-r * T) * normal_cdf(d2)
+                return call_price
+            
+            def black_scholes_put(S, K, T, r, sigma):
+                """Black-Scholes put option price"""
+                if T <= 0 or sigma <= 0:
+                    return None
+                    
+                d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+                d2 = d1 - sigma * math.sqrt(T)
+                
+                put_price = K * math.exp(-r * T) * normal_cdf(-d2) - S * normal_cdf(-d1)
+                return put_price
+            
+            def black_scholes_delta(S, K, T, r, sigma, option_type):
+                """Black-Scholes delta"""
+                if T <= 0 or sigma <= 0:
+                    return None
+                    
+                d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+                
+                if option_type == 'call':
+                    return normal_cdf(d1)
+                else:  # put
+                    return normal_cdf(d1) - 1
+            
+            # Convert time to years
+            T = time_to_expiry / 365.0
+            
+            if T <= 0:
+                return None
+            
+            # Use bisection to find implied volatility
+            sigma_min, sigma_max = 0.1, 1.2  # 10% to 120% volatility range
+            tolerance = 0.001
+            max_iterations = 50
+            
+            for i in range(max_iterations):
+                sigma = (sigma_min + sigma_max) / 2
+                
+                if option_type == 'call':
+                    theoretical_price = black_scholes_call(stock_price, strike, T, risk_free_rate, sigma)
+                else:
+                    theoretical_price = black_scholes_put(stock_price, strike, T, risk_free_rate, sigma)
+                
+                if theoretical_price is None:
+                    return None
+                
+                price_diff = theoretical_price - option_price
+                
+                if abs(price_diff) < tolerance:
+                    # Found implied volatility, calculate delta
+                    delta = black_scholes_delta(stock_price, strike, T, risk_free_rate, sigma, option_type)
+                    return delta
+                
+                if price_diff > 0:
+                    sigma_max = sigma
+                else:
+                    sigma_min = sigma
+            
+            # If bisection didn't converge, return None
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"Error calculating implied delta: {e}")
+            return None
 
 def main():
     """Main function"""
