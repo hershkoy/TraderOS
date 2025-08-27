@@ -1,68 +1,68 @@
 #!/usr/bin/env python3
 """
-Test script to run a small universe update with comprehensive logging
+Test script for the enhanced logging functionality
 """
 
 import sys
 import os
-from datetime import datetime
+sys.path.append('.')
 
-# Add the utils directory to the path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
+from utils.screener_zero_cost_collar_enhanced import CollarScreenerConfig, parse_arguments
 
-def test_small_update():
-    """Test a small universe update with logging"""
+def test_config_loading():
+    """Test configuration loading with log file options"""
+    print("Testing configuration loading...")
+    
+    # Test default config
+    config = CollarScreenerConfig()
+    print(f"LOG_TO_FILE: {config.LOG_TO_FILE}")
+    print(f"LOG_FILENAME: {config.LOG_FILENAME}")
+    print(f"LOG_LEVEL: {config.LOG_LEVEL}")
+    
+    return True
+
+def test_argument_parsing():
+    """Test command line argument parsing"""
+    print("\nTesting argument parsing...")
+    
+    # Test default arguments
+    sys.argv = ['test_logging.py']
+    args = parse_arguments()
+    print(f"Default log level: {args.log_level}")
+    print(f"Default config: {args.config}")
+    print(f"Verbose: {args.verbose}")
+    print(f"Log file: {args.log_file}")
+    print(f"No log file: {args.no_log_file}")
+    
+    return True
+
+def test_log_file_override():
+    """Test log file override functionality"""
+    print("\nTesting log file override...")
+    
+    # Test with custom log file
+    sys.argv = ['test_logging.py', '--log-file', 'test_log.txt']
+    args = parse_arguments()
+    print(f"Custom log file: {args.log_file}")
+    
+    # Test with no log file
+    sys.argv = ['test_logging.py', '--no-log-file']
+    args = parse_arguments()
+    print(f"No log file flag: {args.no_log_file}")
+    
+    return True
+
+if __name__ == '__main__':
+    print("Testing Enhanced Zero-Cost Collar Screener Logging")
+    print("=" * 50)
+    
     try:
-        from update_universe_data import UniverseDataUpdater
-        
-        print(f"[{datetime.now()}] Testing small universe update...")
-        
-        # Create updater for IB hourly data
-        updater = UniverseDataUpdater(provider="ib", timeframe="1h")
-        print(f"[{datetime.now()}] ✅ Updater created")
-        
-        # Run a very small update (just 3 tickers)
-        print(f"[{datetime.now()}] 🔍 About to call update_universe_data...")
-        
-        results = updater.update_universe_data(
-            batch_size=2,
-            delay_between_batches=2.0,
-            delay_between_tickers=1.0,
-            max_tickers=3,  # Only process 3 tickers
-            use_max_bars=False,  # Use fixed amounts for speed
-            skip_existing=False  # Don't skip existing data
-        )
-        
-        print(f"[{datetime.now()}] ✅ update_universe_data returned: {type(results)}")
-        
-        if "error" in results:
-            print(f"[{datetime.now()}] ❌ Update failed: {results['error']}")
-            return False
-        else:
-            print(f"[{datetime.now()}] 🎉 Update completed successfully!")
-            print(f"[{datetime.now()}] Results: {results}")
-            return True
-            
+        test_config_loading()
+        test_argument_parsing()
+        test_log_file_override()
+        print("\n✅ All tests passed!")
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ Error during test: {e}")
+        print(f"\n❌ Test failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
-
-def main():
-    """Run the test"""
-    print("=" * 60)
-    print("SMALL UNIVERSE UPDATE TEST WITH LOGGING")
-    print("=" * 60)
-    
-    success = test_small_update()
-    
-    if success:
-        print(f"\n[{datetime.now()}] 🎉 Test passed! Check the logs for detailed information.")
-        print("\nIf there was a hang, the logs should show exactly where it occurred.")
-    else:
-        print(f"\n[{datetime.now()}] ❌ Test failed. Check the logs for errors.")
-
-if __name__ == "__main__":
-    main()
 

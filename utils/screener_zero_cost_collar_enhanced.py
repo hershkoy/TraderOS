@@ -116,6 +116,18 @@ def parse_arguments():
     parser.add_argument('--verbose', '-v',
                        action='store_true',
                        help='Enable verbose logging (same as --log-level DEBUG)')
+    parser.add_argument('--log-file', '-f',
+                       help='Log file path (overrides config file setting)')
+    parser.add_argument('--no-log-file',
+                       action='store_true',
+                       help='Disable logging to file (console only)')
+    parser.add_argument('--no-real-time-updates',
+                       action='store_true',
+                       help='Disable real-time CSV updates (update only at end)')
+    parser.add_argument('--progress-frequency',
+                       type=int,
+                       default=5,
+                       help='Print progress summary every N symbols (default: 5)')
     return parser.parse_args()
 
 class CollarScreenerConfig:
@@ -162,6 +174,10 @@ class CollarScreenerConfig:
             self.MAX_RESULTS = config['output']['max_results']
             self.SAVE_TO_CSV = config['output']['save_to_csv']
             self.CSV_FILENAME = config['output']['csv_filename']
+            self.LOG_TO_FILE = config['output'].get('log_to_file', True)
+            self.LOG_FILENAME = config['output'].get('log_filename', 'logs/zero_cost_collar_screener.log')
+            self.PROGRESS_UPDATE_FREQUENCY = config['output'].get('progress_update_frequency', 5)
+            self.REAL_TIME_UPDATES = config['output'].get('real_time_updates', True)
             # Override config log level with CLI parameter
             self.LOG_LEVEL = self.log_level
             
@@ -172,6 +188,12 @@ class CollarScreenerConfig:
             self.REQUEST_TIMEOUT = config['advanced']['request_timeout']
             self.SLEEP_BETWEEN_REQUESTS = config['advanced']['sleep_between_requests']
             self.HAS_OPRA = config['advanced'].get('has_opra', False)  # OPRA subscription for Greeks
+            
+            # Black-Scholes Parameters
+            self.RISK_FREE_RATE = config['options'].get('risk_free_rate', 0.045)
+            self.DIVIDEND_YIELD_DEFAULT = config['options'].get('dividend_yield_default', 0.0)
+            self.ZERO_COST_TOLERANCE = config['options'].get('zero_cost_tolerance', -25.0)
+            self.DELAYED_SNAPSHOT_PATIENCE = config['options'].get('delayed_snapshot_patience_s', 3.0)
             
         except FileNotFoundError:
             print(f"Config file {self.config_file} not found. Using default configuration.")
@@ -232,6 +254,10 @@ class CollarScreenerConfig:
         self.MAX_RESULTS = 25
         self.SAVE_TO_CSV = True
         self.CSV_FILENAME = 'reports/collar_opportunities.csv'
+        self.LOG_TO_FILE = True
+        self.LOG_FILENAME = 'logs/zero_cost_collar_screener.log'
+        self.PROGRESS_UPDATE_FREQUENCY = 5
+        self.REAL_TIME_UPDATES = True
         self.LOG_LEVEL = self.log_level
         
         self.MAX_STRIKES_PER_EXPIRY = 16
@@ -240,6 +266,12 @@ class CollarScreenerConfig:
         self.REQUEST_TIMEOUT = 5.0
         self.SLEEP_BETWEEN_REQUESTS = 0.25
         self.HAS_OPRA = False
+        
+        # Black-Scholes Parameters
+        self.RISK_FREE_RATE = 0.045
+        self.DIVIDEND_YIELD_DEFAULT = 0.0
+        self.ZERO_COST_TOLERANCE = -25.0
+        self.DELAYED_SNAPSHOT_PATIENCE = 3.0
     
     def setup_logging(self):
         """Setup logging configuration"""
@@ -249,14 +281,38 @@ class CollarScreenerConfig:
         # Convert string log level to logging constant
         log_level = getattr(logging, self.LOG_LEVEL.upper(), logging.INFO)
         
+        # Create handlers list
+        handlers = [logging.StreamHandler()]  # Always include console output
+        
+        # Add file handler if logging to file is enabled
+        if self.LOG_TO_FILE:
+            # Ensure the log file directory exists
+            log_dir = os.path.dirname(self.LOG_FILENAME)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            
+            # Create file handler with timestamp in filename if it doesn't already have one
+            log_filename = self.LOG_FILENAME
+            if not any(char in log_filename for char in ['%', '{', '}']):
+                # Add timestamp to filename if it doesn't have placeholders
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                name, ext = os.path.splitext(log_filename)
+                log_filename = f"{name}_{timestamp}{ext}"
+            
+            handlers.append(logging.FileHandler(log_filename, mode='w'))
+        
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('logs/collar_screener.log'),
-                logging.StreamHandler()
-            ]
+            handlers=handlers
         )
+        
+        # Log the logging configuration
+        if self.LOG_TO_FILE:
+            print(f"Logging to file: {log_filename}")
+        else:
+            print("Logging to console only")
         
         # Filter out account data logging from ib_insync
         logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
@@ -338,13 +394,13 @@ class CollarScreener:
         """
         try:
             max_tries = 6          # ~ up to ~3–5 seconds total
-            base_wait = 0.6        # start at 0.6s
+            base_wait = getattr(self.config, 'DELAYED_SNAPSHOT_PATIENCE', 3.0) / 6.0  # distribute patience over tries
             # Request a snapshot (quotes only)
             ticker = self.ib.reqMktData(opt, '', True, False)
 
             for i in range(max_tries):
                 # wait progressively longer
-                self.ib.sleep(base_wait + 0.3 * i)  # 0.6, 0.9, 1.2, ...
+                self.ib.sleep(base_wait + 0.3 * i)  # progressive wait
                 bid = getattr(ticker, 'bid', None)
                 ask = getattr(ticker, 'ask', None)
                 last = getattr(ticker, 'last', None)
@@ -790,10 +846,14 @@ class CollarScreener:
                             self.logger.debug(f"    Put delta timeout for {symbol} {K} {expiry}")
                             p_delta = None
                         
-                        # If no OPRA delta, try to calculate implied delta
+                        # If no OPRA delta, try to calculate implied delta using professional solver
                         if p_delta is None and p_mid is not None:
                             self.logger.debug(f"    Calculating implied delta for put {symbol} {K} {expiry}")
-                            p_delta = self.calculate_implied_delta(stock_price, K, dte, p_mid, 'put')
+                            p_delta = self.calculate_implied_delta_professional(
+                                stock_price, K, expiry_ib, p_mid, 'put',
+                                risk_free_rate=getattr(self.config, 'RISK_FREE_RATE', 0.045),
+                                dividend_yield=getattr(self.config, 'DIVIDEND_YIELD_DEFAULT', 0.0)
+                            )
                             if p_delta is not None:
                                 self.logger.debug(f"    Implied put delta: {p_delta:.3f}")
                         
@@ -845,10 +905,14 @@ class CollarScreener:
                             self.logger.debug(f"    Call delta timeout for {symbol} {K} {expiry}")
                             c_delta = None
                         
-                        # If no OPRA delta, try to calculate implied delta
+                        # If no OPRA delta, try to calculate implied delta using professional solver
                         if c_delta is None and c_mid is not None:
                             self.logger.debug(f"    Calculating implied delta for call {symbol} {K} {expiry}")
-                            c_delta = self.calculate_implied_delta(stock_price, K, dte, c_mid, 'call')
+                            c_delta = self.calculate_implied_delta_professional(
+                                stock_price, K, expiry_ib, c_mid, 'call',
+                                risk_free_rate=getattr(self.config, 'RISK_FREE_RATE', 0.045),
+                                dividend_yield=getattr(self.config, 'DIVIDEND_YIELD_DEFAULT', 0.0)
+                            )
                             if c_delta is not None:
                                 self.logger.debug(f"    Implied call delta: {c_delta:.3f}")
                         
@@ -951,7 +1015,7 @@ class CollarScreener:
                             filters_failed.append(f"capital_used (${capital_used:.2f}) < min (${self.config.MIN_CAPITAL_USED})")
                         
                         # More lenient floor tolerance for near-zero-loss opportunities
-                        floor_tolerance = max(self.config.FLOOR_TOLERANCE, -25.0)  # Allow up to $25 loss
+                        floor_tolerance = max(self.config.FLOOR_TOLERANCE, self.config.ZERO_COST_TOLERANCE)
                         if floor >= floor_tolerance:
                             filters_passed.append(f"floor (${floor:.2f}) >= tolerance (${floor_tolerance})")
                         else:
@@ -1116,8 +1180,8 @@ class CollarScreener:
         print(f"        P_delta/C_delta=Put/Call Delta, C0=Net Cost, FLOOR=Loss Floor, MAXG=Max Gain")
         print(f"        DTE=Days to Expiry, TYPE=ZERO/NEAR_ZERO, SCORE=Risk-Reward Score")
     
-    def save_to_csv(self, results: List[Dict]):
-        """Save results to CSV file"""
+    def save_to_csv(self, results: List[Dict], append: bool = False):
+        """Save results to CSV file with option to append or overwrite"""
         if not self.config.SAVE_TO_CSV or not results:
             return
         
@@ -1128,13 +1192,118 @@ class CollarScreener:
             os.makedirs('reports', exist_ok=True)
             
             df = pd.DataFrame(results)
-            df.to_csv(self.config.CSV_FILENAME, index=False)
-            self.logger.info(f"Results saved to {self.config.CSV_FILENAME}")
+            
+            if append and os.path.exists(self.config.CSV_FILENAME):
+                # Append to existing file
+                existing_df = pd.read_csv(self.config.CSV_FILENAME)
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                combined_df.to_csv(self.config.CSV_FILENAME, index=False)
+                self.logger.info(f"Appended {len(results)} results to {self.config.CSV_FILENAME}")
+            else:
+                # Create new file or overwrite
+                df.to_csv(self.config.CSV_FILENAME, index=False)
+                self.logger.info(f"Results saved to {self.config.CSV_FILENAME}")
             
         except ImportError:
             self.logger.warning("pandas not available, skipping CSV export")
         except Exception as e:
             self.logger.error(f"Error saving CSV: {e}")
+    
+    def update_report_after_symbol(self, symbol: str, symbol_results: List[Dict], all_results: List[Dict]):
+        """Update the report file after each symbol is processed"""
+        if not self.config.SAVE_TO_CSV:
+            return
+        
+        try:
+            import pandas as pd
+            
+            # Ensure reports directory exists
+            os.makedirs('reports', exist_ok=True)
+            
+            # Create a summary of current progress
+            total_symbols = len(self.config.UNIVERSE)
+            processed_symbols = len([r for r in all_results if r.get('symbol')])
+            unique_symbols = len(set(r.get('symbol') for r in all_results))
+            
+            # Create progress summary
+            progress_summary = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol_processed': symbol,
+                'symbols_found': len(symbol_results),
+                'total_symbols_processed': processed_symbols,
+                'unique_symbols_with_opportunities': unique_symbols,
+                'total_opportunities_found': len(all_results),
+                'progress_percent': round((processed_symbols / total_symbols) * 100, 1)
+            }
+            
+            # Save current results
+            if all_results:
+                df = pd.DataFrame(all_results)
+                df.to_csv(self.config.CSV_FILENAME, index=False)
+            
+            # Create or update progress file
+            progress_file = self.config.CSV_FILENAME.replace('.csv', '_progress.csv')
+            progress_df = pd.DataFrame([progress_summary])
+            
+            if os.path.exists(progress_file):
+                # Append to existing progress file
+                existing_progress = pd.read_csv(progress_file)
+                combined_progress = pd.concat([existing_progress, progress_df], ignore_index=True)
+                combined_progress.to_csv(progress_file, index=False)
+            else:
+                # Create new progress file
+                progress_df.to_csv(progress_file, index=False)
+            
+            # Log progress
+            self.logger.info(f"Progress: {progress_summary['progress_percent']}% ({processed_symbols}/{total_symbols}) - {symbol}: {len(symbol_results)} opportunities")
+            
+        except ImportError:
+            self.logger.warning("pandas not available, skipping progress update")
+        except Exception as e:
+            self.logger.error(f"Error updating progress: {e}")
+    
+    def print_progress_summary(self, all_results: List[Dict], current_symbol: str = None):
+        """Print a summary of current progress"""
+        if not all_results:
+            return
+        
+        total_symbols = len(self.config.UNIVERSE)
+        unique_symbols = len(set(r.get('symbol') for r in all_results))
+        total_opportunities = len(all_results)
+        
+        # Calculate progress
+        if current_symbol:
+            # Estimate progress based on symbol position in universe
+            try:
+                symbol_index = self.config.UNIVERSE.index(current_symbol)
+                progress_percent = round(((symbol_index + 1) / total_symbols) * 100, 1)
+            except ValueError:
+                progress_percent = 0
+        else:
+            progress_percent = 100
+        
+        print(f"\n{'='*60}")
+        print(f"PROGRESS SUMMARY")
+        print(f"{'='*60}")
+        print(f"Progress: {progress_percent}% ({unique_symbols}/{total_symbols} symbols with opportunities)")
+        print(f"Total Opportunities Found: {total_opportunities}")
+        print(f"Current Symbol: {current_symbol if current_symbol else 'Completed'}")
+        print(f"Report File: {self.config.CSV_FILENAME}")
+        print(f"Progress File: {self.config.CSV_FILENAME.replace('.csv', '_progress.csv')}")
+        print(f"{'='*60}")
+        
+        # Show top 5 opportunities so far
+        if all_results:
+            print(f"\nTop 5 Opportunities Found So Far:")
+            print(f"{'SYM':<6} {'EXP':<10} {'C0':>9} {'FLOOR':>8} {'MAXG':>8} {'TYPE':>8}")
+            print(f"{'-'*50}")
+            
+            # Sort by score and show top 5
+            sorted_results = sorted(all_results, key=lambda r: (r['loss_tolerance'] != 'ZERO', -r['score_risk_reward']))
+            for r in sorted_results[:5]:
+                print(f"{r['symbol']:<6} {r['expiry']:<10} {r['net_cost_C0']:>9.2f} {r['floor_$']:>8.2f} {r['max_gain_$']:>8.2f} {r['loss_tolerance']:>8}")
+        
+        print()
     
     def run(self):
         """Run the complete screener"""
@@ -1146,6 +1315,12 @@ class CollarScreener:
         print(f"Call Delta: {self.config.CALL_DELTA_RANGE}")
         print(f"Universe: {len(self.config.UNIVERSE)} symbols")
         print(f"Log Level: {self.config.LOG_LEVEL}")
+        if self.config.LOG_TO_FILE:
+            print(f"Log File: {self.config.LOG_FILENAME}")
+        else:
+            print("Log File: Console only")
+        print(f"Real-time Updates: {'Enabled' if self.config.REAL_TIME_UPDATES else 'Disabled'}")
+        print(f"Progress Frequency: Every {self.config.PROGRESS_UPDATE_FREQUENCY} symbols")
         print()
         
         # Connect to IB
@@ -1169,15 +1344,28 @@ class CollarScreener:
                         all_results.extend(results)
                     else:
                         self.logger.debug(f"NO_OPPORTUNITIES {symbol}: No opportunities found")
+                    
+                    # Update report after each symbol if real-time updates are enabled
+                    if self.config.REAL_TIME_UPDATES:
+                        self.update_report_after_symbol(symbol, results, all_results)
+                    
+                    # Print progress summary based on frequency or when opportunities are found
+                    if i % self.config.PROGRESS_UPDATE_FREQUENCY == 0 or results:
+                        self.print_progress_summary(all_results, symbol)
                         
                 except Exception as e:
                     self.logger.error(f"Error processing {symbol}: {e}")
+                    # Still update progress even if there was an error
+                    self.update_report_after_symbol(symbol, [], all_results)
                     continue
             
             # Sort all results: prioritize true zero-loss, then by score
             all_results.sort(key=lambda r: (r['loss_tolerance'] != 'ZERO', -r['score_risk_reward'], -r['score_gain_per_capital'], r['dte']))
             
             self.logger.info(f"Scan complete! Found {len(all_results)} total opportunities across {total_symbols} symbols")
+            
+            # Print final progress summary
+            self.print_progress_summary(all_results)
             
             # Print and save results
             self.print_results(all_results)
@@ -1280,6 +1468,157 @@ class CollarScreener:
             self.logger.debug(f"Error calculating implied delta: {e}")
             return None
 
+    # ---- Professional Black-Scholes IV Solver ----
+    def _phi(self, x):
+        """Standard normal CDF (erf-based; good enough)"""
+        import math
+        SQRT2 = math.sqrt(2.0)
+        return 0.5 * (1.0 + math.erf(x / SQRT2))
+
+    def _d1(self, S, K, T, r, q, iv):
+        """Calculate d1 for Black-Scholes"""
+        import math
+        if iv <= 0 or T <= 0 or S <= 0 or K <= 0:
+            return None
+        return (math.log(S / K) + (r - q + 0.5 * iv * iv) * T) / (iv * math.sqrt(T))
+
+    def bs_price(self, S, K, T, r=0.045, q=0.0, iv=0.25, right='C'):
+        """European BS price with continuous dividend yield q."""
+        import math
+        if T <= 0 or S <= 0 or K <= 0 or iv <= 0:
+            return None
+        d1 = self._d1(S, K, T, r, q, iv)
+        if d1 is None:
+            return None
+        d2 = d1 - iv * math.sqrt(T)
+        df_r = math.exp(-r * T)
+        df_q = math.exp(-q * T)
+        if right == 'C':
+            return df_q * S * self._phi(d1) - df_r * K * self._phi(d2)
+        else:
+            return df_r * K * self._phi(-d2) - df_q * S * self._phi(-d1)
+
+    def bs_delta(self, S, K, T, r=0.045, q=0.0, iv=0.25, right='C'):
+        """BS delta (∂Price/∂S)."""
+        d1 = self._d1(S, K, T, r, q, iv)
+        if d1 is None:
+            return None
+        import math
+        df_q = math.exp(-q * T)
+        if right == 'C':
+            return df_q * self._phi(d1)
+        else:
+            return -df_q * self._phi(-d1)
+
+    def implied_vol_bisection(self, target_price, S, K, T, r=0.045, q=0.0,
+                              right='C', iv_low=1e-4, iv_high=5.0, tol=1e-4, max_iter=80):
+        """
+        Solve for IV using bisection. Returns (iv, converged:bool).
+        If price is out of arbitrage bounds, returns (None, False).
+        """
+        import math
+        if target_price is None or target_price <= 0 or S <= 0 or K <= 0 or T <= 0:
+            return (None, False)
+
+        # crude no-arb bounds for L1 sanity (European with dividends)
+        df_r = math.exp(-r * T); df_q = math.exp(-q * T)
+        if right == 'C':
+            lower = max(0.0, df_q * S - df_r * K)
+            upper = df_q * S
+        else:
+            lower = max(0.0, df_r * K - df_q * S)
+            upper = df_r * K
+        if not (lower - 1e-6 <= target_price <= upper + 1e-6):
+            return (None, False)
+
+        lo, hi = iv_low, iv_high
+        f_lo = self.bs_price(S, K, T, r, q, lo, right)
+        f_hi = self.bs_price(S, K, T, r, q, hi, right)
+        if f_lo is None or f_hi is None:
+            return (None, False)
+
+        # Ensure target lies between f(lo) and f(hi); otherwise expand hi
+        if f_lo > target_price:
+            return (None, False)
+        tries = 0
+        while f_hi < target_price and hi < 10.0 and tries < 6:
+            hi *= 1.5
+            f_hi = self.bs_price(S, K, T, r, q, hi, right)
+            tries += 1
+            if f_hi is None:
+                return (None, False)
+
+        for _ in range(max_iter):
+            mid = 0.5 * (lo + hi)
+            f_mid = self.bs_price(S, K, T, r, q, mid, right)
+            if f_mid is None:
+                return (None, False)
+            if abs(f_mid - target_price) < tol:
+                return (mid, True)
+            if f_mid < target_price:
+                lo = mid
+            else:
+                hi = mid
+        return (0.5 * (lo + hi), False)
+
+    def year_fraction(self, expiry_yyyymmdd: str, now=None):
+        """
+        Act/365F from 'YYYYMMDD' (IB format) using current UTC as 'now'.
+        """
+        from datetime import datetime, timezone
+        now = now or datetime.now(timezone.utc)
+        y, m, d = int(expiry_yyyymmdd[0:4]), int(expiry_yyyymmdd[4:6]), int(expiry_yyyymmdd[6:8])
+        exp = datetime(y, m, d, 20, 0, 0, tzinfo=timezone.utc)  # ~after close cushion
+        T = (exp - now).total_seconds() / (365.0 * 24 * 3600.0)
+        return max(T, 1e-6)
+
+    def calculate_implied_delta_professional(self, stock_price: float, strike: float, 
+                                           expiry_ib: str, option_price: float, 
+                                           option_type: str = 'call', 
+                                           risk_free_rate: float = 0.045,
+                                           dividend_yield: float = 0.0) -> Optional[float]:
+        """
+        Professional-grade implied delta calculation using robust IV solver.
+        Returns (delta, iv) or (None, None) if calculation fails.
+        """
+        try:
+            # Convert option type to right
+            right = 'C' if option_type == 'call' else 'P'
+            
+            # Calculate time to expiry
+            T = self.year_fraction(expiry_ib)
+            
+            # Solve for implied volatility
+            iv, converged = self.implied_vol_bisection(
+                target_price=option_price,
+                S=stock_price,
+                K=strike,
+                T=T,
+                r=risk_free_rate,
+                q=dividend_yield,
+                right=right
+            )
+            
+            if iv is None or not converged:
+                return None
+            
+            # Calculate delta using the implied volatility
+            delta = self.bs_delta(
+                S=stock_price,
+                K=strike,
+                T=T,
+                r=risk_free_rate,
+                q=dividend_yield,
+                iv=iv,
+                right=right
+            )
+            
+            return delta
+            
+        except Exception as e:
+            self.logger.debug(f"Error in professional implied delta calculation: {e}")
+            return None
+
 def main():
     """Main function"""
     args = parse_arguments()
@@ -1289,6 +1628,20 @@ def main():
         args.log_level = 'DEBUG'
     
     config = CollarScreenerConfig(args.config, args.log_level)
+    
+    # Override log file settings from command line arguments
+    if args.log_file:
+        config.LOG_FILENAME = args.log_file
+        config.LOG_TO_FILE = True
+    elif args.no_log_file:
+        config.LOG_TO_FILE = False
+    
+    # Override progress settings from command line arguments
+    if args.no_real_time_updates:
+        config.REAL_TIME_UPDATES = False
+    if args.progress_frequency:
+        config.PROGRESS_UPDATE_FREQUENCY = args.progress_frequency
+    
     screener = CollarScreener(config)
     screener.run()
 

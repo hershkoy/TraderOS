@@ -19,6 +19,12 @@ options:
   max_dte: 60  # Maximum days to expiry
   put_delta_range: [-0.35, -0.20]  # Target put delta range
   call_delta_range: [0.20, 0.35]   # Target call delta range
+  
+  # Black-Scholes Parameters for Implied Delta Calculation
+  risk_free_rate: 0.045  # Risk-free rate (4.5% annual)
+  dividend_yield_default: 0.0  # Default dividend yield (0% for most stocks)
+  zero_cost_tolerance: -25.0  # Allow up to $25 loss for "near-zero-cost" collars
+  delayed_snapshot_patience_s: 3.0  # Patience for delayed market data (seconds)
 
 # Risk Tolerance
 risk:
@@ -59,6 +65,10 @@ output:
   save_to_csv: true
   csv_filename: "reports/collar_opportunities.csv"
   log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_to_file: true  # Save log output to file
+  log_filename: "logs/zero_cost_collar_screener.log"  # Log file path
+  progress_update_frequency: 5  # Print progress summary every N symbols
+  real_time_updates: true  # Update CSV file after each symbol
 
 # Advanced Settings
 advanced:
