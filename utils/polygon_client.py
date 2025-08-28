@@ -1,0 +1,261 @@
+"""
+Polygon.io API client for options data
+Handles API authentication, rate limiting, and retry logic
+"""
+
+import os
+import time
+import requests
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
+import json
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class PolygonClient:
+    """Client for Polygon.io API with rate limiting and retry logic"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize Polygon client
+        
+        Args:
+            api_key: Polygon API key. If None, will try to load from environment
+        """
+        self.api_key = api_key or os.getenv('POLYGON_API_KEY')
+        if not self.api_key:
+            raise ValueError("Polygon API key required. Set POLYGON_API_KEY environment variable or pass to constructor.")
+        
+        self.base_url = "https://api.polygon.io"
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Authorization': f'Bearer {self.api_key}',
+            'User-Agent': 'BackTrader-LEAPS-Strategy/1.0'
+        })
+        
+        # Rate limiting for free plan (~5 requests per minute)
+        self.requests_per_minute = 5
+        self.request_times = []
+        
+    def _rate_limit(self):
+        """Implement rate limiting for free plan"""
+        now = time.time()
+        # Remove requests older than 1 minute
+        self.request_times = [t for t in self.request_times if now - t < 60]
+        
+        if len(self.request_times) >= self.requests_per_minute:
+            # Wait until we can make another request
+            sleep_time = 60 - (now - self.request_times[0]) + 1
+            if sleep_time > 0:
+                logger.info(f"Rate limit reached, sleeping for {sleep_time:.1f} seconds")
+                time.sleep(sleep_time)
+        
+        self.request_times.append(now)
+    
+    def _make_request(self, endpoint: str, params: Optional[Dict[str, Any]] = None, 
+                     max_retries: int = 3, base_delay: float = 1.0) -> Dict[str, Any]:
+        """
+        Make a rate-limited request to Polygon API with retry logic
+        
+        Args:
+            endpoint: API endpoint (e.g., '/v3/reference/options/contracts')
+            params: Query parameters
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay for exponential backoff (seconds)
+        
+        Returns:
+            API response as dictionary
+        
+        Raises:
+            requests.RequestException: If all retries fail
+        """
+        params = params or {}
+        params['apiKey'] = self.api_key
+        
+        for attempt in range(max_retries + 1):
+            try:
+                self._rate_limit()
+                
+                url = f"{self.base_url}{endpoint}"
+                logger.debug(f"Making request to {url} with params {params}")
+                
+                response = self.session.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # Check for API errors
+                if 'error' in data:
+                    raise requests.RequestException(f"Polygon API error: {data['error']}")
+                
+                return data
+                
+            except requests.RequestException as e:
+                if attempt == max_retries:
+                    logger.error(f"Request failed after {max_retries + 1} attempts: {e}")
+                    raise
+                
+                delay = base_delay * (2 ** attempt)  # Exponential backoff
+                logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s: {e}")
+                time.sleep(delay)
+    
+    def get_options_chain(self, underlying: str, expiration_date: str, 
+                          contract_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get options chain for a specific underlying and expiration
+        
+        Args:
+            underlying: Underlying symbol (e.g., 'QQQ')
+            expiration_date: Expiration date in YYYY-MM-DD format
+            contract_type: Filter by contract type ('call', 'put', or None for both)
+        
+        Returns:
+            Options chain data
+        """
+        endpoint = "/v3/reference/options/contracts"
+        params = {
+            'underlying_asset': underlying,
+            'expiration_date': expiration_date
+        }
+        
+        if contract_type:
+            params['contract_type'] = contract_type
+        
+        return self._make_request(endpoint, params)
+    
+    def get_options_snapshot(self, option_id: str) -> Dict[str, Any]:
+        """
+        Get current snapshot for a specific option contract
+        
+        Args:
+            option_id: OCC option identifier
+        
+        Returns:
+            Option snapshot data
+        """
+        endpoint = f"/v3/snapshot/options/{option_id}"
+        return self._make_request(endpoint)
+    
+    def get_options_aggregates(self, option_id: str, from_date: str, to_date: str,
+                              timespan: str = 'day', multiplier: int = 1) -> Dict[str, Any]:
+        """
+        Get historical aggregates for an option contract
+        
+        Args:
+            option_id: OCC option identifier
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            timespan: Timespan for aggregation ('minute', 'hour', 'day', 'week', 'month', 'quarter', 'year')
+            multiplier: Size of the timespan multiplier
+        
+        Returns:
+            Historical aggregates data
+        """
+        endpoint = f"/v2/aggs/ticker/{option_id}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
+        return self._make_request(endpoint)
+    
+    def get_options_previous_close(self, option_id: str) -> Dict[str, Any]:
+        """
+        Get previous day's close for an option contract
+        
+        Args:
+            option_id: OCC option identifier
+        
+        Returns:
+            Previous close data
+        """
+        endpoint = f"/v2/aggs/ticker/{option_id}/prev"
+        return self._make_request(endpoint)
+    
+    def get_options_trades(self, option_id: str, from_date: str, to_date: str,
+                          limit: int = 50000) -> Dict[str, Any]:
+        """
+        Get trades for an option contract
+        
+        Args:
+            option_id: OCC option identifier
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            limit: Maximum number of trades to return
+        
+        Returns:
+            Trades data
+        """
+        endpoint = f"/v3/trades/{option_id}"
+        params = {
+            'timestamp.gte': from_date,
+            'timestamp.lte': to_date,
+            'limit': limit
+        }
+        return self._make_request(endpoint, params)
+    
+    def get_options_quotes(self, option_id: str, from_date: str, to_date: str,
+                          limit: int = 50000) -> Dict[str, Any]:
+        """
+        Get quotes for an option contract
+        
+        Args:
+            option_id: OCC option identifier
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            limit: Maximum number of quotes to return
+        
+        Returns:
+            Quotes data
+        """
+        endpoint = f"/v3/quotes/{option_id}"
+        params = {
+            'timestamp.gte': from_date,
+            'timestamp.lte': to_date,
+            'limit': limit
+        }
+        return self._make_request(endpoint, params)
+    
+    def close(self):
+        """Close the session"""
+        if self.session:
+            self.session.close()
+
+
+def get_polygon_client(api_key: Optional[str] = None) -> PolygonClient:
+    """
+    Factory function to get a Polygon client
+    
+    Args:
+        api_key: Optional API key override
+    
+    Returns:
+        Configured PolygonClient instance
+    """
+    return PolygonClient(api_key)
+
+
+# Convenience function for simple JSON requests
+def get_json(url: str, params: Optional[Dict[str, Any]] = None, 
+             api_key: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Simple function to make a JSON request to Polygon API
+    
+    Args:
+        url: Full URL to request
+        params: Query parameters
+        api_key: Polygon API key
+    
+    Returns:
+        API response as dictionary
+    """
+    client = get_polygon_client(api_key)
+    try:
+        # Extract endpoint from full URL
+        if url.startswith(client.base_url):
+            endpoint = url[len(client.base_url):]
+        else:
+            endpoint = url
+        
+        return client._make_request(endpoint, params)
+    finally:
+        client.close()
