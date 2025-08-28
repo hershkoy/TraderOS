@@ -128,6 +128,16 @@ def parse_arguments():
                        type=int,
                        default=5,
                        help='Print progress summary every N symbols (default: 5)')
+    parser.add_argument('--start-index',
+                       type=int,
+                       default=0,
+                       help='Index to start processing from (0-based, default: 0)')
+    parser.add_argument('--max-tickers',
+                       type=int,
+                       help='Maximum number of tickers to process (default: all)')
+    parser.add_argument('--resume-from',
+                       type=int,
+                       help='Resume processing from this index (0-based, alias for --start-index)')
     return parser.parse_args()
 
 class CollarScreenerConfig:
@@ -178,6 +188,11 @@ class CollarScreenerConfig:
             self.LOG_FILENAME = config['output'].get('log_filename', 'logs/zero_cost_collar_screener.log')
             self.PROGRESS_UPDATE_FREQUENCY = config['output'].get('progress_update_frequency', 5)
             self.REAL_TIME_UPDATES = config['output'].get('real_time_updates', True)
+            
+            # Processing Range Settings
+            self.START_INDEX = config.get('processing', {}).get('start_index', 0)
+            self.MAX_TICKERS = config.get('processing', {}).get('max_tickers', None)
+            
             # Override config log level with CLI parameter
             self.LOG_LEVEL = self.log_level
             
@@ -258,6 +273,11 @@ class CollarScreenerConfig:
         self.LOG_FILENAME = 'logs/zero_cost_collar_screener.log'
         self.PROGRESS_UPDATE_FREQUENCY = 5
         self.REAL_TIME_UPDATES = True
+        
+        # Processing Range Settings
+        self.START_INDEX = 0
+        self.MAX_TICKERS = None
+        
         self.LOG_LEVEL = self.log_level
         
         self.MAX_STRIKES_PER_EXPIRY = 16
@@ -1262,32 +1282,40 @@ class CollarScreener:
         except Exception as e:
             self.logger.error(f"Error updating progress: {e}")
     
-    def print_progress_summary(self, all_results: List[Dict], current_symbol: str = None):
+    def print_progress_summary(self, all_results: List[Dict], current_symbol: str = None, actual_index: int = None):
         """Print a summary of current progress"""
         if not all_results:
             return
         
-        total_symbols = len(self.config.UNIVERSE)
+        total_universe_symbols = len(self.config.UNIVERSE)
         unique_symbols = len(set(r.get('symbol') for r in all_results))
         total_opportunities = len(all_results)
         
-        # Calculate progress
-        if current_symbol:
-            # Estimate progress based on symbol position in universe
+        # Calculate progress based on actual universe position
+        if current_symbol and actual_index is not None:
+            progress_percent = round(((actual_index + 1) / total_universe_symbols) * 100, 1)
+            current_position = f"{actual_index + 1}/{total_universe_symbols}"
+        elif current_symbol:
+            # Fallback: estimate progress based on symbol position in universe
             try:
                 symbol_index = self.config.UNIVERSE.index(current_symbol)
-                progress_percent = round(((symbol_index + 1) / total_symbols) * 100, 1)
+                progress_percent = round(((symbol_index + 1) / total_universe_symbols) * 100, 1)
+                current_position = f"{symbol_index + 1}/{total_universe_symbols}"
             except ValueError:
                 progress_percent = 0
+                current_position = "Unknown"
         else:
             progress_percent = 100
+            current_position = f"{total_universe_symbols}/{total_universe_symbols}"
         
         print(f"\n{'='*60}")
         print(f"PROGRESS SUMMARY")
         print(f"{'='*60}")
-        print(f"Progress: {progress_percent}% ({unique_symbols}/{total_symbols} symbols with opportunities)")
+        print(f"Progress: {progress_percent}% ({current_position} in universe)")
         print(f"Total Opportunities Found: {total_opportunities}")
         print(f"Current Symbol: {current_symbol if current_symbol else 'Completed'}")
+        if actual_index is not None:
+            print(f"Universe Index: {actual_index}")
         print(f"Report File: {self.config.CSV_FILENAME}")
         print(f"Progress File: {self.config.CSV_FILENAME.replace('.csv', '_progress.csv')}")
         print(f"{'='*60}")
@@ -1321,6 +1349,14 @@ class CollarScreener:
             print("Log File: Console only")
         print(f"Real-time Updates: {'Enabled' if self.config.REAL_TIME_UPDATES else 'Disabled'}")
         print(f"Progress Frequency: Every {self.config.PROGRESS_UPDATE_FREQUENCY} symbols")
+        
+        # Show processing range if specified
+        if self.config.START_INDEX > 0 or self.config.MAX_TICKERS:
+            print(f"Processing Range: Starting from index {self.config.START_INDEX}")
+            if self.config.MAX_TICKERS:
+                print(f"Processing Range: Maximum {self.config.MAX_TICKERS} tickers")
+            print()
+        
         print()
         
         # Connect to IB
@@ -1328,15 +1364,21 @@ class CollarScreener:
             return
         
         try:
-            # Scan all symbols
+            # Apply processing range settings
+            tickers_to_scan = self.config.UNIVERSE[self.config.START_INDEX:]
+            if self.config.MAX_TICKERS:
+                tickers_to_scan = tickers_to_scan[:self.config.MAX_TICKERS]
+            
             all_results = []
-            total_symbols = len(self.config.UNIVERSE)
+            total_symbols = len(tickers_to_scan)
+            start_index = self.config.START_INDEX
             
-            self.logger.info(f"Starting scan of {total_symbols} symbols...")
+            self.logger.info(f"Starting scan of {total_symbols} symbols (starting from index {start_index})...")
             
-            for i, symbol in enumerate(self.config.UNIVERSE, 1):
+            for i, symbol in enumerate(tickers_to_scan, 1):
                 try:
-                    self.logger.info(f"Progress: {i}/{total_symbols} ({i/total_symbols*100:.1f}%) - Scanning {symbol}")
+                    actual_index = start_index + i - 1
+                    self.logger.info(f"Progress: {i}/{total_symbols} ({i/total_symbols*100:.1f}%) - Scanning {symbol} (universe index: {actual_index})")
                     
                     results = self.scan_ticker(symbol)
                     if results:
@@ -1351,7 +1393,7 @@ class CollarScreener:
                     
                     # Print progress summary based on frequency or when opportunities are found
                     if i % self.config.PROGRESS_UPDATE_FREQUENCY == 0 or results:
-                        self.print_progress_summary(all_results, symbol)
+                        self.print_progress_summary(all_results, symbol, actual_index)
                         
                 except Exception as e:
                     self.logger.error(f"Error processing {symbol}: {e}")
@@ -1365,7 +1407,8 @@ class CollarScreener:
             self.logger.info(f"Scan complete! Found {len(all_results)} total opportunities across {total_symbols} symbols")
             
             # Print final progress summary
-            self.print_progress_summary(all_results)
+            final_index = start_index + total_symbols - 1
+            self.print_progress_summary(all_results, None, final_index)
             
             # Print and save results
             self.print_results(all_results)
@@ -1641,6 +1684,15 @@ def main():
         config.REAL_TIME_UPDATES = False
     if args.progress_frequency:
         config.PROGRESS_UPDATE_FREQUENCY = args.progress_frequency
+    
+    # Override processing range settings from command line arguments
+    if args.resume_from is not None:
+        config.START_INDEX = args.resume_from
+    elif args.start_index != 0:
+        config.START_INDEX = args.start_index
+    
+    if args.max_tickers:
+        config.MAX_TICKERS = args.max_tickers
     
     screener = CollarScreener(config)
     screener.run()

@@ -70,6 +70,11 @@ output:
   progress_update_frequency: 5  # Print progress summary every N symbols
   real_time_updates: true  # Update CSV file after each symbol
 
+# Processing Range Settings
+processing:
+  start_index: 0  # Index to start processing from (0-based, default: 0)
+  max_tickers: null  # Maximum number of tickers to process (null = all)
+
 # Advanced Settings
 advanced:
   # Option chain sampling
