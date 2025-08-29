@@ -72,12 +72,12 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
 * [x] Add SQL function `get_underlying_close(symbol TEXT, d TIMESTAMPTZ) RETURNS NUMERIC` that pulls `close` from existing `market_data` at daily resolution (nearest prior bar).
 * [x] Create view `option_chain_with_underlying` joining `option_chain_eod` to `market_data` (`symbol=underlying`, same day) with columns: `underlying_close`, `moneyness = (underlying_close / (strike_cents/100.0))`.
 
-13. **Delta fallback (if Greeks absent)**
+13. **Delta fallback (if Greeks absent)** ✅
 
-* [ ] Implement a Python utility `utils/greeks.py` with Black–Scholes delta/iv solver:
+* [x] Implement a Python utility `utils/greeks.py` with Black–Scholes delta/iv solver:
 
-  * [ ] Inputs: `S=underlying_close`, `K=strike`, `T=days_to_exp/365`, `r=0.00`, `q=dividend_yield (0 for QQQ unless you feed it)`, `option mid = (bid+ask)/2`.
-  * [ ] If `iv` missing, solve IV; compute `delta/gamma/theta/vega`; update `option_quotes` for that `ts, option_id`.
+  * [x] Inputs: `S=underlying_close`, `K=strike`, `T=days_to_exp/365`, `r=0.00`, `q=dividend_yield (0 for QQQ unless you feed it)`, `option mid = (bid+ask)/2`.
+  * [x] If `iv` missing, solve IV; compute `delta/gamma/theta/vega`; update `option_quotes` for that `ts, option_id`.
 
 14. **Daily scheduler**
 
