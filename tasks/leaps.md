@@ -119,13 +119,14 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [ ] `test_contract_upsert_idempotent()` ensures repeat loads don’t duplicate rows.
   * [ ] `test_quotes_upsert()` checks PK conflict handling and updates.
 
-19. **Data integrity checks**
+19. **Data integrity checks** ✅
 
-* [ ] Daily job `checks/options_data_checks.py`:
+* [x] Daily job `scripts/options_data_checks.py`:
 
-  * [ ] Verify `count(distinct option_id)` growth reasonable vs yesterday (±20%).
-  * [ ] Spot-check random `option_id` for monotonic `last_seen`.
-  * [ ] Ensure `option_quotes` has the same (or within tolerance) number of rows as active contracts for the day.
+  * [x] Verify `count(distinct option_id)` growth reasonable vs yesterday (±20%).
+  * [x] Spot-check random `option_id` for monotonic `last_seen`.
+  * [x] Ensure `option_quotes` has the same (or within tolerance) number of rows as active contracts for the day.
+  * [x] Unit tests for integrity checker
 
 20. **Backtest integration glue**
 
