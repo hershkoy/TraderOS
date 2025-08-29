@@ -104,12 +104,12 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] `get_chain_at(ts: datetime, underlying='QQQ') -> pd.DataFrame` using `option_chain_with_underlying`.
   * [x] `select_leaps(ts, delta_band=(0.6,0.85))` and `select_short_calls(ts, dte_band=(25,45), delta_band=(0.15,0.35))`.
 
-17. **Assignment risk helper**
+17. **Assignment risk helper** ✅
 
-* [ ] Implement `utils/assignment.py`:
+* [x] Implement `utils/assignment.py`:
 
-  * [ ] Function `should_flag_assignment(short_delta, moneyness, days_to_exp, ex_div_calendar)` returning bool.
-  * [ ] For QQQ, accept an empty dividend calendar initially; return `True` if ITM and DTE ≤ 3.
+  * [x] Function `should_flag_assignment(short_delta, moneyness, days_to_exp, ex_div_calendar)` returning bool.
+  * [x] For QQQ, accept an empty dividend calendar initially; return `True` if ITM and DTE ≤ 3.
 
 18. **ETL tests (unit)**
 
