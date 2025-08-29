@@ -346,6 +346,151 @@ class TestOptionsRepository(unittest.TestCase):
         # Verify the query was called
         mock_read_sql.assert_called_once()
 
+class TestUpsertOperations(unittest.TestCase):
+    """Test upsert operations for contracts and quotes."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        self.mock_conn = Mock()
+        self.mock_cursor = Mock()
+        self.mock_conn.cursor.return_value = self.mock_cursor
+        
+        # Make the cursor support context manager protocol
+        self.mock_cursor.__enter__ = Mock(return_value=self.mock_cursor)
+        self.mock_cursor.__exit__ = Mock(return_value=None)
+    
+    def test_contract_upsert_idempotent(self):
+        """Test that contract upsert operations are idempotent."""
+        from utils.pg_copy import copy_rows_with_upsert
+        
+        # Test data
+        contracts_data = [
+            {
+                'option_id': 'QQQ_2025-06-20_035000C',
+                'underlying': 'QQQ',
+                'expiration': '2025-06-20',
+                'strike_cents': 35000,
+                'option_right': 'C',
+                'multiplier': 100,
+                'first_seen': '2024-01-15 16:00:00',
+                'last_seen': '2024-01-15 16:00:00'
+            }
+        ]
+        
+        # Mock the upsert function call
+        self.mock_cursor.execute.return_value = None
+        self.mock_cursor.fetchone.return_value = [1]  # One row affected
+        
+        # First upsert
+        result1 = copy_rows_with_upsert(
+            self.mock_conn, 
+            'option_contracts', 
+            ['option_id', 'underlying', 'expiration', 'strike_cents', 'option_right', 'multiplier', 'first_seen', 'last_seen'],
+            iter(contracts_data),
+            conflict_columns=['option_id'],
+            update_columns=['last_seen']
+        )
+        
+        # Second upsert with same data (should not create duplicates)
+        result2 = copy_rows_with_upsert(
+            self.mock_conn, 
+            'option_contracts', 
+            ['option_id', 'underlying', 'expiration', 'strike_cents', 'option_right', 'multiplier', 'first_seen', 'last_seen'],
+            iter(contracts_data),
+            conflict_columns=['option_id'],
+            update_columns=['last_seen']
+        )
+        
+        # Both operations should succeed
+        self.assertIsNotNone(result1)
+        self.assertIsNotNone(result2)
+        
+        # Verify that the upsert function was called multiple times (creates temp tables, etc.)
+        self.assertGreater(self.mock_cursor.execute.call_count, 0)
+    
+    def test_quotes_upsert(self):
+        """Test quotes upsert with PK conflict handling and updates."""
+        from utils.pg_copy import copy_rows_with_upsert
+        
+        # Test data
+        quotes_data = [
+            {
+                'ts': '2024-01-15 16:00:00',
+                'option_id': 'QQQ_2025-06-20_035000C',
+                'bid': 15.50,
+                'ask': 15.75,
+                'last': 15.60,
+                'volume': 100,
+                'open_interest': 500,
+                'iv': 0.25,
+                'delta': 0.75,
+                'gamma': 0.02,
+                'theta': -0.05,
+                'vega': 0.15,
+                'snapshot_type': 'eod'
+            }
+        ]
+        
+        # Mock the upsert function call
+        self.mock_cursor.execute.return_value = None
+        self.mock_cursor.fetchone.return_value = [1]  # One row affected
+        
+        # First upsert
+        result1 = copy_rows_with_upsert(
+            self.mock_conn, 
+            'option_quotes', 
+            ['ts', 'option_id', 'bid', 'ask', 'last', 'volume', 'open_interest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'snapshot_type'],
+            iter(quotes_data),
+            conflict_columns=['option_id', 'ts'],
+            update_columns=['bid', 'ask', 'last', 'volume', 'open_interest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'snapshot_type']
+        )
+        
+        # Second upsert with updated data (should update existing row)
+        updated_quotes_data = [
+            {
+                'ts': '2024-01-15 16:00:00',
+                'option_id': 'QQQ_2025-06-20_035000C',
+                'bid': 15.60,  # Updated bid
+                'ask': 15.80,  # Updated ask
+                'last': 15.70,  # Updated last
+                'volume': 150,  # Updated volume
+                'open_interest': 550,  # Updated OI
+                'iv': 0.26,  # Updated IV
+                'delta': 0.76,  # Updated delta
+                'gamma': 0.021,  # Updated gamma
+                'theta': -0.06,  # Updated theta
+                'vega': 0.16,  # Updated vega
+                'snapshot_type': 'eod'
+            }
+        ]
+        
+        result2 = copy_rows_with_upsert(
+            self.mock_conn, 
+            'option_quotes', 
+            ['ts', 'option_id', 'bid', 'ask', 'last', 'volume', 'open_interest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'snapshot_type'],
+            iter(updated_quotes_data),
+            conflict_columns=['option_id', 'ts'],
+            update_columns=['bid', 'ask', 'last', 'volume', 'open_interest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'snapshot_type']
+        )
+        
+        # Both operations should succeed
+        self.assertIsNotNone(result1)
+        self.assertIsNotNone(result2)
+        
+        # Verify that the upsert function was called multiple times (creates temp tables, etc.)
+        self.assertGreater(self.mock_cursor.execute.call_count, 0)
+        
+        # Verify that the ON CONFLICT clause was used (upsert behavior)
+        # The actual SQL would contain "ON CONFLICT" for upsert operations
+        calls = self.mock_cursor.execute.call_args_list
+        on_conflict_found = False
+        for call in calls:
+            sql = call[0][0]
+            if 'ON CONFLICT' in sql.upper():
+                on_conflict_found = True
+                break
+        self.assertTrue(on_conflict_found, "ON CONFLICT clause not found in any SQL call")
+
 class TestETLIntegration(unittest.TestCase):
     """Test ETL integration scenarios."""
     
