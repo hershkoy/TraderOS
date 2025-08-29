@@ -136,14 +136,14 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] Prices fills at `mid = (bid+ask)/2` with a configurable haircut `%spread`.
   * [x] Emits a struct with the exact legs: `{'date': ts, 'leaps': {...}, 'short_call': {...}}`.
 
-21. **Documentation (README additions)**
+21. **Documentation (README additions)** ✅
 
-* [ ] Add `docs/options_pipeline.md` with:
+* [x] Add `docs/options_pipeline.md` with:
 
-  * [ ] Table schemas + indexes.
-  * [ ] Command snippets to run discover/ingest.
-  * [ ] Notes on rate-limits on Polygon free vs \$29 plan.
-  * [ ] Backtest selector examples (delta vs moneyness fallback).
+  * [x] Table schemas + indexes.
+  * [x] Command snippets to run discover/ingest.
+  * [x] Notes on rate-limits on Polygon free vs \$29 plan.
+  * [x] Backtest selector examples (delta vs moneyness fallback).
 
 22. **Optional: retention & compression tuning**
 
