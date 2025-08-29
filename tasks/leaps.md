@@ -111,11 +111,11 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] Function `should_flag_assignment(short_delta, moneyness, days_to_exp, ex_div_calendar)` returning bool.
   * [x] For QQQ, accept an empty dividend calendar initially; return `True` if ITM and DTE ≤ 3.
 
-18. **ETL tests (unit)**
+18. **ETL tests (unit)** ✅
 
-* [ ] Create pytest cases:
+* [x] Create pytest cases:
 
-  * [ ] `test_build_option_id()` with multiple strikes/rights.
+  * [x] `test_build_option_id()` with multiple strikes/rights.
   * [ ] `test_contract_upsert_idempotent()` ensures repeat loads don’t duplicate rows.
   * [ ] `test_quotes_upsert()` checks PK conflict handling and updates.
 
