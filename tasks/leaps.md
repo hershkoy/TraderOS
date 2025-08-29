@@ -87,15 +87,15 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] `polygon_ingest_eod_quotes.py` (after market settle).
   * [x] Optional: `greeks_fill.py` to backfill missing Greeks for the last N days.
 
-15. **Backtest selector SQL for PMCC/LEAPS**
+15. **Backtest selector SQL for PMCC/LEAPS** ✅
 
-* [ ] SQL view `pmcc_candidates AS`:
+* [x] SQL view `pmcc_candidates AS`:
 
-  * [ ] For each `ts` (trading day):
+  * [x] For each `ts` (trading day):
 
-    * [ ] **LEAPS**: `expiration - date(ts) >= 365` and `right='C'` and `(delta BETWEEN 0.6 AND 0.85 OR moneyness BETWEEN 0.9 AND 1.1 if delta null)`.
-    * [ ] **Short Call**: `25 <= (expiration - date(ts)) <= 45` and `right='C'` and `(delta BETWEEN 0.15 AND 0.35 OR moneyness BETWEEN 1.02 AND 1.08 if delta null)`.
-  * [ ] Include: `option_id`, `expiration`, `strike_cents`, `delta`, `moneyness`, `bid/ask/last`.
+    * [x] **LEAPS**: `expiration - date(ts) >= 365` and `right='C'` and `(delta BETWEEN 0.6 AND 0.85 OR moneyness BETWEEN 0.9 AND 1.1 if delta null)`.
+    * [x] **Short Call**: `25 <= (expiration - date(ts)) <= 45` and `right='C'` and `(delta BETWEEN 0.15 AND 0.35 OR moneyness BETWEEN 1.02 AND 1.08 if delta null)`.
+  * [x] Include: `option_id`, `expiration`, `strike_cents`, `delta`, `moneyness`, `bid/ask/last`.
 
 16. **API module to fetch chain slices for a given date**
 
