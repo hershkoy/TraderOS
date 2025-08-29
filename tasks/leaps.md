@@ -67,10 +67,10 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
 * [x] Add TimescaleDB retention policy to keep `option_quotes` raw (if you later add intraday) for 120 days, keep daily EOD indefinitely.
 * [x] Use `add_retention_policy('option_quotes', INTERVAL '120 days')` guarded behind a feature flag.
 
-12. **Join helpers: option ↔ underlying**
+12. **Join helpers: option ↔ underlying** ✅
 
-* [ ] Add SQL function `get_underlying_close(symbol TEXT, d TIMESTAMPTZ) RETURNS NUMERIC` that pulls `close` from existing `market_data` at daily resolution (nearest prior bar).
-* [ ] Create view `option_chain_with_underlying` joining `option_chain_eod` to `market_data` (`symbol=underlying`, same day) with columns: `underlying_close`, `moneyness = (underlying_close / (strike_cents/100.0))`.
+* [x] Add SQL function `get_underlying_close(symbol TEXT, d TIMESTAMPTZ) RETURNS NUMERIC` that pulls `close` from existing `market_data` at daily resolution (nearest prior bar).
+* [x] Create view `option_chain_with_underlying` joining `option_chain_eod` to `market_data` (`symbol=underlying`, same day) with columns: `underlying_close`, `moneyness = (underlying_close / (strike_cents/100.0))`.
 
 13. **Delta fallback (if Greeks absent)**
 
