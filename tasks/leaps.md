@@ -128,13 +128,13 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] Ensure `option_quotes` has the same (or within tolerance) number of rows as active contracts for the day.
   * [x] Unit tests for integrity checker
 
-20. **Backtest integration glue**
+20. **Backtest integration glue** ✅
 
-* [ ] Implement a provider in your strategy code that:
+* [x] Implement a provider in your strategy code that:
 
-  * [ ] Calls `options_repo.select_leaps()` and `select_short_calls()` for each trading day.
-  * [ ] Prices fills at `mid = (bid+ask)/2` with a configurable haircut `%spread`.
-  * [ ] Emits a struct with the exact legs: `{'date': ts, 'leaps': {...}, 'short_call': {...}}`.
+  * [x] Calls `options_repo.select_leaps()` and `select_short_calls()` for each trading day.
+  * [x] Prices fills at `mid = (bid+ask)/2` with a configurable haircut `%spread`.
+  * [x] Emits a struct with the exact legs: `{'date': ts, 'leaps': {...}, 'short_call': {...}}`.
 
 21. **Documentation (README additions)**
 
