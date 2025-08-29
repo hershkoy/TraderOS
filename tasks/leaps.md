@@ -97,12 +97,12 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
     * [x] **Short Call**: `25 <= (expiration - date(ts)) <= 45` and `right='C'` and `(delta BETWEEN 0.15 AND 0.35 OR moneyness BETWEEN 1.02 AND 1.08 if delta null)`.
   * [x] Include: `option_id`, `expiration`, `strike_cents`, `delta`, `moneyness`, `bid/ask/last`.
 
-16. **API module to fetch chain slices for a given date**
+16. **API module to fetch chain slices for a given date** ✅
 
-* [ ] Implement `data/options_repo.py` with:
+* [x] Implement `data/options_repo.py` with:
 
-  * [ ] `get_chain_at(ts: datetime, underlying='QQQ') -> pd.DataFrame` using `option_chain_with_underlying`.
-  * [ ] `select_leaps(ts, delta_band=(0.6,0.85))` and `select_short_calls(ts, dte_band=(25,45), delta_band=(0.15,0.35))`.
+  * [x] `get_chain_at(ts: datetime, underlying='QQQ') -> pd.DataFrame` using `option_chain_with_underlying`.
+  * [x] `select_leaps(ts, delta_band=(0.6,0.85))` and `select_short_calls(ts, dte_band=(25,45), delta_band=(0.15,0.35))`.
 
 17. **Assignment risk helper**
 
