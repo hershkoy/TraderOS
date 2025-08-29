@@ -145,29 +145,29 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] Notes on rate-limits on Polygon free vs \$29 plan.
   * [x] Backtest selector examples (delta vs moneyness fallback).
 
-22. **Optional: retention & compression tuning**
+22. **Optional: retention & compression tuning** ✅
 
-* [ ] Enable TimescaleDB compression on `option_quotes` older than 90 days:
+* [x] Enable TimescaleDB compression on `option_quotes` older than 90 days:
 
-  * [ ] `SELECT add_compression_policy('option_quotes', INTERVAL '90 days');`
-  * [ ] `ALTER TABLE option_quotes SET (timescaledb.compress, timescaledb.compress_segmentby = 'option_id');`
+  * [x] `SELECT add_compression_policy('option_quotes', INTERVAL '90 days');`
+  * [x] `ALTER TABLE option_quotes SET (timescaledb.compress, timescaledb.compress_segmentby = 'option_id');`
 
-23. **Optional: performance index for selector**
+23. **Optional: performance index for selector** ✅
 
-* [ ] Add partial index on `option_contracts` for calls only:
+* [x] Add partial index on `option_contracts` for calls only:
 
-  * [ ] `CREATE INDEX ON option_contracts (expiration, strike_cents) WHERE right='C' AND underlying='QQQ';`
+  * [x] `CREATE INDEX ON option_contracts (expiration, strike_cents) WHERE right='C' AND underlying='QQQ';`
 
-24. **Optional: sanity stats dashboard**
+24. **Optional: sanity stats dashboard** ✅
 
-* [ ] Create a simple SQL view `options_summary_daily` with per-day counts (`contracts`, `quotes`, avg bid-ask spread, median OI) for monitoring and plotting.
+* [x] Create a simple SQL view `options_summary_daily` with per-day counts (`contracts`, `quotes`, avg bid-ask spread, median OI) for monitoring and plotting.
 
-25. **Dry-run script for 2 years**
+25. **Dry-run script for 2 years** ✅
 
-* [ ] Write `scripts/run_polygon_pipeline_2y.py` that:
+* [x] Write `scripts/run_polygon_pipeline_2y.py` that:
 
-  * [ ] Iterates dates from `today - 730d` to `today`, but only executes a **sample** (e.g., every 5th trading day) to respect the free plan.
-  * [ ] Logs totals of contracts discovered and quotes inserted.
+  * [x] Iterates dates from `today - 730d` to `today`, but only executes a **sample** (e.g., every 5th trading day) to respect the free plan.
+  * [x] Logs totals of contracts discovered and quotes inserted.
 
 
 
