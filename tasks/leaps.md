@@ -79,13 +79,13 @@ This LEAPS strategy focuses on building long-term exposure to major ETFs like QQ
   * [x] Inputs: `S=underlying_close`, `K=strike`, `T=days_to_exp/365`, `r=0.00`, `q=dividend_yield (0 for QQQ unless you feed it)`, `option mid = (bid+ask)/2`.
   * [x] If `iv` missing, solve IV; compute `delta/gamma/theta/vega`; update `option_quotes` for that `ts, option_id`.
 
-14. **Daily scheduler**
+14. **Daily scheduler** ✅
 
-* [ ] Add a `cron`/Taskfile entry to run:
+* [x] Add a `cron`/Taskfile entry to run:
 
-  * [ ] `polygon_discover_contracts.py` (after market close).
-  * [ ] `polygon_ingest_eod_quotes.py` (after market settle).
-  * [ ] Optional: `greeks_fill.py` to backfill missing Greeks for the last N days.
+  * [x] `polygon_discover_contracts.py` (after market close).
+  * [x] `polygon_ingest_eod_quotes.py` (after market settle).
+  * [x] Optional: `greeks_fill.py` to backfill missing Greeks for the last N days.
 
 15. **Backtest selector SQL for PMCC/LEAPS**
 

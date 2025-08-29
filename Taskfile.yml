@@ -1,0 +1,59 @@
+# Taskfile for Options Data Pipeline
+# Install Task: https://taskfile.dev/installation/
+
+version: '3'
+
+vars:
+  PROJECT_DIR: '{{.PROJECT_DIR | default "."}}'
+  VENV_DIR: '{{.VENV_DIR | default "venv"}}'
+  LOG_DIR: '{{.LOG_DIR | default "logs"}}'
+  UNDERLYING: '{{.UNDERLYING | default "QQQ"}}'
+
+tasks:
+  # Discover new option contracts
+  discover-contracts:
+    desc: Discover new option contracts from Polygon
+    cmds:
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+    env:
+      PYTHONPATH: '{{.PROJECT_DIR}}'
+      POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
+
+  # Ingest EOD quotes for a specific date
+  ingest-quotes:
+    desc: Ingest EOD quotes for a specific date
+    cmds:
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --date {{.DATE | default .TODAY}}'
+    env:
+      PYTHONPATH: '{{.PROJECT_DIR}}'
+      POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
+    vars:
+      TODAY: '{{now | date "2006-01-02"}}'
+
+  # Backfill missing Greeks
+  backfill-greeks:
+    desc: Backfill missing Greeks for option quotes
+    cmds:
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE | default .TODAY}} --end-date {{.END_DATE | default .TODAY}} --underlying {{.UNDERLYING}}'
+    env:
+      PYTHONPATH: '{{.PROJECT_DIR}}'
+    vars:
+      TODAY: '{{now | date "2006-01-02"}}'
+
+  # Run complete daily pipeline
+  daily-pipeline:
+    desc: Run complete daily options data pipeline
+    deps: [discover-contracts, ingest-quotes, backfill-greeks]
+    cmds:
+      - echo "Daily pipeline completed successfully"
+
+  # Run pipeline for a specific date range
+  backfill-range:
+    desc: Backfill data for a date range
+    cmds:
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --start-date {{.START_DATE}} --end-date {{.END_DATE}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE}} --end-date {{.END_DATE}} --underlying {{.UNDERLYING}}'
+    env:
+      PYTHONPATH: '{{.PROJECT_DIR}}'
+      POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
