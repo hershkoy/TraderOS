@@ -11,6 +11,9 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 import json
 
+# Import environment loader
+from .env_loader import get_env_var
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,7 +29,7 @@ class PolygonClient:
         Args:
             api_key: Polygon API key. If None, will try to load from environment
         """
-        self.api_key = api_key or os.getenv('POLYGON_API_KEY')
+        self.api_key = api_key or get_env_var('POLYGON_API_KEY')
         if not self.api_key:
             raise ValueError("Polygon API key required. Set POLYGON_API_KEY environment variable or pass to constructor.")
         
@@ -104,7 +107,8 @@ class PolygonClient:
                 time.sleep(delay)
     
     def get_options_chain(self, underlying: str, expiration_date: str, 
-                          contract_type: Optional[str] = None) -> Dict[str, Any]:
+                           contract_type: Optional[str] = None,
+                           as_of: Optional[str] = None, expired: Optional[bool] = None) -> Dict[str, Any]:
         """
         Get options chain for a specific underlying and expiration
         
@@ -112,20 +116,54 @@ class PolygonClient:
             underlying: Underlying symbol (e.g., 'QQQ')
             expiration_date: Expiration date in YYYY-MM-DD format
             contract_type: Filter by contract type ('call', 'put', or None for both)
+            as_of: Discover contracts "as of" a past date (YYYY-MM-DD)
+            expired: Filter by expired status (True/False/None for all)
         
         Returns:
-            Options chain data
+            Options chain data with pagination handled
         """
         endpoint = "/v3/reference/options/contracts"
         params = {
-            'underlying_asset': underlying,
+            'underlying_ticker': underlying,  # Fixed: was 'underlying_asset'
             'expiration_date': expiration_date
         }
         
         if contract_type:
             params['contract_type'] = contract_type
+        if as_of:
+            params['as_of'] = as_of
+        if expired is not None:
+            params['expired'] = str(expired).lower()
         
-        return self._make_request(endpoint, params)
+        # Handle pagination
+        all_results = []
+        next_url = None
+        
+        while True:
+            if next_url:
+                # Extract endpoint from full URL
+                if next_url.startswith(self.base_url):
+                    endpoint = next_url[len(self.base_url):]
+                else:
+                    endpoint = next_url
+                params = {}  # Clear params for subsequent requests
+            
+            data = self._make_request(endpoint, params)
+            
+            if 'results' in data:
+                all_results.extend(data['results'])
+            
+            # Check for next page
+            next_url = data.get('next_url')
+            if not next_url:
+                break
+        
+        # Return in same format as original, but with all pages combined
+        return {
+            'results': all_results,
+            'status': data.get('status', 'OK'),
+            'request_id': data.get('request_id')
+        }
     
     def get_options_snapshot(self, option_id: str) -> Dict[str, Any]:
         """

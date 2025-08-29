@@ -23,6 +23,7 @@ from utils.polygon_client import PolygonClient
 from utils.pg_copy import copy_rows_with_upsert
 from utils.option_utils import build_option_id
 from data.options_repo import OptionsRepository
+from utils.env_loader import get_env_var
 
 # Configure logging
 logging.basicConfig(
@@ -282,8 +283,7 @@ def main():
     }
     
     # Get API key from environment
-    import os
-    api_key = os.getenv('POLYGON_API_KEY')
+    api_key = get_env_var('POLYGON_API_KEY')
     if not api_key:
         logger.warning("POLYGON_API_KEY not found in environment. Using dummy key for dry-run.")
         api_key = 'dummy_key_for_dry_run'

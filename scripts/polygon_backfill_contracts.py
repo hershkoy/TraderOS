@@ -6,6 +6,7 @@ Uses Polygon API to discover contracts from historical dates
 
 import os
 import sys
+import time
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
@@ -117,6 +118,7 @@ class OptionsContractBackfiller:
                         'option_right': contract.get('contract_type', 'call').upper()[0],  # 'call' -> 'C'
                         'multiplier': int(contract.get('multiplier', 100)),
                         'occ_symbol': contract.get('ticker', ''),
+                        'polygon_ticker': contract.get('ticker', ''),  # Store Polygon's ticker for API calls
                         'first_seen': datetime.now(),
                         'last_seen': datetime.now()
                     }
@@ -161,10 +163,10 @@ class OptionsContractBackfiller:
                 upsert_sql = """
                 INSERT INTO option_contracts (
                     option_id, underlying, expiration, strike_cents, option_right, 
-                    multiplier, first_seen, last_seen
+                    multiplier, first_seen, last_seen, polygon_ticker
                 ) VALUES (
                     %(option_id)s, %(underlying)s, %(expiration)s, %(strike_cents)s, 
-                    %(option_right)s, %(multiplier)s, %(first_seen)s, %(last_seen)s
+                    %(option_right)s, %(multiplier)s, %(first_seen)s, %(last_seen)s, %(polygon_ticker)s
                 )
                 ON CONFLICT (option_id) DO UPDATE SET
                     last_seen = EXCLUDED.last_seen,
@@ -172,7 +174,8 @@ class OptionsContractBackfiller:
                     expiration = EXCLUDED.expiration,
                     strike_cents = EXCLUDED.strike_cents,
                     option_right = EXCLUDED.option_right,
-                    multiplier = EXCLUDED.multiplier
+                    multiplier = EXCLUDED.multiplier,
+                    polygon_ticker = EXCLUDED.polygon_ticker
                 """
                 
                 processed = 0

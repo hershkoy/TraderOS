@@ -10,7 +10,8 @@ CREATE TABLE option_contracts (
   option_right    CHAR(1) NOT NULL,              -- 'C' or 'P'
   multiplier      INT  NOT NULL DEFAULT 100,
   first_seen      TIMESTAMPTZ,
-  last_seen       TIMESTAMPTZ
+  last_seen       TIMESTAMPTZ,
+  polygon_ticker  TEXT                           -- Polygon's ticker for API calls (e.g., O:QQQ250920C00300000)
 );
 
 -- Quotes/"EOD"/mid/greeks across time (hypertable)
