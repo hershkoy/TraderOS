@@ -2,6 +2,7 @@
 alwaysApply: true
 ---
 always use venv when running terminal
+we are on windows. Always use windows cmd syntax
 never use emoji characters in logging! UnicodeEncodeError: 'charmap' codec can't encode character '\u03b4' in position 89: character maps to <undefined> (we are running on windows)
 
 put tests in tests folder. 
