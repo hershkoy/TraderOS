@@ -98,7 +98,7 @@ class PolygonClient:
                 # Log response (truncated to 150 characters)
                 response_str = str(data)
                 if len(response_str) > 150:
-                    response_str = response_str[:147] + "..."
+                    response_str = response_str[:500] + "..."
                 logger.debug(f"Response: {response_str}")
                 
                 # Check for API errors
@@ -190,10 +190,15 @@ class PolygonClient:
                 logger.info(f"Page {page_count}: Found {page_contracts_processed} contracts with dates: {unique_dates[0]} to {unique_dates[-1]} ({len(unique_dates)} unique dates)")
                 logger.info(f"Page {page_count}: Total contracts processed so far: {total_contracts_processed}")
             
-            # Check if we have enough data
+            # Check if we have enough data after processing this page
             if max_contracts and total_contracts_processed >= max_contracts:
-                logger.info(f"Reached target of {max_contracts} contracts, stopping pagination")
+                logger.info(f"Reached target of {max_contracts} contracts after page {page_count}, stopping pagination")
                 break
+            
+            # Log progress towards limit
+            if max_contracts:
+                remaining = max_contracts - total_contracts_processed
+                logger.info(f"Page {page_count}: {remaining} contracts remaining until limit")
             
             # Check if we're getting dates outside our requested range
             for date_str in page_dates:

@@ -138,14 +138,14 @@ class OptionsContractBackfiller:
             List of discovered contracts
         """
         try:
-            logger.info(f"Discovering {underlying} options as of {discovery_date}")
+            logger.info(f"Discovering {underlying} options for expiration date {discovery_date}")
             
-            # Get options chain from Polygon with broader parameters
-            # Don't filter by specific expiration_date - get all contracts available as of the date
+            # Get options chain from Polygon for the specific expiration date
+            # We want contracts that expire on this specific date
             data = self.polygon_client.get_options_chain(
                 underlying, 
-                "",  # Don't filter by specific expiration_date
-                as_of=as_of or discovery_date,  # Use discovery_date as as_of if not specified
+                discovery_date,  # Use the specific expiration date
+                as_of=as_of,  # Only use as_of if explicitly provided
                 expired=expired
             )
             
