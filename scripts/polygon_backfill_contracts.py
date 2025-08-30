@@ -36,7 +36,8 @@ def setup_logging(log_level: str = 'INFO'):
         ]
     )
     
-    # Set specific logger levels
+    # Create and configure logger
+    logger = logging.getLogger(__name__)
     logger.setLevel(numeric_level)
     
     # Set Polygon client logger to DEBUG if we want detailed API logging
@@ -91,25 +92,17 @@ class OptionsContractBackfiller:
         try:
             logger.info(f"Fetching real expiration dates for QQQ from {start_date} to {today}")
             
-            # Get all available expirations from Polygon
+            # Use the new targeted approach with date window filtering
+            # This will only fetch expirations within our desired range
             all_expirations = self.polygon_client.list_expirations(
                 underlying='QQQ',
-                as_of=today.strftime('%Y-%m-%d'),  # Get current expirations
-                include_expired=True  # Include expired ones for historical data
+                start=start_date.strftime('%Y-%m-%d'),
+                end=today.strftime('%Y-%m-%d'),
+                include_expired=True
             )
             
-            # Filter to dates within our range
-            filtered_expirations = []
-            for exp_date_str in all_expirations:
-                try:
-                    exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
-                    if start_date <= exp_date <= today:
-                        filtered_expirations.append(exp_date_str)
-                except ValueError:
-                    continue  # Skip invalid dates
-            
-            logger.info(f"Found {len(filtered_expirations)} real expiration dates in range")
-            return filtered_expirations
+            logger.info(f"Found {len(all_expirations)} real expiration dates in range")
+            return all_expirations
             
         except Exception as e:
             logger.warning(f"Failed to get real expirations from Polygon: {e}")

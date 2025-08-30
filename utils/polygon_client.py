@@ -87,7 +87,8 @@ class PolygonClient:
                 self._rate_limit()
                 
                 url = f"{self.base_url}{endpoint}"
-                logger.debug(f"Making request to {url} with params {params}")
+                logger.info(f"Making request to {url} with params {params}")
+                logger.info(f"Full URL with params: {url}?{requests.compat.urlencode(params)}")
                 
                 response = self.session.get(url, params=params, timeout=30)
                 response.raise_for_status()
@@ -115,42 +116,101 @@ class PolygonClient:
                 logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s: {e}")
                 time.sleep(delay)
     
-    def list_expirations(self, underlying: str, as_of: Optional[str] = None, 
+    def list_expirations(self, underlying: str, start: str, end: str, 
                         include_expired: bool = True) -> List[str]:
         """
-        Get list of available expiration dates for an underlying.
+        Get list of available expiration dates for an underlying within a date window.
         
         Args:
             underlying: Underlying symbol (e.g., 'QQQ')
-            as_of: Discover expirations "as of" a past date (YYYY-MM-DD)
+            start: Start date for expiration window (YYYY-MM-DD)
+            end: End date for expiration window (YYYY-MM-DD)
             include_expired: Whether to include expired expirations
             
         Returns:
             List of expiration dates in YYYY-MM-DD format
         """
         endpoint = "/v3/reference/options/contracts"
-        params = {"underlying_ticker": underlying}
+        params = {
+            "underlying_ticker": underlying,
+            "expired": "true" if include_expired else "false",
+            "expiration_date.gte": start,
+            "expiration_date.lte": end,
+            "sort": "expiration_date",
+            "order": "desc",
+            "limit": 1000,
+        }
         
-        if as_of:
-            params["as_of"] = as_of
-        if include_expired:
-            params["expired"] = "true"
+        logger.info(f"list_expirations called with: underlying={underlying}, start={start}, end={end}, include_expired={include_expired}")
+        logger.info(f"Requesting contracts with expiration dates between {start} and {end}")
+        logger.info(f"Initial params: {params}")
         
         expirations = set()
         next_url = None
+        page_count = 0
         
         while True:
-            data = self._make_request(next_url or endpoint, params if not next_url else {})
+            page_count += 1
+            if next_url:
+                # Extract endpoint from full URL
+                if next_url.startswith(self.base_url):
+                    endpoint = next_url[len(self.base_url):]
+                else:
+                    endpoint = next_url
+                params = {}  # Clear params for subsequent requests
+                logger.debug(f"Page {page_count}: Using next_url endpoint")
+            else:
+                logger.debug(f"Page {page_count}: Using initial endpoint: {endpoint}")
+            
+            logger.debug(f"Page {page_count}: Making request...")
+            data = self._make_request(endpoint, params)
+            
+            # Log response details
+            results_count = len(data.get("results", []))
+            logger.info(f"Page {page_count}: Got {results_count} results")
+            
+            # Log date range for this page
+            if results_count > 0:
+                page_dates = []
+                for contract in data.get("results", []):
+                    if "expiration_date" in contract:
+                        page_dates.append(contract["expiration_date"])
+                
+                if page_dates:
+                    unique_dates = sorted(set(page_dates))
+                    logger.info(f"Page {page_count}: Date range: {unique_dates[0]} to {unique_dates[-1]} ({len(unique_dates)} unique dates)")
+                    
+                    # Check if we're getting dates outside our requested range
+                    for date_str in unique_dates:
+                        try:
+                            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                            if date_obj < datetime.strptime(start, '%Y-%m-%d').date() or date_obj > datetime.strptime(end, '%Y-%m-%d').date():
+                                logger.warning(f"Page {page_count}: Found date {date_str} outside requested range {start} to {end}")
+                        except ValueError:
+                            pass
             
             for contract in data.get("results", []):
                 if "expiration_date" in contract:
                     expirations.add(contract["expiration_date"])
             
             next_url = data.get("next_url")
-            if not next_url:
+            if next_url:
+                logger.debug(f"Page {page_count}: Has next_url, continuing...")
+            else:
+                logger.info(f"Page {page_count}: No next_url, stopping pagination")
+                break
+            
+            # Safety check: don't go beyond 10 pages to avoid infinite loops
+            if page_count >= 10:
+                logger.warning(f"Reached maximum page limit ({page_count}), stopping pagination")
                 break
         
-        return sorted(list(expirations))
+        final_expirations = sorted(list(expirations))
+        logger.info(f"Total unique expiration dates found: {len(final_expirations)}")
+        if final_expirations:
+            logger.info(f"Date range: {final_expirations[0]} to {final_expirations[-1]}")
+        
+        return final_expirations
     
     def get_options_chain(self, underlying: str, expiration_date: str, 
                            contract_type: Optional[str] = None,
