@@ -94,11 +94,16 @@ class OptionsContractBackfiller:
             
             # Use the new targeted approach with date window filtering
             # This will only fetch expirations within our desired range
+            # Limit to reasonable number of contracts to avoid excessive pagination
+            max_contracts = min(5000, days_back * 100)  # Rough estimate: 100 contracts per day
+            logger.info(f"Limiting to {max_contracts} contracts to avoid excessive pagination")
+            
             all_expirations = self.polygon_client.list_expirations(
                 underlying='QQQ',
                 start=start_date.strftime('%Y-%m-%d'),
                 end=today.strftime('%Y-%m-%d'),
-                include_expired=True
+                include_expired=True,
+                max_contracts=max_contracts
             )
             
             logger.info(f"Found {len(all_expirations)} real expiration dates in range")

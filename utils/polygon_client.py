@@ -117,15 +117,17 @@ class PolygonClient:
                 time.sleep(delay)
     
     def list_expirations(self, underlying: str, start: str, end: str, 
-                        include_expired: bool = True) -> List[str]:
+                        include_expired: bool = True, max_contracts: int = None) -> List[str]:
         """
         Get list of available expiration dates for an underlying within a date window.
+        Uses efficient pagination: processes contracts page by page, stopping when enough data is found.
         
         Args:
             underlying: Underlying symbol (e.g., 'QQQ')
             start: Start date for expiration window (YYYY-MM-DD)
             end: End date for expiration window (YYYY-MM-DD)
             include_expired: Whether to include expired expirations
+            max_contracts: Maximum number of contracts to process before stopping (None = no limit)
             
         Returns:
             List of expiration dates in YYYY-MM-DD format
@@ -137,17 +139,18 @@ class PolygonClient:
             "expiration_date.gte": start,
             "expiration_date.lte": end,
             "sort": "expiration_date",
-            "order": "desc",
+            "order": "desc",  # Newer contracts first
             "limit": 1000,
         }
         
         logger.info(f"list_expirations called with: underlying={underlying}, start={start}, end={end}, include_expired={include_expired}")
-        logger.info(f"Requesting contracts with expiration dates between {start} and {end}")
+        logger.info(f"Requesting contracts with expiration dates between {start} and {end} (descending order)")
         logger.info(f"Initial params: {params}")
         
         expirations = set()
         next_url = None
         page_count = 0
+        total_contracts_processed = 0
         
         while True:
             page_count += 1
@@ -169,33 +172,41 @@ class PolygonClient:
             results_count = len(data.get("results", []))
             logger.info(f"Page {page_count}: Got {results_count} results")
             
-            # Log date range for this page
-            if results_count > 0:
-                page_dates = []
-                for contract in data.get("results", []):
-                    if "expiration_date" in contract:
-                        page_dates.append(contract["expiration_date"])
-                
-                if page_dates:
-                    unique_dates = sorted(set(page_dates))
-                    logger.info(f"Page {page_count}: Date range: {unique_dates[0]} to {unique_dates[-1]} ({len(unique_dates)} unique dates)")
-                    
-                    # Check if we're getting dates outside our requested range
-                    for date_str in unique_dates:
-                        try:
-                            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-                            if date_obj < datetime.strptime(start, '%Y-%m-%d').date() or date_obj > datetime.strptime(end, '%Y-%m-%d').date():
-                                logger.warning(f"Page {page_count}: Found date {date_str} outside requested range {start} to {end}")
-                        except ValueError:
-                            pass
+            # Process contracts from this page
+            page_contracts_processed = 0
+            page_dates = set()
             
             for contract in data.get("results", []):
                 if "expiration_date" in contract:
-                    expirations.add(contract["expiration_date"])
+                    exp_date = contract["expiration_date"]
+                    expirations.add(exp_date)
+                    page_dates.add(exp_date)
+                    page_contracts_processed += 1
+                    total_contracts_processed += 1
+            
+            # Log what we found on this page
+            if page_dates:
+                unique_dates = sorted(page_dates)
+                logger.info(f"Page {page_count}: Found {page_contracts_processed} contracts with dates: {unique_dates[0]} to {unique_dates[-1]} ({len(unique_dates)} unique dates)")
+                logger.info(f"Page {page_count}: Total contracts processed so far: {total_contracts_processed}")
+            
+            # Check if we have enough data
+            if max_contracts and total_contracts_processed >= max_contracts:
+                logger.info(f"Reached target of {max_contracts} contracts, stopping pagination")
+                break
+            
+            # Check if we're getting dates outside our requested range
+            for date_str in page_dates:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    if date_obj < datetime.strptime(start, '%Y-%m-%d').date() or date_obj > datetime.strptime(end, '%Y-%m-%d').date():
+                        logger.warning(f"Page {page_count}: Found date {date_str} outside requested range {start} to {end}")
+                except ValueError:
+                    pass
             
             next_url = data.get("next_url")
             if next_url:
-                logger.debug(f"Page {page_count}: Has next_url, continuing...")
+                logger.debug(f"Page {page_count}: Has next_url, continuing to next page...")
             else:
                 logger.info(f"Page {page_count}: No next_url, stopping pagination")
                 break
@@ -207,8 +218,9 @@ class PolygonClient:
         
         final_expirations = sorted(list(expirations))
         logger.info(f"Total unique expiration dates found: {len(final_expirations)}")
+        logger.info(f"Total contracts processed: {total_contracts_processed}")
         if final_expirations:
-            logger.info(f"Date range: {final_expirations[0]} to {final_expirations[-1]}")
+            logger.info(f"Final date range: {final_expirations[0]} to {final_expirations[-1]}")
         
         return final_expirations
     
