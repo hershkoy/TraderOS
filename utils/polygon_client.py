@@ -40,8 +40,8 @@ class PolygonClient:
             'User-Agent': 'BackTrader-LEAPS-Strategy/1.0'
         })
         
-        # Rate limiting for free plan (~4 requests per minute to leave safety headroom)
-        self.requests_per_minute = 4
+        # Rate limiting - configurable via environment variable
+        self.requests_per_minute = int(os.getenv("POLYGON_REQUESTS_PER_MINUTE", "60"))
         self.request_times = []
         
     def _rate_limit(self):
@@ -361,18 +361,25 @@ class PolygonClient:
         logger.info(f"Fetching contracts for {underlying} expiring {expiry} (as_of: {as_of}, type: {contract_type}, strikes: {min_strike}-{max_strike})")
         return self._make_request(endpoint, params)
 
-    def get_options_snapshot(self, option_id: str) -> Dict[str, Any]:
+    def get_options_snapshot(self, option_ticker: str, as_of: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get current snapshot for a specific option contract
-        
+        Get (optionally historical) snapshot for a specific option contract.
+
         Args:
-            option_id: OCC option identifier
-        
+            option_ticker: Polygon option ticker, e.g. 'O:QQQ251219C00550000'
+            as_of: Date or timestamp for historical snapshot. You can pass:
+                  - 'YYYY-MM-DD'  (Polygon will use that day's snapshot)
+                  - epoch in ms/ns if you need an intraday moment
+
         Returns:
-            Option snapshot data
+            Snapshot dict
         """
-        endpoint = f"/v3/snapshot/options/{option_id}"
-        return self._make_request(endpoint)
+        endpoint = f"/v3/snapshot/options/{option_ticker}"
+        params = {}
+        if as_of:
+            params["timestamp"] = as_of  # Polygon accepts a date (YYYY-MM-DD) or epoch
+
+        return self._make_request(endpoint, params)
     
     def get_options_aggregates(self, option_id: str, from_date: str, to_date: str,
                               timespan: str = 'day', multiplier: int = 1) -> Dict[str, Any]:

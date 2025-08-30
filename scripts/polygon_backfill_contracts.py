@@ -207,6 +207,52 @@ class OptionsContractBackfiller:
                     continue
             
             logger.info(f"Discovered {len(contracts)} contracts for {underlying} as of {discovery_date}")
+            
+            # Fetch historical bid/ask from snapshots for the same "as_of" date we used
+            historical_quotes = []
+            seen = set()
+
+            for c in contracts:
+                ticker = c.get('polygon_ticker')
+                # Avoid duplicate snapshot calls if the same ticker appears multiple times
+                if not ticker or ticker in seen:
+                    continue
+                seen.add(ticker)
+
+                try:
+                    # Use the same "discovery_date" we used to discover the contracts
+                    snap = self.polygon_client.get_options_snapshot(
+                        option_ticker=ticker,
+                        as_of=discovery_date.strftime('%Y-%m-%d')  # daily snapshot
+                    )
+
+                    res = snap.get('results', {}) if isinstance(snap, dict) else {}
+                    last_quote = res.get('last_quote', {})
+                    bid = last_quote.get('bid')
+                    ask = last_quote.get('ask')
+
+                    # Keep a lightweight record you can store/use later
+                    if bid is not None or ask is not None:
+                        historical_quotes.append({
+                            'option_id': c['option_id'],
+                            'as_of': discovery_date,
+                            'bid': bid,
+                            'ask': ask,
+                            'mid': (bid + ask) / 2.0 if (bid is not None and ask is not None) else None,
+                            'last': res.get('last_trade', {}).get('p'),
+                            'volume': res.get('day', {}).get('v'),
+                            'open_interest': res.get('day', {}).get('o')
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to fetch snapshot for {ticker}: {e}")
+                    continue
+            
+            # Store the historical quotes if we have any
+            if historical_quotes:
+                self.upsert_option_snapshots(historical_quotes)
+                logger.info(f"Stored {len(historical_quotes)} historical snapshots for {discovery_date}")
+            
             return contracts
             
         except Exception as e:
@@ -263,6 +309,40 @@ class OptionsContractBackfiller:
                 conn.commit()
                 logger.info(f"Successfully processed {processed} contracts")
                 return processed
+    
+    def upsert_option_snapshots(self, rows):
+        """
+        Upsert option snapshots into the database
+        
+        Args:
+            rows: List of snapshot dictionaries
+        
+        Returns:
+            Number of snapshots processed
+        """
+        if not rows:
+            return 0
+        
+        sql = """
+        INSERT INTO option_eod_snapshots (option_id, as_of, bid, ask, mid, last, volume, open_interest)
+        VALUES (%(option_id)s, %(as_of)s, %(bid)s, %(ask)s, %(mid)s, %(last)s, %(volume)s, %(open_interest)s)
+        ON CONFLICT (option_id, as_of) DO UPDATE SET
+            bid = EXCLUDED.bid, 
+            ask = EXCLUDED.ask, 
+            mid = EXCLUDED.mid,
+            last = EXCLUDED.last,
+            volume = EXCLUDED.volume,
+            open_interest = EXCLUDED.open_interest
+        """
+        
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                for r in rows:
+                    cur.execute(sql, r)
+            conn.commit()
+        
+        logger.info(f"Successfully processed {len(rows)} option snapshots")
+        return len(rows)
     
     def backfill_contracts(self, underlying: str = 'QQQ', days_back: int = 730, 
                           sample_rate: int = 5) -> Dict[str, Any]:
