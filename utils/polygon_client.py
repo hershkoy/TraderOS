@@ -317,9 +317,10 @@ class PolygonClient:
         logger.info(f"Fetching all contracts for {underlying} as of {as_of}")
         return self._make_request(endpoint, params)
 
-    def get_contracts_for_expiry(self, underlying: str, expiry: str, as_of: str = None, limit: int = 1000) -> Dict[str, Any]:
+    def get_contracts_for_expiry(self, underlying: str, expiry: str, as_of: str = None, limit: int = 1000, 
+                                contract_type: str = None, min_strike: float = None, max_strike: float = None) -> Dict[str, Any]:
         """
-        Return contracts for a single expiry (YYYY-MM-DD).
+        Return contracts for a single expiry (YYYY-MM-DD) with optional filtering.
         This avoids the unbounded pagination path by filtering to a specific date.
         
         Args:
@@ -327,6 +328,9 @@ class PolygonClient:
             expiry: Expiration date in YYYY-MM-DD format
             as_of: Discover contracts "as of" a past date (YYYY-MM-DD)
             limit: Maximum number of contracts to return
+            contract_type: Filter by contract type ('call', 'put', or None for both)
+            min_strike: Minimum strike price filter
+            max_strike: Maximum strike price filter
             
         Returns:
             Contracts data for the specific expiry
@@ -342,10 +346,19 @@ class PolygonClient:
             "expired": "true" if as_of else None,
             "as_of": as_of,
         }
+        
+        # Add optional filters
+        if contract_type:
+            params["contract_type"] = contract_type
+        if min_strike is not None:
+            params["strike_price.gte"] = min_strike
+        if max_strike is not None:
+            params["strike_price.lte"] = max_strike
+        
         # remove None entries
         params = {k: v for k, v in params.items() if v is not None}
         
-        logger.info(f"Fetching contracts for {underlying} expiring {expiry} (as_of: {as_of})")
+        logger.info(f"Fetching contracts for {underlying} expiring {expiry} (as_of: {as_of}, type: {contract_type}, strikes: {min_strike}-{max_strike})")
         return self._make_request(endpoint, params)
 
     def get_options_snapshot(self, option_id: str) -> Dict[str, Any]:
