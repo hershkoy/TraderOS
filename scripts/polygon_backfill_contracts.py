@@ -2,6 +2,7 @@
 """
 Backfill historical QQQ option contracts for the last 2 years
 Uses Polygon API to discover contracts from historical dates
+Only processes Friday expiration dates to reduce data volume
 """
 
 import os
@@ -105,6 +106,26 @@ class OptionsContractBackfiller:
                 include_expired=True,
                 max_contracts=max_contracts
             )
+            
+            # Filter to only Friday expiration dates
+            friday_expirations = []
+            non_friday_dates = []
+            for exp_date_str in all_expirations:
+                try:
+                    exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
+                    # Check if it's a Friday (weekday() returns 4 for Friday)
+                    if exp_date.weekday() == 4:
+                        friday_expirations.append(exp_date_str)
+                    else:
+                        non_friday_dates.append(exp_date_str)
+                except ValueError:
+                    continue
+            
+            logger.info(f"Filtered from {len(all_expirations)} total expirations to {len(friday_expirations)} Friday expirations")
+            if non_friday_dates:
+                logger.debug(f"Filtered out non-Friday dates: {non_friday_dates[:10]}{'...' if len(non_friday_dates) > 10 else ''}")
+            
+            return friday_expirations
             
             logger.info(f"Found {len(all_expirations)} real expiration dates in range")
             return all_expirations
