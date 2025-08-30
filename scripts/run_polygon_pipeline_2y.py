@@ -84,7 +84,7 @@ class PolygonPipelineDryRun:
     
     def discover_contracts_for_date(self, trade_date: date, underlying: str = 'QQQ') -> int:
         """
-        Discover contracts for a specific date (dry-run simulation).
+        Discover contracts for a specific date using Polygon API.
         
         Args:
             trade_date: Trading date
@@ -96,41 +96,29 @@ class PolygonPipelineDryRun:
         try:
             logger.info(f"Discovering contracts for {underlying} on {trade_date}")
             
-            # Simulate contract discovery
-            # In a real implementation, this would call Polygon API
-            contracts_found = 0
+            # Call Polygon API to discover contracts
+            discovery_date = trade_date.strftime('%Y-%m-%d')
             
-            # Simulate finding contracts for different expirations
-            # Look ahead 365 days from trade date
-            for days_ahead in [30, 60, 90, 180, 365]:
-                expiration_date = trade_date + timedelta(days=days_ahead)
-                
-                # Simulate finding contracts at different strikes
-                for strike_offset in [-20, -10, -5, 0, 5, 10, 20]:
-                    # Simulate base price around $350 for QQQ
-                    base_price = 350
-                    strike = base_price + strike_offset
-                    
-                    # Build option ID
-                    option_id = build_option_id(underlying, expiration_date, strike, 'C')
-                    
-                    # Simulate contract data
-                    contract_data = {
-                        'option_id': option_id,
-                        'underlying': underlying,
-                        'expiration': expiration_date.strftime('%Y-%m-%d'),
-                        'strike_cents': int(strike * 100),
-                        'option_right': 'C',
-                        'multiplier': 100,
-                        'first_seen': trade_date.strftime('%Y-%m-%d 16:00:00'),
-                        'last_seen': trade_date.strftime('%Y-%m-%d 16:00:00')
-                    }
-                    
-                    contracts_found += 1
-                    
-                    # In dry-run mode, just log the contract
-                    if contracts_found <= 5:  # Log first 5 contracts
-                        logger.debug(f"  Found contract: {option_id}")
+            # Get options chain from Polygon with proper parameters
+            data = self.polygon_client.get_options_chain(
+                underlying, 
+                discovery_date,  # Use as expiration_date for the API call
+                as_of=discovery_date,  # Discover contracts "as of" this date
+                expired=False  # Get active contracts (not expired)
+            )
+            
+            if 'results' not in data:
+                logger.warning(f"No results found for {underlying} on {discovery_date}")
+                return 0
+            
+            contracts_found = len(data['results'])
+            
+            # Log some sample contracts
+            for i, contract in enumerate(data['results'][:5]):  # Log first 5 contracts
+                ticker = contract.get('ticker', 'unknown')
+                strike = contract.get('strike_price', 'unknown')
+                expiration = contract.get('expiration_date', 'unknown')
+                logger.debug(f"  Found contract: {ticker} - Strike: {strike}, Exp: {expiration}")
             
             logger.info(f"Discovered {contracts_found} contracts for {trade_date}")
             return contracts_found

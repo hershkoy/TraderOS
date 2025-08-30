@@ -7,7 +7,7 @@ import os
 import time
 import requests
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import json
 
@@ -40,8 +40,8 @@ class PolygonClient:
             'User-Agent': 'BackTrader-LEAPS-Strategy/1.0'
         })
         
-        # Rate limiting for free plan (~5 requests per minute)
-        self.requests_per_minute = 5
+        # Rate limiting for free plan (~4 requests per minute to leave safety headroom)
+        self.requests_per_minute = 4
         self.request_times = []
         
     def _rate_limit(self):
@@ -57,7 +57,10 @@ class PolygonClient:
                 logger.info(f"Rate limit reached, sleeping for {sleep_time:.1f} seconds")
                 time.sleep(sleep_time)
         
-        self.request_times.append(now)
+        # Add small random jitter to avoid multiple parallel loops firing at the same time
+        import random
+        jitter = random.uniform(0, 0.5)  # 0-0.5 second jitter
+        self.request_times.append(now + jitter)
     
     def _make_request(self, endpoint: str, params: Optional[Dict[str, Any]] = None, 
                      max_retries: int = 3, base_delay: float = 1.0) -> Dict[str, Any]:
@@ -91,6 +94,12 @@ class PolygonClient:
                 
                 data = response.json()
                 
+                # Log response (truncated to 150 characters)
+                response_str = str(data)
+                if len(response_str) > 150:
+                    response_str = response_str[:147] + "..."
+                logger.debug(f"Response: {response_str}")
+                
                 # Check for API errors
                 if 'error' in data:
                     raise requests.RequestException(f"Polygon API error: {data['error']}")
@@ -105,6 +114,43 @@ class PolygonClient:
                 delay = base_delay * (2 ** attempt)  # Exponential backoff
                 logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s: {e}")
                 time.sleep(delay)
+    
+    def list_expirations(self, underlying: str, as_of: Optional[str] = None, 
+                        include_expired: bool = True) -> List[str]:
+        """
+        Get list of available expiration dates for an underlying.
+        
+        Args:
+            underlying: Underlying symbol (e.g., 'QQQ')
+            as_of: Discover expirations "as of" a past date (YYYY-MM-DD)
+            include_expired: Whether to include expired expirations
+            
+        Returns:
+            List of expiration dates in YYYY-MM-DD format
+        """
+        endpoint = "/v3/reference/options/contracts"
+        params = {"underlying_ticker": underlying}
+        
+        if as_of:
+            params["as_of"] = as_of
+        if include_expired:
+            params["expired"] = "true"
+        
+        expirations = set()
+        next_url = None
+        
+        while True:
+            data = self._make_request(next_url or endpoint, params if not next_url else {})
+            
+            for contract in data.get("results", []):
+                if "expiration_date" in contract:
+                    expirations.add(contract["expiration_date"])
+            
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+        
+        return sorted(list(expirations))
     
     def get_options_chain(self, underlying: str, expiration_date: str, 
                            contract_type: Optional[str] = None,

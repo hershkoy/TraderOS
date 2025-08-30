@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import logging
+import argparse
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 import psycopg2
@@ -19,16 +20,32 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.polygon_client import get_polygon_client
 from utils.option_utils import build_option_id
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/options_backfill.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+def setup_logging(log_level: str = 'INFO'):
+    """Setup logging with specified level"""
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {log_level}')
+    
+    # Configure logging
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/options_backfill.log'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Set specific logger levels
+    logger.setLevel(numeric_level)
+    
+    # Set Polygon client logger to DEBUG if we want detailed API logging
+    if numeric_level <= logging.DEBUG:
+        logging.getLogger('utils.polygon_client').setLevel(logging.DEBUG)
+    
+    return logger
+
+logger = setup_logging()  # Default to INFO level
 
 
 class OptionsContractBackfiller:
@@ -60,7 +77,7 @@ class OptionsContractBackfiller:
     
     def get_historical_expiration_dates(self, days_back: int = 730) -> List[str]:
         """
-        Generate list of historical expiration dates to check
+        Get real expiration dates from Polygon API
         
         Args:
             days_back: Number of days to go back from today
@@ -69,42 +86,73 @@ class OptionsContractBackfiller:
             List of expiration dates in YYYY-MM-DD format
         """
         today = date.today()
-        expiration_dates = []
-        
-        # Start from 2 years ago
         start_date = today - timedelta(days=days_back)
-        current_date = start_date
         
-        # Generate monthly expiration dates (approximate)
-        while current_date <= today:
-            # Add the date to our list
-            expiration_dates.append(current_date.strftime('%Y-%m-%d'))
+        try:
+            logger.info(f"Fetching real expiration dates for QQQ from {start_date} to {today}")
             
-            # Move to next month (approximate)
-            current_date += timedelta(days=30)
-        
-        logger.info(f"Generated {len(expiration_dates)} historical expiration dates")
-        return expiration_dates
+            # Get all available expirations from Polygon
+            all_expirations = self.polygon_client.list_expirations(
+                underlying='QQQ',
+                as_of=today.strftime('%Y-%m-%d'),  # Get current expirations
+                include_expired=True  # Include expired ones for historical data
+            )
+            
+            # Filter to dates within our range
+            filtered_expirations = []
+            for exp_date_str in all_expirations:
+                try:
+                    exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
+                    if start_date <= exp_date <= today:
+                        filtered_expirations.append(exp_date_str)
+                except ValueError:
+                    continue  # Skip invalid dates
+            
+            logger.info(f"Found {len(filtered_expirations)} real expiration dates in range")
+            return filtered_expirations
+            
+        except Exception as e:
+            logger.warning(f"Failed to get real expirations from Polygon: {e}")
+            logger.info("Falling back to approximate monthly dates")
+            
+            # Fallback to approximate dates if API fails
+            expiration_dates = []
+            current_date = start_date
+            
+            while current_date <= today:
+                expiration_dates.append(current_date.strftime('%Y-%m-%d'))
+                current_date += timedelta(days=30)
+            
+            logger.info(f"Generated {len(expiration_dates)} approximate expiration dates")
+            return expiration_dates
     
-    def discover_contracts_for_date(self, underlying: str, expiration_date: str) -> List[Dict[str, Any]]:
+    def discover_contracts_for_date(self, underlying: str, discovery_date: str, as_of: str = None, expired: bool = None) -> List[Dict[str, Any]]:
         """
-        Discover option contracts for a specific underlying and expiration date
+        Discover option contracts for a specific underlying and discovery date
         
         Args:
             underlying: Underlying symbol (e.g., 'QQQ')
-            expiration_date: Expiration date in YYYY-MM-DD format
+            discovery_date: Date to discover contracts from (YYYY-MM-DD format)
+            as_of: Discover contracts "as of" a past date (YYYY-MM-DD)
+            expired: Filter by expired status (True/False/None for all)
         
         Returns:
             List of discovered contracts
         """
         try:
-            logger.info(f"Discovering {underlying} options for expiration {expiration_date}")
+            logger.info(f"Discovering {underlying} options as of {discovery_date}")
             
-            # Get options chain from Polygon
-            data = self.polygon_client.get_options_chain(underlying, expiration_date)
+            # Get options chain from Polygon with broader parameters
+            # Don't filter by specific expiration_date - get all contracts available as of the date
+            data = self.polygon_client.get_options_chain(
+                underlying, 
+                "",  # Don't filter by specific expiration_date
+                as_of=as_of or discovery_date,  # Use discovery_date as as_of if not specified
+                expired=expired
+            )
             
             if 'results' not in data:
-                logger.warning(f"No results found for {underlying} on {expiration_date}")
+                logger.warning(f"No results found for {underlying} as of {discovery_date}")
                 return []
             
             contracts = []
@@ -113,7 +161,7 @@ class OptionsContractBackfiller:
                     # Extract contract details
                     contract_info = {
                         'underlying': underlying,
-                        'expiration': expiration_date,
+                        'expiration': contract.get('expiration_date', discovery_date),  # Use actual expiration from contract
                         'strike': float(contract.get('strike_price', 0)),
                         'option_right': contract.get('contract_type', 'call').upper()[0],  # 'call' -> 'C'
                         'multiplier': int(contract.get('multiplier', 100)),
@@ -137,11 +185,11 @@ class OptionsContractBackfiller:
                     logger.error(f"Error processing contract {contract}: {e}")
                     continue
             
-            logger.info(f"Discovered {len(contracts)} contracts for {underlying} on {expiration_date}")
+            logger.info(f"Discovered {len(contracts)} contracts for {underlying} as of {discovery_date}")
             return contracts
             
         except Exception as e:
-            logger.error(f"Error discovering contracts for {underlying} on {expiration_date}: {e}")
+            logger.error(f"Error discovering contracts for {underlying} as of {discovery_date}: {e}")
             return []
     
     def upsert_contracts(self, contracts: List[Dict[str, Any]]) -> int:
@@ -222,24 +270,30 @@ class OptionsContractBackfiller:
         processed_dates = 0
         failed_dates = 0
         
-        for i, expiration_date in enumerate(sampled_dates):
+        for i, discovery_date in enumerate(sampled_dates):
             try:
-                logger.info(f"Processing date {i+1}/{len(sampled_dates)}: {expiration_date}")
+                logger.info(f"Processing date {i+1}/{len(sampled_dates)}: {discovery_date}")
                 
-                contracts = self.discover_contracts_for_date(underlying, expiration_date)
+                # For historical dates, set expired=True to get contracts that existed then
+                contracts = self.discover_contracts_for_date(
+                    underlying, 
+                    discovery_date, 
+                    as_of=discovery_date, 
+                    expired=True  # Get contracts that existed on this date (may be expired now)
+                )
                 if contracts:
                     processed = self.upsert_contracts(contracts)
                     total_contracts += processed
                     processed_dates += 1
                 else:
-                    logger.warning(f"No contracts found for {expiration_date}")
+                    logger.warning(f"No contracts found for {discovery_date}")
                 
                 # Add delay between requests to be extra respectful of rate limits
                 if i < len(sampled_dates) - 1:  # Don't sleep after the last request
                     time.sleep(2)  # 2 second delay between dates
                 
             except Exception as e:
-                logger.error(f"Error processing expiration {expiration_date}: {e}")
+                logger.error(f"Error processing discovery date {discovery_date}: {e}")
                 failed_dates += 1
                 continue
         
@@ -264,14 +318,36 @@ class OptionsContractBackfiller:
 
 def main():
     """Main function to run the contract backfill"""
+    parser = argparse.ArgumentParser(description='Backfill historical QQQ option contracts')
+    parser.add_argument('--log-level', type=str, default='INFO', 
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='Set logging level (default: INFO)')
+    parser.add_argument('--underlying', type=str, default='QQQ',
+                       help='Underlying symbol (default: QQQ)')
+    parser.add_argument('--days-back', type=int, default=730,
+                       help='Number of days to go back (default: 730)')
+    parser.add_argument('--sample-rate', type=int, default=5,
+                       help='Sample rate for dates (default: 5)')
+    
+    args = parser.parse_args()
+    
     try:
+        # Setup logging with CLI level
+        global logger
+        logger = setup_logging(args.log_level)
+        
         logger.info("Starting QQQ options contract backfill")
+        logger.info(f"Log level: {args.log_level}")
+        logger.info(f"Parameters: underlying={args.underlying}, days_back={args.days_back}, sample_rate={args.sample_rate}")
         
         backfiller = OptionsContractBackfiller()
         
-        # Backfill contracts for the last 2 years with sampling
-        # Use sample_rate=5 to respect free plan rate limits
-        summary = backfiller.backfill_contracts('QQQ', days_back=730, sample_rate=5)
+        # Backfill contracts with CLI parameters
+        summary = backfiller.backfill_contracts(
+            underlying=args.underlying, 
+            days_back=args.days_back, 
+            sample_rate=args.sample_rate
+        )
         
         logger.info(f"Contract backfill completed successfully")
         logger.info(f"Summary: {summary}")
