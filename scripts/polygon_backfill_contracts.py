@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.polygon_client import get_polygon_client
 from utils.option_utils import build_option_id
+from utils.date_rules import get_next_friday_after
 
 def setup_logging(log_level: str = 'INFO'):
     """Setup logging with specified level"""
