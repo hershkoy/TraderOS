@@ -41,7 +41,8 @@ class PolygonClient:
         })
         
         # Rate limiting - configurable via environment variable
-        self.requests_per_minute = int(os.getenv("POLYGON_REQUESTS_PER_MINUTE", "60"))
+        # Default to 50 req/min to stay well below Polygon's 100 req/sec recommendation
+        self.requests_per_minute = int(os.getenv("POLYGON_REQUESTS_PER_MINUTE", "50"))
         self.request_times = []
         
     def _rate_limit(self):
@@ -63,7 +64,7 @@ class PolygonClient:
         self.request_times.append(now + jitter)
     
     def _make_request(self, endpoint: str, params: Optional[Dict[str, Any]] = None, 
-                     max_retries: int = 3, base_delay: float = 1.0) -> Dict[str, Any]:
+                     max_retries: int = 5, base_delay: float = 1.0) -> Dict[str, Any]:
         """
         Make a rate-limited request to Polygon API with retry logic
         
@@ -87,10 +88,29 @@ class PolygonClient:
                 self._rate_limit()
                 
                 url = f"{self.base_url}{endpoint}"
-                logger.info(f"Making request to {url} with params {params}")
-                logger.info(f"Full URL with params: {url}?{requests.compat.urlencode(params)}")
+                
+                # Create a safe version of params for logging (hide API key)
+                safe_params = params.copy()
+                if 'apiKey' in safe_params:
+                    safe_params['apiKey'] = '***HIDDEN***'
+                
+                logger.info(f"Making request to {url} with params {safe_params}")
+                
+                # Create safe URL for logging (without API key)
+                safe_url_params = safe_params.copy()
+                if 'apiKey' in safe_url_params:
+                    safe_url_params['apiKey'] = '***HIDDEN***'
+                logger.info(f"Full URL with params: {url}?{requests.compat.urlencode(safe_url_params)}")
                 
                 response = self.session.get(url, params=params, timeout=30)
+                
+                # Handle 429 rate limit errors specifically
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 60))
+                    logger.warning(f"Rate limit exceeded (429). Waiting {retry_after} seconds before retry...")
+                    time.sleep(retry_after)
+                    continue
+                
                 response.raise_for_status()
                 
                 data = response.json()
@@ -111,6 +131,13 @@ class PolygonClient:
                 if attempt == max_retries:
                     logger.error(f"Request failed after {max_retries + 1} attempts: {e}")
                     raise
+                
+                # Handle 429 errors with longer delays
+                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                    retry_after = int(e.response.headers.get('Retry-After', 60))
+                    logger.warning(f"Rate limit exceeded (429). Waiting {retry_after} seconds before retry...")
+                    time.sleep(retry_after)
+                    continue
                 
                 delay = base_delay * (2 ** attempt)  # Exponential backoff
                 logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s: {e}")
@@ -379,6 +406,38 @@ class PolygonClient:
         if as_of:
             params["timestamp"] = as_of  # Polygon accepts a date (YYYY-MM-DD) or epoch
 
+        return self._make_request(endpoint, params)
+    
+    def get_option_eod(self, option_ticker: str, date: str) -> Dict[str, Any]:
+        """
+        Get end-of-day pricing for a specific option contract and date.
+        Uses the aggregates endpoint for more reliable historical data.
+        
+        Args:
+            option_ticker: Polygon option ticker, e.g. "O:QQQ241220C00400000"
+            date: Date in YYYY-MM-DD format
+        
+        Returns:
+            Dictionary with EOD data (open, close, high, low, volume, vwap, transactions)
+        """
+        # Use aggregates endpoint for daily bars - more reliable than open-close
+        endpoint = f"/v2/aggs/ticker/{option_ticker}/range/1/day/{date}/{date}"
+        params = {"adjusted": "true", "limit": 1}
+        return self._make_request(endpoint, params)
+    
+    def get_option_minute_aggs(self, option_ticker: str, date: str) -> Dict[str, Any]:
+        """
+        Get intraday minute bars for a specific option contract and date.
+        
+        Args:
+            option_ticker: Polygon option ticker, e.g. "O:QQQ241220C00400000"
+            date: Date in YYYY-MM-DD format
+        
+        Returns:
+            Dictionary with minute-by-minute OHLCV data
+        """
+        endpoint = f"/v2/aggs/ticker/{option_ticker}/range/1/minute/{date}/{date}"
+        params = {"adjusted": "true", "limit": 50000}
         return self._make_request(endpoint, params)
     
     def get_options_aggregates(self, option_id: str, from_date: str, to_date: str,

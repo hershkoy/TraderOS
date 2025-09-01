@@ -283,3 +283,14 @@ docker-compose logs timescaledb
 docker-compose down -v
 docker-compose up -d
 ```
+
+
+
+useful commands:
+
+python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 700 --log-level DEBUG -log-file "logs/debug_session.log"
+python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --continuous --dates-per-batch 15 --delay-between-batches 120 --log-level DEBUG --log-file "logs/debug_session.log"
+python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --max-dates-per-run 50 --log-level DEBUG --log-file "logs/debug_session.log"
+
+slow:
+python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --continuous --dates-per-batch 10 --delay-between-batches 180 --log-level DEBUG --log-file "logs/debug_session.log"
