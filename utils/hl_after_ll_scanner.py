@@ -287,6 +287,11 @@ def load_from_timescaledb(symbols: Iterable[str], timeframe: str = "1d") -> Dict
             continue
 
         # Normalize to OHLCV indexed by datetime
+        # Convert timestamp to datetime index
+        ts_series = pd.to_datetime(df["ts"])
+        if ts_series.dt.tz is not None:
+            ts_series = ts_series.dt.tz_convert(None)
+        
         d = pd.DataFrame(
             {
                 "open": pd.to_numeric(df["open"], errors="coerce"),
@@ -295,7 +300,7 @@ def load_from_timescaledb(symbols: Iterable[str], timeframe: str = "1d") -> Dict
                 "close": pd.to_numeric(df["close"], errors="coerce"),
                 "volume": pd.to_numeric(df["volume"], errors="coerce"),
             },
-            index=pd.to_datetime(df["timestamp"]).tz_convert(None),
+            index=ts_series,
         ).dropna()
         out[sym] = d
 

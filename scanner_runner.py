@@ -9,6 +9,7 @@ import sys
 import yaml
 import logging
 import argparse
+import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -18,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import scanner modules
 from utils.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
-from utils.ticker_universe import get_ticker_universe
+from utils.ticker_universe import get_combined_universe
 from utils.timescaledb_client import get_timescaledb_client
 
 class ScannerRunner:
@@ -103,8 +104,7 @@ class ScannerRunner:
         
         if source == 'database':
             self.logger.info("Loading ticker universe from database...")
-            universe = get_ticker_universe()
-            symbols = list(universe.keys())
+            symbols = get_combined_universe()
             self.logger.info(f"Loaded {len(symbols)} symbols from universe")
             return symbols
         
@@ -147,23 +147,23 @@ class ScannerRunner:
             
             for symbol in symbols:
                 try:
-                    # Get latest data for this symbol
-                    query = """
-                    SELECT MAX(timestamp) as latest_date, COUNT(*) as record_count
-                    FROM market_data 
-                    WHERE symbol = %s AND provider = %s AND timeframe = %s
-                    """
-                    result = client.execute_query(query, (symbol, provider, timeframe))
+                    # Get latest data for this symbol using the client's method
+                    df = client.get_market_data(symbol, timeframe, provider)
                     
-                    if result and result[0]['latest_date']:
-                        latest_date = result[0]['latest_date']
-                        record_count = result[0]['record_count']
+                    if df is not None and not df.empty:
+                        # Get the latest timestamp from the data
+                        latest_date = df.index.max()
                         
                         # Calculate days since latest data
-                        if isinstance(latest_date, str):
-                            latest_date = datetime.fromisoformat(latest_date.replace('Z', '+00:00'))
+                        if hasattr(latest_date, 'tz') and latest_date.tz is not None:
+                            latest_date = latest_date.tz_convert(None)
                         
-                        days_old = (datetime.now() - latest_date.replace(tzinfo=None)).days
+                        # Ensure we have datetime objects for comparison
+                        if isinstance(latest_date, pd.Timestamp):
+                            latest_date = latest_date.to_pydatetime()
+                        
+                        days_old = (datetime.now() - latest_date).days
+                        record_count = len(df)
                         
                         if days_old > max_days_old:
                             stale_symbols.append((symbol, latest_date, days_old, record_count))
@@ -224,28 +224,43 @@ class ScannerRunner:
                 else:  # 1h
                     bars_needed = days_back * 7 + 50  # Extra buffer for hourly
                 
-                # Import and run fetch_data
-                import subprocess
-                cmd = [
-                    "python", "utils/fetch_data.py",
-                    "--symbol", symbol,
-                    "--provider", provider,
-                    "--timeframe", timeframe,
-                    "--bars", str(bars_needed)
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                
-                if result.returncode == 0:
-                    successful_updates += 1
-                    self.logger.info(f"  ✅ {symbol} - Data updated successfully")
-                else:
-                    failed_updates += 1
-                    self.logger.warning(f"  ❌ {symbol} - Failed: {result.stderr.strip()}")
+                # Fetch data directly and save to TimescaleDB
+                try:
+                    # Import the fetch function and save the data
+                    import sys
+                    sys.path.append('utils')
+                    from fetch_data import fetch_from_alpaca, fetch_from_ib
                     
-            except subprocess.TimeoutExpired:
-                failed_updates += 1
-                self.logger.warning(f"  ⏰ {symbol} - Timeout")
+                    # Fetch the data directly
+                    if provider.lower() == 'alpaca':
+                        df = fetch_from_alpaca(symbol, bars_needed, timeframe)
+                    else:
+                        df = fetch_from_ib(symbol, bars_needed, timeframe)
+                    
+                    if df is not None and not df.empty:
+                        # Save to TimescaleDB
+                        client = get_timescaledb_client()
+                        if client.ensure_connection():
+                            success = client.insert_market_data(df, symbol, provider, timeframe)
+                            client.disconnect()
+                            
+                            if success:
+                                successful_updates += 1
+                                self.logger.info(f"  ✅ {symbol} - Data updated and saved successfully")
+                            else:
+                                failed_updates += 1
+                                self.logger.warning(f"  ❌ {symbol} - Data fetched but failed to save to database")
+                        else:
+                            failed_updates += 1
+                            self.logger.warning(f"  ❌ {symbol} - Could not connect to database")
+                    else:
+                        failed_updates += 1
+                        self.logger.warning(f"  ❌ {symbol} - No data returned from fetch")
+                        
+                except Exception as e:
+                    failed_updates += 1
+                    self.logger.warning(f"  ❌ {symbol} - Error fetching/saving data: {e}")
+                    
             except Exception as e:
                 failed_updates += 1
                 self.logger.warning(f"  ❌ {symbol} - Error: {e}")
@@ -317,11 +332,11 @@ class ScannerRunner:
         output_config = self.config.get('output', {}).get('console', {})
         
         if not matches:
-            print("\n❌ No LL → HH → HL patterns found")
+            print("\nNo LL -> HH -> HL patterns found")
             return
         
         if output_config.get('show_summary', True):
-            print(f"\n✅ Found {len(matches)} symbols with LL → HH → HL patterns:")
+            print(f"\nFound {len(matches)} symbols with LL -> HH -> HL patterns:")
             print("=" * 80)
         
         for i, match in enumerate(matches, 1):
@@ -339,9 +354,9 @@ class ScannerRunner:
                 # Monday check
                 if output_config.get('show_monday_check', True):
                     if match.last_price >= match.hl_price:
-                        print(f"   ✅ Monday Check: Current price (${match.last_price:.2f}) >= HL (${match.hl_price:.2f})")
+                        print(f"   PASS: Monday Check: Current price (${match.last_price:.2f}) >= HL (${match.hl_price:.2f})")
                     else:
-                        print(f"   ❌ Monday Check: Current price (${match.last_price:.2f}) < HL (${match.hl_price:.2f}) - Pattern broken")
+                        print(f"   FAIL: Monday Check: Current price (${match.last_price:.2f}) < HL (${match.hl_price:.2f}) - Pattern broken")
     
     def print_results(self, matches: List[Any]):
         """Print scan results based on scanner type"""
@@ -391,7 +406,7 @@ class ScannerRunner:
         
         df = pd.DataFrame(data)
         df.to_csv(filename, index=False)
-        print(f"\n📊 Results saved to: {filename}")
+        print(f"\nResults saved to: {filename}")
     
     def save_results(self, matches: List[Any]):
         """Save results based on scanner type"""
@@ -402,7 +417,7 @@ class ScannerRunner:
     
     def run(self, scanner_type: str, symbols: Optional[List[str]] = None, skip_auto_update: bool = False):
         """Run the complete scan with optional auto-update"""
-        print(f"🔍 {scanner_type.upper()} Scanner")
+        print(f"{scanner_type.upper()} Scanner")
         print("=" * 50)
         
         # Get symbols to scan
@@ -416,38 +431,38 @@ class ScannerRunner:
         # Auto-update data if enabled and not skipped
         auto_update_config = self.config.get('auto_update', {})
         if not skip_auto_update and auto_update_config.get('enabled', True):
-            print(f"\n📡 Auto-Update Data Check")
+            print(f"\nAuto-Update Data Check")
             print("-" * 30)
             
             # Check data freshness
             freshness = self.check_data_freshness(symbols)
             
             if freshness['needs_update']:
-                print(f"⚠️  Data needs updating:")
+                print(f"WARNING: Data needs updating:")
                 if freshness['stale_symbols']:
                     print(f"   Stale data: {len(freshness['stale_symbols'])} symbols")
                 if freshness['missing_symbols']:
                     print(f"   Missing data: {len(freshness['missing_symbols'])} symbols")
                 
-                print(f"\n🔄 Updating data...")
+                print(f"\nUpdating data...")
                 update_success = self.update_stale_data(
                     freshness['stale_symbols'], 
                     freshness['missing_symbols']
                 )
                 
                 if update_success:
-                    print(f"✅ Data update completed successfully")
+                    print(f"SUCCESS: Data update completed successfully")
                 else:
-                    print(f"⚠️  Data update had some failures, but continuing with scan...")
+                    print(f"WARNING: Data update had some failures, but continuing with scan...")
             else:
-                print(f"✅ All data is fresh, no update needed")
+                print(f"SUCCESS: All data is fresh, no update needed")
         elif skip_auto_update:
-            print(f"⏭️  Skipping auto-update (--skip-update specified)")
+            print(f"SKIP: Skipping auto-update (--skip-update specified)")
         else:
-            print(f"⏭️  Auto-update disabled in configuration")
+            print(f"SKIP: Auto-update disabled in configuration")
         
         # Run the scanner
-        print(f"\n🔍 Running {scanner_type.upper()} scanner...")
+        print(f"\nRunning {scanner_type.upper()} scanner...")
         matches = self.run_scanner(scanner_type, symbols)
         
         # Display results
@@ -457,7 +472,7 @@ class ScannerRunner:
         if matches:
             self.save_results(matches)
         
-        print(f"\n🎯 {scanner_type.upper()} scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n{scanner_type.upper()} scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 def main():
     """Main function"""
