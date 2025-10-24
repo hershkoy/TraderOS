@@ -101,6 +101,26 @@ class OptionsContractBackfiller:
         self.db_connection_string = db_connection_string or self._get_default_connection_string()
         self.polygon_client = get_polygon_client()
         
+    def _find_next_friday_expiration(self, start_date: str, lookback_days: int = 365) -> str:
+        """
+        Find the next Friday expiration date that is approximately lookback_days in the future
+        
+        Args:
+            start_date: Starting date in YYYY-MM-DD format
+            lookback_days: Target number of days to look forward (default: 365)
+        
+        Returns:
+            Next Friday expiration date in YYYY-MM-DD format
+        """
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        target_dt = start_dt + timedelta(days=lookback_days)
+        
+        # Find the next Friday after the target date
+        while target_dt.weekday() != 4:  # 4 = Friday
+            target_dt += timedelta(days=1)
+        
+        return target_dt.strftime('%Y-%m-%d')
+
     def _get_default_connection_string(self) -> str:
         """Get default database connection string from environment"""
         host = os.getenv('TIMESCALEDB_HOST', 'localhost')
@@ -208,22 +228,26 @@ class OptionsContractBackfiller:
         
         Args:
             underlying: Underlying symbol (e.g., 'QQQ')
-            discovery_date: Date to discover contracts from (YYYY-MM-DD format)
-            as_of: Discover contracts "as of" a past date (YYYY-MM-DD)
+            discovery_date: Date to look back from (YYYY-MM-DD format) - when we want to see what contracts existed
+            as_of: Discover contracts "as of" a future date (YYYY-MM-DD) - when contracts will expire
             expired: Filter by expired status (True/False/None for all)
+        
+        Note:
+            For LEAPS contracts, discovery_date should be the historical date (e.g., 2023-10-06)
+            and as_of should be when the contracts expire (e.g., 2024-10-06)
         
         Returns:
             List of discovered contracts
         """
         try:
-            logger.info(f"Discovering {underlying} options for expiration date {discovery_date}")
+            logger.info(f"Discovering {underlying} options expiring on {as_of} as they existed on {discovery_date}")
             
             # Get options chain from Polygon for the specific expiration date
-            # We want contracts that expire on this specific date
+            # We want contracts that expire on the as_of date (future) but existed on discovery_date (past)
             data = self.polygon_client.get_options_chain(
                 underlying, 
-                discovery_date,  # Use the specific expiration date
-                as_of=as_of,  # Only use as_of if explicitly provided
+                as_of,  # Use as_of as the expiration date (future)
+                as_of=discovery_date,  # Use discovery_date as the as_of date (past)
                 expired=expired
             )
             
@@ -474,7 +498,8 @@ class OptionsContractBackfiller:
         return len(rows)
     
     def backfill_contracts(self, underlying: str = 'QQQ', days_back: int = 730, 
-                          sample_rate: int = 1, max_dates_per_run: int = None) -> Dict[str, Any]:
+                          sample_rate: int = 1, max_dates_per_run: int = None, 
+                          lookback_days: int = 365) -> Dict[str, Any]:
         """
         Backfill contracts for the last N days with continuous processing and rate limit respect
         
@@ -483,6 +508,7 @@ class OptionsContractBackfiller:
             days_back: Number of days to go back
             sample_rate: Only process every Nth date to respect rate limits
             max_dates_per_run: Maximum dates to process in one run (None = all dates)
+            lookback_days: Days to look forward from discovery date to find expiration (default: 365 for LEAPS)
         
         Returns:
             Summary of backfill operation
@@ -533,12 +559,17 @@ class OptionsContractBackfiller:
             try:
                 logger.info(f"Processing date {i+1}/{len(sampled_dates)}: {discovery_date}")
                 
-                # For historical dates, set expired=True to get contracts that existed then
+                # For historical dates, we want to discover contracts that expire in the future
+                # but were available for trading on the discovery date (typically 1 year later for LEAPS)
+                # Set as_of to be lookback_days after discovery to find contracts that expire then
+                as_of_date = self._find_next_friday_expiration(discovery_date, lookback_days)
+                logger.info(f"Discovering contracts expiring on {as_of_date} as they existed on {discovery_date} (lookback: {lookback_days} days)")
+                
                 contracts = self.discover_contracts_for_date(
                     underlying, 
-                    discovery_date, 
-                    as_of=discovery_date, 
-                    expired=True  # Get contracts that existed on this date (may be expired now)
+                    discovery_date,  # discovery date
+                    as_of=as_of_date,  # future expiration date
+                    expired=True  # Get contracts that existed on the discovery date
                 )
                 if contracts:
                     processed = self.upsert_contracts(contracts)
@@ -578,7 +609,7 @@ class OptionsContractBackfiller:
     
     def backfill_contracts_continuous(self, underlying: str = 'QQQ', days_back: int = 730, 
                                     sample_rate: int = 1, dates_per_batch: int = 10,
-                                    delay_between_batches: int = 60) -> Dict[str, Any]:
+                                    delay_between_batches: int = 60, lookback_days: int = 365) -> Dict[str, Any]:
         """
         Continuous backfill that processes dates in batches with delays between batches
         
@@ -588,6 +619,7 @@ class OptionsContractBackfiller:
             sample_rate: Only process every Nth date to respect rate limits
             dates_per_batch: Number of dates to process in each batch
             delay_between_batches: Seconds to wait between batches
+            lookback_days: Days to look forward from discovery date to find expiration (default: 365 for LEAPS)
         
         Returns:
             Summary of backfill operation
@@ -642,12 +674,17 @@ class OptionsContractBackfiller:
                 try:
                     logger.info(f"Processing date {i+j+1}/{len(sampled_dates)}: {discovery_date}")
                     
-                    # For historical dates, set expired=True to get contracts that existed then
+                    # For historical dates, we want to discover contracts that expire in the future
+                    # but were available for trading on the discovery date (typically 1 year later for LEAPS)
+                    # Set as_of to be lookback_days after discovery to find contracts that expire then
+                    as_of_date = self._find_next_friday_expiration(discovery_date, lookback_days)
+                    logger.info(f"Discovering contracts expiring on {as_of_date} as they existed on {discovery_date} (lookback: {lookback_days} days)")
+                    
                     contracts = self.discover_contracts_for_date(
                         underlying, 
-                        discovery_date, 
-                        as_of=discovery_date, 
-                        expired=True  # Get contracts that existed on this date (may be expired now)
+                        discovery_date,  # discovery date
+                        as_of=as_of_date,  # future expiration date
+                        expired=True  # Get contracts that existed on the discovery date
                     )
                     if contracts:
                         processed = self.upsert_contracts(contracts)
@@ -736,6 +773,8 @@ Backfill Modes:
                        help='Maximum dates to process in one run (default: all dates)')
     parser.add_argument('--test-date', type=str, default=None,
                        help='Test a single specific date (YYYY-MM-DD format) for debugging')
+    parser.add_argument('--lookback-days', type=int, default=365,
+                       help='Days to look forward from discovery date to find expiration (default: 365 for LEAPS)')
     
     args = parser.parse_args()
     
@@ -762,10 +801,15 @@ Backfill Modes:
             logger.info(f"Testing single date: {args.test_date}")
             try:
                 # Test contract discovery for this specific date
+                # For LEAPS contracts, we want to discover contracts that expire in the future
+                # but were available for trading on the test date (based on lookback_days)
+                as_of_date = backfiller._find_next_friday_expiration(args.test_date, args.lookback_days)
+                logger.info(f"Testing: Discovering contracts expiring on {as_of_date} as they existed on {args.test_date} (lookback: {args.lookback_days} days)")
+                
                 contracts = backfiller.discover_contracts_for_date(
                     args.underlying, 
-                    args.test_date, 
-                    as_of=args.test_date, 
+                    args.test_date,  # discovery date
+                    as_of=as_of_date,  # future expiration date
                     expired=True
                 )
                 
@@ -794,20 +838,22 @@ Backfill Modes:
         # Choose backfill method based on CLI parameters
         if args.continuous:
             # Continuous backfill with batching
-            summary = backfiller.backfill_contracts_continuous(
-                underlying=args.underlying, 
-                days_back=args.days_back, 
-                sample_rate=args.sample_rate,
-                dates_per_batch=args.dates_per_batch,
-                delay_between_batches=args.delay_between_batches
-            )
+            summary =                 backfiller.backfill_contracts_continuous(
+                    underlying=args.underlying, 
+                    days_back=args.days_back, 
+                    sample_rate=args.sample_rate,
+                    dates_per_batch=args.dates_per_batch,
+                    delay_between_batches=args.delay_between_batches,
+                    lookback_days=args.lookback_days
+                )
         else:
             # Standard backfill
             summary = backfiller.backfill_contracts(
                 underlying=args.underlying, 
                 days_back=args.days_back, 
                 sample_rate=args.sample_rate,
-                max_dates_per_run=args.max_dates_per_run
+                max_dates_per_run=args.max_dates_per_run,
+                lookback_days=args.lookback_days
             )
         
         logger.info(f"Contract backfill completed successfully")

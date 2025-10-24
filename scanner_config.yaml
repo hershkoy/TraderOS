@@ -1,0 +1,197 @@
+# Unified Scanner Configuration
+# Supports multiple scanner types with consistent interface
+
+# Scanner settings
+scanner:
+  type: "hl_after_ll"           # Scanner type: hl_after_ll, vcp, liquidity_sweep
+  
+  # HL After LL Scanner settings
+  hl_after_ll:
+    left_bars: 1                # 1 left bar for confirmation
+    right_bars: 2               # 2 right bars for confirmation
+    patterns:
+      - "LL→HH→HL"              # Basic pattern
+      - "LL→HH→HH→HL"           # Extended pattern with double HH
+    monday_check:
+      enabled: false
+      description: "Current price must be >= HL price to confirm pattern is still valid"
+    data:
+      timeframe: "1d"            # Use daily data, resampled to weekly internally
+      min_weeks: 52              # Minimum 52 weeks of data required
+      max_weeks: 260             # Maximum 5 years of data
+  
+  # VCP Scanner settings (future)
+  vcp:
+    min_weeks: 6
+    max_weeks: 12
+    max_depth_pct: 25.0
+    min_contractions: 2
+    volume_dryup_window: 20
+    zigzag_pct: 3.0
+  
+  # Liquidity Sweep Scanner settings (future)
+  liquidity_sweep:
+    atr_period: 14
+    vol_lookback: 20
+    vol_mult: 1.5
+    body_frac: 0.4
+    sweep_atr_frac: 0.2
+    stop_atr_frac: 0.1
+    max_bars_after_sweep: 3
+    rr: 2.0
+    trend_sma: 50
+    use_trend: true
+
+# Output settings
+output:
+  # Console output
+  console:
+    show_summary: true
+    show_details: true
+    show_monday_check: true
+  
+  # File output
+  files:
+    save_csv: true
+    csv_filename: "{scanner_type}_scan_{timestamp}.csv"
+    save_log: true
+    log_filename: "logs/scanner_runner.log"
+  
+  # Report settings
+  reports:
+    include_charts: false        # Set to true if you want price charts
+    include_statistics: true
+
+# Symbol universe settings
+universe:
+  # Use ticker universe from database
+  source: "database"             # Options: "database", "file", "manual"
+  
+  # If using file source
+  file_path: "data/ticker_universe.csv"
+  
+  # If using manual source
+  symbols:
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "AMZN"
+    - "TSLA"
+  
+  # Filtering options
+  filters:
+    min_price: 5.0               # Minimum stock price
+    max_price: 10000.0          # Maximum stock price
+    min_volume: 100000          # Minimum average volume
+    sectors: []                  # Empty = all sectors
+
+# Database settings
+database:
+  # TimescaleDB connection
+  host: "localhost"
+  port: 5432
+  database: "backtrader"
+  user: "backtrader_user"
+  password: "backtrader_password"
+  
+  # Data loading
+  batch_size: 100                # Process symbols in batches
+  timeout: 30                   # Database query timeout in seconds
+
+# Data provider settings
+provider:
+  # Data source configuration
+  default: "ALPACA"              # Default provider: ALPACA, IB
+  fallback: "IB"                 # Fallback provider if default fails
+  
+  # Provider-specific settings
+  ALPACA:
+    api_key: "${ALPACA_API_KEY_ID}"
+    api_secret: "${ALPACA_API_SECRET}"
+    base_url: "https://api.alpaca.markets"
+    rate_limit: 200             # Requests per minute
+  
+  IB:
+    host: "localhost"
+    port: 4001
+    client_id: 1
+    timeout: 30
+
+# Auto-update settings
+auto_update:
+  enabled: true                  # Enable automatic data updates
+  max_days_old: 1                # Update data older than N days
+  provider: "ALPACA"             # Provider to fetch data from
+  timeframe: "1d"                # Data timeframe to update
+  days_back: 30                  # Days back to fetch when updating
+  batch_size: 10                 # Update symbols in batches
+  timeout: 60                    # Timeout per symbol update (seconds)
+
+# Logging settings
+logging:
+  level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  file_rotation: true            # Rotate log files daily
+  
+  # Scanner-specific logging
+  scanners:
+    hl_after_ll:
+      level: "INFO"
+      log_patterns: true         # Log detected patterns
+      log_monday_checks: true    # Log Monday check results
+    
+    vcp:
+      level: "DEBUG"
+      log_contractions: true     # Log VCP contractions
+      log_volume_analysis: true  # Log volume analysis
+    
+    liquidity_sweep:
+      level: "INFO"
+      log_sweeps: true           # Log liquidity sweeps
+      log_trend_analysis: true   # Log trend analysis
+
+# Performance settings
+performance:
+  max_workers: 4                 # Number of parallel workers for scanning
+  memory_limit: "2GB"           # Memory limit for data processing
+  cache_data: true               # Cache loaded data for faster re-runs
+  
+  # Scanner-specific performance
+  hl_after_ll:
+    batch_size: 50               # Process symbols in batches
+    cache_weekly_data: true      # Cache weekly resampled data
+  
+  vcp:
+    batch_size: 25               # Smaller batches for VCP analysis
+    cache_daily_data: true       # Cache daily data for VCP
+  
+  liquidity_sweep:
+    batch_size: 100              # Larger batches for liquidity analysis
+    cache_hourly_data: true      # Cache hourly data for liquidity
+
+# Alert settings (future)
+alerts:
+  enabled: false
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: "${EMAIL_USERNAME}"
+    password: "${EMAIL_PASSWORD}"
+    to_addresses: ["trader@example.com"]
+  
+  webhook:
+    url: "${WEBHOOK_URL}"
+    timeout: 10
+  
+  # Scanner-specific alerts
+  hl_after_ll:
+    alert_on_pattern: true       # Alert when LL→HH→HL pattern found
+    alert_on_monday_check_fail: true  # Alert when Monday check fails
+  
+  vcp:
+    alert_on_breakout: true      # Alert on VCP breakout
+    alert_on_volume_spike: true  # Alert on volume spike
+  
+  liquidity_sweep:
+    alert_on_sweep: true         # Alert on liquidity sweep
+    alert_on_rejection: true     # Alert on rejection at key levels

@@ -1,0 +1,92 @@
+# HL After LL Scanner Configuration
+# Scans for LL → HH → HL patterns in weekly data
+
+# Scanner settings
+scanner:
+  # Pivot detection parameters (matching Pine script lb=1, rb=2)
+  left_bars: 1          # 1 left bar for confirmation
+  right_bars: 2         # 2 right bars for confirmation
+  
+  # Pattern detection
+  patterns:
+    - "LL→HH→HL"        # Basic pattern
+    - "LL→HH→HH→HL"     # Extended pattern with double HH
+  
+  # Monday check settings
+  monday_check:
+    enabled: true
+    description: "Current price must be >= HL price to confirm pattern is still valid"
+  
+  # Data requirements
+  data:
+    timeframe: "1d"      # Use daily data, resampled to weekly internally
+    min_weeks: 52        # Minimum 52 weeks of data required
+    max_weeks: 260       # Maximum 5 years of data
+
+# Output settings
+output:
+  # Console output
+  console:
+    show_summary: true
+    show_details: true
+    show_monday_check: true
+  
+  # File output
+  files:
+    save_csv: true
+    csv_filename: "hl_after_ll_scan_{timestamp}.csv"
+    save_log: true
+    log_filename: "logs/hl_after_ll_scanner.log"
+  
+  # Report settings
+  reports:
+    include_charts: false  # Set to true if you want price charts
+    include_statistics: true
+
+# Symbol universe settings
+universe:
+  # Use ticker universe from database
+  source: "database"     # Options: "database", "file", "manual"
+  
+  # If using file source
+  file_path: "data/ticker_universe.csv"
+  
+  # If using manual source
+  symbols:
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "AMZN"
+    - "TSLA"
+  
+  # Filtering options
+  filters:
+    min_price: 5.0        # Minimum stock price
+    max_price: 10000.0   # Maximum stock price
+    min_volume: 100000   # Minimum average volume
+    sectors: []          # Empty = all sectors
+
+# Database settings
+database:
+  # TimescaleDB connection
+  host: "localhost"
+  port: 5432
+  database: "backtrader"
+  user: "backtrader_user"
+  password: "backtrader_password"
+  
+  # Data loading
+  batch_size: 100        # Process symbols in batches
+  timeout: 30           # Database query timeout in seconds
+
+# Logging settings
+logging:
+  level: "INFO"         # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  file_rotation: true   # Rotate log files daily
+
+# Performance settings
+performance:
+  max_workers: 4        # Number of parallel workers for scanning
+  memory_limit: "2GB"   # Memory limit for data processing
+  cache_data: true      # Cache loaded data for faster re-runs

@@ -102,3 +102,4 @@ if __name__ == "__main__":
         print("\nMigration failed. Please check the error messages above.")
         sys.exit(1)
 
+

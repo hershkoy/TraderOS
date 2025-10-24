@@ -170,6 +170,118 @@ python backtrader_runner_yaml.py ^
   --log-level DEBUG
 ```
 
+## Run Scanners
+
+### Unified Scanner Runner
+The framework includes a unified scanner runner that supports multiple scanner types:
+
+```bash
+# HL After LL Scanner (LL → HH → HL patterns)
+python scanner_runner.py ^
+  --config scanner_config.yaml ^
+  --scanner hl_after_ll ^
+  --provider ALPACA ^
+  --log-level DEBUG
+
+# Scan specific symbols
+python scanner_runner.py ^
+  --scanner hl_after_ll ^
+  --symbols AAPL MSFT GOOGL
+
+# Skip automatic data update
+python scanner_runner.py ^
+  --scanner hl_after_ll ^
+  --skip-update
+
+# Force data update even if data appears fresh
+python scanner_runner.py ^
+  --scanner hl_after_ll ^
+  --force-update
+
+# VCP Scanner (future)
+python scanner_runner.py ^
+  --scanner vcp ^
+  --log-level INFO
+
+# Liquidity Sweep Scanner (future)
+python scanner_runner.py ^
+  --scanner liquidity_sweep ^
+  --log-level INFO
+```
+
+### Scanner Configuration
+Edit `scanner_config.yaml` to customize scanner behavior:
+
+```yaml
+scanner:
+  type: "hl_after_ll"           # Scanner type
+  hl_after_ll:
+    left_bars: 1                # 1 left bar confirmation
+    right_bars: 2               # 2 right bars confirmation
+    monday_check:
+      enabled: true             # Monday price check
+
+# Auto-update settings
+auto_update:
+  enabled: true                 # Enable automatic data updates
+  max_days_old: 1              # Update data older than N days
+  provider: "ALPACA"            # Provider to fetch from
+  timeframe: "1d"               # Data timeframe
+  days_back: 30                # Days back to fetch
+```
+
+### Scanner Types
+- **hl_after_ll**: Detects LL → HH → HL reversal patterns
+- **vcp**: Volume Contraction Pattern scanner (future)
+- **liquidity_sweep**: Liquidity sweep detection (future)
+
+### Automatic Data Updates
+The scanner runner now automatically checks and updates data before scanning:
+
+```bash
+# Normal scan with auto-update (default)
+python scanner_runner.py --scanner hl_after_ll
+
+# Skip auto-update, scan existing data only
+python scanner_runner.py --scanner hl_after_ll --skip-update
+
+# Force update even if data appears fresh
+python scanner_runner.py --scanner hl_after_ll --force-update
+```
+
+**Auto-update behavior:**
+- ✅ Checks data freshness for all symbols
+- ✅ Updates stale data (older than 1 day by default)
+- ✅ Fetches missing data for new symbols
+- ✅ Uses configured provider (ALPACA/IB)
+- ✅ Continues scanning even if some updates fail
+
+### Data Update Workflow
+The scanners work with data already in TimescaleDB. To ensure you have current data:
+
+```bash
+# Check data freshness first
+python check_data_freshness.py --provider ALPACA --timeframe 1d
+
+# Update data and scan in one command
+python update_and_scan.py --scanner hl_after_ll --provider ALPACA --days-back 30
+
+# Or update specific symbols
+python update_and_scan.py --scanner hl_after_ll --symbols AAPL MSFT GOOGL --provider ALPACA
+
+# Skip data update, just scan existing data
+python update_and_scan.py --scanner hl_after_ll --skip-update
+```
+
+### Data Freshness Check
+```bash
+# Check how recent your data is
+python check_data_freshness.py --provider ALPACA --timeframe 1d
+
+# Check specific symbols
+python check_data_freshness.py --symbols AAPL MSFT GOOGL --provider ALPACA
+```
+
 ### Legacy Parquet Commands (Still Supported)
 ```bash
 # Run backtest with parquet file (legacy)

@@ -33,3 +33,4 @@ COMMENT ON COLUMN option_eod_prices.vwap IS 'Volume-weighted average price for t
 COMMENT ON COLUMN option_eod_prices.transactions IS 'Number of transactions for the day';
 COMMENT ON COLUMN option_eod_prices.created_at IS 'Timestamp when this EOD record was created in our system';
 
+
