@@ -157,66 +157,62 @@ class Match:
 
 def find_ll_hh_hl(swings: List[PivotPoint], last_price: float, symbol: str) -> Optional[Match]:
     """
-    Look for:
-      (1)   LL → HH → HL
-      (2)   LL → HH → HH → HL
+    Look for the most recent patterns by checking the last few pivots in sequence:
+      (1)   LL→HH→HL (last 3 pivots)
+      (2)   LL→HH→HH→HL (last 4 pivots)
 
-    with any number of ordinary bars between the swings (we're matching by *swing order*, not bar adjacency).
+    The pattern must be found in the most recent pivot sequence, not scattered throughout history.
 
     Monday rule: only return a match if last_price >= HL price (HL not broken on the new week).
     """
-    # Indices of swing lows/highs by label
-    # We’ll walk the sequence once from oldest → newest
-    n = len(swings)
-    for i in range(n):
-        # start on a confirmed LL
-        if not (swings[i].kind == "L" and swings[i].label == "LL"):
-            continue
-
-        # we need at least one HH after this LL
-        hh1 = None
-        hh2 = None
-        hl_confirm = None
-
-        # search forward
-        for j in range(i + 1, n):
-            s = swings[j]
-
-            if hh1 is None and s.kind == "H" and s.label == "HH":
-                hh1 = j
-                continue
-
-            # optional second HH (pattern 2)
-            if hh1 is not None and hh2 is None and s.kind == "H" and s.label == "HH":
-                hh2 = j
-                continue
-
-            # confirmation HL *after* at least one HH
-            if hh1 is not None and s.kind == "L" and s.label == "HL":
-                hl_confirm = j
-                break
-
-        if hh1 is not None and hl_confirm is not None:
-            ll = swings[i]
-            hl = swings[hl_confirm]
-
+    if not swings:
+        return None
+    
+    # Sort swings by date descending (most recent first)
+    sorted_swings = sorted(swings, key=lambda x: x.ts, reverse=True)
+    
+    # Check for pattern 1: LL→HH→HL (last 3 pivots)
+    if len(sorted_swings) >= 3:
+        if (sorted_swings[0].kind == "L" and sorted_swings[0].label == "HL" and
+            sorted_swings[1].kind == "H" and sorted_swings[1].label == "HH" and
+            sorted_swings[2].kind == "L" and sorted_swings[2].label == "LL"):
+            
+            hl = sorted_swings[0]
+            hh = sorted_swings[1]
+            ll = sorted_swings[2]
+            
             # Monday check: don't accept if current price already broke the HL
-            if last_price < hl.price:
-                continue
-
-            hhs = [swings[hh1]]
-            if hh2 is not None:
-                hhs.append(swings[hh2])
-
-            return Match(
-                symbol=symbol,
-                ll_date=ll.ts, ll_price=ll.price,
-                hh_dates=[h.ts for h in hhs],
-                hh_prices=[h.price for h in hhs],
-                hl_date=hl.ts, hl_price=hl.price,
-                last_price=last_price
-            )
-
+            if last_price >= hl.price:
+                return Match(
+                    symbol=symbol,
+                    ll_date=ll.ts, ll_price=ll.price,
+                    hh_dates=[hh.ts], hh_prices=[hh.price],
+                    hl_date=hl.ts, hl_price=hl.price,
+                    last_price=last_price
+                )
+    
+    # Check for pattern 2: LL→HH→HH→HL (last 4 pivots)
+    if len(sorted_swings) >= 4:
+        if (sorted_swings[0].kind == "L" and sorted_swings[0].label == "HL" and
+            sorted_swings[1].kind == "H" and sorted_swings[1].label == "HH" and
+            sorted_swings[2].kind == "H" and sorted_swings[2].label == "HH" and
+            sorted_swings[3].kind == "L" and sorted_swings[3].label == "LL"):
+            
+            hl = sorted_swings[0]
+            hh1 = sorted_swings[1]
+            hh2 = sorted_swings[2]
+            ll = sorted_swings[3]
+            
+            # Monday check: don't accept if current price already broke the HL
+            if last_price >= hl.price:
+                return Match(
+                    symbol=symbol,
+                    ll_date=ll.ts, ll_price=ll.price,
+                    hh_dates=[hh1.ts, hh2.ts], hh_prices=[hh1.price, hh2.price],
+                    hl_date=hl.ts, hl_price=hl.price,
+                    last_price=last_price
+                )
+    
     return None
 
 
@@ -288,20 +284,28 @@ def load_from_timescaledb(symbols: Iterable[str], timeframe: str = "1d") -> Dict
 
         # Normalize to OHLCV indexed by datetime
         # Convert timestamp to datetime index
-        ts_series = pd.to_datetime(df["ts"])
+        ts_series = pd.to_datetime(df["ts"], errors="coerce")
         if ts_series.dt.tz is not None:
             ts_series = ts_series.dt.tz_convert(None)
         
+        # Remove rows with invalid timestamps
+        valid_timestamps = ~ts_series.isna()
+        ts_series = ts_series[valid_timestamps]
+        df_clean = df[valid_timestamps]
+        
+        # Convert Decimal objects to float using direct conversion
         d = pd.DataFrame(
             {
-                "open": pd.to_numeric(df["open"], errors="coerce"),
-                "high": pd.to_numeric(df["high"], errors="coerce"),
-                "low": pd.to_numeric(df["low"], errors="coerce"),
-                "close": pd.to_numeric(df["close"], errors="coerce"),
-                "volume": pd.to_numeric(df["volume"], errors="coerce"),
+                "open": [float(x) for x in df_clean["open"]],
+                "high": [float(x) for x in df_clean["high"]],
+                "low": [float(x) for x in df_clean["low"]],
+                "close": [float(x) for x in df_clean["close"]],
+                "volume": [float(x) for x in df_clean["volume"]],
             },
             index=ts_series,
-        ).dropna()
+        )
+        
+        d = d.dropna()
         out[sym] = d
 
     client.disconnect()

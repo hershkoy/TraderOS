@@ -272,6 +272,60 @@ class ScannerRunner:
         
         return successful_updates > 0
     
+    def _log_pivot_signals(self, symbol: str, df: pd.DataFrame):
+        """Log the last 5 pivot signals (LL, HL, HH, LH) for debugging"""
+        try:
+            # Import the scanner functions
+            from utils.hl_after_ll_scanner import to_weekly, classify_pivots_weekly
+            
+            # Log data info
+            try:
+                self.logger.info(f"  {symbol}: DataFrame shape: {df.shape}")
+                self.logger.info(f"  {symbol}: DataFrame index type: {type(df.index)}")
+                self.logger.info(f"  {symbol}: DataFrame index sample: {df.index[:3].tolist()}")
+                
+                min_date = df.index.min()
+                max_date = df.index.max()
+                if pd.isna(min_date) or pd.isna(max_date):
+                    self.logger.info(f"  {symbol}: Data has invalid timestamps (NaT values)")
+                    self.logger.info(f"  {symbol}: Min date: {min_date}, Max date: {max_date}")
+                else:
+                    self.logger.info(f"  {symbol}: Data range: {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} ({len(df)} bars)")
+            except Exception as e:
+                self.logger.info(f"  {symbol}: Error getting data range: {e}")
+            
+            # Convert to weekly data
+            df_w = to_weekly(df)
+            try:
+                min_date_w = df_w.index.min()
+                max_date_w = df_w.index.max()
+                if pd.isna(min_date_w) or pd.isna(max_date_w):
+                    self.logger.info(f"  {symbol}: Weekly data has invalid timestamps (NaT values)")
+                else:
+                    self.logger.info(f"  {symbol}: Weekly data: {min_date_w.strftime('%Y-%m-%d')} to {max_date_w.strftime('%Y-%m-%d')} ({len(df_w)} weeks)")
+            except Exception as e:
+                self.logger.info(f"  {symbol}: Error getting weekly data range: {e}")
+            
+            # Get pivot signals
+            swings = classify_pivots_weekly(df_w)
+            
+            if not swings:
+                self.logger.info(f"  {symbol}: No pivot signals detected")
+                return
+            
+            # Get the last 5 signals
+            last_signals = swings[-5:] if len(swings) >= 5 else swings
+            
+            self.logger.info(f"  {symbol}: Last {len(last_signals)} pivot signals:")
+            for signal in last_signals:
+                date_str = signal.ts.strftime('%Y-%m-%d')
+                self.logger.info(f"    {date_str}: {signal.label} at ${signal.price:.2f}")
+                
+        except Exception as e:
+            self.logger.info(f"  {symbol}: Error getting pivot signals: {e}")
+            import traceback
+            self.logger.info(f"  {symbol}: Traceback: {traceback.format_exc()}")
+    
     def run_hl_after_ll_scanner(self, symbols: List[str]) -> List[Any]:
         """Run HL After LL scanner"""
         scanner_config = self.config.get('scanner', {})
@@ -290,9 +344,23 @@ class ScannerRunner:
                 self.logger.warning("No data loaded from TimescaleDB")
                 return []
             
-            # Scan for patterns
+            # Scan for patterns with debug logging
             self.logger.info("Scanning for LL → HH → HL patterns...")
-            matches = scan_universe(ohlcv_data)
+            matches = []
+            
+            for symbol, df in ohlcv_data.items():
+                try:
+                    # Get debug info for this symbol
+                    self._log_pivot_signals(symbol, df)
+                    
+                    # Scan for patterns
+                    match = scan_symbol_for_setup(symbol, df)
+                    if match:
+                        matches.append(match)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error scanning {symbol}: {e}")
+                    continue
             
             self.logger.info(f"Found {len(matches)} symbols with LL → HH → HL patterns")
             return matches
