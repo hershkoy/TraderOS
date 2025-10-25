@@ -12,6 +12,7 @@ scanner:
     patterns:
       - "LL→HH→HL"              # Basic pattern
       - "LL→HH→HH→HL"           # Extended pattern with double HH
+      - "LL→(LH|HH)3→HL"        # Flexible pattern: LL, up to 3 LH/HH, then HL
     monday_check:
       enabled: false
       description: "Current price must be >= HL price to confirm pattern is still valid"

@@ -160,6 +160,7 @@ def find_ll_hh_hl(swings: List[PivotPoint], last_price: float, symbol: str) -> O
     Look for the most recent patterns by checking the last few pivots in sequence:
       (1)   LL→HH→HL (last 3 pivots)
       (2)   LL→HH→HH→HL (last 4 pivots)
+      (3)   LL→(LH|HH)3→HL (flexible pattern: LL, up to 3 LH/HH, then HL)
 
     The pattern must be found in the most recent pivot sequence, not scattered throughout history.
 
@@ -212,6 +213,58 @@ def find_ll_hh_hl(swings: List[PivotPoint], last_price: float, symbol: str) -> O
                     hl_date=hl.ts, hl_price=hl.price,
                     last_price=last_price
                 )
+    
+    # Check for pattern 3: LL→(LH|HH)3→HL (flexible pattern)
+    # Look for this pattern in the most recent pivot sequence only
+    # Check patterns of different lengths starting from the most recent pivots
+    for pattern_length in [3, 4, 5]:  # Check patterns of different lengths
+        if len(sorted_swings) < pattern_length:
+            continue
+        
+        # Extract the most recent pattern sequence
+        pattern_sequence = sorted_swings[:pattern_length]
+        
+        # The first pivot in the sequence must be HL (most recent in time)
+        if pattern_sequence[0].kind != "L" or pattern_sequence[0].label != "HL":
+            continue
+        
+        # The last pivot in the sequence must be LL (oldest in time)
+        if pattern_sequence[-1].kind != "L" or pattern_sequence[-1].label != "LL":
+            continue
+        
+        # All middle pivots must be LH or HH
+        middle_pivots = pattern_sequence[1:-1]
+        valid_middle = all(
+            (pivot.kind == "H" and pivot.label in ["HH", "LH"]) or
+            (pivot.kind == "L" and pivot.label in ["LH", "HL"])
+            for pivot in middle_pivots
+        )
+        
+        if not valid_middle:
+            continue
+        
+        # Check that we have at least one LH or HH in the middle
+        has_lh_or_hh = any(
+            pivot.label in ["LH", "HH"] for pivot in middle_pivots
+        )
+        
+        if not has_lh_or_hh:
+            continue
+        
+        # Pattern found! Extract the components
+        hl = pattern_sequence[0]  # Most recent (first in sorted list)
+        ll = pattern_sequence[-1]  # Oldest (last in sorted list)
+        
+        # Monday check: don't accept if current price already broke the HL
+        if last_price >= hl.price:
+            return Match(
+                symbol=symbol,
+                ll_date=ll.ts, ll_price=ll.price,
+                hh_dates=[pivot.ts for pivot in middle_pivots], 
+                hh_prices=[pivot.price for pivot in middle_pivots],
+                hl_date=hl.ts, hl_price=hl.price,
+                last_price=last_price
+            )
     
     return None
 
