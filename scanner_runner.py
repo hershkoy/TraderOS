@@ -1016,7 +1016,7 @@ class ScannerRunner:
         if not matches:
             print("\nNo Squeeze zero-cross up signals found")
             return
-        print(f"\nFound {len(matches)} symbols with Squeeze zero-cross up (val: <=0 → >0):")
+        print(f"\nFound {len(matches)} symbols with Squeeze zero-cross up (val: <=0 to >0):")
         print("=" * 80)
         for i, m in enumerate(matches, 1):
             print(f"\n{i}. {m.symbol}")

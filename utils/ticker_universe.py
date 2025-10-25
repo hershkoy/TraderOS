@@ -272,6 +272,13 @@ class TickerUniverseManager:
     
     def get_combined_universe(self, force_refresh: bool = False) -> List[str]:
         """Get combined universe of all tickers"""
+        # First try to get custom universe (our imported tickers)
+        custom_tickers = self._get_cached_tickers('custom_universe')
+        if custom_tickers:
+            logger.info(f"Using custom universe with {len(custom_tickers)} symbols")
+            return custom_tickers
+        
+        # Fallback to S&P 500 + NASDAQ 100 if no custom universe
         sp500 = self.get_sp500_tickers(force_refresh)
         nasdaq100 = self.get_nasdaq100_tickers(force_refresh)
         
@@ -284,6 +291,13 @@ class TickerUniverseManager:
     
     def get_cached_combined_universe(self) -> List[str]:
         """Get combined universe from cache only (no fetching)"""
+        # First try to get custom universe (our imported tickers)
+        custom_tickers = self._get_cached_tickers('custom_universe')
+        if custom_tickers:
+            logger.info(f"Using cached custom universe with {len(custom_tickers)} symbols")
+            return custom_tickers
+        
+        # Fallback to S&P 500 + NASDAQ 100 if no custom universe
         sp500 = self._get_cached_tickers('sp500') or []
         nasdaq100 = self._get_cached_tickers('nasdaq100') or []
         
@@ -400,7 +414,7 @@ def get_nasdaq100_tickers(force_refresh: bool = False) -> List[str]:
     return manager.get_nasdaq100_tickers(force_refresh)
 
 def get_combined_universe(force_refresh: bool = False) -> List[str]:
-    """Get combined universe of all tickers"""
+    """Get combined universe of all tickers (prioritizes custom universe)"""
     manager = TickerUniverseManager()
     return manager.get_combined_universe(force_refresh)
 

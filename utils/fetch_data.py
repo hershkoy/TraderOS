@@ -401,10 +401,10 @@ def fetch_from_alpaca(symbol, bars, timeframe):
     from alpaca.data.enums import DataFeed
 
     if bars == "max":
-        logger.info(f"→ Fetching maximum available bars from Alpaca for {symbol} @ {timeframe}...")
+        logger.info(f"Fetching maximum available bars from Alpaca for {symbol} @ {timeframe}...")
         return fetch_smart_max_from_alpaca(symbol, timeframe)
     else:
-        logger.info(f"→ Fetching {bars} bars from Alpaca for {symbol} @ {timeframe}...")
+        logger.info(f"Fetching {bars} bars from Alpaca for {symbol} @ {timeframe}...")
         return fetch_single_alpaca_request(symbol, bars, timeframe)
 
 def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, end_time):
