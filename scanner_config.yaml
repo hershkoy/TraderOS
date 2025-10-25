@@ -3,7 +3,7 @@
 
 # Scanner settings
 scanner:
-  type: "hl_after_ll"           # Scanner type: hl_after_ll, vcp, liquidity_sweep
+  type: "hl_after_ll"           # Scanner type: hl_after_ll, squeeze, vcp, liquidity_sweep
   
   # HL After LL Scanner settings
   hl_after_ll:
@@ -23,6 +23,17 @@ scanner:
       auto_fetch_weeks: 120      # Automatically fetch this many weeks if insufficient data
       auto_fetch_enabled: true   # Enable automatic data fetching for insufficient data
   
+  # Squeeze Scanner settings
+  squeeze:
+    lengthKC: 20                 # LazyBear lengthKC parameter (default 20)
+    confirm_on_close: true       # Only fire on last CLOSED weekly bar (recommended)
+    data:
+      timeframe: "1d"            # Raw load timeframe; module resamples to W-FRI internally
+      min_weeks: 52              # Minimum weeks of data required
+      max_weeks: 260             # Maximum weeks of data
+      auto_fetch_enabled: true   # Enable automatic data fetching for insufficient data
+      auto_fetch_weeks: 120      # Automatically fetch this many weeks if insufficient data
+
   # VCP Scanner settings (future)
   vcp:
     min_weeks: 6
@@ -143,6 +154,11 @@ logging:
       log_patterns: true         # Log detected patterns
       log_monday_checks: true    # Log Monday check results
     
+    squeeze:
+      level: "INFO"
+      log_crosses: true          # Log zero-cross up signals
+      log_val_calculations: true # Log squeeze val calculations
+    
     vcp:
       level: "DEBUG"
       log_contractions: true     # Log VCP contractions
@@ -161,6 +177,10 @@ performance:
   
   # Scanner-specific performance
   hl_after_ll:
+    batch_size: 50               # Process symbols in batches
+    cache_weekly_data: true      # Cache weekly resampled data
+  
+  squeeze:
     batch_size: 50               # Process symbols in batches
     cache_weekly_data: true      # Cache weekly resampled data
   
@@ -190,6 +210,10 @@ alerts:
   hl_after_ll:
     alert_on_pattern: true       # Alert when LL→HH→HL pattern found
     alert_on_monday_check_fail: true  # Alert when Monday check fails
+  
+  squeeze:
+    alert_on_cross: true         # Alert when squeeze val crosses above 0
+    alert_on_confirmation: true  # Alert only on confirmed weekly closes
   
   vcp:
     alert_on_breakout: true      # Alert on VCP breakout

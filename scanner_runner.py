@@ -19,6 +19,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import scanner modules
 from utils.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
+from utils.squeeze_scanner import (
+    scan_symbol_for_squeeze as squeeze_scan_symbol,
+    load_from_timescaledb as squeeze_load,
+)
 from utils.ticker_universe import get_combined_universe
 from utils.timescaledb_client import get_timescaledb_client
 
@@ -781,6 +785,61 @@ class ScannerRunner:
         self.logger.info("VCP scanner not implemented yet")
         return []
     
+    def run_squeeze_scanner(self, symbols: List[str]) -> List[Any]:
+        """Run Squeeze Zero-Cross-Up scanner - per-stock completeness + update like HL scanner."""
+        scanner_cfg = self.config.get('scanner', {})
+        data_cfg = scanner_cfg.get('data', {})
+        timeframe = data_cfg.get('timeframe', '1d')
+        lengthKC = scanner_cfg.get('lengthKC', 20)
+        confirm_on_close = scanner_cfg.get('confirm_on_close', True)
+
+        self.logger.info(f"Running SQUEEZE scanner on {len(symbols)} symbols")
+
+        matches = []
+        ok, fail = 0, 0
+        for i, symbol in enumerate(symbols, 1):
+            try:
+                self.logger.info(f"[{i}/{len(symbols)}] {symbol}...")
+
+                # completeness
+                status = self._check_data_completeness_single(symbol)
+                if status['needs_update']:
+                    self.logger.info(f"  {symbol}: Updating data...")
+                    if not self._update_data_single(symbol):
+                        self.logger.warning(f"  {symbol}: Update failed, skipping")
+                        fail += 1
+                        continue
+
+                # ensure enough history
+                self._check_and_fetch_insufficient_data_single(symbol)
+
+                # load and scan
+                ohlcv = squeeze_load([symbol], timeframe)
+                if symbol not in ohlcv or ohlcv[symbol].empty:
+                    self.logger.warning(f"  {symbol}: No data after update")
+                    fail += 1
+                    continue
+
+                m = squeeze_scan_symbol(
+                    symbol, ohlcv[symbol],
+                    lengthKC=lengthKC, confirm_on_close=confirm_on_close,
+                    timeframe_label=timeframe
+                )
+                if m:
+                    matches.append(m)
+                    self.logger.info(f"  {symbol}: [HIT] Squeeze zero-cross up on {m.cross_date.date()}")
+                else:
+                    self.logger.info(f"  {symbol}: No cross-up")
+                ok += 1
+
+            except Exception as e:
+                self.logger.error(f"  {symbol}: Error: {e}")
+                fail += 1
+                continue
+
+        self.logger.info(f"Scanning complete. Success {ok}, Failed {fail}, Hits {len(matches)}")
+        return matches
+
     def run_liquidity_sweep_scanner(self, symbols: List[str]) -> List[Any]:
         """Run Liquidity Sweep scanner (placeholder for future implementation)"""
         self.logger.info("Liquidity Sweep scanner not implemented yet")
@@ -792,6 +851,8 @@ class ScannerRunner:
         
         if scanner_type == 'hl_after_ll':
             return self.run_hl_after_ll_scanner(symbols)
+        elif scanner_type == 'squeeze':
+            return self.run_squeeze_scanner(symbols)
         elif scanner_type == 'vcp':
             return self.run_vcp_scanner(symbols)
         elif scanner_type == 'liquidity_sweep':
@@ -831,10 +892,26 @@ class ScannerRunner:
                     else:
                         print(f"   FAIL: Monday Check: Current price (${match.last_price:.2f}) < HL (${match.hl_price:.2f}) - Pattern broken")
     
+    def print_squeeze_results(self, matches: List[Any]):
+        """Print Squeeze scan results"""
+        if not matches:
+            print("\nNo Squeeze zero-cross up signals found")
+            return
+        print(f"\nFound {len(matches)} symbols with Squeeze zero-cross up (val: <=0 → >0):")
+        print("=" * 80)
+        for i, m in enumerate(matches, 1):
+            print(f"\n{i}. {m.symbol}")
+            print(f"   Cross Week : {m.cross_date.strftime('%Y-%m-%d')}")
+            print(f"   Prev val   : {m.prev_value:.4f}")
+            print(f"   Curr val   : {m.cross_value:.4f}")
+            print(f"   Last Price : {m.last_price:.2f}")
+
     def print_results(self, matches: List[Any]):
         """Print scan results based on scanner type"""
         if self.scanner_type == 'hl_after_ll':
             self.print_hl_after_ll_results(matches)
+        elif self.scanner_type == 'squeeze':
+            self.print_squeeze_results(matches)
         else:
             print(f"\nResults for {self.scanner_type} scanner:")
             print(f"Found {len(matches)} matches")
@@ -881,10 +958,36 @@ class ScannerRunner:
         df.to_csv(filename, index=False)
         print(f"\nResults saved to: {filename}")
     
+    def save_squeeze_results(self, matches: List[Any]):
+        """Save Squeeze results to CSV"""
+        if not matches:
+            print("No matches to save")
+            return
+        files_cfg = self.config.get('output', {}).get('files', {})
+        if not files_cfg.get('save_csv', True):
+            return
+        from pathlib import Path
+        import pandas as pd
+        Path("reports").mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fn = f"reports/squeeze_zero_cross_{ts}.csv"
+        rows = [{
+            "symbol": m.symbol,
+            "cross_week": m.cross_date.strftime("%Y-%m-%d"),
+            "prev_val": m.prev_value,
+            "curr_val": m.cross_value,
+            "last_price": m.last_price,
+            "timeframe": m.timeframe,
+        } for m in matches]
+        pd.DataFrame(rows).to_csv(fn, index=False)
+        print(f"\nResults saved to: {fn}")
+
     def save_results(self, matches: List[Any]):
         """Save results based on scanner type"""
         if self.scanner_type == 'hl_after_ll':
             self.save_hl_after_ll_results(matches)
+        elif self.scanner_type == 'squeeze':
+            self.save_squeeze_results(matches)
         else:
             print(f"CSV export not implemented for {self.scanner_type} scanner yet")
     
@@ -929,7 +1032,7 @@ def main():
     parser.add_argument('--config', type=str, default='scanner_config.yaml',
                        help='Path to configuration file')
     parser.add_argument('--scanner', type=str, required=True,
-                       choices=['hl_after_ll', 'vcp', 'liquidity_sweep'],
+                       choices=['hl_after_ll', 'squeeze', 'vcp', 'liquidity_sweep'],
                        help='Scanner type to run')
     parser.add_argument('--symbols', type=str, nargs='+',
                        help='Specific symbols to scan (overrides config)')
