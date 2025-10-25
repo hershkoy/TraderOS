@@ -58,7 +58,7 @@ output:
     save_csv: true
     csv_filename: "{scanner_type}_scan_{timestamp}.csv"
     save_log: true
-    log_filename: "logs/scanner_runner.log"
+    log_filename: "logs/{scanner_type}_scanner_{timestamp}.log"
   
   # Report settings
   reports:

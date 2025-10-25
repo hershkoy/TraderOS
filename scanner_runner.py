@@ -25,11 +25,11 @@ from utils.timescaledb_client import get_timescaledb_client
 class ScannerRunner:
     """Unified scanner runner supporting multiple scanner types"""
     
-    def __init__(self, config_path: str = "scanner_config.yaml"):
+    def __init__(self, config_path: str = "scanner_config.yaml", scanner_type: str = None):
         """Initialize scanner runner with configuration"""
         self.config = self.load_config(config_path)
+        self.scanner_type = scanner_type
         self.logger = self.setup_logging()
-        self.scanner_type = None
         
     def load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -86,13 +86,37 @@ class ScannerRunner:
         # Setup handlers
         handlers = [logging.StreamHandler()]
         
-        if self.config.get('output', {}).get('files', {}).get('save_log', True):
-            handlers.append(logging.FileHandler('logs/scanner_runner.log'))
+        # Add file logging if enabled
+        output_config = self.config.get('output', {})
+        files_config = output_config.get('files', {})
         
+        if files_config.get('save_log', True):
+            # Generate timestamped log filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            log_filename = f"logs/scanner_runner_{timestamp}.log"
+            
+            # Use custom filename if specified in config
+            if 'log_filename' in files_config:
+                log_filename = files_config['log_filename'].format(
+                    timestamp=timestamp,
+                    scanner_type=self.scanner_type or 'unknown'
+                )
+            
+            # Add file handler
+            file_handler = logging.FileHandler(log_filename)
+            file_handler.setLevel(level)
+            file_handler.setFormatter(logging.Formatter(format_str))
+            handlers.append(file_handler)
+            
+            # Log the file location
+            print(f"Logging to file: {log_filename}")
+        
+        # Configure logging
         logging.basicConfig(
             level=level,
             format=format_str,
-            handlers=handlers
+            handlers=handlers,
+            force=True  # Force reconfiguration
         )
         
         return logging.getLogger(__name__)
@@ -683,7 +707,7 @@ class ScannerRunner:
         timeframe = data_config.get('timeframe', '1d')
         
         self.logger.info(f"Running HL After LL scanner on {len(symbols)} symbols")
-        self.logger.info("Processing each stock individually: check completeness → update data → check criteria")
+        self.logger.info("Processing each stock individually: check completeness -> update data -> check criteria")
         
         matches = []
         successful_scans = 0
@@ -723,12 +747,12 @@ class ScannerRunner:
                 self._log_pivot_signals(symbol, df)
                 
                 # Step 5: Scan for patterns
-                self.logger.info(f"  {symbol}: Scanning for LL → HH → HL patterns...")
+                self.logger.info(f"  {symbol}: Scanning for LL -> HH -> HL patterns...")
                 match = scan_symbol_for_setup(symbol, df)
                 
                 if match:
                     matches.append(match)
-                    self.logger.info(f"  {symbol}: ✅ Pattern found!")
+                    self.logger.info(f"  {symbol}: [SUCCESS] Pattern found!")
                 else:
                     self.logger.info(f"  {symbol}: No pattern detected")
                 
@@ -741,10 +765,10 @@ class ScannerRunner:
         
         # Summary
         self.logger.info(f"Scanning complete:")
-        self.logger.info(f"  ✅ Successful: {successful_scans}")
-        self.logger.info(f"  ❌ Failed: {failed_scans}")
-        self.logger.info(f"  📊 Success Rate: {successful_scans/len(symbols)*100:.1f}%")
-        self.logger.info(f"  🎯 Patterns Found: {len(matches)}")
+        self.logger.info(f"  [SUCCESS] Successful: {successful_scans}")
+        self.logger.info(f"  [FAILED] Failed: {failed_scans}")
+        self.logger.info(f"  [STATS] Success Rate: {successful_scans/len(symbols)*100:.1f}%")
+        self.logger.info(f"  [RESULTS] Patterns Found: {len(matches)}")
         
         return matches
     
@@ -917,7 +941,7 @@ def main():
     args = parser.parse_args()
     
     # Initialize scanner runner
-    runner = ScannerRunner(args.config)
+    runner = ScannerRunner(args.config, args.scanner)
     
     # Override logging level if specified
     if args.log_level:
