@@ -176,9 +176,10 @@ logging:
       log_monday_checks: true    # Log Monday check results
     
     squeeze:
-      level: "INFO"
+      level: "DEBUG"             # Enable detailed logging for squeeze analysis
       log_crosses: true          # Log zero-cross up signals
       log_val_calculations: true # Log squeeze val calculations
+      log_intermediate_values: true # Log intermediate calculation steps
     
     vcp:
       level: "DEBUG"

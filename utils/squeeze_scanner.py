@@ -48,7 +48,12 @@ def rolling_linreg_yhat(x: pd.Series, length: int) -> pd.Series:
     return x.rolling(length, min_periods=length).apply(_fit, raw=False)
 
 def squeeze_val(df_w: pd.DataFrame, lengthKC: int = 20) -> pd.Series:
+    import logging
+    logger = logging.getLogger(__name__)
+    
     src = df_w["close"]
+    logger.debug(f"Calculating squeeze val with lengthKC={lengthKC}")
+    
     # component = close - avg( avg(highest(high,L), lowest(low,L)), sma(close,L) )
     highest_h = df_w["high"].rolling(lengthKC, min_periods=lengthKC).max()
     lowest_l  = df_w["low"].rolling(lengthKC,  min_periods=lengthKC).min()
@@ -56,7 +61,26 @@ def squeeze_val(df_w: pd.DataFrame, lengthKC: int = 20) -> pd.Series:
     sma_c     = src.rolling(lengthKC, min_periods=lengthKC).mean()
     baseline  = (mid_hl + sma_c) / 2.0
     x = src - baseline
-    return rolling_linreg_yhat(x, lengthKC)
+    
+    # Log key intermediate values for the last few periods
+    if len(df_w) >= 3:
+        logger.debug(f"Last 3 periods - Close: {src.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - Highest H: {highest_h.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - Lowest L: {lowest_l.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - Mid HL: {mid_hl.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - SMA C: {sma_c.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - Baseline: {baseline.tail(3).tolist()}")
+        logger.debug(f"Last 3 periods - X (close-baseline): {x.tail(3).tolist()}")
+    
+    val = rolling_linreg_yhat(x, lengthKC)
+    
+    # Log the final squeeze values
+    valid_vals = val.dropna()
+    if len(valid_vals) > 0:
+        logger.debug(f"Final squeeze val range: {valid_vals.min():.4f} to {valid_vals.max():.4f}")
+        logger.debug(f"Last 3 squeeze vals: {valid_vals.tail(3).tolist()}")
+    
+    return val
 
 # -----------------------------
 # Match & scan
@@ -100,29 +124,61 @@ def scan_symbol_for_squeeze(
       (prev <= 0, curr > 0). If confirm_on_close=True (default), we only use
       completed weekly bars (like TradingView on 1W chart).
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if raw_df is None or raw_df.empty:
+        logger.warning(f"{symbol}: No data available")
         return None
 
+    logger.info(f"{symbol}: Starting squeeze analysis with lengthKC={lengthKC}")
+    
+    # Convert to weekly data
     df_w = to_weekly(raw_df)
+    logger.info(f"{symbol}: Weekly data shape: {df_w.shape}, date range: {df_w.index[0]} to {df_w.index[-1]}")
+    
+    # Calculate squeeze values
     val = squeeze_val(df_w, lengthKC=lengthKC)
+    
+    # Log key squeeze values
+    valid_vals = val.dropna()
+    if len(valid_vals) > 0:
+        logger.info(f"{symbol}: Squeeze val range: {valid_vals.min():.4f} to {valid_vals.max():.4f}")
+        logger.info(f"{symbol}: Last 5 squeeze vals: {valid_vals.tail(5).tolist()}")
+        
+        # Check for any zero crosses in the data
+        zero_crosses = ((val > 0) & (val.shift(1) <= 0)).sum()
+        logger.info(f"{symbol}: Total zero-cross up events in data: {zero_crosses}")
+    else:
+        logger.warning(f"{symbol}: No valid squeeze values calculated")
+        return None
 
     # Use only confirmed weekly bar (last row is the most recent Friday close).
     # If you ever want to allow an in-progress week check, you can add an option
     # to look at the latest partial calculation; default keeps it "confirmed".
     cross = _find_latest_zero_cross_up(val)
     if not cross:
+        logger.info(f"{symbol}: No zero-cross up detected")
         return None
 
     cross_ts, prev_v, curr_v = cross
     lp = latest_price(raw_df)
+    
+    logger.info(f"{symbol}: Zero-cross detected at {cross_ts}")
+    logger.info(f"{symbol}: Cross values - prev: {prev_v:.4f}, curr: {curr_v:.4f}")
+    logger.info(f"{symbol}: Latest price: {lp:.2f}")
 
     # Ensure the crossing is the last closed weekly bar (confirmation)
     # i.e., cross_ts must be the last index in df_w (latest Friday).
     if confirm_on_close:
         if cross_ts != df_w.index[-1]:
             # Most recent CROSS is not the last closed week → ignore (older signal)
+            logger.info(f"{symbol}: Cross not on latest closed week ({cross_ts} != {df_w.index[-1]}) - ignoring")
             return None
+        else:
+            logger.info(f"{symbol}: Cross confirmed on latest closed week")
 
+    logger.info(f"{symbol}: SQUEEZE PATTERN DETECTED!")
     return SqueezeCross(
         symbol=symbol,
         cross_date=cross_ts,
