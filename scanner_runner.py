@@ -270,29 +270,29 @@ class ScannerRunner:
                             
                             if success:
                                 successful_updates += 1
-                                self.logger.info(f"  ✅ {symbol} - Data updated and saved successfully")
+                                self.logger.info(f"  [SUCCESS] {symbol} - Data updated and saved successfully")
                             else:
                                 failed_updates += 1
-                                self.logger.warning(f"  ❌ {symbol} - Data fetched but failed to save to database")
+                                self.logger.warning(f"  [FAILED] {symbol} - Data fetched but failed to save to database")
                         else:
                             failed_updates += 1
-                            self.logger.warning(f"  ❌ {symbol} - Could not connect to database")
+                            self.logger.warning(f"  [FAILED] {symbol} - Could not connect to database")
                     else:
                         failed_updates += 1
-                        self.logger.warning(f"  ❌ {symbol} - No data returned from fetch")
+                        self.logger.warning(f"  [FAILED] {symbol} - No data returned from fetch")
                         
                 except Exception as e:
                     failed_updates += 1
-                    self.logger.warning(f"  ❌ {symbol} - Error fetching/saving data: {e}")
+                    self.logger.warning(f"  [FAILED] {symbol} - Error fetching/saving data: {e}")
                     
             except Exception as e:
                 failed_updates += 1
-                self.logger.warning(f"  ❌ {symbol} - Error: {e}")
+                self.logger.warning(f"  [FAILED] {symbol} - Error: {e}")
         
         self.logger.info(f"Data update summary:")
-        self.logger.info(f"  ✅ Successful: {successful_updates}")
-        self.logger.info(f"  ❌ Failed: {failed_updates}")
-        self.logger.info(f"  📈 Success Rate: {successful_updates/(successful_updates+failed_updates)*100:.1f}%")
+        self.logger.info(f"  [SUCCESS] Successful: {successful_updates}")
+        self.logger.info(f"  [FAILED] Failed: {failed_updates}")
+        self.logger.info(f"  [STATS] Success Rate: {successful_updates/(successful_updates+failed_updates)*100:.1f}%")
         
         return successful_updates > 0
     
@@ -451,22 +451,22 @@ class ScannerRunner:
                             
                             if success:
                                 successful_fetches += 1
-                                self.logger.info(f"  ✅ {symbol} - Historical data fetched and saved successfully")
+                                self.logger.info(f"  [SUCCESS] {symbol} - Historical data fetched and saved successfully")
                             else:
-                                self.logger.error(f"  ❌ {symbol} - Failed to save historical data")
+                                self.logger.error(f"  [FAILED] {symbol} - Failed to save historical data")
                         else:
-                            self.logger.error(f"  ❌ {symbol} - Could not connect to database")
+                            self.logger.error(f"  [FAILED] {symbol} - Could not connect to database")
                     else:
-                        self.logger.error(f"  ❌ {symbol} - No data received from {provider}")
+                        self.logger.error(f"  [FAILED] {symbol} - No data received from {provider}")
                         
                 except Exception as e:
-                    self.logger.error(f"  ❌ {symbol} - Error fetching historical data: {e}")
+                    self.logger.error(f"  [FAILED] {symbol} - Error fetching historical data: {e}")
                     continue
             
             self.logger.info(f"Historical data fetch summary:")
-            self.logger.info(f"  ✅ Successful: {successful_fetches}")
-            self.logger.info(f"  ❌ Failed: {len(symbols_needing_data) - successful_fetches}")
-            self.logger.info(f"  📊 Success Rate: {successful_fetches/len(symbols_needing_data)*100:.1f}%")
+            self.logger.info(f"  [SUCCESS] Successful: {successful_fetches}")
+            self.logger.info(f"  [FAILED] Failed: {len(symbols_needing_data) - successful_fetches}")
+            self.logger.info(f"  [STATS] Success Rate: {successful_fetches/len(symbols_needing_data)*100:.1f}%")
         
         return symbols
 
@@ -539,16 +539,16 @@ class ScannerRunner:
                                         client.disconnect()
                                         
                                         if success:
-                                            self.logger.info(f"  {symbol}: ✅ Historical data fetched and saved successfully")
+                                            self.logger.info(f"  {symbol}: [SUCCESS] Historical data fetched and saved successfully")
                                             return True
                                         else:
-                                            self.logger.error(f"  {symbol}: ❌ Failed to save historical data")
+                                            self.logger.error(f"  {symbol}: [FAILED] Failed to save historical data")
                                             return False
                                     else:
-                                        self.logger.error(f"  {symbol}: ❌ Could not connect to database")
+                                        self.logger.error(f"  {symbol}: [FAILED] Could not connect to database")
                                         return False
                                 else:
-                                    self.logger.error(f"  {symbol}: ❌ No data received from {provider}")
+                                    self.logger.error(f"  {symbol}: [FAILED] No data received from {provider}")
                                     return False
                             else:
                                 self.logger.info(f"  {symbol}: Sufficient data ({weeks_of_data:.1f} weeks >= {min_weeks} weeks)")
@@ -684,20 +684,20 @@ class ScannerRunner:
                     client.disconnect()
                     
                     if success:
-                        self.logger.info(f"  {symbol}: ✅ Data updated and saved successfully")
+                        self.logger.info(f"  {symbol}: [SUCCESS] Data updated and saved successfully")
                         return True
                     else:
-                        self.logger.error(f"  {symbol}: ❌ Failed to save data")
+                        self.logger.error(f"  {symbol}: [FAILED] Failed to save data")
                         return False
                 else:
-                    self.logger.error(f"  {symbol}: ❌ Could not connect to database")
+                    self.logger.error(f"  {symbol}: [FAILED] Could not connect to database")
                     return False
             else:
-                self.logger.error(f"  {symbol}: ❌ No data received from {provider}")
+                self.logger.error(f"  {symbol}: [FAILED] No data received from {provider}")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"  {symbol}: ❌ Error updating data: {e}")
+            self.logger.error(f"  {symbol}: [FAILED] Error updating data: {e}")
             return False
 
     def run_hl_after_ll_scanner(self, symbols: List[str]) -> List[Any]:
