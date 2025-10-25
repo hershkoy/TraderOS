@@ -446,54 +446,307 @@ class ScannerRunner:
         
         return symbols
 
+    def _check_and_fetch_insufficient_data_single(self, symbol: str) -> bool:
+        """Check and fetch insufficient data for a single stock"""
+        scanner_config = self.config.get('scanner', {})
+        data_config = scanner_config.get('data', {})
+        auto_fetch_enabled = data_config.get('auto_fetch_enabled', True)
+        auto_fetch_weeks = data_config.get('auto_fetch_weeks', 120)
+        min_weeks = data_config.get('min_weeks', 52)
+        timeframe = data_config.get('timeframe', '1d')
+        
+        if not auto_fetch_enabled:
+            return True
+        
+        client = get_timescaledb_client()
+        
+        try:
+            if client.ensure_connection():
+                # Get data count for this symbol
+                query = """
+                SELECT COUNT(*) as count, 
+                       MIN(ts) as earliest, 
+                       MAX(ts) as latest
+                FROM market_data 
+                WHERE symbol = %s AND timeframe = %s
+                """
+                
+                result = client.execute_query(query, (symbol, timeframe))
+                if result and len(result) > 0:
+                    count, earliest, latest = result[0]
+                    
+                    if count > 0:
+                        # Calculate weeks of data
+                        if earliest and latest:
+                            weeks_of_data = (latest - earliest).days / 7
+                            self.logger.info(f"  {symbol}: {count} bars, {weeks_of_data:.1f} weeks of data")
+                            
+                            if weeks_of_data < min_weeks:
+                                self.logger.info(f"  {symbol}: Insufficient data ({weeks_of_data:.1f} weeks < {min_weeks} weeks)")
+                                
+                                # Fetch more data for this symbol
+                                self.logger.info(f"  {symbol}: Fetching {auto_fetch_weeks} weeks of historical data...")
+                                
+                                # Get auto-update config for provider
+                                auto_update_config = self.config.get('auto_update', {})
+                                provider = auto_update_config.get('provider', 'ALPACA')
+                                
+                                # Calculate bars needed
+                                if timeframe == "1d":
+                                    bars_needed = auto_fetch_weeks * 7 + 50  # Extra buffer
+                                else:  # 1h
+                                    bars_needed = auto_fetch_weeks * 7 * 24 + 200  # Extra buffer for hourly
+                                
+                                # Import the fetch function
+                                import sys
+                                sys.path.append('utils')
+                                from fetch_data import fetch_from_alpaca, fetch_from_ib
+                                
+                                # Fetch the data directly
+                                if provider.lower() == 'alpaca':
+                                    df = fetch_from_alpaca(symbol, bars_needed, timeframe)
+                                else:
+                                    df = fetch_from_ib(symbol, bars_needed, timeframe)
+                                
+                                if df is not None and not df.empty:
+                                    # Save to TimescaleDB
+                                    if client.ensure_connection():
+                                        success = client.insert_market_data(df, symbol, provider, timeframe)
+                                        client.disconnect()
+                                        
+                                        if success:
+                                            self.logger.info(f"  {symbol}: ✅ Historical data fetched and saved successfully")
+                                            return True
+                                        else:
+                                            self.logger.error(f"  {symbol}: ❌ Failed to save historical data")
+                                            return False
+                                    else:
+                                        self.logger.error(f"  {symbol}: ❌ Could not connect to database")
+                                        return False
+                                else:
+                                    self.logger.error(f"  {symbol}: ❌ No data received from {provider}")
+                                    return False
+                            else:
+                                self.logger.info(f"  {symbol}: Sufficient data ({weeks_of_data:.1f} weeks >= {min_weeks} weeks)")
+                                return True
+                        else:
+                            self.logger.warning(f"  {symbol}: Could not determine data range")
+                            return False
+                    else:
+                        self.logger.info(f"  {symbol}: No data found")
+                        return False
+                else:
+                    self.logger.warning(f"  {symbol}: Could not check data count")
+                    return False
+        
+        except Exception as e:
+            self.logger.error(f"  {symbol}: Error checking data sufficiency: {e}")
+            return False
+        
+        finally:
+            client.disconnect()
+        
+        return True
+
+    def _check_data_completeness_single(self, symbol: str) -> dict:
+        """Check data completeness for a single stock"""
+        auto_update_config = self.config.get('auto_update', {})
+        max_days_old = auto_update_config.get('max_days_old', 1)
+        timeframe = auto_update_config.get('timeframe', '1d')
+        
+        client = get_timescaledb_client()
+        
+        try:
+            if client.ensure_connection():
+                # Get latest data for this symbol
+                query = """
+                SELECT MAX(ts) as latest_date, COUNT(*) as count
+                FROM market_data 
+                WHERE symbol = %s AND timeframe = %s
+                """
+                
+                result = client.execute_query(query, (symbol, timeframe))
+                if result and len(result) > 0:
+                    latest_date, count = result[0]
+                    
+                    if count == 0:
+                        return {
+                            'needs_update': True,
+                            'reason': 'No data found',
+                            'latest_date': None,
+                            'days_old': None
+                        }
+                    
+                    # Calculate how old the data is
+                    if latest_date:
+                        from datetime import datetime, timezone
+                        now = datetime.now(timezone.utc)
+                        if latest_date.tzinfo is None:
+                            latest_date = latest_date.replace(tzinfo=timezone.utc)
+                        
+                        days_old = (now - latest_date).days
+                        
+                        if days_old > max_days_old:
+                            return {
+                                'needs_update': True,
+                                'reason': f'Data is {days_old} days old (max: {max_days_old})',
+                                'latest_date': latest_date,
+                                'days_old': days_old
+                            }
+                        else:
+                            return {
+                                'needs_update': False,
+                                'reason': f'Data is fresh ({days_old} days old)',
+                                'latest_date': latest_date,
+                                'days_old': days_old
+                            }
+                    else:
+                        return {
+                            'needs_update': True,
+                            'reason': 'Could not determine data age',
+                            'latest_date': None,
+                            'days_old': None
+                        }
+                else:
+                    return {
+                        'needs_update': True,
+                        'reason': 'Could not query data',
+                        'latest_date': None,
+                        'days_old': None
+                    }
+        
+        except Exception as e:
+            self.logger.error(f"  {symbol}: Error checking data completeness: {e}")
+            return {
+                'needs_update': True,
+                'reason': f'Error: {e}',
+                'latest_date': None,
+                'days_old': None
+            }
+        
+        finally:
+            client.disconnect()
+
+    def _update_data_single(self, symbol: str) -> bool:
+        """Update data for a single stock"""
+        auto_update_config = self.config.get('auto_update', {})
+        provider = auto_update_config.get('provider', 'ALPACA')
+        timeframe = auto_update_config.get('timeframe', '1d')
+        days_back = auto_update_config.get('days_back', 30)
+        
+        try:
+            # Calculate bars needed
+            if timeframe == "1d":
+                bars_needed = days_back + 10  # Extra buffer
+            else:  # 1h
+                bars_needed = days_back * 7 + 50  # Extra buffer for hourly
+            
+            # Import the fetch function
+            import sys
+            sys.path.append('utils')
+            from fetch_data import fetch_from_alpaca, fetch_from_ib
+            
+            # Fetch the data directly
+            if provider.lower() == 'alpaca':
+                df = fetch_from_alpaca(symbol, bars_needed, timeframe)
+            else:
+                df = fetch_from_ib(symbol, bars_needed, timeframe)
+            
+            if df is not None and not df.empty:
+                # Save to TimescaleDB
+                client = get_timescaledb_client()
+                if client.ensure_connection():
+                    success = client.insert_market_data(df, symbol, provider, timeframe)
+                    client.disconnect()
+                    
+                    if success:
+                        self.logger.info(f"  {symbol}: ✅ Data updated and saved successfully")
+                        return True
+                    else:
+                        self.logger.error(f"  {symbol}: ❌ Failed to save data")
+                        return False
+                else:
+                    self.logger.error(f"  {symbol}: ❌ Could not connect to database")
+                    return False
+            else:
+                self.logger.error(f"  {symbol}: ❌ No data received from {provider}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"  {symbol}: ❌ Error updating data: {e}")
+            return False
+
     def run_hl_after_ll_scanner(self, symbols: List[str]) -> List[Any]:
-        """Run HL After LL scanner"""
+        """Run HL After LL scanner - process each stock individually"""
         scanner_config = self.config.get('scanner', {})
         data_config = scanner_config.get('data', {})
         timeframe = data_config.get('timeframe', '1d')
         
         self.logger.info(f"Running HL After LL scanner on {len(symbols)} symbols")
+        self.logger.info("Processing each stock individually: check completeness → update data → check criteria")
         
-        # Check for insufficient data and fetch more if needed
-        symbols = self.check_and_fetch_insufficient_data(symbols)
+        matches = []
+        successful_scans = 0
+        failed_scans = 0
         
-        self.logger.info(f"Loading {timeframe} data from TimescaleDB...")
-        
-        try:
-            # Load data from TimescaleDB
-            ohlcv_data = load_from_timescaledb(symbols, timeframe)
-            self.logger.info(f"Successfully loaded data for {len(ohlcv_data)} symbols")
-            
-            if not ohlcv_data:
-                self.logger.warning("No data loaded from TimescaleDB")
-                return []
-            
-            # Scan for patterns with debug logging
-            self.logger.info("Scanning for LL → HH → HL patterns...")
-            matches = []
-            
-            for symbol, df in ohlcv_data.items():
-                try:
-                    # Get debug info for this symbol
-                    self._log_pivot_signals(symbol, df)
-                    
-                    # Scan for patterns
-                    match = scan_symbol_for_setup(symbol, df)
-                    if match:
-                        matches.append(match)
-                        
-                except Exception as e:
-                    self.logger.error(f"Error scanning {symbol}: {e}")
+        for i, symbol in enumerate(symbols, 1):
+            try:
+                self.logger.info(f"[{i}/{len(symbols)}] Processing {symbol}...")
+                
+                # Step 1: Check data completeness for this specific stock
+                self.logger.info(f"  {symbol}: Checking data completeness...")
+                data_status = self._check_data_completeness_single(symbol)
+                
+                # Step 2: Update data if needed
+                if data_status['needs_update']:
+                    self.logger.info(f"  {symbol}: Updating data...")
+                    update_success = self._update_data_single(symbol)
+                    if not update_success:
+                        self.logger.warning(f"  {symbol}: Data update failed, skipping...")
+                        failed_scans += 1
+                        continue
+                else:
+                    self.logger.info(f"  {symbol}: Data is up to date")
+                
+                # Step 3: Load data for this stock
+                self.logger.info(f"  {symbol}: Loading data from TimescaleDB...")
+                ohlcv_data = load_from_timescaledb([symbol], timeframe)
+                
+                if not ohlcv_data or symbol not in ohlcv_data:
+                    self.logger.warning(f"  {symbol}: No data available after update")
+                    failed_scans += 1
                     continue
-            
-            self.logger.info(f"Found {len(matches)} symbols with LL → HH → HL patterns")
-            return matches
-            
-        except Exception as e:
-            self.logger.error(f"Error during HL After LL scanning: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return []
+                
+                df = ohlcv_data[symbol]
+                
+                # Step 4: Get debug info for this symbol
+                self._log_pivot_signals(symbol, df)
+                
+                # Step 5: Scan for patterns
+                self.logger.info(f"  {symbol}: Scanning for LL → HH → HL patterns...")
+                match = scan_symbol_for_setup(symbol, df)
+                
+                if match:
+                    matches.append(match)
+                    self.logger.info(f"  {symbol}: ✅ Pattern found!")
+                else:
+                    self.logger.info(f"  {symbol}: No pattern detected")
+                
+                successful_scans += 1
+                
+            except Exception as e:
+                self.logger.error(f"  {symbol}: Error processing: {e}")
+                failed_scans += 1
+                continue
+        
+        # Summary
+        self.logger.info(f"Scanning complete:")
+        self.logger.info(f"  ✅ Successful: {successful_scans}")
+        self.logger.info(f"  ❌ Failed: {failed_scans}")
+        self.logger.info(f"  📊 Success Rate: {successful_scans/len(symbols)*100:.1f}%")
+        self.logger.info(f"  🎯 Patterns Found: {len(matches)}")
+        
+        return matches
     
     def run_vcp_scanner(self, symbols: List[str]) -> List[Any]:
         """Run VCP scanner (placeholder for future implementation)"""
@@ -608,7 +861,7 @@ class ScannerRunner:
             print(f"CSV export not implemented for {self.scanner_type} scanner yet")
     
     def run(self, scanner_type: str, symbols: Optional[List[str]] = None, skip_auto_update: bool = False):
-        """Run the complete scan with optional auto-update"""
+        """Run the complete scan with per-stock auto-update"""
         print(f"{scanner_type.upper()} Scanner")
         print("=" * 50)
         
@@ -620,40 +873,16 @@ class ScannerRunner:
             self.logger.error("No symbols to scan")
             return
         
-        # Auto-update data if enabled and not skipped
+        # Show auto-update status
         auto_update_config = self.config.get('auto_update', {})
-        if not skip_auto_update and auto_update_config.get('enabled', True):
-            print(f"\nAuto-Update Data Check")
-            print("-" * 30)
-            
-            # Check data freshness
-            freshness = self.check_data_freshness(symbols)
-            
-            if freshness['needs_update']:
-                print(f"WARNING: Data needs updating:")
-                if freshness['stale_symbols']:
-                    print(f"   Stale data: {len(freshness['stale_symbols'])} symbols")
-                if freshness['missing_symbols']:
-                    print(f"   Missing data: {len(freshness['missing_symbols'])} symbols")
-                
-                print(f"\nUpdating data...")
-                update_success = self.update_stale_data(
-                    freshness['stale_symbols'], 
-                    freshness['missing_symbols']
-                )
-                
-                if update_success:
-                    print(f"SUCCESS: Data update completed successfully")
-                else:
-                    print(f"WARNING: Data update had some failures, but continuing with scan...")
-            else:
-                print(f"SUCCESS: All data is fresh, no update needed")
-        elif skip_auto_update:
+        if skip_auto_update:
             print(f"SKIP: Skipping auto-update (--skip-update specified)")
-        else:
+        elif not auto_update_config.get('enabled', True):
             print(f"SKIP: Auto-update disabled in configuration")
+        else:
+            print(f"ENABLED: Per-stock auto-update will check and update data for each symbol individually")
         
-        # Run the scanner
+        # Run the scanner (which now handles per-stock updates internally)
         print(f"\nRunning {scanner_type.upper()} scanner...")
         matches = self.run_scanner(scanner_type, symbols)
         
