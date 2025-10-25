@@ -4,6 +4,12 @@
 # Scanner settings
 scanner:
   type: "hl_after_ll"           # Scanner type: hl_after_ll, squeeze, vcp, liquidity_sweep
+  # Multi-scanner mode: run multiple scanners on each stock (more efficient)
+  multi_scanner:
+    enabled: false              # Set to true to run multiple scanners per stock
+    scanners:                   # List of scanners to run in multi-scanner mode
+      - "hl_after_ll"
+      - "squeeze"
   
   # HL After LL Scanner settings
   hl_after_ll:

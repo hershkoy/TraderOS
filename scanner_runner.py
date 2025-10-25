@@ -845,8 +845,127 @@ class ScannerRunner:
         self.logger.info("Liquidity Sweep scanner not implemented yet")
         return []
     
+    def run_multi_scanner(self, scanner_types: List[str], symbols: List[str]) -> Dict[str, List[Any]]:
+        """Run multiple scanners on each stock - more efficient approach"""
+        self.logger.info(f"Running MULTI-SCANNER on {len(symbols)} symbols with scanners: {scanner_types}")
+        self.logger.info("Processing each stock once: check data -> update if needed -> run all scanners")
+        
+        # Initialize results for each scanner
+        all_results = {scanner_type: [] for scanner_type in scanner_types}
+        
+        successful_scans = 0
+        failed_scans = 0
+        
+        for i, symbol in enumerate(symbols, 1):
+            try:
+                self.logger.info(f"[{i}/{len(symbols)}] Processing {symbol}...")
+                
+                # Step 1: Check data completeness for this specific stock
+                self.logger.info(f"  {symbol}: Checking data completeness...")
+                data_status = self._check_data_completeness_single(symbol)
+                
+                # Step 2: Update data if needed
+                if data_status['needs_update']:
+                    self.logger.info(f"  {symbol}: Updating data...")
+                    update_success = self._update_data_single(symbol)
+                    if not update_success:
+                        self.logger.warning(f"  {symbol}: Data update failed, skipping...")
+                        failed_scans += 1
+                        continue
+                else:
+                    self.logger.info(f"  {symbol}: Data is up to date")
+                
+                # Step 3: Check for insufficient historical data and fetch more if needed
+                self.logger.info(f"  {symbol}: Checking data sufficiency...")
+                self._check_and_fetch_insufficient_data_single(symbol)
+                
+                # Step 4: Load data for this stock once
+                scanner_config = self.config.get('scanner', {})
+                data_config = scanner_config.get('data', {})
+                timeframe = data_config.get('timeframe', '1d')
+                
+                self.logger.info(f"  {symbol}: Loading data from TimescaleDB...")
+                ohlcv_data = load_from_timescaledb([symbol], timeframe)
+                
+                if not ohlcv_data or symbol not in ohlcv_data:
+                    self.logger.warning(f"  {symbol}: No data available after update")
+                    failed_scans += 1
+                    continue
+                
+                df = ohlcv_data[symbol]
+                
+                # Step 5: Run all enabled scanners on this stock
+                symbol_results = {}
+                for scanner_type in scanner_types:
+                    try:
+                        self.logger.info(f"  {symbol}: Running {scanner_type.upper()} scanner...")
+                        
+                        if scanner_type == 'hl_after_ll':
+                            # Get debug info for HL scanner
+                            self._log_pivot_signals(symbol, df)
+                            match = scan_symbol_for_setup(symbol, df)
+                            
+                        elif scanner_type == 'squeeze':
+                            lengthKC = scanner_config.get('lengthKC', 20)
+                            confirm_on_close = scanner_config.get('confirm_on_close', True)
+                            match = squeeze_scan_symbol(
+                                symbol, df, 
+                                lengthKC=lengthKC, 
+                                confirm_on_close=confirm_on_close,
+                                timeframe_label=timeframe
+                            )
+                            
+                        elif scanner_type == 'vcp':
+                            match = None  # Placeholder
+                            self.logger.info(f"  {symbol}: VCP scanner not implemented yet")
+                            
+                        elif scanner_type == 'liquidity_sweep':
+                            match = None  # Placeholder
+                            self.logger.info(f"  {symbol}: Liquidity Sweep scanner not implemented yet")
+                            
+                        else:
+                            self.logger.warning(f"  {symbol}: Unknown scanner type: {scanner_type}")
+                            match = None
+                        
+                        if match:
+                            all_results[scanner_type].append(match)
+                            symbol_results[scanner_type] = match
+                            self.logger.info(f"  {symbol}: [HIT] {scanner_type.upper()} pattern found!")
+                        else:
+                            self.logger.info(f"  {symbol}: No {scanner_type.upper()} pattern detected")
+                            
+                    except Exception as e:
+                        self.logger.error(f"  {symbol}: Error in {scanner_type} scanner: {e}")
+                        continue
+                
+                # Log summary for this symbol
+                hits = [st for st, result in symbol_results.items() if result is not None]
+                if hits:
+                    self.logger.info(f"  {symbol}: [SUMMARY] Found patterns: {', '.join(hits)}")
+                else:
+                    self.logger.info(f"  {symbol}: [SUMMARY] No patterns found")
+                
+                successful_scans += 1
+                
+            except Exception as e:
+                self.logger.error(f"  {symbol}: Error processing: {e}")
+                failed_scans += 1
+                continue
+        
+        # Summary
+        self.logger.info(f"Multi-scanner complete:")
+        self.logger.info(f"  [SUCCESS] Successful: {successful_scans}")
+        self.logger.info(f"  [FAILED] Failed: {failed_scans}")
+        self.logger.info(f"  [STATS] Success Rate: {successful_scans/len(symbols)*100:.1f}%")
+        
+        for scanner_type in scanner_types:
+            count = len(all_results[scanner_type])
+            self.logger.info(f"  [RESULTS] {scanner_type.upper()} patterns found: {count}")
+        
+        return all_results
+
     def run_scanner(self, scanner_type: str, symbols: List[str]) -> List[Any]:
-        """Run specified scanner type"""
+        """Run specified scanner type (legacy single-scanner method)"""
         self.scanner_type = scanner_type
         
         if scanner_type == 'hl_after_ll':
@@ -905,6 +1024,29 @@ class ScannerRunner:
             print(f"   Prev val   : {m.prev_value:.4f}")
             print(f"   Curr val   : {m.cross_value:.4f}")
             print(f"   Last Price : {m.last_price:.2f}")
+
+    def print_multi_scanner_results(self, all_results: Dict[str, List[Any]]):
+        """Print results for multiple scanners"""
+        print("\n" + "=" * 80)
+        print("MULTI-SCANNER RESULTS")
+        print("=" * 80)
+        
+        total_matches = 0
+        for scanner_type, matches in all_results.items():
+            total_matches += len(matches)
+            print(f"\n{scanner_type.upper()} Scanner: {len(matches)} matches")
+            print("-" * 40)
+            
+            if scanner_type == 'hl_after_ll':
+                self.print_hl_after_ll_results(matches)
+            elif scanner_type == 'squeeze':
+                self.print_squeeze_results(matches)
+            else:
+                print(f"Found {len(matches)} matches")
+        
+        print(f"\n" + "=" * 80)
+        print(f"TOTAL MATCHES ACROSS ALL SCANNERS: {total_matches}")
+        print("=" * 80)
 
     def print_results(self, matches: List[Any]):
         """Print scan results based on scanner type"""
@@ -982,6 +1124,42 @@ class ScannerRunner:
         pd.DataFrame(rows).to_csv(fn, index=False)
         print(f"\nResults saved to: {fn}")
 
+    def save_multi_scanner_results(self, all_results: Dict[str, List[Any]]):
+        """Save results for multiple scanners to separate CSV files"""
+        files_cfg = self.config.get('output', {}).get('files', {})
+        if not files_cfg.get('save_csv', True):
+            return
+        
+        from pathlib import Path
+        import pandas as pd
+        
+        # Ensure reports directory exists
+        Path("reports").mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        saved_files = []
+        for scanner_type, matches in all_results.items():
+            if not matches:
+                continue
+                
+            if scanner_type == 'hl_after_ll':
+                filename = f"reports/hl_after_ll_scan_{timestamp}.csv"
+                self.save_hl_after_ll_results(matches)
+                saved_files.append(filename)
+                
+            elif scanner_type == 'squeeze':
+                filename = f"reports/squeeze_zero_cross_{timestamp}.csv"
+                self.save_squeeze_results(matches)
+                saved_files.append(filename)
+                
+            else:
+                print(f"CSV export not implemented for {scanner_type} scanner yet")
+        
+        if saved_files:
+            print(f"\nMulti-scanner results saved to:")
+            for file in saved_files:
+                print(f"  - {file}")
+
     def save_results(self, matches: List[Any]):
         """Save results based on scanner type"""
         if self.scanner_type == 'hl_after_ll':
@@ -991,6 +1169,40 @@ class ScannerRunner:
         else:
             print(f"CSV export not implemented for {self.scanner_type} scanner yet")
     
+    def run_multi(self, scanner_types: List[str], symbols: Optional[List[str]] = None, skip_auto_update: bool = False):
+        """Run multiple scanners on each stock - efficient approach"""
+        print(f"MULTI-SCANNER: {', '.join(scanner_types).upper()}")
+        print("=" * 60)
+        
+        # Get symbols to scan
+        if symbols is None:
+            symbols = self.get_symbols()
+        
+        if not symbols:
+            self.logger.error("No symbols to scan")
+            return
+        
+        # Show auto-update status
+        auto_update_config = self.config.get('auto_update', {})
+        if skip_auto_update:
+            print(f"SKIP: Skipping auto-update (--skip-update specified)")
+        elif not auto_update_config.get('enabled', True):
+            print(f"SKIP: Auto-update disabled in configuration")
+        else:
+            print(f"ENABLED: Per-stock auto-update will check and update data for each symbol individually")
+        
+        # Run the multi-scanner
+        print(f"\nRunning MULTI-SCANNER with: {', '.join(scanner_types)}...")
+        all_results = self.run_multi_scanner(scanner_types, symbols)
+        
+        # Display results
+        self.print_multi_scanner_results(all_results)
+        
+        # Save results
+        self.save_multi_scanner_results(all_results)
+        
+        print(f"\nMULTI-SCANNER completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
     def run(self, scanner_type: str, symbols: Optional[List[str]] = None, skip_auto_update: bool = False):
         """Run the complete scan with per-stock auto-update"""
         print(f"{scanner_type.upper()} Scanner")
@@ -1031,9 +1243,11 @@ def main():
     parser = argparse.ArgumentParser(description="Unified Scanner Runner")
     parser.add_argument('--config', type=str, default='scanner_config.yaml',
                        help='Path to configuration file')
-    parser.add_argument('--scanner', type=str, required=True,
+    parser.add_argument('--scanner', type=str, nargs='+',
                        choices=['hl_after_ll', 'squeeze', 'vcp', 'liquidity_sweep'],
-                       help='Scanner type to run')
+                       help='Scanner type(s) to run. Use multiple for multi-scanner mode.')
+    parser.add_argument('--multi', action='store_true',
+                       help='Run multiple scanners on each stock (efficient mode)')
     parser.add_argument('--symbols', type=str, nargs='+',
                        help='Specific symbols to scan (overrides config)')
     parser.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
@@ -1047,8 +1261,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate arguments
+    if not args.scanner:
+        parser.error("--scanner is required")
+    
     # Initialize scanner runner
-    runner = ScannerRunner(args.config, args.scanner)
+    runner = ScannerRunner(args.config, args.scanner[0] if len(args.scanner) == 1 else 'multi')
     
     # Override logging level if specified
     if args.log_level:
@@ -1065,8 +1283,13 @@ def main():
     elif args.force_update:
         runner.config['auto_update']['max_days_old'] = 0  # Force update even fresh data
     
-    # Run scanner
-    runner.run(args.scanner, args.symbols, skip_auto_update=args.skip_update)
+    # Run scanner(s)
+    if len(args.scanner) == 1 and not args.multi:
+        # Single scanner mode
+        runner.run(args.scanner[0], args.symbols, skip_auto_update=args.skip_update)
+    else:
+        # Multi-scanner mode
+        runner.run_multi(args.scanner, args.symbols, skip_auto_update=args.skip_update)
 
 if __name__ == "__main__":
     main()
