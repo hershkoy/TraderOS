@@ -126,7 +126,7 @@ auto_update:
   max_days_old: 1                # Update data older than N days
   provider: "ALPACA"             # Provider to fetch data from
   timeframe: "1d"                # Data timeframe to update
-  days_back: 30                  # Days back to fetch when updating
+  days_back: 840                 # Days back to fetch when updating (120 weeks)
   batch_size: 10                 # Update symbols in batches
   timeout: 60                    # Timeout per symbol update (seconds)
 
