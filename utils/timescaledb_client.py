@@ -722,6 +722,22 @@ class TimescaleDBClient:
             if cursor:
                 cursor.close()
 
+    def execute_query(self, query: str, params: tuple = None):
+        """Execute a custom query and return results"""
+        if not self.ensure_connection():
+            return None
+        
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            cursor.close()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            return None
+
 # Global client instance
 _timescaledb_client = None
 

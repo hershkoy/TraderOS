@@ -326,6 +326,126 @@ class ScannerRunner:
             import traceback
             self.logger.info(f"  {symbol}: Traceback: {traceback.format_exc()}")
     
+    def check_and_fetch_insufficient_data(self, symbols: List[str]) -> List[str]:
+        """Check for insufficient data and fetch more historical data if needed"""
+        scanner_config = self.config.get('scanner', {})
+        data_config = scanner_config.get('data', {})
+        auto_fetch_enabled = data_config.get('auto_fetch_enabled', True)
+        auto_fetch_weeks = data_config.get('auto_fetch_weeks', 120)
+        min_weeks = data_config.get('min_weeks', 52)
+        timeframe = data_config.get('timeframe', '1d')
+        
+        if not auto_fetch_enabled:
+            return symbols
+        
+        self.logger.info(f"Checking data sufficiency for {len(symbols)} symbols...")
+        
+        # Check each symbol for sufficient data
+        symbols_needing_data = []
+        client = get_timescaledb_client()
+        
+        try:
+            if client.ensure_connection():
+                for symbol in symbols:
+                    # Get data count for this symbol
+                    query = """
+                    SELECT COUNT(*) as count, 
+                           MIN(ts) as earliest, 
+                           MAX(ts) as latest
+                    FROM market_data 
+                    WHERE symbol = %s AND timeframe = %s
+                    """
+                    
+                    result = client.execute_query(query, (symbol, timeframe))
+                    if result and len(result) > 0:
+                        count, earliest, latest = result[0]
+                        
+                        if count > 0:
+                            # Calculate weeks of data
+                            if earliest and latest:
+                                weeks_of_data = (latest - earliest).days / 7
+                                self.logger.info(f"  {symbol}: {count} bars, {weeks_of_data:.1f} weeks of data")
+                                
+                                if weeks_of_data < min_weeks:
+                                    self.logger.info(f"  {symbol}: Insufficient data ({weeks_of_data:.1f} weeks < {min_weeks} weeks)")
+                                    symbols_needing_data.append(symbol)
+                                else:
+                                    self.logger.info(f"  {symbol}: Sufficient data ({weeks_of_data:.1f} weeks >= {min_weeks} weeks)")
+                            else:
+                                self.logger.warning(f"  {symbol}: Could not determine data range")
+                                symbols_needing_data.append(symbol)
+                        else:
+                            self.logger.info(f"  {symbol}: No data found")
+                            symbols_needing_data.append(symbol)
+                    else:
+                        self.logger.warning(f"  {symbol}: Could not check data count")
+                        symbols_needing_data.append(symbol)
+        
+        except Exception as e:
+            self.logger.error(f"Error checking data sufficiency: {e}")
+            return symbols
+        
+        finally:
+            client.disconnect()
+        
+        # Fetch more data for symbols that need it
+        if symbols_needing_data:
+            self.logger.info(f"Fetching additional historical data for {len(symbols_needing_data)} symbols...")
+            
+            # Get auto-update config for provider
+            auto_update_config = self.config.get('auto_update', {})
+            provider = auto_update_config.get('provider', 'ALPACA')
+            
+            # Calculate bars needed (convert weeks to days, then to bars)
+            if timeframe == "1d":
+                bars_needed = auto_fetch_weeks * 7 + 50  # Extra buffer
+            else:  # 1h
+                bars_needed = auto_fetch_weeks * 7 * 24 + 200  # Extra buffer for hourly
+            
+            successful_fetches = 0
+            
+            for i, symbol in enumerate(symbols_needing_data, 1):
+                try:
+                    self.logger.info(f"  [{i}/{len(symbols_needing_data)}] Fetching {auto_fetch_weeks} weeks of data for {symbol}...")
+                    
+                    # Import the fetch function
+                    import sys
+                    sys.path.append('utils')
+                    from fetch_data import fetch_from_alpaca, fetch_from_ib
+                    
+                    # Fetch the data directly
+                    if provider.lower() == 'alpaca':
+                        df = fetch_from_alpaca(symbol, bars_needed, timeframe)
+                    else:
+                        df = fetch_from_ib(symbol, bars_needed, timeframe)
+                    
+                    if df is not None and not df.empty:
+                        # Save to TimescaleDB
+                        if client.ensure_connection():
+                            success = client.insert_market_data(df, symbol, provider, timeframe)
+                            client.disconnect()
+                            
+                            if success:
+                                successful_fetches += 1
+                                self.logger.info(f"  ✅ {symbol} - Historical data fetched and saved successfully")
+                            else:
+                                self.logger.error(f"  ❌ {symbol} - Failed to save historical data")
+                        else:
+                            self.logger.error(f"  ❌ {symbol} - Could not connect to database")
+                    else:
+                        self.logger.error(f"  ❌ {symbol} - No data received from {provider}")
+                        
+                except Exception as e:
+                    self.logger.error(f"  ❌ {symbol} - Error fetching historical data: {e}")
+                    continue
+            
+            self.logger.info(f"Historical data fetch summary:")
+            self.logger.info(f"  ✅ Successful: {successful_fetches}")
+            self.logger.info(f"  ❌ Failed: {len(symbols_needing_data) - successful_fetches}")
+            self.logger.info(f"  📊 Success Rate: {successful_fetches/len(symbols_needing_data)*100:.1f}%")
+        
+        return symbols
+
     def run_hl_after_ll_scanner(self, symbols: List[str]) -> List[Any]:
         """Run HL After LL scanner"""
         scanner_config = self.config.get('scanner', {})
@@ -333,6 +453,10 @@ class ScannerRunner:
         timeframe = data_config.get('timeframe', '1d')
         
         self.logger.info(f"Running HL After LL scanner on {len(symbols)} symbols")
+        
+        # Check for insufficient data and fetch more if needed
+        symbols = self.check_and_fetch_insufficient_data(symbols)
+        
         self.logger.info(f"Loading {timeframe} data from TimescaleDB...")
         
         try:

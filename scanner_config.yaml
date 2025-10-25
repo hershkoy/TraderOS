@@ -19,6 +19,8 @@ scanner:
       timeframe: "1d"            # Use daily data, resampled to weekly internally
       min_weeks: 52              # Minimum 52 weeks of data required
       max_weeks: 260             # Maximum 5 years of data
+      auto_fetch_weeks: 120      # Automatically fetch this many weeks if insufficient data
+      auto_fetch_enabled: true   # Enable automatic data fetching for insufficient data
   
   # VCP Scanner settings (future)
   vcp:
