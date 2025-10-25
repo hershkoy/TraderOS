@@ -11,6 +11,21 @@ scanner:
       - "hl_after_ll"
       - "squeeze"
   
+  # OTC Stock filtering (disabled - OTC stocks already removed from database)
+  filter_otc:
+    enabled: false              # OTC stocks already removed from database
+    otc_suffixes:               # Common OTC stock suffixes to filter out
+      - "F"                     # Foreign stocks
+      - "PK"                    # Pink sheets
+      - "OB"                    # OTC Bulletin Board
+      - "OTCMKTS"               # OTC Markets
+  
+  # Ticker length filtering (disabled - long tickers already removed from database)
+  filter_length:
+    enabled: false              # Long tickers already removed from database
+    max_length: 4               # Maximum ticker length (4 characters) - only short tickers kept
+    description: "Only tickers 4 characters or shorter remain in database"
+  
   # HL After LL Scanner settings
   hl_after_ll:
     left_bars: 1                # 1 left bar for confirmation

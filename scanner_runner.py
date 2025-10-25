@@ -134,6 +134,10 @@ class ScannerRunner:
             self.logger.info("Loading ticker universe from database...")
             symbols = get_combined_universe()
             self.logger.info(f"Loaded {len(symbols)} symbols from universe")
+            
+            # Apply filtering if enabled
+            symbols = self.filter_otc_stocks(symbols)
+            symbols = self.filter_ticker_length(symbols)
             return symbols
         
         elif source == 'file':
@@ -150,6 +154,69 @@ class ScannerRunner:
         else:
             self.logger.error(f"Unknown universe source: {source}")
             return []
+    
+    def filter_otc_stocks(self, symbols: List[str]) -> List[str]:
+        """Filter out OTC stocks based on configuration"""
+        filter_config = self.config.get('scanner', {}).get('filter_otc', {})
+        
+        if not filter_config.get('enabled', True):
+            return symbols
+        
+        otc_suffixes = filter_config.get('otc_suffixes', ['F', 'PK', 'OB', 'OTCMKTS'])
+        original_count = len(symbols)
+        filtered_symbols = []
+        otc_symbols = []
+        
+        for symbol in symbols:
+            # Check if symbol ends with any OTC suffix
+            is_otc = any(symbol.endswith(suffix) for suffix in otc_suffixes)
+            
+            if is_otc:
+                otc_symbols.append(symbol)
+            else:
+                filtered_symbols.append(symbol)
+        
+        if otc_symbols:
+            self.logger.info(f"Filtered out {len(otc_symbols)} OTC stocks (suffixes: {otc_suffixes})")
+            self.logger.info(f"Symbols reduced from {original_count} to {len(filtered_symbols)}")
+            
+            # Log first few OTC symbols for reference
+            if len(otc_symbols) <= 10:
+                self.logger.info(f"OTC symbols filtered: {', '.join(otc_symbols)}")
+            else:
+                self.logger.info(f"OTC symbols filtered (first 10): {', '.join(otc_symbols[:10])}...")
+        
+        return filtered_symbols
+    
+    def filter_ticker_length(self, symbols: List[str]) -> List[str]:
+        """Filter out tickers longer than specified length"""
+        filter_config = self.config.get('scanner', {}).get('filter_length', {})
+        
+        if not filter_config.get('enabled', True):
+            return symbols
+        
+        max_length = filter_config.get('max_length', 5)
+        original_count = len(symbols)
+        filtered_symbols = []
+        long_symbols = []
+        
+        for symbol in symbols:
+            if len(symbol) <= max_length:
+                filtered_symbols.append(symbol)
+            else:
+                long_symbols.append(symbol)
+        
+        if long_symbols:
+            self.logger.info(f"Filtered out {len(long_symbols)} tickers longer than {max_length} characters")
+            self.logger.info(f"Symbols reduced from {original_count} to {len(filtered_symbols)}")
+            
+            # Log first few long symbols for reference
+            if len(long_symbols) <= 10:
+                self.logger.info(f"Long tickers filtered: {', '.join(long_symbols)}")
+            else:
+                self.logger.info(f"Long tickers filtered (first 10): {', '.join(long_symbols[:10])}...")
+        
+        return filtered_symbols
     
     def check_data_freshness(self, symbols: List[str]) -> Dict[str, Any]:
         """Check how fresh the data is for given symbols"""
