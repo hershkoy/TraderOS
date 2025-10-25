@@ -732,7 +732,11 @@ class ScannerRunner:
                 else:
                     self.logger.info(f"  {symbol}: Data is up to date")
                 
-                # Step 3: Load data for this stock
+                # Step 3: Check for insufficient historical data and fetch more if needed
+                self.logger.info(f"  {symbol}: Checking data sufficiency...")
+                self._check_and_fetch_insufficient_data_single(symbol)
+                
+                # Step 4: Load data for this stock
                 self.logger.info(f"  {symbol}: Loading data from TimescaleDB...")
                 ohlcv_data = load_from_timescaledb([symbol], timeframe)
                 
@@ -743,10 +747,10 @@ class ScannerRunner:
                 
                 df = ohlcv_data[symbol]
                 
-                # Step 4: Get debug info for this symbol
+                # Step 5: Get debug info for this symbol
                 self._log_pivot_signals(symbol, df)
                 
-                # Step 5: Scan for patterns
+                # Step 6: Scan for patterns
                 self.logger.info(f"  {symbol}: Scanning for LL -> HH -> HL patterns...")
                 match = scan_symbol_for_setup(symbol, df)
                 
