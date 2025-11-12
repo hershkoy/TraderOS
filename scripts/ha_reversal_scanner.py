@@ -228,6 +228,13 @@ class RealtimeScanner:
         self.current_bar = None  # the bar currently being formed
         self.last_completed_time = None  # track last completed bar time to avoid duplicates
         
+        # Pattern tracking state
+        self.pattern_state = None  # None, "armed", "bar1_strong", "waiting_bar3"
+        self.pattern_doji_time = None
+        self.pattern_bar1_time = None
+        self.pattern_bar2_time = None
+        self.pattern_bar1_direction = None  # "bull" or "bear" if strong
+        
         # Lock for thread-safe DataFrame updates
         self.lock = threading.Lock()
         
@@ -286,9 +293,8 @@ class RealtimeScanner:
                             print(f"DEBUG: Completed bar @ {completed_time}: O={self.current_bar['open']:.2f} H={self.current_bar['high']:.2f} L={self.current_bar['low']:.2f} C={self.current_bar['close']:.2f}")
                         
                         # Check for patterns immediately when bar completes
-                        self.check_patterns()
-                    elif DEBUG_MODE:
-                        print(f"DEBUG: Skipping duplicate bar @ {completed_time} (last_completed={self.last_completed_time})")
+                        self.check_patterns(completed_time)
+                    # Removed verbose duplicate bar logging - only log at critical level if needed
                 
                 # Start new bar
                 self.current_bar = {
@@ -305,11 +311,139 @@ class RealtimeScanner:
                     self.current_bar['low'] = min(self.current_bar['low'], latest.low)
                     self.current_bar['close'] = latest.close
     
-    def check_patterns(self):
-        """Check for reversal patterns in the current bar set."""
+    def check_patterns(self, completed_time: pd.Timestamp):
+        """Check for reversal patterns in the current bar set and log pattern progression."""
         if len(self.bars_df) < 3:
             return
         
+        # Get the last few bars for pattern tracking
+        ha = to_heikin_ashi(self.bars_df)
+        merged = pd.concat([self.bars_df, ha], axis=1).dropna()
+        
+        if len(merged) < 1:
+            return
+        
+        # Get the most recent completed bar
+        last_bar_row = merged.iloc[-1]
+        last_bar = HABar(
+            ts=last_bar_row.name,
+            o=last_bar_row["ha_open"],
+            h=last_bar_row["ha_high"],
+            l=last_bar_row["ha_low"],
+            c=last_bar_row["ha_close"]
+        )
+        
+        # State machine for pattern tracking
+        if self.pattern_state is None:
+            # Not tracking - check if this bar is a doji
+            if is_doji(last_bar):
+                self.pattern_state = "armed"
+                self.pattern_doji_time = last_bar.ts
+                print(f"INFO: Doji detected @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - detector armed")
+        
+        elif self.pattern_state == "armed":
+            # Waiting for bar #1 after doji (should be exactly 1 minute later)
+            expected_bar1_time = self.pattern_doji_time + timedelta(minutes=1)
+            if last_bar.ts == expected_bar1_time:
+                is_bull = is_strong_bull(last_bar)
+                is_bear = is_strong_bear(last_bar)
+                
+                if is_bull:
+                    self.pattern_state = "bar1_strong"
+                    self.pattern_bar1_time = last_bar.ts
+                    self.pattern_bar1_direction = "bull"
+                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL")
+                elif is_bear:
+                    self.pattern_state = "bar1_strong"
+                    self.pattern_bar1_time = last_bar.ts
+                    self.pattern_bar1_direction = "bear"
+                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR")
+                else:
+                    self.pattern_state = None
+                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (pattern reset)")
+            elif last_bar.ts > expected_bar1_time:
+                # We skipped bar #1, reset
+                self.pattern_state = None
+        
+        elif self.pattern_state == "bar1_strong":
+            # Waiting for bar #2 after strong bar #1 (should be exactly 1 minute later)
+            expected_bar2_time = self.pattern_bar1_time + timedelta(minutes=1)
+            if last_bar.ts == expected_bar2_time:
+                is_bull = is_strong_bull(last_bar)
+                is_bear = is_strong_bear(last_bar)
+                
+                if self.pattern_bar1_direction == "bull" and is_bull:
+                    # Check if bodies are growing (if required)
+                    if len(merged) >= 2:
+                        bar1_row = merged.iloc[-2]
+                        bar1 = HABar(
+                            ts=bar1_row.name,
+                            o=bar1_row["ha_open"],
+                            h=bar1_row["ha_high"],
+                            l=bar1_row["ha_low"],
+                            c=bar1_row["ha_close"]
+                        )
+                        if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
+                            self.pattern_state = "waiting_bar3"
+                            self.pattern_bar2_time = last_bar.ts
+                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
+                        else:
+                            self.pattern_state = None
+                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
+                    else:
+                        self.pattern_state = "waiting_bar3"
+                        self.pattern_bar2_time = last_bar.ts
+                        print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
+                elif self.pattern_bar1_direction == "bear" and is_bear:
+                    # Check if bodies are growing (if required)
+                    if len(merged) >= 2:
+                        bar1_row = merged.iloc[-2]
+                        bar1 = HABar(
+                            ts=bar1_row.name,
+                            o=bar1_row["ha_open"],
+                            h=bar1_row["ha_high"],
+                            l=bar1_row["ha_low"],
+                            c=bar1_row["ha_close"]
+                        )
+                        if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
+                            self.pattern_state = "waiting_bar3"
+                            self.pattern_bar2_time = last_bar.ts
+                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
+                        else:
+                            self.pattern_state = None
+                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
+                    else:
+                        self.pattern_state = "waiting_bar3"
+                        self.pattern_bar2_time = last_bar.ts
+                        print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
+                else:
+                    self.pattern_state = None
+                    direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
+                    print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
+            elif last_bar.ts > expected_bar2_time:
+                # We skipped bar #2, reset
+                self.pattern_state = None
+        
+        elif self.pattern_state == "waiting_bar3":
+            # Waiting for bar #3 after pattern completion (should be exactly 1 minute later)
+            expected_bar3_time = self.pattern_bar2_time + timedelta(minutes=1)
+            if last_bar.ts == expected_bar3_time:
+                is_bull = is_strong_bull(last_bar)
+                is_bear = is_strong_bear(last_bar)
+                
+                if is_bull or is_bear:
+                    bar_type = "STRONG BULL" if is_bull else "STRONG BEAR"
+                    print(f"INFO: Bar #3 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - {bar_type} - pattern continues")
+                else:
+                    print(f"INFO: Bar #3 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK - pattern ends")
+                
+                # Reset after logging bar #3
+                self.pattern_state = None
+            elif last_bar.ts > expected_bar3_time:
+                # We skipped bar #3, reset
+                self.pattern_state = None
+        
+        # Also check for complete patterns using the existing detection logic
         signals = detect_reversal_signals(self.bars_df)
         
         if signals:
