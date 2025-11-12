@@ -1,0 +1,164 @@
+---
+globs: scripts\ha_reversal_scanner.py
+alwaysApply: false
+---
+# Heikin Ashi Reversal Pattern Detection Logic
+
+## Overview
+This rule documents the logic for detecting Heikin Ashi (HA) reversal patterns in the `ha_reversal_scanner.py` script. The pattern identifies potential trend reversals using a specific sequence of HA candles.
+
+## Pattern Definition
+
+### Required Sequence
+The pattern consists of **three consecutive bars** with no gaps, dojis, or weak bars between them:
+
+1. **Doji Bar** - Indecision candle
+2. **Bar #1** - First strong directional bar (bullish or bearish)
+3. **Bar #2** - Second strong directional bar (same direction as Bar #1, and stronger)
+
+### Pattern Structure
+```
+Doji → Bar #1 (strong) → Bar #2 (stronger)
+```
+
+**Critical Requirement**: All three bars must be **consecutive** (exactly 1 minute apart). No gaps, no intermediate dojis, no weak bars allowed between them.
+
+## Heikin Ashi Calculation
+
+### Formula
+- **HA Close** = (Open + High + Low + Close) / 4
+- **HA Open** = (Previous HA Open + Previous HA Close) / 2 (for first bar: (O+C)/2)
+- **HA High** = max(High, HA Open, HA Close)
+- **HA Low** = min(Low, HA Open, HA Close)
+
+## Pattern Thresholds
+
+### Doji Detection
+A bar is considered a **doji** if:
+- Body ≤ 20% of total range (`BODY_VS_RANGE_DOJI = 0.20`)
+- Upper wick ≥ 15% of range (`WICK_MIN_FRAC_DOJI = 0.15`)
+- Lower wick ≥ 15% of range (`WICK_MIN_FRAC_DOJI = 0.15`)
+
+### Strong Bull Bar
+A bar is considered a **strong bull** if:
+- Green candle (close ≥ open)
+- Body ≥ 55% of total range (`BODY_MIN_FRAC_STRONG = 0.55`)
+- Lower wick ≤ 5% of range (`WICK_EPS_STRONG = 0.05`)
+
+### Strong Bear Bar
+A bar is considered a **strong bear** if:
+- Red candle (close < open)
+- Body ≥ 55% of total range (`BODY_MIN_FRAC_STRONG = 0.55`)
+- Upper wick ≤ 5% of range (`WICK_EPS_STRONG = 0.05`)
+
+### Body Growth Requirement
+When `REQUIRE_GROWING = True`:
+- Bar #2's body must be ≥ Bar #1's body
+- This ensures the second bar is "stronger" than the first
+
+## Detection Logic
+
+### Historical Scan
+The `detect_reversal_signals()` function scans historical data:
+
+1. **Convert to Heikin Ashi**: Transform standard OHLC to HA candles
+2. **Iterate through triplets**: For each potential doji at index `i`:
+   - Check if bar at `i` is a doji
+   - Check if bar at `i+1` is strong (Bar #1) - **must be consecutive**
+   - Check if bar at `i+2` is strong in same direction (Bar #2) - **must be consecutive**
+   - Verify Bar #2 body ≥ Bar #1 body (if `REQUIRE_GROWING = True`)
+3. **Return signals**: List of detected patterns with timestamps
+
+### Live Scan
+The `RealtimeScanner.check_patterns()` method uses a state machine:
+
+**State: `None`**
+- Look for doji in recent bars
+- When doji found → transition to `"armed"`
+
+**State: `"armed"`**
+- Wait for Bar #1 (must arrive exactly 1 minute after doji)
+- If Bar #1 is strong → transition to `"bar1_strong"`
+- If Bar #1 is weak/doji or time passes → reset to `None`
+
+**State: `"bar1_strong"`**
+- Wait for Bar #2 (must arrive exactly 1 minute after Bar #1)
+- If Bar #2 is strong in same direction and bodies growing → transition to `"waiting_bar3"` and **PATTERN DETECTED**
+- If Bar #2 is weak/doji/wrong direction or time passes → reset to `None`
+
+**State: `"waiting_bar3"`**
+- Monitor Bar #3 to see if pattern continues or ends
+- Log whether pattern continues (strong bar) or ends (weak bar)
+
+## Key Constraints
+
+### Consecutive Bars Only
+- **Bar #1 must be exactly 1 minute after Doji** (no gaps)
+- **Bar #2 must be exactly 1 minute after Bar #1** (no gaps)
+- If any gap exists, the pattern is **invalid** and detection resets
+
+### No Intermediate Bars
+- No dojis allowed between Doji and Bar #1
+- No weak bars allowed between Doji and Bar #1
+- No dojis allowed between Bar #1 and Bar #2
+- No weak bars allowed between Bar #1 and Bar #2
+
+### Direction Consistency
+- Bar #1 and Bar #2 must be in the **same direction** (both bullish or both bearish)
+- If Bar #2 is in opposite direction, pattern is invalid
+
+### Body Growth
+- When `REQUIRE_GROWING = True`, Bar #2's body must be ≥ Bar #1's body
+- This ensures momentum is increasing, not decreasing
+
+## Example Pattern
+
+### Valid Bullish Reversal
+```
+Time    Type        Body%    Upper Wick%  Lower Wick%
+10:00   Doji        15%      20%          20%        ← Doji
+10:01   Strong Bull 60%      5%           0%         ← Bar #1 (consecutive)
+10:02   Strong Bull 70%      3%           0%         ← Bar #2 (consecutive, stronger)
+```
+
+### Invalid Pattern (Gap)
+```
+Time    Type        Body%    Upper Wick%  Lower Wick%
+10:00   Doji        15%      20%          20%        ← Doji
+10:01   Weak        30%      10%          10%        ← Weak bar (invalid)
+10:02   Strong Bull 60%      5%           0%         ← Bar #1 (too late)
+```
+
+### Invalid Pattern (Wrong Direction)
+```
+Time    Type        Body%    Upper Wick%  Lower Wick%
+10:00   Doji        15%      20%          20%        ← Doji
+10:01   Strong Bull 60%      5%           0%         ← Bar #1 (bull)
+10:02   Strong Bear 65%      0%           4%         ← Bar #2 (bear - wrong direction)
+```
+
+## Implementation Notes
+
+### Historical vs Live Scanning
+- **Historical scan**: Checks all triplets in the dataset (when `scan_all=True`)
+- **Live scan**: Uses state machine to track pattern progression in real-time
+- Both use the same core detection logic for consistency
+
+### Logging
+- `INFO` level: Pattern detection events (doji detected, bar status, pattern detected)
+- `DEBUG` level: Detailed triplet checking, state transitions, lookback operations
+
+### State Initialization
+- After historical scan, the most recent pattern's Bar #2 timestamp is used to initialize `last_alert_t2`
+- This prevents duplicate alerts for patterns already detected in historical data
+
+## Configuration
+
+Key parameters (in `ha_reversal_scanner.py`):
+- `BODY_VS_RANGE_DOJI = 0.20` - Doji body threshold
+- `WICK_MIN_FRAC_DOJI = 0.15` - Doji wick minimum
+- `WICK_EPS_STRONG = 0.05` - Strong bar wick maximum
+- `BODY_MIN_FRAC_STRONG = 0.55` - Strong bar body minimum
+- `REQUIRE_GROWING = True` - Require Bar #2 body ≥ Bar #1 body
+
+These thresholds are tuned for 1-minute bars and can be adjusted for different timeframes.
