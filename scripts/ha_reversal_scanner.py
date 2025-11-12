@@ -184,8 +184,8 @@ def scan_historical_bars(df_ohlc: pd.DataFrame, n_bars: int = 100):
     print(f"Time range: {bars_to_scan.index[0]} to {bars_to_scan.index[-1]}")
     print()
     
-    # Use the same detection function as live scanning
-    signals = detect_reversal_signals(bars_to_scan, check_last_n=len(bars_to_scan))
+    # Use the same detection function as live scanning, but scan ALL triplets for historical data
+    signals = detect_reversal_signals(bars_to_scan, scan_all=True)
     
     if not signals:
         print("No reversal patterns detected in historical data.")
@@ -217,12 +217,13 @@ def scan_historical_bars(df_ohlc: pd.DataFrame, n_bars: int = 100):
 # ──────────────────────────────────────────────────────────────────────────────
 # Pattern detection
 # ──────────────────────────────────────────────────────────────────────────────
-def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5):
+def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5, scan_all: bool = False):
     """
     Returns a list of signals. Each signal is:
       {"direction": "bull"|"bear", "t_doji": ts, "t1": ts, "t2": ts}
     
-    check_last_n: Check the last N triplets to catch patterns that might have been missed
+    check_last_n: Check the last N triplets to catch patterns that might have been missed (used when scan_all=False)
+    scan_all: If True, check all triplets in the dataframe (ignores check_last_n)
     """
     if len(df_ohlc) < 3:
         return []
@@ -230,31 +231,190 @@ def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5):
     ha = to_heikin_ashi(df_ohlc)
     merged = pd.concat([df_ohlc, ha], axis=1).dropna()
     signals = []
+    
+    if DEBUG_MODE:
+        print(f"DEBUG: detect_reversal_signals: checking {len(merged)} bars, scan_all={scan_all}, check_last_n={check_last_n}")
 
     def as_bar(row) -> HABar:
         return HABar(ts=row.name, o=row["ha_open"], h=row["ha_high"], l=row["ha_low"], c=row["ha_close"])
 
-    # Check the last N triplets to catch patterns that might have been missed
-    # Start from the end and work backwards
-    start_idx = max(2, len(merged) - check_last_n)
-    for i in range(start_idx, len(merged)):
-        b0 = as_bar(merged.iloc[i - 2])
-        b1 = as_bar(merged.iloc[i - 1])
-        b2 = as_bar(merged.iloc[i])
-
-        # Verify timestamps are sequential (not duplicates)
-        if b0.ts >= b1.ts or b1.ts >= b2.ts:
+    # Determine which triplets to check
+    if scan_all:
+        # Check all triplets from index 2 to the end
+        start_idx = 2
+        end_idx = len(merged)
+    else:
+        # Check the last N triplets
+        start_idx = max(2, len(merged) - check_last_n)
+        end_idx = len(merged)
+    
+    if DEBUG_MODE:
+        print(f"DEBUG: Checking triplets from index {start_idx} to {end_idx-1} (total triplets: {end_idx - start_idx})")
+    
+    # First pass: find all dojis and check each one independently
+    # This handles cases where multiple consecutive bars are dojis
+    for doji_idx in range(start_idx - 2, end_idx - 2):
+        if doji_idx < 0:
+            continue
+        doji_bar = as_bar(merged.iloc[doji_idx])
+        
+        if not is_doji(doji_bar):
+            continue
+        
+        if scan_all:
+            print(f"INFO: Doji detected @ {doji_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} (historical scan) - looking ahead for strong bars...")
+        
+        # Found a doji - look ahead for the next two strong bars (skipping any intermediate dojis)
+        # Look for bar #1 (first strong bar after doji)
+        bar1_idx = None
+        bar1_direction = None
+        for j in range(doji_idx + 1, len(merged)):
+            candidate = as_bar(merged.iloc[j])
+            if is_strong_bull(candidate):
+                bar1_idx = j
+                bar1_direction = "bull"
+                if scan_all:
+                    print(f"INFO: Bar #1 @ {candidate.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL")
+                break
+            elif is_strong_bear(candidate):
+                bar1_idx = j
+                bar1_direction = "bear"
+                if scan_all:
+                    print(f"INFO: Bar #1 @ {candidate.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR")
+                break
+            # If we hit another doji, continue looking
+            # If we hit a weak bar that's not a doji, stop (pattern broken)
+            if not is_doji(candidate):
+                if scan_all:
+                    r = candidate.range
+                    body_pct = (candidate.body / r * 100) if r > 0 else 0
+                    print(f"INFO: Bar @ {candidate.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (body={body_pct:.1f}%, pattern reset)")
+                break
+        
+        if bar1_idx is None:
+            if scan_all:
+                print(f"INFO: No strong bar found after doji @ {doji_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            continue
+        
+        # Found bar #1 - now look for bar #2 (second strong bar, same direction)
+        bar2_idx = None
+        for j in range(bar1_idx + 1, len(merged)):
+            candidate = as_bar(merged.iloc[j])
+            if bar1_direction == "bull" and is_strong_bull(candidate):
+                bar2_idx = j
+                break
+            elif bar1_direction == "bear" and is_strong_bear(candidate):
+                bar2_idx = j
+                break
+            # If we hit a doji, continue looking
+            # If we hit a weak bar or opposite direction, stop (pattern broken)
+            if not is_doji(candidate):
+                if scan_all:
+                    direction_str = "BULL" if bar1_direction == "bull" else "BEAR"
+                    print(f"INFO: Bar #2 @ {candidate.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
+                break
+        
+        if bar2_idx is None:
+            if scan_all:
+                print(f"INFO: No second strong bar found after bar #1 @ {merged.iloc[bar1_idx].name}")
+            continue
+        
+        # Found both strong bars - check if bodies are growing (if required)
+        bar1 = as_bar(merged.iloc[bar1_idx])
+        bar2 = as_bar(merged.iloc[bar2_idx])
+        
+        if REQUIRE_GROWING and not bodies_growing(bar1, bar2):
+            if scan_all:
+                print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {bar1_direction.upper()} but bodies not growing (pattern reset)")
             if DEBUG_MODE:
-                print(f"DEBUG: Skipping invalid triplet: {b0.ts} -> {b1.ts} -> {b2.ts}")
+                print(f"DEBUG: Pattern found but bodies not growing: doji@{doji_bar.ts}, bar1@{bar1.ts}, bar2@{bar2.ts}")
             continue
+        
+        # Pattern detected!
+        if scan_all:
+            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {bar1_direction.upper()} - PATTERN DETECTED")
+        signals.append({
+            "direction": bar1_direction,
+            "t_doji": doji_bar.ts,
+            "t1": bar1.ts,
+            "t2": bar2.ts
+        })
+        if DEBUG_MODE:
+            print(f"DEBUG: {bar1_direction.upper()} pattern detected: doji@{doji_bar.ts}, strong#1@{bar1.ts}, strong#2@{bar2.ts}")
+    
+    # Second pass: standard triplet check for logging purposes (only if scan_all)
+    if scan_all:
+        for i in range(start_idx, end_idx):
+            b0 = as_bar(merged.iloc[i - 2])
+            b1 = as_bar(merged.iloc[i - 1])
+            b2 = as_bar(merged.iloc[i])
 
-        if not is_doji(b0):
-            continue
+            # Verify timestamps are sequential (not duplicates)
+            if b0.ts >= b1.ts or b1.ts >= b2.ts:
+                continue
+
+            # Debug: Log bar characteristics
+            if DEBUG_MODE:
+                body_pct_b0 = (b0.body / b0.range * 100) if b0.range > 0 else 0
+                body_pct_b1 = (b1.body / b1.range * 100) if b1.range > 0 else 0
+                body_pct_b2 = (b2.body / b2.range * 100) if b2.range > 0 else 0
+                print(f"DEBUG: Checking triplet @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')}: "
+                      f"b0(doji={is_doji(b0)}, body={body_pct_b0:.1f}%) "
+                      f"b1(bull={is_strong_bull(b1)}, bear={is_strong_bear(b1)}, body={body_pct_b1:.1f}%) "
+                      f"b2(bull={is_strong_bull(b2)}, bear={is_strong_bear(b2)}, body={body_pct_b2:.1f}%)")
+
+            if not is_doji(b0):
+                continue
+
+            # Doji found - log it
+            # During historical scan, log all dojis found
+            print(f"INFO: Doji detected @ {b0.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} (historical scan)")
+            # Check what happens with subsequent bars
+            if is_strong_bull(b1):
+                print(f"INFO: Bar #1 @ {b1.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL")
+            elif is_strong_bear(b1):
+                print(f"INFO: Bar #1 @ {b1.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR")
+            else:
+                # Log why bar #1 is not strong
+                r1 = b1.range
+                body_pct_b1 = (b1.body / r1 * 100) if r1 > 0 else 0
+                lower_wick_pct_b1 = (b1.lower_wick / r1 * 100) if r1 > 0 else 0
+                upper_wick_pct_b1 = (b1.upper_wick / r1 * 100) if r1 > 0 else 0
+                is_green_b1 = b1.is_green
+                reason = []
+                if not is_green_b1:
+                    reason.append("not green")
+                if body_pct_b1 < BODY_MIN_FRAC_STRONG * 100:
+                    reason.append(f"body too small ({body_pct_b1:.1f}% < {BODY_MIN_FRAC_STRONG*100:.0f}%)")
+                if is_green_b1 and lower_wick_pct_b1 > WICK_EPS_STRONG * 100:
+                    reason.append(f"has lower wick ({lower_wick_pct_b1:.1f}% > {WICK_EPS_STRONG*100:.0f}%)")
+                if not is_green_b1 and upper_wick_pct_b1 > WICK_EPS_STRONG * 100:
+                    reason.append(f"has upper wick ({upper_wick_pct_b1:.1f}% > {WICK_EPS_STRONG*100:.0f}%)")
+                reason_str = ", ".join(reason) if reason else "unknown"
+                print(f"INFO: Bar #1 @ {b1.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK ({reason_str})")
+            
+            if is_strong_bull(b1) or is_strong_bear(b1):
+                # Bar #1 was strong, check bar #2
+                if is_strong_bull(b1) and is_strong_bull(b2):
+                    if not REQUIRE_GROWING or bodies_growing(b1, b2):
+                        print(f"INFO: Bar #2 @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
+                    else:
+                        print(f"INFO: Bar #2 @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
+                elif is_strong_bear(b1) and is_strong_bear(b2):
+                    if not REQUIRE_GROWING or bodies_growing(b1, b2):
+                        print(f"INFO: Bar #2 @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
+                    else:
+                        print(f"INFO: Bar #2 @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
+                else:
+                    direction_str = "BULL" if is_strong_bull(b1) else "BEAR"
+                    print(f"INFO: Bar #2 @ {b2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
 
         # bullish reversal: doji then two strong bulls
         if is_strong_bull(b1) and is_strong_bull(b2):
             if not REQUIRE_GROWING or bodies_growing(b1, b2):
                 signals.append({"direction": "bull", "t_doji": b0.ts, "t1": b1.ts, "t2": b2.ts})
+                if DEBUG_MODE:
+                    print(f"DEBUG: BULL pattern detected: doji@{b0.ts}, strong#1@{b1.ts}, strong#2@{b2.ts}")
             elif DEBUG_MODE:
                 print(f"DEBUG: Bull pattern found but bodies not growing: b1.body={b1.body:.4f}, b2.body={b2.body:.4f} @ {b2.ts}")
 
@@ -262,8 +422,13 @@ def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5):
         if is_strong_bear(b1) and is_strong_bear(b2):
             if not REQUIRE_GROWING or bodies_growing(b1, b2):
                 signals.append({"direction": "bear", "t_doji": b0.ts, "t1": b1.ts, "t2": b2.ts})
+                if DEBUG_MODE:
+                    print(f"DEBUG: BEAR pattern detected: doji@{b0.ts}, strong#1@{b1.ts}, strong#2@{b2.ts}")
             elif DEBUG_MODE:
                 print(f"DEBUG: Bear pattern found but bodies not growing: b1.body={b1.body:.4f}, b2.body={b2.body:.4f} @ {b2.ts}")
+
+    if DEBUG_MODE:
+        print(f"DEBUG: detect_reversal_signals: found {len(signals)} pattern(s)")
 
     return signals
 
@@ -374,15 +539,12 @@ class RealtimeScanner:
         if len(merged) < 1:
             return
         
+        def as_bar(row) -> HABar:
+            return HABar(ts=row.name, o=row["ha_open"], h=row["ha_high"], l=row["ha_low"], c=row["ha_close"])
+        
         # Get the most recent completed bar
         last_bar_row = merged.iloc[-1]
-        last_bar = HABar(
-            ts=last_bar_row.name,
-            o=last_bar_row["ha_open"],
-            h=last_bar_row["ha_high"],
-            l=last_bar_row["ha_low"],
-            c=last_bar_row["ha_close"]
-        )
+        last_bar = as_bar(last_bar_row)
         
         # Debug: Log bar characteristics for diagnosis
         if DEBUG_MODE:
@@ -451,140 +613,237 @@ class RealtimeScanner:
                         break
         
         elif self.pattern_state == "armed":
-            # Waiting for bar #1 after doji (should be exactly 1 minute later)
-            expected_bar1_time = self.pattern_doji_time + timedelta(minutes=1)
-            if last_bar.ts == expected_bar1_time:
-                is_bull = is_strong_bull(last_bar)
-                is_bear = is_strong_bear(last_bar)
-                
-                if is_bull:
-                    self.pattern_state = "bar1_strong"
-                    self.pattern_bar1_time = last_bar.ts
-                    self.pattern_bar1_direction = "bull"
-                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL")
-                elif is_bear:
-                    self.pattern_state = "bar1_strong"
-                    self.pattern_bar1_time = last_bar.ts
-                    self.pattern_bar1_direction = "bear"
-                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR")
-                else:
-                    self.pattern_state = None
-                    print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (pattern reset)")
-            elif last_bar.ts > expected_bar1_time:
-                # We skipped bar #1, reset
-                if DEBUG_MODE:
-                    print(f"DEBUG: Skipped bar #1 - expected {expected_bar1_time}, got {last_bar.ts}, resetting pattern")
+            # Waiting for bar #1 after doji - look ahead, skipping any intermediate dojis
+            # Find the doji index in merged
+            doji_idx = None
+            for i in range(len(merged)):
+                if merged.index[i] == self.pattern_doji_time:
+                    doji_idx = i
+                    break
+            
+            if doji_idx is None:
                 self.pattern_state = None
+                return
+            
+            # Look ahead for the first strong bar after the doji (skipping intermediate dojis)
+            bar1_idx = None
+            bar1_direction = None
+            for j in range(doji_idx + 1, len(merged)):
+                candidate = as_bar(merged.iloc[j])
+                if is_strong_bull(candidate):
+                    bar1_idx = j
+                    bar1_direction = "bull"
+                    break
+                elif is_strong_bear(candidate):
+                    bar1_idx = j
+                    bar1_direction = "bear"
+                    break
+                # If we hit another doji, continue looking
+                # If we hit a weak bar that's not a doji, stop (pattern broken)
+                if not is_doji(candidate):
+                    break
+            
+            if bar1_idx is None:
+                # No strong bar found yet, check if current bar is the expected next bar
+                expected_bar1_time = self.pattern_doji_time + timedelta(minutes=1)
+                if last_bar.ts == expected_bar1_time:
+                    # Current bar is the immediate next bar - check if it's strong
+                    is_bull = is_strong_bull(last_bar)
+                    is_bear = is_strong_bear(last_bar)
+                    
+                    if is_bull:
+                        self.pattern_state = "bar1_strong"
+                        self.pattern_bar1_time = last_bar.ts
+                        self.pattern_bar1_direction = "bull"
+                        print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL")
+                    elif is_bear:
+                        self.pattern_state = "bar1_strong"
+                        self.pattern_bar1_time = last_bar.ts
+                        self.pattern_bar1_direction = "bear"
+                        print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR")
+                    else:
+                        # Check if it's a doji - if so, continue waiting
+                        if is_doji(last_bar):
+                            if DEBUG_MODE:
+                                print(f"DEBUG: Bar @ {last_bar.ts} is also a doji, continuing to look ahead...")
+                        else:
+                            self.pattern_state = None
+                            print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (pattern reset)")
+                elif last_bar.ts > expected_bar1_time:
+                    # We've passed the expected time - check if we skipped dojis
+                    # Look back to see if there were dojis we should have skipped
+                    found_doji_chain = False
+                    for j in range(doji_idx + 1, len(merged)):
+                        if merged.index[j] >= last_bar.ts:
+                            break
+                        candidate = as_bar(merged.iloc[j])
+                        if is_doji(candidate):
+                            found_doji_chain = True
+                        elif not is_doji(candidate) and not is_strong_bull(candidate) and not is_strong_bear(candidate):
+                            # Hit a weak bar, pattern broken
+                            self.pattern_state = None
+                            if DEBUG_MODE:
+                                print(f"DEBUG: Skipped bar #1 - expected {expected_bar1_time}, got {last_bar.ts}, pattern broken")
+                            return
+                    
+                    if found_doji_chain:
+                        # There were dojis in between, continue looking ahead
+                        if DEBUG_MODE:
+                            print(f"DEBUG: Found doji chain, continuing to look ahead from {last_bar.ts}")
+                    else:
+                        # No dojis found, pattern broken
+                        self.pattern_state = None
+                        if DEBUG_MODE:
+                            print(f"DEBUG: Skipped bar #1 - expected {expected_bar1_time}, got {last_bar.ts}, resetting pattern")
+            else:
+                # Found bar #1 in lookback - check if it's the current bar or we need to wait
+                bar1_time = merged.index[bar1_idx]
+                if bar1_time == last_bar.ts:
+                    # Current bar is bar #1
+                    self.pattern_state = "bar1_strong"
+                    self.pattern_bar1_time = bar1_time
+                    self.pattern_bar1_direction = bar1_direction
+                    print(f"INFO: Bar #1 @ {bar1_time.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {bar1_direction.upper()}")
+                elif bar1_time < last_bar.ts:
+                    # Bar #1 already passed, we missed it - should have been caught earlier
+                    # This shouldn't happen, but handle it gracefully
+                    self.pattern_state = "bar1_strong"
+                    self.pattern_bar1_time = bar1_time
+                    self.pattern_bar1_direction = bar1_direction
+                    if DEBUG_MODE:
+                        print(f"DEBUG: Bar #1 @ {bar1_time} already passed, setting state")
+                # else: bar #1 is in the future, continue waiting
         
         elif self.pattern_state == "bar1_strong":
-            # Waiting for bar #2 after strong bar #1 (should be exactly 1 minute later)
-            expected_bar2_time = self.pattern_bar1_time + timedelta(minutes=1)
-            
-            # Check if bar #2 already exists in the lookback
+            # Waiting for bar #2 after strong bar #1 - look ahead, skipping any intermediate dojis
+            # Find bar #1 index in merged
             bar1_idx = None
             for i in range(len(merged)):
                 if merged.index[i] == self.pattern_bar1_time:
                     bar1_idx = i
                     break
             
-            if bar1_idx is not None and bar1_idx + 1 < len(merged):
-                # Bar #2 already exists, check it
-                bar1_row = merged.iloc[bar1_idx]
-                bar2_row = merged.iloc[bar1_idx + 1]
-                if bar2_row.name == expected_bar2_time:
-                    bar1 = HABar(
-                        ts=bar1_row.name,
-                        o=bar1_row["ha_open"],
-                        h=bar1_row["ha_high"],
-                        l=bar1_row["ha_low"],
-                        c=bar1_row["ha_close"]
-                    )
-                    bar2 = HABar(
-                        ts=bar2_row.name,
-                        o=bar2_row["ha_open"],
-                        h=bar2_row["ha_high"],
-                        l=bar2_row["ha_low"],
-                        c=bar2_row["ha_close"]
-                    )
-                    is_bull = is_strong_bull(bar2)
-                    is_bear = is_strong_bear(bar2)
+            if bar1_idx is None:
+                self.pattern_state = None
+                return
+            
+            # Look ahead for bar #2 (second strong bar, same direction, skipping intermediate dojis)
+            bar2_idx = None
+            for j in range(bar1_idx + 1, len(merged)):
+                candidate = as_bar(merged.iloc[j])
+                if self.pattern_bar1_direction == "bull" and is_strong_bull(candidate):
+                    bar2_idx = j
+                    break
+                elif self.pattern_bar1_direction == "bear" and is_strong_bear(candidate):
+                    bar2_idx = j
+                    break
+                # If we hit a doji, continue looking
+                # If we hit a weak bar or opposite direction, stop (pattern broken)
+                if not is_doji(candidate):
+                    break
+            
+            if bar2_idx is None:
+                # No bar #2 found yet, check if current bar is the expected next bar
+                expected_bar2_time = self.pattern_bar1_time + timedelta(minutes=1)
+                if last_bar.ts == expected_bar2_time:
+                    # Current bar is the immediate next bar - check if it's strong
+                    is_bull = is_strong_bull(last_bar)
+                    is_bear = is_strong_bear(last_bar)
                     
                     if self.pattern_bar1_direction == "bull" and is_bull:
-                        if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
-                            self.pattern_state = "waiting_bar3"
-                            self.pattern_bar2_time = bar2.ts
-                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED (found in lookback)")
+                        # Check if bodies are growing (if required)
+                        if len(merged) >= 2:
+                            bar1_row = merged.iloc[-2]
+                            bar1 = as_bar(bar1_row)
+                            if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
+                                self.pattern_state = "waiting_bar3"
+                                self.pattern_bar2_time = last_bar.ts
+                                print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
+                            else:
+                                self.pattern_state = None
+                                print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
                         else:
-                            self.pattern_state = None
-                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
-                    elif self.pattern_bar1_direction == "bear" and is_bear:
-                        if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
-                            self.pattern_state = "waiting_bar3"
-                            self.pattern_bar2_time = bar2.ts
-                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED (found in lookback)")
-                        else:
-                            self.pattern_state = None
-                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
-                    else:
-                        self.pattern_state = None
-                        direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
-                        print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
-            
-            if last_bar.ts == expected_bar2_time:
-                is_bull = is_strong_bull(last_bar)
-                is_bear = is_strong_bear(last_bar)
-                
-                if self.pattern_bar1_direction == "bull" and is_bull:
-                    # Check if bodies are growing (if required)
-                    if len(merged) >= 2:
-                        bar1_row = merged.iloc[-2]
-                        bar1 = HABar(
-                            ts=bar1_row.name,
-                            o=bar1_row["ha_open"],
-                            h=bar1_row["ha_high"],
-                            l=bar1_row["ha_low"],
-                            c=bar1_row["ha_close"]
-                        )
-                        if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
                             self.pattern_state = "waiting_bar3"
                             self.pattern_bar2_time = last_bar.ts
                             print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
+                    elif self.pattern_bar1_direction == "bear" and is_bear:
+                        # Check if bodies are growing (if required)
+                        if len(merged) >= 2:
+                            bar1_row = merged.iloc[-2]
+                            bar1 = as_bar(bar1_row)
+                            if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
+                                self.pattern_state = "waiting_bar3"
+                                self.pattern_bar2_time = last_bar.ts
+                                print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
+                            else:
+                                self.pattern_state = None
+                                print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
                         else:
-                            self.pattern_state = None
-                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
-                    else:
-                        self.pattern_state = "waiting_bar3"
-                        self.pattern_bar2_time = last_bar.ts
-                        print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED")
-                elif self.pattern_bar1_direction == "bear" and is_bear:
-                    # Check if bodies are growing (if required)
-                    if len(merged) >= 2:
-                        bar1_row = merged.iloc[-2]
-                        bar1 = HABar(
-                            ts=bar1_row.name,
-                            o=bar1_row["ha_open"],
-                            h=bar1_row["ha_high"],
-                            l=bar1_row["ha_low"],
-                            c=bar1_row["ha_close"]
-                        )
-                        if not REQUIRE_GROWING or bodies_growing(bar1, last_bar):
                             self.pattern_state = "waiting_bar3"
                             self.pattern_bar2_time = last_bar.ts
                             print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
+                    else:
+                        # Check if it's a doji - if so, continue waiting
+                        if is_doji(last_bar):
+                            if DEBUG_MODE:
+                                print(f"DEBUG: Bar @ {last_bar.ts} is also a doji, continuing to look ahead for bar #2...")
                         else:
                             self.pattern_state = None
-                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
+                            direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
+                            print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
+                elif last_bar.ts > expected_bar2_time:
+                    # We've passed the expected time - check if we skipped dojis
+                    found_doji_chain = False
+                    for j in range(bar1_idx + 1, len(merged)):
+                        if merged.index[j] >= last_bar.ts:
+                            break
+                        candidate = as_bar(merged.iloc[j])
+                        if is_doji(candidate):
+                            found_doji_chain = True
+                        elif not is_doji(candidate):
+                            # Hit a weak bar, pattern broken
+                            self.pattern_state = None
+                            if DEBUG_MODE:
+                                print(f"DEBUG: Skipped bar #2 - expected {expected_bar2_time}, got {last_bar.ts}, pattern broken")
+                            return
+                    
+                    if found_doji_chain:
+                        # There were dojis in between, continue looking ahead
+                        if DEBUG_MODE:
+                            print(f"DEBUG: Found doji chain, continuing to look ahead for bar #2 from {last_bar.ts}")
                     else:
+                        # No dojis found, pattern broken
+                        self.pattern_state = None
+                        if DEBUG_MODE:
+                            print(f"DEBUG: Skipped bar #2 - expected {expected_bar2_time}, got {last_bar.ts}, resetting pattern")
+            else:
+                # Found bar #2 in lookback - check if it's the current bar or we need to wait
+                bar2_time = merged.index[bar2_idx]
+                bar1_row = merged.iloc[bar1_idx]
+                bar2_row = merged.iloc[bar2_idx]
+                bar1 = as_bar(bar1_row)
+                bar2 = as_bar(bar2_row)
+                
+                if bar2_time == last_bar.ts:
+                    # Current bar is bar #2
+                    if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
                         self.pattern_state = "waiting_bar3"
-                        self.pattern_bar2_time = last_bar.ts
-                        print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED")
-                else:
-                    self.pattern_state = None
-                    direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
-                    print(f"INFO: Bar #2 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
-            elif last_bar.ts > expected_bar2_time:
-                # We skipped bar #2, reset
-                self.pattern_state = None
+                        self.pattern_bar2_time = bar2_time
+                        direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
+                        print(f"INFO: Bar #2 @ {bar2_time.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {direction_str} - PATTERN DETECTED")
+                    else:
+                        self.pattern_state = None
+                        direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
+                        print(f"INFO: Bar #2 @ {bar2_time.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {direction_str} but bodies not growing (pattern reset)")
+                elif bar2_time < last_bar.ts:
+                    # Bar #2 already passed, we missed it - should have been caught earlier
+                    # This shouldn't happen, but handle it gracefully
+                    if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
+                        self.pattern_state = "waiting_bar3"
+                        self.pattern_bar2_time = bar2_time
+                        if DEBUG_MODE:
+                            print(f"DEBUG: Bar #2 @ {bar2_time} already passed, setting state")
+                # else: bar #2 is in the future, continue waiting
         
         elif self.pattern_state == "waiting_bar3":
             # Waiting for bar #3 after pattern completion (should be exactly 1 minute later)
