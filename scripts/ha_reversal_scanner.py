@@ -164,6 +164,57 @@ def get_initial_bars(symbol: str, n_minutes: int, ib: IB) -> pd.DataFrame:
         return pd.DataFrame(columns=["open","high","low","close"]).set_index(pd.DatetimeIndex([], tz=TZ))
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Historical pattern scan
+# ──────────────────────────────────────────────────────────────────────────────
+def scan_historical_bars(df_ohlc: pd.DataFrame, n_bars: int = 100):
+    """
+    Scan the last N bars for reversal patterns and report all signals found.
+    Returns the most recent signal timestamp (if any) for state initialization.
+    """
+    if len(df_ohlc) < 3:
+        print("INFO: Not enough bars for historical scan (need at least 3)")
+        return None
+    
+    # Get the last N bars
+    bars_to_scan = df_ohlc.tail(n_bars)
+    
+    print(f"\n{'='*70}")
+    print(f"SCANNING LAST {len(bars_to_scan)} HISTORICAL BARS FOR PATTERNS")
+    print(f"{'='*70}")
+    print(f"Time range: {bars_to_scan.index[0]} to {bars_to_scan.index[-1]}")
+    print()
+    
+    # Use the same detection function as live scanning
+    signals = detect_reversal_signals(bars_to_scan, check_last_n=len(bars_to_scan))
+    
+    if not signals:
+        print("No reversal patterns detected in historical data.")
+        print()
+        return None
+    
+    print(f"Found {len(signals)} reversal pattern(s):\n")
+    
+    last_signal_t2 = None
+    for i, sig in enumerate(signals, 1):
+        direction = sig["direction"]
+        t_doji = sig["t_doji"]
+        t1 = sig["t1"]
+        t2 = sig["t2"]
+        
+        print(f"Pattern #{i}: {direction.upper()} reversal")
+        print(f"  Doji:     {t_doji.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"  Strong #1: {t1.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"  Strong #2: {t2.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print()
+        
+        if last_signal_t2 is None or t2 > last_signal_t2:
+            last_signal_t2 = t2
+    
+    print(f"{'='*70}\n")
+    
+    return last_signal_t2
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pattern detection
 # ──────────────────────────────────────────────────────────────────────────────
 def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5):
@@ -333,13 +384,71 @@ class RealtimeScanner:
             c=last_bar_row["ha_close"]
         )
         
+        # Debug: Log bar characteristics for diagnosis
+        if DEBUG_MODE:
+            body_pct = (last_bar.body / last_bar.range * 100) if last_bar.range > 0 else 0
+            upper_wick_pct = (last_bar.upper_wick / last_bar.range * 100) if last_bar.range > 0 else 0
+            lower_wick_pct = (last_bar.lower_wick / last_bar.range * 100) if last_bar.range > 0 else 0
+            print(f"DEBUG: Bar @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')}: "
+                  f"O={last_bar.o:.2f} H={last_bar.h:.2f} L={last_bar.l:.2f} C={last_bar.c:.2f} | "
+                  f"body={body_pct:.1f}% upper_wick={upper_wick_pct:.1f}% lower_wick={lower_wick_pct:.1f}% | "
+                  f"is_doji={is_doji(last_bar)} is_strong_bull={is_strong_bull(last_bar)} is_strong_bear={is_strong_bear(last_bar)}")
+        
         # State machine for pattern tracking
         if self.pattern_state is None:
-            # Not tracking - check if this bar is a doji
-            if is_doji(last_bar):
-                self.pattern_state = "armed"
-                self.pattern_doji_time = last_bar.ts
-                print(f"INFO: Doji detected @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - detector armed")
+            # Not tracking - check if this bar or recent bars contain a doji
+            # Check the last 3 bars to catch dojis we might have missed
+            check_bars = min(3, len(merged))
+            for i in range(check_bars):
+                check_idx = len(merged) - 1 - i
+                if check_idx < 0:
+                    break
+                check_bar_row = merged.iloc[check_idx]
+                check_bar = HABar(
+                    ts=check_bar_row.name,
+                    o=check_bar_row["ha_open"],
+                    h=check_bar_row["ha_high"],
+                    l=check_bar_row["ha_low"],
+                    c=check_bar_row["ha_close"]
+                )
+                if is_doji(check_bar):
+                    # Found a doji - check if we can still track the pattern
+                    # We need at least 2 more bars after the doji to complete the pattern
+                    if check_idx + 2 < len(merged):
+                        # Pattern already complete, let detect_reversal_signals handle it
+                        break
+                    elif check_idx + 1 < len(merged):
+                        # We have bar #1 after doji, check it
+                        bar1_row = merged.iloc[check_idx + 1]
+                        bar1 = HABar(
+                            ts=bar1_row.name,
+                            o=bar1_row["ha_open"],
+                            h=bar1_row["ha_high"],
+                            l=bar1_row["ha_low"],
+                            c=bar1_row["ha_close"]
+                        )
+                        is_bull = is_strong_bull(bar1)
+                        is_bear = is_strong_bear(bar1)
+                        if is_bull or is_bear:
+                            self.pattern_state = "bar1_strong"
+                            self.pattern_doji_time = check_bar.ts
+                            self.pattern_bar1_time = bar1.ts
+                            self.pattern_bar1_direction = "bull" if is_bull else "bear"
+                            print(f"INFO: Doji detected @ {check_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - detector armed (found in lookback)")
+                            print(f"INFO: Bar #1 @ {bar1.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG {'BULL' if is_bull else 'BEAR'}")
+                            break
+                        else:
+                            # Doji found but bar #1 is weak, start fresh from this doji
+                            self.pattern_state = "armed"
+                            self.pattern_doji_time = check_bar.ts
+                            print(f"INFO: Doji detected @ {check_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - detector armed (found in lookback)")
+                            break
+                    else:
+                        # Doji found, waiting for bar #1
+                        self.pattern_state = "armed"
+                        self.pattern_doji_time = check_bar.ts
+                        print(f"INFO: Doji detected @ {check_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - detector armed")
+                        break
         
         elif self.pattern_state == "armed":
             # Waiting for bar #1 after doji (should be exactly 1 minute later)
@@ -363,11 +472,64 @@ class RealtimeScanner:
                     print(f"INFO: Bar #1 @ {last_bar.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (pattern reset)")
             elif last_bar.ts > expected_bar1_time:
                 # We skipped bar #1, reset
+                if DEBUG_MODE:
+                    print(f"DEBUG: Skipped bar #1 - expected {expected_bar1_time}, got {last_bar.ts}, resetting pattern")
                 self.pattern_state = None
         
         elif self.pattern_state == "bar1_strong":
             # Waiting for bar #2 after strong bar #1 (should be exactly 1 minute later)
             expected_bar2_time = self.pattern_bar1_time + timedelta(minutes=1)
+            
+            # Check if bar #2 already exists in the lookback
+            bar1_idx = None
+            for i in range(len(merged)):
+                if merged.index[i] == self.pattern_bar1_time:
+                    bar1_idx = i
+                    break
+            
+            if bar1_idx is not None and bar1_idx + 1 < len(merged):
+                # Bar #2 already exists, check it
+                bar1_row = merged.iloc[bar1_idx]
+                bar2_row = merged.iloc[bar1_idx + 1]
+                if bar2_row.name == expected_bar2_time:
+                    bar1 = HABar(
+                        ts=bar1_row.name,
+                        o=bar1_row["ha_open"],
+                        h=bar1_row["ha_high"],
+                        l=bar1_row["ha_low"],
+                        c=bar1_row["ha_close"]
+                    )
+                    bar2 = HABar(
+                        ts=bar2_row.name,
+                        o=bar2_row["ha_open"],
+                        h=bar2_row["ha_high"],
+                        l=bar2_row["ha_low"],
+                        c=bar2_row["ha_close"]
+                    )
+                    is_bull = is_strong_bull(bar2)
+                    is_bear = is_strong_bear(bar2)
+                    
+                    if self.pattern_bar1_direction == "bull" and is_bull:
+                        if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
+                            self.pattern_state = "waiting_bar3"
+                            self.pattern_bar2_time = bar2.ts
+                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL - PATTERN DETECTED (found in lookback)")
+                        else:
+                            self.pattern_state = None
+                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BULL but bodies not growing (pattern reset)")
+                    elif self.pattern_bar1_direction == "bear" and is_bear:
+                        if not REQUIRE_GROWING or bodies_growing(bar1, bar2):
+                            self.pattern_state = "waiting_bar3"
+                            self.pattern_bar2_time = bar2.ts
+                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR - PATTERN DETECTED (found in lookback)")
+                        else:
+                            self.pattern_state = None
+                            print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - STRONG BEAR but bodies not growing (pattern reset)")
+                    else:
+                        self.pattern_state = None
+                        direction_str = "BULL" if self.pattern_bar1_direction == "bull" else "BEAR"
+                        print(f"INFO: Bar #2 @ {bar2.ts.strftime('%Y-%m-%d %H:%M:%S %Z')} - WEAK (expected {direction_str}, pattern reset)")
+            
             if last_bar.ts == expected_bar2_time:
                 is_bull = is_strong_bull(last_bar)
                 is_bear = is_strong_bear(last_bar)
@@ -496,6 +658,9 @@ def main():
             print("ERROR: Could not load initial bars. Exiting.")
             return
         
+        # Scan historical bars for patterns (last 100 minutes)
+        last_signal_time = scan_historical_bars(initial_bars, n_bars=100)
+        
         # Create and qualify contract
         contract = Stock(symbol=SYMBOL, exchange='SMART', currency='USD')
         qualified_contracts = ib.qualifyContracts(contract)
@@ -506,6 +671,12 @@ def main():
         
         # Create scanner
         scanner = RealtimeScanner(SYMBOL, ib, initial_bars)
+        
+        # Initialize last_alert_t2 with the most recent historical signal (if any)
+        # This prevents re-alerting on patterns we've already seen
+        if last_signal_time is not None:
+            scanner.last_alert_t2 = last_signal_time
+            print(f"Initialized scanner: will only alert on patterns after {last_signal_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
         
         # Subscribe to real-time bars (1 minute bars)
         print(f"Subscribing to real-time 1-minute bars for {SYMBOL}...")
