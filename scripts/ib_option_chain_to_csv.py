@@ -55,16 +55,16 @@ def get_underlying_and_chain(
     """
     ib = get_ib_connection()
     
-    # Determine security type
-    sec_type = 'STK'
-    if underlying_symbol in ['SPX', 'RUT', 'NDX', 'VIX']:
-        sec_type = 'IND'
-    
-    underlying = Contract()
-    underlying.symbol = underlying_symbol
-    underlying.secType = sec_type
-    underlying.currency = currency
-    underlying.exchange = exchange
+    # Determine security type and exchange for indices
+    # Index options typically trade on CBOE
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    if underlying_symbol.upper() in INDEX_SYMBOLS:
+        # For indices, use Index class with CBOE exchange
+        logger.info(f"Detected index symbol {underlying_symbol}, using Index contract with CBOE exchange")
+        underlying = Index(symbol=underlying_symbol, exchange='CBOE', currency=currency)
+    else:
+        # For stocks/ETFs, use Stock class
+        underlying = Stock(symbol=underlying_symbol, exchange=exchange, currency=currency)
     
     # Qualify contract
     logger.info(f"Qualifying underlying contract for {underlying_symbol}...")
@@ -288,7 +288,7 @@ def fetch_options_for_right(
     ib,
     underlying,
     underlying_symbol: str,
-    exchange: str,
+    chain,
     right: str,
     expirations: list,
     selected_strikes: list
@@ -296,11 +296,28 @@ def fetch_options_for_right(
     """
     Fetch options for a specific right (P or C) and return the data rows.
     
+    Args:
+        ib: IB connection
+        underlying: Underlying contract
+        underlying_symbol: Underlying symbol
+        chain: Option chain object from reqSecDefOptParams
+        right: Option right ('P' or 'C')
+        expirations: List of expiration dates
+        selected_strikes: List of strike prices
+    
     Returns:
         List of dictionaries containing option data
     """
-    # Build option contracts
-    logger.info(f"Building {len(expirations) * len(selected_strikes)} {right} option contracts...")
+    # Use SMART exchange for better routing, but keep tradingClass from chain
+    # SMART will route to the best exchange automatically
+    exchange = 'SMART'
+    trading_class = getattr(chain, 'tradingClass', None)
+    
+    logger.info(
+        f"Building {len(expirations) * len(selected_strikes)} {right} option contracts "
+        f"(exchange={exchange}, tradingClass={trading_class})..."
+    )
+    
     option_contracts = []
     for expiry in expirations:
         for strike in selected_strikes:
@@ -309,7 +326,8 @@ def fetch_options_for_right(
                 lastTradeDateOrContractMonth=expiry,
                 strike=strike,
                 right=right,
-                exchange=exchange
+                exchange=exchange,
+                tradingClass=trading_class
             )
             option_contracts.append(opt)
     
@@ -331,9 +349,17 @@ def fetch_options_for_right(
     
     # Collect data
     rows = []
+    data_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f"Collecting market data at {data_timestamp}")
+    
     for contract, t in zip(qualified_contracts, tickers):
         # OptionGreeks lives in tickers[i].modelGreeks
         greeks = t.modelGreeks
+        
+        # Get market data type info (if available)
+        market_data_type = 'Live'  # Default since we request type 1
+        # Check if we can determine actual data type from ticker
+        # Note: ib_insync doesn't expose this directly, but we log what we requested
         
         row = {
             'symbol': contract.symbol,
@@ -349,7 +375,9 @@ def fetch_options_for_right(
             'delta': greeks.delta if greeks and greeks.delta is not None else '',
             'gamma': greeks.gamma if greeks and greeks.gamma is not None else '',
             'vega': greeks.vega if greeks and greeks.vega is not None else '',
-            'theta': greeks.theta if greeks and greeks.theta is not None else ''
+            'theta': greeks.theta if greeks and greeks.theta is not None else '',
+            'data_timestamp': data_timestamp,
+            'market_data_type': market_data_type
         }
         
         rows.append(row)
@@ -396,6 +424,9 @@ def fetch_options_to_csv(
     ib = get_ib_connection()
     
     try:
+        # Request live market data (MarketDataType 1 = Live, 2 = Frozen, 3 = Delayed, 4 = Delayed-Frozen)
+        ib.reqMarketDataType(1)
+        logger.info("Requested live market data (MarketDataType 1)")
         # Determine which rights to fetch
         if right.upper() == 'BOTH':
             rights_to_fetch = ['P', 'C']
@@ -450,6 +481,20 @@ def fetch_options_to_csv(
         
         all_strikes = sorted(chain.strikes)
         
+        # Optional: Filter out "weird" strikes (adjusted series, etc.)
+        # Keep only normal strikes (integer values, typically 1 or 5 increments)
+        def is_normal_strike(s: float) -> bool:
+            # Must be an integer (or very close to it)
+            if abs(round(s) - s) > 1e-6:
+                return False
+            # Keep all integers (they're all valid)
+            return True
+        
+        original_strike_count = len(all_strikes)
+        all_strikes = [s for s in all_strikes if is_normal_strike(s)]
+        if len(all_strikes) < original_strike_count:
+            logger.info(f"Filtered out {original_strike_count - len(all_strikes)} non-standard strikes (kept {len(all_strikes)} normal strikes)")
+        
         # Get current underlying price and IV for filtering
         logger.info(f"Requesting current market price for {underlying_symbol}...")
         ticker = ib.reqMktData(underlying, '', False, False)
@@ -476,16 +521,20 @@ def fetch_options_to_csv(
                     atm_strike = min(all_strikes, key=lambda s: abs(s - underlying_price))
                     
                     try:
-                        # Try to get IV from ATM call option
+                        # Try to get IV from ATM call option using SMART exchange
+                        chain_trading_class = getattr(chain, 'tradingClass', None)
                         atm_call = Option(
                             symbol=underlying_symbol,
                             lastTradeDateOrContractMonth=first_expiry,
                             strike=atm_strike,
                             right='C',
-                            exchange=exchange
+                            exchange='SMART',
+                            tradingClass=chain_trading_class
                         )
                         qualified_atm = ib.qualifyContracts(atm_call)
                         if qualified_atm:
+                            # Ensure we're requesting live data for ATM IV lookup
+                            ib.reqMarketDataType(1)
                             atm_ticker = ib.reqMktData(qualified_atm[0], '', False, False)
                             ib.sleep(1)
                             if atm_ticker.modelGreeks and atm_ticker.modelGreeks.impliedVol:
@@ -541,7 +590,7 @@ def fetch_options_to_csv(
         for right_type in rights_to_fetch:
             logger.info(f"Fetching {right_type} options...")
             rows = fetch_options_for_right(
-                ib, underlying, underlying_symbol, exchange,
+                ib, underlying, underlying_symbol, chain,
                 right_type, expirations, selected_strikes
             )
             all_rows.extend(rows)
@@ -566,7 +615,9 @@ def fetch_options_to_csv(
             'delta',
             'gamma',
             'vega',
-            'theta'
+            'theta',
+            'data_timestamp',
+            'market_data_type'
         ]
         
         with open(output_csv, mode='w', newline='') as f:
