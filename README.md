@@ -343,11 +343,7 @@ python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --std-de
 
 
 
-# Auto-fetch and analyze (no CSV file needed)
+# Auto-fetch and analyze
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --target-delta 0.10
-
-# Use existing CSV file
-python scripts/spreads_trader.py --input-csv reports/QQQ_P_options_20251113_214807.csv --symbol QQQ --expiry 20251120
-
-# Auto-fetch and create orders
+python scripts/spreads_trader.py --input-csv reports\QQQ_P_options_20251113_214807.csv --symbol QQQ --expiry 20251120
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --quantity 2

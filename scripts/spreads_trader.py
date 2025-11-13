@@ -175,28 +175,95 @@ def find_spread_candidates(
         usable.append(r)
     
     if not usable:
-        raise ValueError("No usable options with delta and quotes")
+        # Provide diagnostic info
+        total_with_delta = sum(1 for r in rows if r.delta is not None and not math.isnan(r.delta))
+        total_with_mid = sum(1 for r in rows if r.mid is not None)
+        raise ValueError(
+            f"No usable options with delta and quotes. "
+            f"Found {total_with_delta} options with delta, {total_with_mid} with mid prices, "
+            f"but none in delta range [0.02, 0.35]"
+        )
+    
+    logger.info(f"Found {len(usable)} usable options with delta and quotes")
     
     # Sort by closeness to target delta (absolute)
     usable.sort(key=lambda r: abs(abs(r.delta) - target_delta))
     
     candidates: List[SpreadCandidate] = []
+    skipped_no_long = 0
+    skipped_low_credit = 0
+    
     for r in usable:
+        # Try exact width first
         long_strike = r.strike - width
         long_row = strike_map.get(long_strike)
+        actual_width = width  # Default to requested width
+        
+        # If exact strike not found, try to find closest available strike
         if not long_row or long_row.mid is None:
+            # Find available strikes below, sorted by how close they are to desired width
+            available_strikes = [s for s in strike_map.keys() if s < r.strike]
+            if available_strikes:
+                # Sort by how close the width is to desired width
+                available_strikes.sort(key=lambda s: abs((r.strike - s) - width))
+                # Use the strike that gives width closest to desired, but at least width/2 away
+                for candidate_long_strike in available_strikes:
+                    actual_width_candidate = r.strike - candidate_long_strike
+                    if actual_width_candidate >= width * 0.5:  # At least half the width
+                        long_row = strike_map.get(candidate_long_strike)
+                        if long_row and long_row.mid is not None:
+                            long_strike = candidate_long_strike
+                            actual_width = actual_width_candidate
+                            if abs(actual_width - width) > 0.5:  # Only log if significantly different
+                                logger.debug(f"Using adjusted width: {r.strike}/{long_strike} (width={actual_width:.1f} instead of {width:.1f})")
+                            break
+        
+        if not long_row or long_row.mid is None:
+            skipped_no_long += 1
             continue
         
         credit = r.mid - long_row.mid
         if credit < min_credit:
+            skipped_low_credit += 1
+            logger.debug(f"Skipping {r.strike}/{long_strike} spread: credit ${credit:.2f} < min ${min_credit:.2f}")
             continue
         
-        candidates.append(SpreadCandidate(short=r, long=long_row, width=width, credit=credit))
+        # Use actual width (may differ from requested if we adjusted)
+        candidates.append(SpreadCandidate(short=r, long=long_row, width=actual_width, credit=credit))
         if len(candidates) >= num_candidates:
             break
     
     if not candidates:
-        raise ValueError("No spread candidates met the credit/min-delta filters")
+        # Provide detailed diagnostic info
+        logger.warning(f"Skipped {skipped_no_long} candidates: long strike not found")
+        logger.warning(f"Skipped {skipped_low_credit} candidates: credit too low (min: ${min_credit:.2f})")
+        
+        # Try to find what the actual credit range is
+        sample_credits = []
+        for r in usable[:5]:  # Check first 5 usable options
+            long_strike = r.strike - width
+            long_row = strike_map.get(long_strike)
+            if long_row and long_row.mid is not None:
+                credit = r.mid - long_row.mid
+                sample_credits.append(credit)
+        
+        if sample_credits:
+            max_credit = max(sample_credits)
+            min_credit_found = min(sample_credits)
+            raise ValueError(
+                f"No spread candidates met the filters. "
+                f"Found {len(usable)} usable short legs, but:\n"
+                f"  - {skipped_no_long} skipped: long strike not found (width={width})\n"
+                f"  - {skipped_low_credit} skipped: credit < ${min_credit:.2f}\n"
+                f"  - Sample credit range: ${min_credit_found:.2f} - ${max_credit:.2f}\n"
+                f"  - Try: --min-credit {max(0.05, min_credit_found - 0.05):.2f} or --spread-width {width + 1}"
+            )
+        else:
+            raise ValueError(
+                f"No spread candidates met the filters. "
+                f"Found {len(usable)} usable short legs, but none had matching long strikes. "
+                f"Try adjusting --spread-width (current: {width})"
+            )
     
     return candidates
 
@@ -436,8 +503,8 @@ def main():
     parser.add_argument(
         "--min-credit",
         type=float,
-        default=0.18,
-        help="Minimum acceptable credit for candidate (default: 0.18)",
+        default=0.10,
+        help="Minimum acceptable credit for candidate (default: 0.10)",
     )
     
     parser.add_argument(
