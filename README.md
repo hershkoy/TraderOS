@@ -333,3 +333,11 @@ python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --
 
 slow:
 python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --continuous --dates-per-batch 10 --delay-between-batches 180 --log-level DEBUG --log-file "logs/debug_session.log"
+
+detect revesal in (SPX) 1m chart, using heikin ashi
+python scripts\ha_reversal_scanner.py --debug
+
+
+# Fetch expiration closest to 7 DTE
+python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --std-dev 2.0
+

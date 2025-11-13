@@ -14,9 +14,10 @@ import os
 import csv
 import argparse
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,14 +42,339 @@ ib_logger = logging.getLogger('ib_insync.wrapper')
 ib_logger.setLevel(logging.WARNING)
 
 
+def get_underlying_and_chain(
+    underlying_symbol: str,
+    exchange: str = 'SMART',
+    currency: str = 'USD'
+) -> Tuple[Contract, object]:
+    """
+    Get qualified underlying contract and option chain information.
+    
+    Returns:
+        Tuple of (qualified_underlying_contract, chain_object)
+    """
+    ib = get_ib_connection()
+    
+    # Determine security type
+    sec_type = 'STK'
+    if underlying_symbol in ['SPX', 'RUT', 'NDX', 'VIX']:
+        sec_type = 'IND'
+    
+    underlying = Contract()
+    underlying.symbol = underlying_symbol
+    underlying.secType = sec_type
+    underlying.currency = currency
+    underlying.exchange = exchange
+    
+    # Qualify contract
+    logger.info(f"Qualifying underlying contract for {underlying_symbol}...")
+    qualified_underlying = ib.qualifyContracts(underlying)
+    if not qualified_underlying:
+        raise ValueError(f"No qualified contracts found for {underlying_symbol}")
+    
+    underlying = qualified_underlying[0]
+    logger.info(f"Underlying contract qualified: {underlying_symbol} -> conId: {underlying.conId}")
+    
+    # Get option chain parameters
+    logger.info(f"Requesting option chain parameters for {underlying_symbol}...")
+    chains = ib.reqSecDefOptParams(
+        underlying_symbol,
+        '',   # futFopExchange - usually empty for stocks/ETFs
+        underlying.secType,
+        underlying.conId
+    )
+    
+    if not chains:
+        raise ValueError(f'No option chains found for {underlying_symbol}')
+    
+    chain = chains[0]  # usually one main chain
+    return underlying, chain
+
+
+def calculate_dte(expiry_str: str) -> int:
+    """
+    Calculate Days To Expiration from IB expiry string.
+    
+    IB expiry format is typically 'YYYYMMDD' or 'YYYYMMDD 16:00:00'
+    """
+    try:
+        # Parse the expiry string - IB format is usually YYYYMMDD
+        if ' ' in expiry_str:
+            expiry_date = datetime.strptime(expiry_str.split()[0], '%Y%m%d')
+        else:
+            expiry_date = datetime.strptime(expiry_str, '%Y%m%d')
+        
+        # Calculate DTE (days to expiration)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        dte = (expiry_date - today).days
+        return dte
+    except Exception as e:
+        logger.warning(f"Could not parse expiry {expiry_str}: {e}")
+        return None
+
+
+def list_expirations(
+    underlying_symbol: str,
+    exchange: str = 'SMART',
+    currency: str = 'USD',
+    dte_min: Optional[int] = None,
+    dte_max: Optional[int] = None
+) -> List[Tuple[str, int]]:
+    """
+    List available expirations with Days To Expiration (DTE).
+    
+    Args:
+        underlying_symbol: The underlying symbol
+        exchange: Exchange for the contract
+        currency: Currency
+        dte_min: Minimum DTE to include (optional)
+        dte_max: Maximum DTE to include (optional)
+    
+    Returns:
+        List of tuples: [(expiry_string, dte), ...]
+    """
+    try:
+        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency)
+        
+        logger.info(f"Found {len(chain.expirations)} available expirations")
+        
+        # Calculate DTE for each expiration
+        expirations_with_dte = []
+        for expiry in sorted(chain.expirations):
+            dte = calculate_dte(expiry)
+            if dte is not None:
+                # Apply DTE filters if specified
+                if dte_min is not None and dte < dte_min:
+                    continue
+                if dte_max is not None and dte > dte_max:
+                    continue
+                expirations_with_dte.append((expiry, dte))
+        
+        return expirations_with_dte
+        
+    except Exception as e:
+        logger.error(f"Error listing expirations: {e}", exc_info=True)
+        return []
+
+
+def calculate_strike_std_dev(
+    underlying_price: float,
+    volatility: float,
+    days_to_expiration: int
+) -> float:
+    """
+    Calculate one standard deviation of price movement for option strikes.
+    
+    Formula: S * σ * sqrt(T)
+    where:
+        S = current underlying price
+        σ = implied volatility (as decimal, e.g., 0.20 for 20%)
+        T = time to expiration in years
+    
+    Args:
+        underlying_price: Current underlying price
+        volatility: Implied volatility as decimal (e.g., 0.20 for 20%)
+        days_to_expiration: Days to expiration
+    
+    Returns:
+        One standard deviation in price terms
+    """
+    T = days_to_expiration / 365.0
+    if T <= 0:
+        return 0.0
+    return underlying_price * volatility * math.sqrt(T)
+
+
+def filter_strikes_by_std_dev(
+    all_strikes: List[float],
+    underlying_price: float,
+    volatility: float,
+    days_to_expiration: int,
+    std_dev_multiplier: float = 2.0
+) -> List[float]:
+    """
+    Filter strikes within N standard deviations of current price.
+    
+    Args:
+        all_strikes: List of all available strikes
+        underlying_price: Current underlying price
+        volatility: Implied volatility as decimal
+        days_to_expiration: Days to expiration
+        std_dev_multiplier: Number of standard deviations (default: 2.0 for "2 SD")
+    
+    Returns:
+        Filtered list of strikes within the range
+    """
+    if not all_strikes or underlying_price <= 0 or volatility <= 0:
+        return all_strikes
+    
+    std_dev = calculate_strike_std_dev(underlying_price, volatility, days_to_expiration)
+    lower_bound = underlying_price - (std_dev_multiplier * std_dev)
+    upper_bound = underlying_price + (std_dev_multiplier * std_dev)
+    
+    filtered = [s for s in all_strikes if lower_bound <= s <= upper_bound]
+    return sorted(filtered)
+
+
+def filter_expirations(
+    all_expirations: List[str],
+    dte_min: Optional[int] = None,
+    dte_max: Optional[int] = None,
+    target_dte: Optional[int] = None,
+    specific_expirations: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Filter expirations based on DTE range, target DTE, or specific list.
+    
+    Args:
+        all_expirations: List of all available expirations
+        dte_min: Minimum DTE to include
+        dte_max: Maximum DTE to include
+        target_dte: Target DTE - finds expiration closest to this value (overrides dte_min/dte_max)
+        specific_expirations: Specific expirations to use (overrides all DTE filtering)
+    
+    Returns:
+        Filtered list of expirations
+    """
+    if specific_expirations:
+        # Use specific expirations, but validate they exist
+        valid_expirations = []
+        for exp in specific_expirations:
+            if exp in all_expirations:
+                valid_expirations.append(exp)
+            else:
+                logger.warning(f"Expiration {exp} not found in available expirations")
+        return sorted(valid_expirations)
+    
+    # If target_dte is specified, find the expiration closest to that DTE
+    if target_dte is not None:
+        best_expiry = None
+        best_dte_diff = float('inf')
+        
+        for expiry in sorted(all_expirations):
+            dte = calculate_dte(expiry)
+            if dte is not None:
+                dte_diff = abs(dte - target_dte)
+                if dte_diff < best_dte_diff:
+                    best_dte_diff = dte_diff
+                    best_expiry = expiry
+        
+        if best_expiry:
+            actual_dte = calculate_dte(best_expiry)
+            logger.info(f"Found expiration closest to {target_dte} DTE: {best_expiry} (DTE: {actual_dte})")
+            return [best_expiry]
+        else:
+            logger.warning(f"No expiration found with DTE close to {target_dte}")
+            return []
+    
+    # Filter by DTE range if specified
+    if dte_min is not None or dte_max is not None:
+        filtered = []
+        for expiry in sorted(all_expirations):
+            dte = calculate_dte(expiry)
+            if dte is not None:
+                if dte_min is not None and dte < dte_min:
+                    continue
+                if dte_max is not None and dte > dte_max:
+                    continue
+                filtered.append(expiry)
+        return filtered
+    
+    # No filtering - return all
+    return sorted(all_expirations)
+
+
+def fetch_options_for_right(
+    ib,
+    underlying,
+    underlying_symbol: str,
+    exchange: str,
+    right: str,
+    expirations: list,
+    selected_strikes: list
+):
+    """
+    Fetch options for a specific right (P or C) and return the data rows.
+    
+    Returns:
+        List of dictionaries containing option data
+    """
+    # Build option contracts
+    logger.info(f"Building {len(expirations) * len(selected_strikes)} {right} option contracts...")
+    option_contracts = []
+    for expiry in expirations:
+        for strike in selected_strikes:
+            opt = Option(
+                symbol=underlying_symbol,
+                lastTradeDateOrContractMonth=expiry,
+                strike=strike,
+                right=right,
+                exchange=exchange
+            )
+            option_contracts.append(opt)
+    
+    # Qualify option contracts
+    logger.info(f"Qualifying {len(option_contracts)} {right} option contracts...")
+    qualified_contracts = ib.qualifyContracts(*option_contracts)
+    logger.info(f"Successfully qualified {len(qualified_contracts)} {right} option contracts")
+    
+    if not qualified_contracts:
+        logger.warning(f"No qualified {right} option contracts found")
+        return []
+    
+    # Request market data for all contracts
+    logger.info(f"Requesting market data for {len(qualified_contracts)} {right} contracts...")
+    tickers = [ib.reqMktData(c, '', False, False) for c in qualified_contracts]
+    
+    # Wait a bit for data to come in
+    ib.sleep(3)
+    
+    # Collect data
+    rows = []
+    for contract, t in zip(qualified_contracts, tickers):
+        # OptionGreeks lives in tickers[i].modelGreeks
+        greeks = t.modelGreeks
+        
+        row = {
+            'symbol': contract.symbol,
+            'secType': contract.secType,
+            'expiry': contract.lastTradeDateOrContractMonth,
+            'right': contract.right,
+            'strike': contract.strike,
+            'bid': t.bid if t.bid is not None else '',
+            'ask': t.ask if t.ask is not None else '',
+            'last': t.last if t.last is not None else '',
+            'volume': t.volume if t.volume is not None else '',
+            'iv': greeks.impliedVol if greeks and greeks.impliedVol is not None else '',
+            'delta': greeks.delta if greeks and greeks.delta is not None else '',
+            'gamma': greeks.gamma if greeks and greeks.gamma is not None else '',
+            'vega': greeks.vega if greeks and greeks.vega is not None else '',
+            'theta': greeks.theta if greeks and greeks.theta is not None else ''
+        }
+        
+        rows.append(row)
+    
+    # Cancel all market data subscriptions
+    logger.info(f"Cancelling market data subscriptions for {right} contracts...")
+    for t in tickers:
+        ib.cancelMktData(t.contract)
+    
+    return rows
+
+
 def fetch_options_to_csv(
     underlying_symbol: str,
     exchange: str = 'SMART',
     currency: str = 'USD',
-    right: str = 'P',           # 'P' for puts, 'C' for calls
+    right: str = 'P',           # 'P' for puts, 'C' for calls, 'BOTH' for both
     max_strikes: int = 20,      # limit how many strikes
-    max_expirations: int = 3,   # limit how many expirations
-    output_csv: Optional[str] = None
+    max_expirations: Optional[int] = 3,   # limit how many expirations (None = all)
+    output_csv: Optional[str] = None,
+    dte_min: Optional[int] = None,
+    dte_max: Optional[int] = None,
+    target_dte: Optional[int] = None,
+    specific_expirations: Optional[List[str]] = None,
+    std_dev: Optional[float] = None  # Filter strikes by standard deviation (e.g., 2.0 for "2 SD")
 ):
     """
     Pulls option chain for the given underlying and writes bid/ask, volume, IV, delta to CSV.
@@ -57,123 +383,175 @@ def fetch_options_to_csv(
         underlying_symbol: The underlying symbol (e.g., 'QQQ', 'SPX', 'RUT')
         exchange: Exchange for the contract (default: 'SMART')
         currency: Currency (default: 'USD')
-        right: Option type - 'P' for puts, 'C' for calls (default: 'P')
+        right: Option type - 'P' for puts, 'C' for calls, 'BOTH' for both (default: 'P')
         max_strikes: Maximum number of strikes to fetch (default: 20)
-        max_expirations: Maximum number of expirations to fetch (default: 3)
+        max_expirations: Maximum number of expirations to fetch (None = all, default: 3)
         output_csv: Output CSV file path (default: auto-generated)
+        dte_min: Minimum Days To Expiration to include
+        dte_max: Maximum Days To Expiration to include
+        target_dte: Target DTE - finds expiration closest to this value (overrides dte_min/dte_max)
+        specific_expirations: List of specific expirations to fetch (overrides DTE filtering)
+        std_dev: Filter strikes by standard deviation (e.g., 2.0 for "2 SD", None = no filtering)
     """
     ib = get_ib_connection()
     
     try:
+        # Determine which rights to fetch
+        if right.upper() == 'BOTH':
+            rights_to_fetch = ['P', 'C']
+            right_suffix = 'BOTH'
+        else:
+            rights_to_fetch = [right.upper()]
+            right_suffix = right.upper()
+        
+        # Default output to reports folder
         if output_csv is None:
             dt = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_csv = f'{underlying_symbol}_{right}_options_{dt}.csv'
+            output_csv = f'reports/{underlying_symbol}_{right_suffix}_options_{dt}.csv'
+        elif not os.path.isabs(output_csv) and not output_csv.startswith('reports/'):
+            # If relative path doesn't start with reports/, prepend it
+            output_csv = f'reports/{output_csv}'
         
         # Ensure output directory exists
         output_path = Path(output_csv)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 1) Define the underlying contract
-        # For ETFs/Stocks: SecType='STK'
-        # For index (SPX, RUT): SecType='IND'
-        sec_type = 'STK'
-        if underlying_symbol in ['SPX', 'RUT', 'NDX', 'VIX']:
-            sec_type = 'IND'
-        
-        underlying = Contract()
-        underlying.symbol = underlying_symbol
-        underlying.secType = sec_type
-        underlying.currency = currency
-        underlying.exchange = exchange
-        
-        # 2) Qualify contract (IB adds conId etc.)
-        logger.info(f"Qualifying underlying contract for {underlying_symbol}...")
-        qualified_underlying = ib.qualifyContracts(underlying)
-        if not qualified_underlying:
-            logger.error(f"No qualified contracts found for {underlying_symbol}")
-            return False
-        
-        underlying = qualified_underlying[0]
-        logger.info(f"Underlying contract qualified: {underlying_symbol} -> conId: {underlying.conId}")
-        
-        # 3) Get option chain parameters
-        logger.info(f"Requesting option chain parameters for {underlying_symbol}...")
-        chains = ib.reqSecDefOptParams(
-            underlying_symbol,
-            '',   # futFopExchange - usually empty for stocks/ETFs
-            underlying.secType,
-            underlying.conId
-        )
-        
-        if not chains:
-            logger.error(f'No option chains found for {underlying_symbol}')
-            return False
-        
-        chain = chains[0]  # usually one main chain
+        # Get underlying contract and chain
+        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency)
         logger.info(f"Found option chain with {len(chain.expirations)} expirations and {len(chain.strikes)} strikes")
         
-        # Limit expirations and strikes so we don't explode requests
-        expirations = sorted(chain.expirations)[:max_expirations]
-        strikes = sorted(chain.strikes)
+        # Filter expirations based on DTE or specific list
+        filtered_expirations = filter_expirations(
+            list(chain.expirations),
+            dte_min=dte_min,
+            dte_max=dte_max,
+            target_dte=target_dte,
+            specific_expirations=specific_expirations
+        )
         
-        # Optional: center strikes around ATM (for huge lists like SPX)
-        # Get current underlying price
+        # Apply max_expirations limit if specified
+        if max_expirations is not None and len(filtered_expirations) > max_expirations:
+            expirations = sorted(filtered_expirations)[:max_expirations]
+            logger.info(f"Limited to {max_expirations} expirations (from {len(filtered_expirations)} filtered)")
+        else:
+            expirations = sorted(filtered_expirations)
+        
+        if not expirations:
+            logger.error("No expirations match the specified criteria")
+            return False
+        
+        # Log expiration details with DTE
+        logger.info(f"Selected {len(expirations)} expirations:")
+        for exp in expirations[:10]:  # Show first 10
+            dte = calculate_dte(exp)
+            logger.info(f"  {exp} (DTE: {dte})")
+        if len(expirations) > 10:
+            logger.info(f"  ... and {len(expirations) - 10} more")
+        
+        all_strikes = sorted(chain.strikes)
+        
+        # Get current underlying price and IV for filtering
         logger.info(f"Requesting current market price for {underlying_symbol}...")
         ticker = ib.reqMktData(underlying, '', False, False)
         ib.sleep(2)  # give time to receive price
         
         underlying_price = ticker.last if ticker.last is not None else ticker.close
         if underlying_price is None:
-            # fallback: just take first N strikes if we couldn't get a price
-            logger.warning(f"Could not get current price for {underlying_symbol}, using first {max_strikes} strikes")
-            selected_strikes = strikes[:max_strikes]
-        else:
-            # choose strikes closest to ATM
-            logger.info(f"Underlying {underlying_symbol} current price: {underlying_price}")
+            logger.error(f"Could not get current price for {underlying_symbol}")
+            return False
+        
+        logger.info(f"Underlying {underlying_symbol} current price: {underlying_price}")
+        
+        # Filter strikes based on std dev if requested
+        if std_dev is not None:
+            # Get ATM IV from the first expiration to use for std dev calculation
+            # We'll use the first expiration's DTE for the calculation
+            first_expiry = expirations[0] if expirations else None
+            if first_expiry:
+                dte = calculate_dte(first_expiry)
+                if dte is not None and dte > 0:
+                    # Try to get actual ATM IV by fetching an ATM call option
+                    iv_to_use = None
+                    # Find closest strike to ATM
+                    atm_strike = min(all_strikes, key=lambda s: abs(s - underlying_price))
+                    
+                    try:
+                        # Try to get IV from ATM call option
+                        atm_call = Option(
+                            symbol=underlying_symbol,
+                            lastTradeDateOrContractMonth=first_expiry,
+                            strike=atm_strike,
+                            right='C',
+                            exchange=exchange
+                        )
+                        qualified_atm = ib.qualifyContracts(atm_call)
+                        if qualified_atm:
+                            atm_ticker = ib.reqMktData(qualified_atm[0], '', False, False)
+                            ib.sleep(1)
+                            if atm_ticker.modelGreeks and atm_ticker.modelGreeks.impliedVol:
+                                iv_to_use = atm_ticker.modelGreeks.impliedVol
+                                logger.info(f"Got ATM IV from option: {iv_to_use*100:.2f}%")
+                            ib.cancelMktData(qualified_atm[0])
+                    except Exception as e:
+                        logger.debug(f"Could not get ATM IV: {e}")
+                    
+                    # Fallback to default IV if we couldn't get it
+                    if iv_to_use is None or iv_to_use <= 0:
+                        iv_to_use = 0.20  # 20% default
+                        logger.info(f"Using default IV {iv_to_use*100:.1f}% for std dev calculation")
+                    
+                    logger.info(f"Filtering strikes by {std_dev} standard deviations (IV: {iv_to_use*100:.2f}%, DTE: {dte})")
+                    
+                    # Filter strikes by std dev
+                    filtered_strikes = filter_strikes_by_std_dev(
+                        all_strikes,
+                        underlying_price,
+                        iv_to_use,
+                        dte,
+                        std_dev
+                    )
+                    
+                    if filtered_strikes:
+                        std_dev_value = calculate_strike_std_dev(underlying_price, iv_to_use, dte)
+                        logger.info(f"Filtered to {len(filtered_strikes)} strikes within {std_dev} std dev (range: {underlying_price - std_dev*std_dev_value:.2f} to {underlying_price + std_dev*std_dev_value:.2f}, from {len(all_strikes)} total)")
+                        all_strikes = filtered_strikes
+                    else:
+                        logger.warning(f"No strikes found within {std_dev} std dev, using all strikes")
+        
+        # Select strikes - use only strikes that exist in the chain
+        if len(all_strikes) > max_strikes:
+            # Choose strikes closest to ATM
             strikes_sorted_by_distance = sorted(
-                strikes,
+                all_strikes,
                 key=lambda s: abs(s - underlying_price)
             )
             selected_strikes = sorted(strikes_sorted_by_distance[:max_strikes])
+            logger.info(f"Selected {len(selected_strikes)} strikes closest to ATM (from {len(all_strikes)} available)")
+        else:
+            selected_strikes = all_strikes
+            logger.info(f"Using all {len(selected_strikes)} available strikes")
         
-        logger.info(f'Using expirations: {expirations}')
         logger.info(f'Using {len(selected_strikes)} strikes (showing first 10): {selected_strikes[:10]}')
         
         # Cancel market data for underlying
         ib.cancelMktData(underlying)
         
-        # 4) Build option contracts
-        logger.info(f"Building {len(expirations) * len(selected_strikes)} option contracts...")
-        option_contracts = []
-        for expiry in expirations:
-            for strike in selected_strikes:
-                opt = Option(
-                    symbol=underlying_symbol,
-                    lastTradeDateOrContractMonth=expiry,
-                    strike=strike,
-                    right=right,
-                    exchange=exchange
-                )
-                option_contracts.append(opt)
+        # 4) Fetch options for each right type
+        all_rows = []
+        for right_type in rights_to_fetch:
+            logger.info(f"Fetching {right_type} options...")
+            rows = fetch_options_for_right(
+                ib, underlying, underlying_symbol, exchange,
+                right_type, expirations, selected_strikes
+            )
+            all_rows.extend(rows)
+            logger.info(f"Fetched {len(rows)} {right_type} options")
         
-        # 5) Qualify option contracts
-        logger.info(f"Qualifying {len(option_contracts)} option contracts...")
-        qualified_contracts = ib.qualifyContracts(*option_contracts)
-        logger.info(f"Successfully qualified {len(qualified_contracts)} option contracts")
-        
-        if not qualified_contracts:
-            logger.error("No qualified option contracts found")
+        if not all_rows:
+            logger.error("No option data collected")
             return False
         
-        # 6) Request market data for all contracts
-        logger.info(f"Requesting market data for {len(qualified_contracts)} contracts...")
-        tickers = [ib.reqMktData(c, '', False, False) for c in qualified_contracts]
-        
-        # Wait a bit for data to come in
-        logger.info("Waiting for market data to arrive...")
-        ib.sleep(3)
-        
-        # 7) Collect data and write to CSV
+        # 5) Write all data to CSV
         fieldnames = [
             'symbol',
             'secType',
@@ -191,41 +569,12 @@ def fetch_options_to_csv(
             'theta'
         ]
         
-        rows_written = 0
         with open(output_csv, mode='w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            
-            for contract, t in zip(qualified_contracts, tickers):
-                # OptionGreeks lives in tickers[i].modelGreeks
-                greeks = t.modelGreeks
-                
-                row = {
-                    'symbol': contract.symbol,
-                    'secType': contract.secType,
-                    'expiry': contract.lastTradeDateOrContractMonth,
-                    'right': contract.right,
-                    'strike': contract.strike,
-                    'bid': t.bid if t.bid is not None else '',
-                    'ask': t.ask if t.ask is not None else '',
-                    'last': t.last if t.last is not None else '',
-                    'volume': t.volume if t.volume is not None else '',
-                    'iv': greeks.impliedVol if greeks and greeks.impliedVol is not None else '',
-                    'delta': greeks.delta if greeks and greeks.delta is not None else '',
-                    'gamma': greeks.gamma if greeks and greeks.gamma is not None else '',
-                    'vega': greeks.vega if greeks and greeks.vega is not None else '',
-                    'theta': greeks.theta if greeks and greeks.theta is not None else ''
-                }
-                
-                writer.writerow(row)
-                rows_written += 1
+            writer.writerows(all_rows)
         
-        logger.info(f"Wrote {rows_written} options to {output_csv}")
-        
-        # 8) Cancel all market data subscriptions
-        logger.info("Cancelling market data subscriptions...")
-        for t in tickers:
-            ib.cancelMktData(t.contract)
+        logger.info(f"Wrote {len(all_rows)} options ({len(rights_to_fetch)} type(s)) to {output_csv}")
         
         return True
         
@@ -241,14 +590,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # List available expirations with DTE
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --list-expirations
+  
+  # List expirations filtered by DTE range (0-30 days)
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --list-expirations --dte-min 0 --dte-max 30
+  
   # Fetch QQQ puts, 20 strikes, 3 expirations
   python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --max-strikes 20 --max-expirations 3
   
-  # Fetch SPX calls, 15 strikes, 2 expirations
-  python scripts/ib_option_chain_to_csv.py --symbol SPX --right C --max-strikes 15 --max-expirations 2
+  # Fetch options with DTE filtering (0-45 days)
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte-min 0 --dte-max 45 --max-strikes 20
   
-  # Fetch RUT puts with custom output file
-  python scripts/ib_option_chain_to_csv.py --symbol RUT --right P --output results/rut_puts.csv
+  # Fetch expiration closest to 7 DTE
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --max-strikes 20
+  
+  # Fetch specific expirations
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --expirations 20241115,20241122,20241129 --max-strikes 20
+  
+  # Fetch options filtered by 2 standard deviations (like IB chain viewer)
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --std-dev 2.0 --max-expirations 3
+  
+  # Fetch both puts and calls for QQQ in one run
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right BOTH --max-strikes 20 --max-expirations 3
         """
     )
     
@@ -259,10 +623,16 @@ Examples:
     )
     
     parser.add_argument(
+        '--list-expirations',
+        action='store_true',
+        help='List available expirations with DTE and exit (do not fetch options)'
+    )
+    
+    parser.add_argument(
         '--right',
-        choices=['P', 'C'],
+        choices=['P', 'C', 'BOTH'],
         default='P',
-        help='Option type: P for puts, C for calls (default: P)'
+        help='Option type: P for puts, C for calls, BOTH for both (default: P)'
     )
     
     parser.add_argument(
@@ -276,14 +646,49 @@ Examples:
         '--max-expirations',
         type=int,
         default=3,
-        help='Maximum number of expirations to fetch (default: 3)'
+        help='Maximum number of expirations to fetch (default: 3, use 0 for all)'
+    )
+    
+    parser.add_argument(
+        '--dte-min',
+        type=int,
+        default=None,
+        help='Minimum Days To Expiration to include'
+    )
+    
+    parser.add_argument(
+        '--dte-max',
+        type=int,
+        default=None,
+        help='Maximum Days To Expiration to include'
+    )
+    
+    parser.add_argument(
+        '--dte',
+        type=int,
+        default=None,
+        help='Target DTE - finds expiration closest to this value (e.g., 7 for 7 DTE, overrides --dte-min/--dte-max)'
+    )
+    
+    parser.add_argument(
+        '--expirations',
+        type=str,
+        default=None,
+        help='Comma-separated list of specific expirations to fetch (e.g., 20241115,20241122,20241129)'
+    )
+    
+    parser.add_argument(
+        '--std-dev',
+        type=float,
+        default=None,
+        help='Filter strikes by standard deviation (e.g., 2.0 for "2 SD" like IB chain viewer, default: no filtering)'
     )
     
     parser.add_argument(
         '--output',
         type=str,
         default=None,
-        help='Output CSV file path (default: auto-generated)'
+        help='Output CSV file path (default: auto-generated in reports/ folder)'
     )
     
     parser.add_argument(
@@ -302,8 +707,57 @@ Examples:
     
     args = parser.parse_args()
     
-    logger.info(f"Starting option chain fetch for {args.symbol} {args.right}")
-    logger.info(f"Max strikes: {args.max_strikes}, Max expirations: {args.max_expirations}")
+    # Handle list-expirations mode
+    if args.list_expirations:
+        logger.info(f"Listing expirations for {args.symbol}...")
+        expirations_with_dte = list_expirations(
+            underlying_symbol=args.symbol.upper(),
+            exchange=args.exchange,
+            currency=args.currency,
+            dte_min=args.dte_min,
+            dte_max=args.dte_max
+        )
+        
+        if not expirations_with_dte:
+            logger.warning("No expirations found matching criteria")
+            sys.exit(1)
+        
+        print(f"\nAvailable expirations for {args.symbol}:")
+        print(f"{'Expiration':<15} {'DTE':<10}")
+        print("-" * 25)
+        for expiry, dte in expirations_with_dte:
+            print(f"{expiry:<15} {dte:<10}")
+        print(f"\nTotal: {len(expirations_with_dte)} expirations")
+        
+        # Show how to use specific expirations
+        if len(expirations_with_dte) > 0:
+            expiry_list = ','.join([exp for exp, _ in expirations_with_dte[:5]])
+            print(f"\nExample: Use --expirations {expiry_list} to fetch these expirations")
+        
+        sys.exit(0)
+    
+    # Parse specific expirations if provided
+    specific_expirations = None
+    if args.expirations:
+        specific_expirations = [exp.strip() for exp in args.expirations.split(',')]
+        logger.info(f"Using specific expirations: {specific_expirations}")
+    
+    # Handle max_expirations: 0 means all
+    max_expirations = None if args.max_expirations == 0 else args.max_expirations
+    
+    right_display = args.right if args.right != 'BOTH' else 'puts and calls'
+    logger.info(f"Starting option chain fetch for {args.symbol} {right_display}")
+    logger.info(f"Max strikes: {args.max_strikes}")
+    if max_expirations:
+        logger.info(f"Max expirations: {max_expirations}")
+    else:
+        logger.info("Max expirations: all (unlimited)")
+    if args.dte is not None:
+        logger.info(f"Target DTE: {args.dte}")
+    elif args.dte_min is not None or args.dte_max is not None:
+        logger.info(f"DTE range: {args.dte_min or 'any'} to {args.dte_max or 'any'}")
+    if args.std_dev is not None:
+        logger.info(f"Strike filter: {args.std_dev} standard deviations")
     
     success = fetch_options_to_csv(
         underlying_symbol=args.symbol.upper(),
@@ -311,8 +765,13 @@ Examples:
         currency=args.currency,
         right=args.right,
         max_strikes=args.max_strikes,
-        max_expirations=args.max_expirations,
-        output_csv=args.output
+        max_expirations=max_expirations,
+        output_csv=args.output,
+        dte_min=args.dte_min,
+        dte_max=args.dte_max,
+        target_dte=args.dte,
+        specific_expirations=specific_expirations,
+        std_dev=args.std_dev
     )
     
     if success:
