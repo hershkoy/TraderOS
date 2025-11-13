@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 # ---- IB API imports ----
-from ib_insync import IB, Stock, RealTimeBar
+from ib_insync import IB, Stock, Index, RealTimeBar
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Settings (edit to taste)
 # ──────────────────────────────────────────────────────────────────────────────
-SYMBOL = os.getenv("SPX_SCANNER_SYMBOL", "SPY")          # use SPY as SPX proxy
+SYMBOL = os.getenv("SPX_SCANNER_SYMBOL", "SPX")          # use SPY as SPX proxy
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")             # IB TWS/Gateway host
 IB_PORT = int(os.getenv("IB_PORT", "4001"))              # 7496 for TWS paper, 4001 for Gateway
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))       # unique client ID
@@ -100,15 +100,35 @@ def is_strong_bear(bar: HABar) -> bool:
     return (not bar.is_green) and no_upper and big_body
 
 def bodies_growing(b1: HABar, b2: HABar) -> bool:
-    return b2.body >= b1.body
+    """Check if bar #2's body is stronger than bar #1's body.
+    Compares body as percentage of range (not absolute size) to account for different bar ranges."""
+    r1 = b1.range
+    r2 = b2.range
+    if r1 <= 0 or r2 <= 0:
+        return False
+    body_pct1 = (b1.body / r1) * 100
+    body_pct2 = (b2.body / r2) * 100
+    return body_pct2 >= body_pct1
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Historical data for initialization
 # ──────────────────────────────────────────────────────────────────────────────
+def create_contract(symbol: str):
+    """Create appropriate IB contract (Stock or Index) based on symbol."""
+    # Common index symbols
+    INDEX_SYMBOLS = {'SPX', 'NDX', 'DJX', 'RUT', 'VIX'}
+    
+    if symbol.upper() in INDEX_SYMBOLS:
+        # For indices, use Index contract
+        return Index(symbol=symbol, exchange='CBOE', currency='USD')
+    else:
+        # For stocks, use Stock contract
+        return Stock(symbol=symbol, exchange='SMART', currency='USD')
+
 def get_initial_bars(symbol: str, n_minutes: int, ib: IB) -> pd.DataFrame:
     """Fetch initial historical bars to populate the lookback window."""
     try:
-        contract = Stock(symbol=symbol, exchange='SMART', currency='USD')
+        contract = create_contract(symbol)
         qualified_contracts = ib.qualifyContracts(contract)
         if not qualified_contracts:
             print(f"Warning: Could not qualify contract for {symbol}")
@@ -231,9 +251,11 @@ def format_bar_info(bar: HABar) -> str:
     strong = "BULL" if strong_bull else ("BEAR" if strong_bear else "NO")
     color = "GREEN" if bar.is_green else "RED"
     
-    return (f"doji={doji}, body={body_pct:.1f}%, "
-            f"upper_wick={upper_wick_pct:.1f}%, lower_wick={lower_wick_pct:.1f}%, "
-            f"strong={strong}, color={color}")
+    return (f"HA(O={bar.o:.2f}, H={bar.h:.2f}, L={bar.l:.2f}, C={bar.c:.2f}) | "
+            f"range={r:.2f}, body={bar.body:.2f} ({body_pct:.1f}%), "
+            f"upper_wick={bar.upper_wick:.2f} ({upper_wick_pct:.1f}%), "
+            f"lower_wick={bar.lower_wick:.2f} ({lower_wick_pct:.1f}%) | "
+            f"doji={doji}, strong={strong}, color={color}")
 
 def detect_reversal_signals(df_ohlc: pd.DataFrame, check_last_n: int = 5, scan_all: bool = False):
     """
@@ -674,7 +696,7 @@ def main():
         last_signal_time = scan_historical_bars(initial_bars, n_bars=100)
         
         # Create and qualify contract
-        contract = Stock(symbol=SYMBOL, exchange='SMART', currency='USD')
+        contract = create_contract(SYMBOL)
         qualified_contracts = ib.qualifyContracts(contract)
         if not qualified_contracts:
             print(f"ERROR: Could not qualify contract for {SYMBOL}")
