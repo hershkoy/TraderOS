@@ -15,15 +15,16 @@ import csv
 import argparse
 import logging
 import math
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from ib_insync import Contract, Option, Stock, Index
+    from ib_insync import Contract, Option, Stock, Index, Order, Trade
 except ImportError:
     print("Error: ib_insync not found. Please install with: pip install ib_insync")
     sys.exit(1)
@@ -634,6 +635,308 @@ def fetch_options_to_csv(
         return False
 
 
+def calculate_mid_price(bid: float, ask: float) -> Optional[float]:
+    """
+    Calculate mid price from bid and ask.
+    
+    Args:
+        bid: Bid price
+        ask: Ask price
+    
+    Returns:
+        Mid price, or None if either bid or ask is missing
+    """
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        return None
+    return (bid + ask) / 2.0
+
+
+def place_and_monitor_option_order(
+    contract: Contract,
+    quantity: int,
+    initial_price: float,
+    account: str = '',
+    min_price: float = 0.23,
+    initial_wait_minutes: int = 2,
+    price_reduction_per_minute: float = 0.01
+) -> Optional[Trade]:
+    """
+    Place an option order and monitor it with dynamic pricing strategy.
+    
+    Pricing strategy:
+    - Start with initial_price for initial_wait_minutes
+    - Then reduce price by price_reduction_per_minute every minute
+    - Stop if price would go below min_price
+    
+    Args:
+        contract: Qualified option contract
+        quantity: Number of contracts
+        initial_price: Initial limit price
+        account: IB account ID (empty string for default account)
+        min_price: Minimum price to go down to (default: 0.23)
+        initial_wait_minutes: Minutes to wait at initial price (default: 2)
+        price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+    
+    Returns:
+        Trade object if order is filled, None otherwise
+    """
+    ib = get_ib_connection()
+    
+    # Create limit order (BUY order - starting high and reducing to get filled)
+    order = Order()
+    order.action = 'BUY'  # Buying options (starting at mid+15% and reducing)
+    order.orderType = 'LMT'
+    order.totalQuantity = quantity
+    order.lmtPrice = round(initial_price, 2)
+    order.tif = 'DAY'  # Day order
+    
+    if account:
+        order.account = account
+        logger.info(f"Using account: {account}")
+    
+    logger.info(
+        f"Placing order: {order.action} {quantity}x {contract.symbol} {contract.lastTradeDateOrContractMonth} "
+        f"{contract.right} {contract.strike} @ ${order.lmtPrice:.2f}"
+    )
+    
+    # Place order
+    trade = ib.placeOrder(contract, order)
+    
+    if not trade:
+        logger.error("Failed to place order")
+        return None
+    
+    logger.info(f"Order placed. Order ID: {trade.order.orderId}, Status: {trade.orderStatus.status}")
+    
+    # Monitor order
+    start_time = datetime.now()
+    initial_wait_end = start_time + timedelta(minutes=initial_wait_minutes)
+    current_price = initial_price
+    last_price_reduction_time = initial_wait_end
+    
+    logger.info(f"Monitoring order. Initial price: ${current_price:.2f} for {initial_wait_minutes} minutes")
+    logger.info(f"After {initial_wait_minutes} minutes, will reduce by ${price_reduction_per_minute:.2f} per minute (min: ${min_price:.2f})")
+    
+    while True:
+        # Check order status
+        ib.sleep(1)  # Wait 1 second between checks
+        
+        status = trade.orderStatus.status
+        fill_price = trade.orderStatus.avgFillPrice
+        
+        current_time = datetime.now()
+        
+        # Log status periodically (every 10 seconds)
+        elapsed_seconds = int((current_time - start_time).total_seconds())
+        if elapsed_seconds > 0 and elapsed_seconds % 10 == 0:
+            logger.info(
+                f"Order status: {status}, Current limit: ${current_price:.2f}, "
+                f"Fill price: ${fill_price if fill_price > 0 else 'N/A'}, "
+                f"Filled: {trade.orderStatus.filled}/{trade.orderStatus.totalQuantity}"
+            )
+        
+        # Check if order is filled
+        if status == 'Filled':
+            logger.info(
+                f"Order FILLED! Price: ${fill_price:.2f}, "
+                f"Quantity: {trade.orderStatus.filled}/{trade.orderStatus.totalQuantity}"
+            )
+            return trade
+        
+        # Check if order is cancelled or rejected
+        if status in ['Cancelled', 'ApiCancelled', 'Rejected']:
+            logger.warning(f"Order {status.lower()}. Reason: {trade.orderStatus.whyHeld or 'N/A'}")
+            return trade
+        
+        # Apply pricing strategy
+        if current_time >= initial_wait_end:
+            # Time to start reducing price
+            minutes_since_reduction_start = (current_time - last_price_reduction_time).total_seconds() / 60.0
+            
+            if minutes_since_reduction_start >= 1.0:
+                # Reduce price by price_reduction_per_minute
+                new_price = current_price - price_reduction_per_minute
+                
+                # Check minimum price
+                if new_price < min_price:
+                    logger.info(f"Price reduction would go below minimum (${min_price:.2f}). Stopping price reduction.")
+                    logger.info(f"Order will remain at ${current_price:.2f} until filled or cancelled")
+                    # Continue monitoring but don't reduce price further
+                    last_price_reduction_time = current_time  # Reset to prevent further reductions
+                    continue
+                
+                # Update order price
+                current_price = round(new_price, 2)
+                trade.order.lmtPrice = current_price
+                
+                logger.info(f"Reducing limit price to ${current_price:.2f}")
+                
+                # Modify order (placeOrder with same orderId modifies existing order)
+                try:
+                    ib.placeOrder(contract, trade.order)
+                    # Wait a moment for order modification to be processed
+                    ib.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Error modifying order: {e}")
+                    # Continue monitoring even if modification fails
+                
+                last_price_reduction_time = current_time
+        
+        # Safety timeout: cancel order after 1 hour if not filled
+        if (current_time - start_time).total_seconds() > 3600:
+            logger.warning("Order not filled after 1 hour. Cancelling...")
+            ib.cancelOrder(trade.order)
+            return trade
+
+
+def get_option_delta(row: Dict[str, str]) -> float:
+    """
+    Extract delta value from CSV row.
+    
+    Args:
+        row: Dictionary containing option data from CSV
+    
+    Returns:
+        Delta value as float, or 0.0 if not available
+    """
+    try:
+        delta_str = row.get('delta', '')
+        if delta_str:
+            return abs(float(delta_str))
+    except (ValueError, TypeError):
+        pass
+    return 0.0
+
+
+def choose_option_by_risk_profile(
+    rows_sorted: List[Dict[str, str]],
+    profile: str
+) -> Dict[str, str]:
+    """
+    Choose an option from sorted list based on risk profile.
+    
+    Args:
+        rows_sorted: List of option rows sorted by |delta| (highest first = riskiest)
+        profile: Risk profile ('risky', 'balanced', 'conservative')
+    
+    Returns:
+        Selected option row dictionary
+    """
+    n = len(rows_sorted)
+    if n == 0:
+        raise ValueError("No options to choose from")
+    
+    if profile == "risky":
+        idx = 0
+        description = "riskiest (highest |delta|)"
+    elif profile == "conservative":
+        idx = n - 1
+        description = "most conservative (lowest |delta|)"
+    elif profile == "balanced":
+        idx = n // 2
+        description = "balanced (middle |delta|)"
+    else:
+        raise ValueError(f"Unsupported profile: {profile}")
+    
+    selected = rows_sorted[idx]
+    delta = get_option_delta(selected)
+    
+    logger.info(
+        f"Risk profile '{profile}' selected option #{idx+1} of {n} ({description}): "
+        f"{selected.get('symbol')} {selected.get('expiry')} {selected.get('right')} "
+        f"{selected.get('strike')} (|delta|={delta:.4f})"
+    )
+    
+    return selected
+
+
+def place_order_from_csv_row(
+    row: Dict[str, str],
+    quantity: int,
+    account: str = '',
+    min_price: float = 0.23,
+    initial_wait_minutes: int = 2,
+    price_reduction_per_minute: float = 0.01
+) -> Optional[Trade]:
+    """
+    Place an order for an option based on a CSV row.
+    
+    Args:
+        row: Dictionary containing option data from CSV (symbol, expiry, right, strike, bid, ask, etc.)
+        quantity: Number of contracts
+        account: IB account ID (empty string for default account)
+        min_price: Minimum price to go down to (default: 0.23)
+        initial_wait_minutes: Minutes to wait at initial price (default: 2)
+        price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+    
+    Returns:
+        Trade object if order is filled, None otherwise
+    """
+    ib = get_ib_connection()
+    
+    # Parse CSV row data
+    symbol = row['symbol']
+    expiry = row['expiry']
+    right = row['right']
+    strike = float(row['strike'])
+    
+    # Get bid/ask for mid price calculation
+    try:
+        bid = float(row['bid']) if row['bid'] else None
+        ask = float(row['ask']) if row['ask'] else None
+    except (ValueError, KeyError):
+        bid = None
+        ask = None
+    
+    # Calculate initial price (mid + 15%)
+    mid_price = calculate_mid_price(bid, ask)
+    if mid_price is None:
+        logger.error(f"Cannot calculate mid price for {symbol} {expiry} {right} {strike} (bid={bid}, ask={ask})")
+        return None
+    
+    initial_price = mid_price * 1.15  # Mid + 15%
+    logger.info(f"Mid price: ${mid_price:.2f}, Initial order price (mid + 15%): ${initial_price:.2f}")
+    
+    # Determine exchange
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    exchange = 'CBOE' if symbol.upper() in INDEX_SYMBOLS else 'SMART'
+    
+    # Get trading class from chain (we'll need to get it)
+    underlying, chain = get_underlying_and_chain(symbol, exchange, 'USD')
+    trading_class = getattr(chain, 'tradingClass', None)
+    
+    # Create option contract
+    option = Option(
+        symbol=symbol,
+        lastTradeDateOrContractMonth=expiry,
+        strike=strike,
+        right=right,
+        exchange=exchange,
+        tradingClass=trading_class
+    )
+    
+    # Qualify contract
+    logger.info(f"Qualifying contract: {symbol} {expiry} {right} {strike}")
+    qualified = ib.qualifyContracts(option)
+    if not qualified:
+        logger.error(f"Could not qualify contract: {symbol} {expiry} {right} {strike}")
+        return None
+    
+    contract = qualified[0]
+    logger.info(f"Contract qualified: conId={contract.conId}")
+    
+    # Place and monitor order
+    return place_and_monitor_option_order(
+        contract=contract,
+        quantity=quantity,
+        initial_price=initial_price,
+        account=account,
+        min_price=min_price,
+        initial_wait_minutes=initial_wait_minutes,
+        price_reduction_per_minute=price_reduction_per_minute
+    )
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -664,13 +967,28 @@ Examples:
   
   # Fetch both puts and calls for QQQ in one run
   python scripts/ib_option_chain_to_csv.py --symbol QQQ --right BOTH --max-strikes 20 --max-expirations 3
+  
+  # Place order from CSV row (interactive selection)
+  python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options_20241113.csv --place-order --quantity 1 --account DU123456
+  
+  # Place order for specific row from CSV
+  python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options_20241113.csv --place-order --order-row 5 --quantity 1 --account DU123456
+  
+  # Auto-select riskiest option and place order
+  python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options_20241113.csv --place-order --risk-profile risky --quantity 1 --account DU123456
+  
+  # Auto-select balanced option and place order
+  python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options_20241113.csv --place-order --risk-profile balanced --quantity 1 --account DU123456
+  
+  # Auto-select conservative option and place order
+  python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options_20241113.csv --place-order --risk-profile conservative --quantity 1 --account DU123456
         """
     )
     
     parser.add_argument(
         '--symbol',
-        required=True,
-        help='Underlying symbol (e.g., QQQ, SPX, RUT, AAPL)'
+        required=False,
+        help='Underlying symbol (e.g., QQQ, SPX, RUT, AAPL). Required unless using --place-order with --input-csv'
     )
     
     parser.add_argument(
@@ -756,7 +1074,183 @@ Examples:
         help='Currency (default: USD)'
     )
     
+    parser.add_argument(
+        '--place-order',
+        action='store_true',
+        help='Place order for an option from CSV (requires --input-csv)'
+    )
+    
+    parser.add_argument(
+        '--input-csv',
+        type=str,
+        default=None,
+        help='Input CSV file to read option data from (for order placement)'
+    )
+    
+    parser.add_argument(
+        '--order-row',
+        type=int,
+        default=None,
+        help='Row number from CSV to place order for (0-indexed). If not specified, will show interactive selection'
+    )
+    
+    parser.add_argument(
+        '--quantity',
+        type=int,
+        default=1,
+        help='Number of contracts to order (default: 1)'
+    )
+    
+    parser.add_argument(
+        '--account',
+        type=str,
+        default='',
+        help='IB account ID for order placement (e.g., DU123456 for paper trading, U123456 for live). Empty string uses default account. For paper trading, ensure TWS/Gateway is configured for paper account.'
+    )
+    
+    parser.add_argument(
+        '--min-price',
+        type=float,
+        default=0.23,
+        help='Minimum price to reduce order to (default: 0.23)'
+    )
+    
+    parser.add_argument(
+        '--initial-wait-minutes',
+        type=int,
+        default=2,
+        help='Minutes to wait at initial price before reducing (default: 2)'
+    )
+    
+    parser.add_argument(
+        '--price-reduction-per-minute',
+        type=float,
+        default=0.01,
+        help='Price reduction per minute after initial wait (default: 0.01)'
+    )
+    
+    parser.add_argument(
+        '--risk-profile',
+        choices=['interactive', 'conservative', 'balanced', 'risky'],
+        default='interactive',
+        help=(
+            "How to choose the option when --order-row is not specified. "
+            "'interactive' = ask user; "
+            "'conservative' = lowest |delta| (safest); "
+            "'balanced' = middle |delta|; "
+            "'risky' = highest |delta| (riskiest)."
+        )
+    )
+    
     args = parser.parse_args()
+    
+    # Handle order placement mode
+    if args.place_order:
+        if not args.input_csv:
+            logger.error("--place-order requires --input-csv")
+            sys.exit(1)
+        
+        if not os.path.exists(args.input_csv):
+            logger.error(f"CSV file not found: {args.input_csv}")
+            sys.exit(1)
+        
+        # Read CSV
+        rows = []
+        with open(args.input_csv, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        
+        if not rows:
+            logger.error("CSV file is empty or has no data rows")
+            sys.exit(1)
+        
+        logger.info(f"Loaded {len(rows)} option rows from {args.input_csv}")
+        
+        # Select row
+        if args.order_row is not None:
+            # Explicit row number specified
+            if args.order_row < 0 or args.order_row >= len(rows):
+                logger.error(f"Row number {args.order_row} is out of range (0-{len(rows)-1})")
+                sys.exit(1)
+            selected_row = rows[args.order_row]
+            logger.info(f"Using explicitly specified row {args.order_row}")
+        elif args.risk_profile != "interactive":
+            # Auto-select based on risk profile
+            # Sort by |delta| (highest first = riskiest)
+            rows_sorted = sorted(
+                rows,
+                key=lambda r: get_option_delta(r),
+                reverse=True  # Highest |delta| first (riskiest)
+            )
+            
+            logger.info(f"Sorting options by |delta| (riskiest to most conservative)")
+            selected_row = choose_option_by_risk_profile(rows_sorted, args.risk_profile)
+        else:
+            # Interactive selection - show options sorted by risk
+            rows_sorted = sorted(
+                rows,
+                key=lambda r: get_option_delta(r),
+                reverse=True  # Highest |delta| first (riskiest)
+            )
+            
+            print("\nAvailable options (sorted by risk, highest |delta| first):")
+            print(f"{'Row':<6} {'Symbol':<8} {'Expiry':<12} {'Right':<6} {'Strike':<10} "
+                  f"{'Bid':<10} {'Ask':<10} {'Mid':<10} {'|Delta|':<10}")
+            print("-" * 100)
+            for i, row in enumerate(rows_sorted[:50]):  # Show first 50
+                try:
+                    bid = float(row.get('bid', 0) or 0)
+                    ask = float(row.get('ask', 0) or 0)
+                    mid = calculate_mid_price(bid, ask) or 0.0
+                    delta = get_option_delta(row)
+                    print(f"{i:<6} {row.get('symbol', 'N/A'):<8} {row.get('expiry', 'N/A'):<12} "
+                          f"{row.get('right', 'N/A'):<6} {row.get('strike', 'N/A'):<10} "
+                          f"{bid:<10.2f} {ask:<10.2f} {mid:<10.2f} {delta:<10.4f}")
+                except (ValueError, KeyError):
+                    delta = get_option_delta(row)
+                    print(f"{i:<6} {row.get('symbol', 'N/A'):<8} {row.get('expiry', 'N/A'):<12} "
+                          f"{row.get('right', 'N/A'):<6} {row.get('strike', 'N/A'):<10} "
+                          f"{'N/A':<10} {'N/A':<10} {'N/A':<10} {delta:<10.4f}")
+            
+            if len(rows_sorted) > 50:
+                print(f"... and {len(rows_sorted) - 50} more rows")
+            
+            print(f"\nNote: Row 0 = riskiest (highest |delta|), Row {len(rows_sorted)-1} = most conservative (lowest |delta|)")
+            
+            try:
+                row_num = int(input(f"\nEnter row number (0-{len(rows_sorted)-1}): "))
+                if row_num < 0 or row_num >= len(rows_sorted):
+                    logger.error(f"Invalid row number: {row_num}")
+                    sys.exit(1)
+                selected_row = rows_sorted[row_num]
+            except (ValueError, KeyboardInterrupt):
+                logger.error("Invalid input or cancelled")
+                sys.exit(1)
+        
+        # Display selected option
+        logger.info(f"Selected option: {selected_row.get('symbol')} {selected_row.get('expiry')} "
+                   f"{selected_row.get('right')} {selected_row.get('strike')}")
+        
+        # Place order
+        logger.info(f"Placing order: {args.quantity} contract(s), Account: {args.account or 'default'}")
+        logger.info(f"Pricing strategy: Start at mid+15% for {args.initial_wait_minutes} min, "
+                   f"then reduce by ${args.price_reduction_per_minute:.2f}/min (min: ${args.min_price:.2f})")
+        
+        trade = place_order_from_csv_row(
+            row=selected_row,
+            quantity=args.quantity,
+            account=args.account,
+            min_price=args.min_price,
+            initial_wait_minutes=args.initial_wait_minutes,
+            price_reduction_per_minute=args.price_reduction_per_minute
+        )
+        
+        if trade and trade.orderStatus.status == 'Filled':
+            logger.info("Order successfully filled!")
+            sys.exit(0)
+        else:
+            logger.warning("Order not filled or cancelled")
+            sys.exit(1)
     
     # Handle list-expirations mode
     if args.list_expirations:
@@ -792,6 +1286,11 @@ Examples:
     if args.expirations:
         specific_expirations = [exp.strip() for exp in args.expirations.split(',')]
         logger.info(f"Using specific expirations: {specific_expirations}")
+    
+    # Validate symbol is provided for fetch mode
+    if not args.symbol:
+        logger.error("--symbol is required for fetching option chains")
+        sys.exit(1)
     
     # Handle max_expirations: 0 means all
     max_expirations = None if args.max_expirations == 0 else args.max_expirations

@@ -348,6 +348,12 @@ python scripts/spreads_trader.py --symbol QQQ --dte 7 --target-delta 0.10
 python scripts/spreads_trader.py --input-csv reports\QQQ_P_options_20251113_214807.csv --symbol QQQ --expiry 20251120
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --quantity 2
 
+# Place order:
+risky/balanced/conservative
+python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options.csv --place-order --risk-profile risky --quantity 1 --account DU123456
+
+
+
 
 #daily scanner:
 python scripts\daily_scanner.py --output-report
