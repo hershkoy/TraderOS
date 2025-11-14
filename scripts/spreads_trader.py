@@ -39,7 +39,7 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 # Make project root importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -116,6 +116,63 @@ def parse_float_safe(x: str) -> float:
         return float(x)
     except Exception:
         return float("nan")
+
+def validate_csv(path: str, expected_right: str = "P") -> Tuple[str, str]:
+    """
+    Validate CSV and extract symbol and expiry.
+    
+    Returns:
+        Tuple of (symbol, expiry)
+    
+    Raises:
+        ValueError if validation fails
+    """
+    symbols = set()
+    expiries = set()
+    rights = set()
+    
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            symbol = r.get("symbol", "").strip()
+            expiry = r.get("expiry", "").strip()
+            right = r.get("right", "").strip().upper()
+            
+            if symbol:
+                symbols.add(symbol)
+            if expiry:
+                expiries.add(expiry)
+            if right:
+                rights.add(right)
+    
+    # Validation checks
+    if not symbols:
+        raise ValueError("CSV contains no symbol data")
+    
+    if len(symbols) > 1:
+        raise ValueError(f"CSV contains multiple symbols: {symbols}. All rows must have the same symbol.")
+    
+    if not expiries:
+        raise ValueError("CSV contains no expiry data")
+    
+    if len(expiries) > 1:
+        raise ValueError(f"CSV contains multiple expiries: {expiries}. All rows must have the same expiry.")
+    
+    if not rights:
+        raise ValueError("CSV contains no option right data")
+    
+    if len(rights) > 1:
+        raise ValueError(f"CSV contains multiple option rights: {rights}. All rows must have the same right.")
+    
+    actual_right = rights.pop()
+    if actual_right.upper() != expected_right.upper():
+        raise ValueError(f"CSV contains {actual_right} options, but expected {expected_right} options.")
+    
+    symbol = symbols.pop()
+    expiry = expiries.pop()
+    
+    logger.info(f"CSV validated: symbol={symbol}, expiry={expiry}, right={actual_right}")
+    return symbol, expiry
 
 def load_option_rows(
     path: str,
@@ -461,15 +518,16 @@ def main():
     
     parser.add_argument(
         "--symbol",
-        required=True,
-        help="Underlying symbol (e.g., SPY, QQQ, SPX)",
+        type=str,
+        default=None,
+        help="Underlying symbol (e.g., SPY, QQQ, SPX). If omitted and --input-csv provided, will be extracted from CSV.",
     )
     
     parser.add_argument(
         "--expiry",
         type=str,
         default=None,
-        help="Expiration in IB format (e.g., 20251120). Required if --input-csv is provided, optional if auto-fetching.",
+        help="Expiration in IB format (e.g., 20251120). If omitted and --input-csv provided, will be extracted from CSV.",
     )
     
     parser.add_argument(
@@ -548,6 +606,8 @@ def main():
     
     if csv_path is None:
         # Auto-fetch option chain
+        if not args.symbol:
+            parser.error("--symbol is required when --input-csv is omitted")
         if not args.expiry and not args.dte:
             parser.error("Either --expiry or --dte must be provided when --input-csv is omitted")
         
@@ -561,19 +621,33 @@ def main():
             max_expirations=1 if args.expiry else None  # If expiry specified, only fetch that one
         )
         
-        # Extract expiry from CSV if not provided
+        # Extract symbol and expiry from CSV if not provided
+        csv_symbol, csv_expiry = validate_csv(csv_path, expected_right=args.right)
+        if not args.symbol:
+            args.symbol = csv_symbol
+            logger.info(f"Using symbol from CSV: {args.symbol}")
         if not args.expiry:
-            # Read first row to get expiry
-            with open(csv_path, newline="") as f:
-                reader = csv.DictReader(f)
-                first_row = next(reader, None)
-                if first_row:
-                    args.expiry = first_row.get("expiry")
-                    logger.info(f"Using expiry from fetched data: {args.expiry}")
+            args.expiry = csv_expiry
+            logger.info(f"Using expiry from CSV: {args.expiry}")
     else:
-        # CSV provided - expiry is required
+        # CSV provided - validate and extract symbol/expiry if not provided
+        csv_symbol, csv_expiry = validate_csv(csv_path, expected_right=args.right)
+        
+        if not args.symbol:
+            args.symbol = csv_symbol
+            logger.info(f"Using symbol from CSV: {args.symbol}")
+        else:
+            # Verify provided symbol matches CSV
+            if args.symbol.upper() != csv_symbol.upper():
+                parser.error(f"Provided symbol '{args.symbol}' does not match CSV symbol '{csv_symbol}'")
+        
         if not args.expiry:
-            parser.error("--expiry is required when --input-csv is provided")
+            args.expiry = csv_expiry
+            logger.info(f"Using expiry from CSV: {args.expiry}")
+        else:
+            # Verify provided expiry matches CSV
+            if args.expiry != csv_expiry:
+                parser.error(f"Provided expiry '{args.expiry}' does not match CSV expiry '{csv_expiry}'")
     
     # Load options from CSV
     rows = load_option_rows(
