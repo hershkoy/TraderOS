@@ -364,3 +364,8 @@ run_scanner.bat
 ninja trader -> tools -> historical data -> export
 or 
 python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01
+
+
+# Export csv to ninja trader:
+python utils/export_to_ninjatrader.py AAPL 1d --output-dir ./exports --start-time "2024-01-01" --end-time "2024-12-31"
+

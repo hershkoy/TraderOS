@@ -73,8 +73,10 @@ def create_ib_contract_with_primary_exchange(symbol):
     """Create an IB contract with proper primary exchange to avoid ambiguity"""
     from ib_insync import Stock, Index
     
-    # Define index symbols that need special handling
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'SPY', 'QQQ', 'IWM', 'DIA'}
+    # Define index symbols that need special handling (actual indices, not ETFs)
+    # SPX, RUT, NDX, VIX, DJX are indices
+    # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:
@@ -83,9 +85,11 @@ def create_ib_contract_with_primary_exchange(symbol):
         return Index(symbol=symbol, exchange='CBOE', currency='USD')
     
     # Define primary exchanges for common symbols to avoid ambiguity
+    # Major ETFs (SPY, QQQ, IWM, DIA) trade on ARCA - use SMART routing for these
     NASDAQ_SYMBOLS = {
         'STLD', 'STX', 'SWKS', 'TEAM', 'TECH', 'TER', 'ZS',
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA'
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA',
+        'QQQ'  # QQQ is an ETF that trades on NASDAQ
     }
     
     NYSE_SYMBOLS = {
@@ -93,11 +97,18 @@ def create_ib_contract_with_primary_exchange(symbol):
         'JPM', 'JNJ', 'PG', 'UNH', 'HD', 'MA', 'PFE', 'BAC', 'KO', 'PEP'
     }
     
+    # Major ETFs that trade on ARCA - use SMART routing (no primaryExchange needed)
+    ARCA_ETFS = {'SPY', 'DIA', 'IWM'}  # These ETFs trade on NYSE ARCA
+    
     # Determine primary exchange
     if symbol in NASDAQ_SYMBOLS:
         primary_exchange = 'NASDAQ'
     elif symbol in NYSE_SYMBOLS:
         primary_exchange = 'NYSE'
+    elif symbol in ARCA_ETFS:
+        # For ARCA ETFs, use SMART routing without primaryExchange
+        # IB will route to ARCA automatically
+        primary_exchange = None
     else:
         # For unknown symbols, let IB resolve it
         primary_exchange = None
@@ -106,15 +117,20 @@ def create_ib_contract_with_primary_exchange(symbol):
         logger.info(f"Creating contract for {symbol} with primary exchange {primary_exchange}")
         return Stock(symbol=symbol, exchange='SMART', currency='USD', primaryExchange=primary_exchange)
     else:
-        logger.info(f"Creating contract for {symbol} without primary exchange (will be resolved by IB)")
+        if symbol in ARCA_ETFS:
+            logger.info(f"Creating contract for ETF {symbol} using SMART routing (will route to ARCA)")
+        else:
+            logger.info(f"Creating contract for {symbol} without primary exchange (will be resolved by IB)")
         return Stock(symbol=symbol, exchange='SMART', currency='USD')
 
 def create_ib_contract_from_cache(symbol, con_id, primary_exchange):
     """Create an IB contract directly from cached information (no qualification needed)"""
     from ib_insync import Stock, Index
     
-    # Define index symbols that need special handling
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'SPY', 'QQQ', 'IWM', 'DIA'}
+    # Define index symbols that need special handling (actual indices, not ETFs)
+    # SPX, RUT, NDX, VIX, DJX are indices
+    # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:
@@ -977,6 +993,15 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
             else:  # 1d
                 dur_unit = f"{IB_BAR_CAP} D"
             
+            # Log what date range is being requested
+            if end_date:
+                logger.info(f"Requesting data ending at: {end_date}, duration: {dur_unit}")
+            else:
+                logger.info(f"Requesting most recent data, duration: {dur_unit}")
+            
+            if target_start_date:
+                logger.info(f"Target start date: {target_start_date.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
             logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
             # Get data with intelligent retry logic
@@ -1033,11 +1058,28 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
         all_data.append(batch_data)
         total_bars_fetched += len(batch_data)
         
-        logger.info(f"Fetched batch of {len(batch_data)} bars. Total: {total_bars_fetched}")
-        
-        # Update end_date for next batch (go further back in time)
+        # Get date range of this batch
         if len(batch_data) > 0:
-            end_date = batch_data['timestamp'].min().strftime("%Y%m%d %H:%M:%S")
+            batch_min = batch_data['timestamp'].min()
+            batch_max = batch_data['timestamp'].max()
+            logger.info(f"Fetched batch of {len(batch_data)} bars. Total: {total_bars_fetched}")
+            logger.info(f"  Batch date range: {batch_min.strftime('%Y-%m-%d %H:%M:%S %Z')} to {batch_max.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
+            # Check if we've reached the target start date
+            if target_start_date:
+                if batch_min <= target_start_date:
+                    logger.info(f"Reached target start date ({target_start_date.strftime('%Y-%m-%d %H:%M:%S %Z')}). Stopping fetch.")
+                    # Filter out data before target_start_date
+                    batch_data = batch_data[batch_data['timestamp'] >= target_start_date]
+                    if len(batch_data) < len(all_data[-1]):
+                        all_data[-1] = batch_data
+                        logger.info(f"Filtered batch to {len(batch_data)} bars after target date")
+                    break
+            
+            # Update end_date for next batch (go further back in time)
+            end_date = batch_min.strftime("%Y%m%d %H:%M:%S")
+        else:
+            logger.info(f"Fetched batch of {len(batch_data)} bars. Total: {total_bars_fetched}")
         
         # Add delay between requests to respect rate limits
         time.sleep(IB_REQUEST_DELAY)
@@ -1055,7 +1097,23 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
     combined_df = pd.concat(all_data, ignore_index=True)
     combined_df = combined_df.drop_duplicates(subset=['timestamp']).sort_values('timestamp')
     
+    # Filter to target start date if specified
+    if target_start_date and len(combined_df) > 0:
+        original_count = len(combined_df)
+        combined_df = combined_df[combined_df['timestamp'] >= target_start_date]
+        if len(combined_df) < original_count:
+            logger.info(f"Filtered combined data from {original_count} to {len(combined_df)} bars after target start date")
+    
     logger.info(f"Combined {len(combined_df)} unique bars from {len(all_data)} batches")
+    
+    if len(combined_df) > 0:
+        final_min = combined_df['timestamp'].min()
+        final_max = combined_df['timestamp'].max()
+        logger.info(f"Final data date range: {final_min.strftime('%Y-%m-%d %H:%M:%S %Z')} to {final_max.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        if target_start_date:
+            logger.info(f"Requested start date: {target_start_date.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if final_min > target_start_date:
+                logger.warning(f"Earliest data ({final_min.strftime('%Y-%m-%d %H:%M:%S %Z')}) is after requested start date ({target_start_date.strftime('%Y-%m-%d %H:%M:%S %Z')})")
     
     # Transform to Nautilus format
     df = prepare_nautilus_dataframe(combined_df, symbol, "IB", timeframe)
@@ -1183,18 +1241,31 @@ if __name__ == "__main__":
             exit(1)
 
     try:
+        df = None
         if provider == "alpaca":
             if bars == "max":
-                fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
+                df = fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
             else:
                 bars = min(bars, ALPACA_BAR_CAP)
-                fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
+                df = fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
         elif provider == "ib":
             if bars == "max":
-                fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
+                df = fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
             else:
                 bars = min(bars, IB_BAR_CAP)
-                fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
+                df = fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
+        
+        # Save to database if data was fetched
+        if df is not None and not df.empty:
+            provider_upper = provider.upper()
+            logger.info(f"Saving {len(df)} records to TimescaleDB for {symbol} {timeframe} from {provider_upper}...")
+            if save_to_timescaledb(df, symbol, provider_upper, timeframe):
+                logger.info(f"Successfully saved data to database")
+            else:
+                logger.error(f"Failed to save data to database")
+        elif df is None or df.empty:
+            logger.warning("No data was fetched, nothing to save")
+            
     except Exception as e:
         logger.error(f"Failed to fetch data: {e}")
         exit(1)
