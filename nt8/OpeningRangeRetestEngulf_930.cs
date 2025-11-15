@@ -16,13 +16,9 @@ using NinjaTrader.Cbi;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
-    public class OpeningRangeRetestEngulf_930 : Strategy
+    public class OpeningRangeRetestEngulf_Permissive : Strategy
     {
         // === PARAMETERS ===
-		
-		[NinjaScriptProperty]
-		[Display(Name = "RetestBufferTicks", GroupName = "Parameters", Order = 8)]
-		public int RetestBufferTicks { get; set; } = 2;
 
         [NinjaScriptProperty]
         [Display(Name = "RewardRiskRatio", GroupName = "Parameters", Order = 0)]
@@ -56,7 +52,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Debug", GroupName = "Parameters", Order = 7)]
         public bool Debug { get; set; } = true;
 
+        [NinjaScriptProperty]
+        [Display(Name = "RetestBufferTicks", GroupName = "Parameters", Order = 8)]
+        public int RetestBufferTicks { get; set; } = 3;
+
+        [NinjaScriptProperty]
+        [Display(Name = "RequireRetest", GroupName = "Parameters", Order = 9)]
+        public bool RequireRetest { get; set; } = false;   // more permissive by default
+
+        [NinjaScriptProperty]
+        [Display(Name = "MaxDistanceFromOR", GroupName = "Parameters", Order = 10)]
+        public int MaxDistanceFromOR { get; set; } = 20;   // in ticks
+
+
         // === INTERNAL STATE ===
+
         private double openingRangeHigh;
         private double openingRangeLow;
         private bool   rangeComplete;
@@ -67,14 +77,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime orEndTime       = Core.Globals.MinDate;
         private DateTime tradeEndTime    = Core.Globals.MinDate;
 
+        // breakout trackers: int.MaxValue means "no breakout yet"
         private int barsSinceHighBreak;
         private int barsSinceLowBreak;
+
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Name = "OpeningRangeRetestEngulf_930";
+                Name = "OpeningRangeRetestEngulf_Permissive";
                 Calculate = Calculate.OnBarClose;
                 EntriesPerDirection = 1;
                 EntryHandling = EntryHandling.AllEntries;
@@ -90,6 +102,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 OpeningRangeMinutes = 5;
                 StopTradingMinutesAfterOpen = 180;
                 Debug = true;
+
+                RetestBufferTicks = 3;
+                RequireRetest = false;
+                MaxDistanceFromOR = 20;
             }
         }
 
@@ -146,7 +162,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (openingRangeHigh > double.MinValue && openingRangeLow < double.MaxValue)
                 {
                     rangeComplete = true;
-                    D(string.Format("{0} OR DONE  High={1}  Low={2}", bt, openingRangeHigh, openingRangeLow));
+
+                    double orRange = openingRangeHigh - openingRangeLow;
+                    int orTicks = (int)Math.Round(orRange / TickSize);
+
+                    D(string.Format(
+                        "{0} OR DONE  High={1:F2}  Low={2:F2}  Range={3:F2}  Ticks={4}",
+                        bt, openingRangeHigh, openingRangeLow, orRange, orTicks));
 
                     string tagHigh = "ORHigh_" + sessionOpenTime.ToString("yyyyMMdd_HHmm");
                     string tagLow  = "ORLow_"  + sessionOpenTime.ToString("yyyyMMdd_HHmm");
@@ -164,19 +186,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (tradesToday >= MaxTradesPerDay)
                 return;
 
-            // === 3) Track breakout state ===
+            // === 3) Track breakout state (first breakout only) ===
             if (barsSinceHighBreak != int.MaxValue)
                 barsSinceHighBreak++;
             if (barsSinceLowBreak != int.MaxValue)
                 barsSinceLowBreak++;
 
-            if (Close[0] > openingRangeHigh)
+            // First close above OR high -> mark breakout
+            if (barsSinceHighBreak == int.MaxValue && Close[0] > openingRangeHigh)
             {
                 barsSinceHighBreak = 0;
                 D(string.Format("{0} BREAKOUT HIGH  Close={1} ORHigh={2}", bt, Close[0], openingRangeHigh));
             }
 
-            if (Close[0] < openingRangeLow)
+            // First close below OR low -> mark breakout
+            if (barsSinceLowBreak == int.MaxValue && Close[0] < openingRangeLow)
             {
                 barsSinceLowBreak = 0;
                 D(string.Format("{0} BREAKOUT LOW   Close={1} ORLow={2}", bt, Close[0], openingRangeLow));
@@ -186,18 +210,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (Position.MarketPosition != MarketPosition.Flat)
                 return;
 
-            // === 4) LONG SETUP ===
+            // buffer for retest zone
+            double buffer = RetestBufferTicks * TickSize;
+
+            // === 4) LONG SETUP (more permissive) ===
             bool longSignal = false;
-			double buffer = RetestBufferTicks * TickSize;
-			
-            if (barsSinceHighBreak > 0 && barsSinceHighBreak <= MaxBarsAfterBreakout)
+            if (barsSinceHighBreak >= 0 && barsSinceHighBreak <= MaxBarsAfterBreakout)
             {
-                bool touchedLevel  = Low[0] <= openingRangeHigh + buffer 
-                     && High[0] >= openingRangeHigh - buffer 
-                     && Close[0] > openingRangeHigh;
-				
-                bool bullishEngulf = IsBullishEngulfing(0);
-                bool bullishReject = IsBullishRejection(0);
+                // distance from OR high in ticks
+                double distanceTicks = Math.Abs(Close[0] - openingRangeHigh) / TickSize;
+                bool nearLevel       = distanceTicks <= MaxDistanceFromOR;
+
+                // strict retest: bar trades through OR-high zone (with buffer)
+                bool touchedLevel    = Low[0] <= openingRangeHigh + buffer &&
+                                       High[0] >= openingRangeHigh - buffer;
+
+                bool bullishEngulf   = IsBullishEngulfing(0);
+                bool bullishReject   = IsBullishRejection(0);
 
                 if (touchedLevel)
                     D(string.Format("{0} LONG touch  Close={1} Low={2} ORHigh={3}", bt, Close[0], Low[0], openingRangeHigh));
@@ -206,21 +235,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (bullishReject)
                     D(string.Format("{0} LONG rejection candidate", bt));
 
-                if (touchedLevel && (bullishEngulf || (!UseEngulfOnly && bullishReject)))
+                bool levelCondition = RequireRetest ? touchedLevel : nearLevel;
+
+                if (levelCondition && (bullishEngulf || (!UseEngulfOnly && bullishReject)))
                     longSignal = true;
             }
 
-            // === 5) SHORT SETUP ===
+            // === 5) SHORT SETUP (more permissive) ===
             bool shortSignal = false;
-            if (barsSinceLowBreak > 0 && barsSinceLowBreak <= MaxBarsAfterBreakout)
+            if (barsSinceLowBreak >= 0 && barsSinceLowBreak <= MaxBarsAfterBreakout)
             {
-                
-				bool touchedLevel   = High[0] >= openingRangeLow - buffer
-                      && Low[0]  <= openingRangeLow + buffer
-                      && Close[0] < openingRangeLow;
+                double distanceTicks = Math.Abs(Close[0] - openingRangeLow) / TickSize;
+                bool nearLevel       = distanceTicks <= MaxDistanceFromOR;
 
-                bool bearishEngulf  = IsBearishEngulfing(0);
-                bool bearishReject  = IsBearishRejection(0);
+                bool touchedLevel    = High[0] >= openingRangeLow - buffer &&
+                                       Low[0]  <= openingRangeLow + buffer;
+
+                bool bearishEngulf   = IsBearishEngulfing(0);
+                bool bearishReject   = IsBearishRejection(0);
 
                 if (touchedLevel)
                     D(string.Format("{0} SHORT touch  Close={1} High={2} ORLow={3}", bt, Close[0], High[0], openingRangeLow));
@@ -229,7 +261,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (bearishReject)
                     D(string.Format("{0} SHORT rejection candidate", bt));
 
-                if (touchedLevel && (bearishEngulf || (!UseEngulfOnly && bearishReject)))
+                bool levelCondition = RequireRetest ? touchedLevel : nearLevel;
+
+                if (levelCondition && (bearishEngulf || (!UseEngulfOnly && bearishReject)))
                     shortSignal = true;
             }
 
@@ -274,15 +308,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // === PATTERN HELPERS ===
+
         private bool IsBullishEngulfing(int idx)
         {
             if (CurrentBar < idx + 2)
                 return false;
 
-            if (Close[idx + 1] >= Open[idx + 1]) // previous must be bearish
+            // previous bar must be bearish
+            if (Close[idx + 1] >= Open[idx + 1])
                 return false;
 
             bool currentBullish = Close[idx] > Open[idx];
+
             bool bodyEngulfs =
                 Close[idx] >= Open[idx + 1] &&
                 Open[idx]  <= Close[idx + 1];
@@ -295,10 +332,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < idx + 2)
                 return false;
 
-            if (Close[idx + 1] <= Open[idx + 1]) // previous must be bullish
+            // previous bar must be bullish
+            if (Close[idx + 1] <= Open[idx + 1])
                 return false;
 
             bool currentBearish = Close[idx] < Open[idx];
+
             bool bodyEngulfs =
                 Close[idx] <= Open[idx + 1] &&
                 Open[idx]  >= Close[idx + 1];
