@@ -1,3 +1,8 @@
+# Fetch data script
+
+# Fetch SPX 1-minute data since 2020-01-01
+python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01
+
 # Universe Data Updater
 
 A comprehensive script to fetch maximum available bars for all tickers in the ticker universe using the existing `fetch_data.py` functionality. This tool integrates the ticker universe management system with your data fetching pipeline.
@@ -274,3 +279,8 @@ python -u utils/update_universe_data.py --provider alpaca --timeframe 1d --max-t
 ## Examples
 
 See `examples/update_universe_example.py` for complete usage examples and demonstrations of all features.
+
+
+
+python utils/update_universe_data.py --provider ib --timeframe 1m --max-bars --symbol SPX
+

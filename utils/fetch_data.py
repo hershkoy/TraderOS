@@ -71,7 +71,16 @@ def get_ib_connection():
 
 def create_ib_contract_with_primary_exchange(symbol):
     """Create an IB contract with proper primary exchange to avoid ambiguity"""
-    from ib_insync import Stock
+    from ib_insync import Stock, Index
+    
+    # Define index symbols that need special handling
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'SPY', 'QQQ', 'IWM', 'DIA'}
+    
+    # Check if this is an index
+    if symbol.upper() in INDEX_SYMBOLS:
+        # For indices, use Index class with CBOE exchange
+        logger.info(f"Detected index symbol {symbol}, using Index contract with CBOE exchange")
+        return Index(symbol=symbol, exchange='CBOE', currency='USD')
     
     # Define primary exchanges for common symbols to avoid ambiguity
     NASDAQ_SYMBOLS = {
@@ -102,7 +111,17 @@ def create_ib_contract_with_primary_exchange(symbol):
 
 def create_ib_contract_from_cache(symbol, con_id, primary_exchange):
     """Create an IB contract directly from cached information (no qualification needed)"""
-    from ib_insync import Stock
+    from ib_insync import Stock, Index
+    
+    # Define index symbols that need special handling
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'SPY', 'QQQ', 'IWM', 'DIA'}
+    
+    # Check if this is an index
+    if symbol.upper() in INDEX_SYMBOLS:
+        logger.info(f"Creating pre-qualified index contract for {symbol}: conId {con_id}, exchange {primary_exchange or 'CBOE'}")
+        contract = Index(symbol=symbol, exchange=primary_exchange or 'CBOE', currency='USD')
+        contract.conId = con_id
+        return contract
     
     logger.info(f"Creating pre-qualified contract for {symbol}: conId {con_id}, exchange {primary_exchange}")
     contract = Stock(symbol=symbol, exchange='SMART', currency='USD', primaryExchange=primary_exchange)
@@ -289,7 +308,9 @@ def detect_max_available_bars(symbol, timeframe):
             
             end_time = datetime.now(timezone.utc)
             # Go back much further to see what's actually available
-            if timeframe == "1h":
+            if timeframe == "1m":
+                start_time = end_time - timedelta(days=365)  # Try 1 year for minute data
+            elif timeframe == "1h":
                 start_time = end_time - timedelta(days=2000)  # Try 5+ years
             else:  # 1d
                 start_time = end_time - timedelta(days=3000)  # Try 8+ years
@@ -368,25 +389,48 @@ def detect_max_available_bars_with_range(symbol, timeframe):
     """
     return detect_max_available_bars(symbol, timeframe)
 
-def fetch_smart_max_from_alpaca(symbol, timeframe):
+def fetch_smart_max_from_alpaca(symbol, timeframe, start_date=None):
     """
     Smart version of max bars that first detects what's available
     then fetches that amount using the reliable single request method.
     """
     logger.info(f"🔍 Detecting maximum available bars for {symbol} @ {timeframe}...")
     
-    # Get both the count and the actual time range from detection
-    detection_result = detect_max_available_bars_with_range(symbol, timeframe)
+    # If start_date is provided, use it; otherwise detect from available data
+    if start_date:
+        if isinstance(start_date, str):
+            start_time = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        else:
+            start_time = start_date
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        end_time = datetime.now(timezone.utc)
+        logger.info(f"Using provided start date: {start_time}, fetching until {end_time}")
+        # Estimate max_available based on timeframe (will be adjusted by actual fetch)
+        if timeframe == "1m":
+            days = (end_time - start_time).days
+            max_available = int(days * 390 * 5 / 7)  # Rough estimate
+        elif timeframe == "1h":
+            days = (end_time - start_time).days
+            max_available = int(days * 6.5 * 5 / 7)  # Rough estimate
+        else:  # 1d
+            days = (end_time - start_time).days
+            max_available = int(days * 5 / 7)  # Rough estimate
+    else:
+        # Get both the count and the actual time range from detection
+        detection_result = detect_max_available_bars_with_range(symbol, timeframe)
+        
+        if detection_result is None:
+            logger.warning(f"No data available for {symbol} @ {timeframe}")
+            return None
+        
+        max_available, start_time, end_time = detection_result
     
-    if detection_result is None:
-        logger.warning(f"No data available for {symbol} @ {timeframe}")
-        return None
-    
-    max_available, start_time, end_time = detection_result
-    
-    logger.info(f"📊 Detected {max_available} bars available for {symbol} @ {timeframe}")
+    logger.info(f"📊 Fetching up to {max_available} bars for {symbol} @ {timeframe}")
     logger.info(f"📅 Time range: {start_time.date()} to {end_time.date()}")
-    logger.info(f"🚀 Fetching {max_available} bars using single request method...")
+    logger.info(f"🚀 Fetching bars using single request method...")
     
     # Use the reliable single request method with the detected amount and time range
     return fetch_single_alpaca_request_with_range(symbol, max_available, timeframe, start_time, end_time)
@@ -394,7 +438,7 @@ def fetch_smart_max_from_alpaca(symbol, timeframe):
 # ─────────────────────────────
 # ALPACA LOGIC
 # ─────────────────────────────
-def fetch_from_alpaca(symbol, bars, timeframe):
+def fetch_from_alpaca(symbol, bars, timeframe, start_date=None):
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
@@ -402,10 +446,10 @@ def fetch_from_alpaca(symbol, bars, timeframe):
 
     if bars == "max":
         logger.info(f"Fetching maximum available bars from Alpaca for {symbol} @ {timeframe}...")
-        return fetch_smart_max_from_alpaca(symbol, timeframe)
+        return fetch_smart_max_from_alpaca(symbol, timeframe, start_date=start_date)
     else:
         logger.info(f"Fetching {bars} bars from Alpaca for {symbol} @ {timeframe}...")
-        return fetch_single_alpaca_request(symbol, bars, timeframe)
+        return fetch_single_alpaca_request(symbol, bars, timeframe, start_date=start_date)
 
 def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, end_time):
     """Fetch a single request from Alpaca using a specific time range."""
@@ -415,6 +459,7 @@ def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, 
     from alpaca.data.enums import DataFeed
 
     tf_map = {
+        "1m": TimeFrame.Minute,
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -473,7 +518,7 @@ def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, 
                 logger.error(f"Failed to fetch data from Alpaca after {MAX_RETRIES} attempts: {e}")
                 raise
 
-def fetch_single_alpaca_request(symbol, bars, timeframe):
+def fetch_single_alpaca_request(symbol, bars, timeframe, start_date=None):
     """Fetch a single request from Alpaca."""
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
@@ -481,6 +526,7 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
     from alpaca.data.enums import DataFeed
 
     tf_map = {
+        "1m": TimeFrame.Minute,
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -493,18 +539,36 @@ def fetch_single_alpaca_request(symbol, bars, timeframe):
         secret_key=secret_key,
     )
 
-    # Calculate a reasonable time period to get the requested number of bars
-    # For hourly data: account for ~6.5 hours per trading day, weekends, holidays
-    # For daily data: account for weekends and holidays
-    if timeframe == "1h":
-        # Assume ~6.5 trading hours per day, ~5 trading days per week
-        # So we need roughly (bars / 6.5) * 7/5 days to get enough bars
-        days_needed = max(1, int((bars / 6.5) * 7 / 5))
-        start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
-    else:  # 1d
-        # For daily data, assume ~5 trading days per week
-        days_needed = max(1, int(bars * 7 / 5))
-        start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+    # Use provided start_date if available, otherwise calculate from bars
+    if start_date:
+        if isinstance(start_date, str):
+            start_time = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        else:
+            start_time = start_date
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        logger.info(f"Using provided start date: {start_time}")
+    else:
+        # Calculate a reasonable time period to get the requested number of bars
+        # For minute data: account for ~6.5 hours per trading day, ~390 minutes per day
+        # For hourly data: account for ~6.5 hours per trading day, weekends, holidays
+        # For daily data: account for weekends and holidays
+        if timeframe == "1m":
+            # Assume ~390 trading minutes per day (6.5 hours * 60), ~5 trading days per week
+            # So we need roughly (bars / 390) * 7/5 days to get enough bars
+            days_needed = max(1, int((bars / 390) * 7 / 5))
+            start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+        elif timeframe == "1h":
+            # Assume ~6.5 trading hours per day, ~5 trading days per week
+            # So we need roughly (bars / 6.5) * 7/5 days to get enough bars
+            days_needed = max(1, int((bars / 6.5) * 7 / 5))
+            start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+        else:  # 1d
+            # For daily data, assume ~5 trading days per week
+            days_needed = max(1, int(bars * 7 / 5))
+            start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
     
     end_time = datetime.now(timezone.utc)
 
@@ -562,6 +626,7 @@ def fetch_max_from_alpaca(symbol, timeframe):
     from alpaca.data.enums import DataFeed
 
     tf_map = {
+        "1m": TimeFrame.Minute,
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -582,7 +647,10 @@ def fetch_max_from_alpaca(symbol, timeframe):
     
     while True:
         # Calculate start time for this batch
-        if timeframe == "1h":
+        if timeframe == "1m":
+            # For 1-minute data, go back by the number of minutes (capped at ALPACA_BAR_CAP)
+            start_time = end_time - timedelta(minutes=ALPACA_BAR_CAP)
+        elif timeframe == "1h":
             start_time = end_time - timedelta(hours=ALPACA_BAR_CAP)
         else:  # 1d
             start_time = end_time - timedelta(days=ALPACA_BAR_CAP)
@@ -662,15 +730,15 @@ def fetch_max_from_alpaca(symbol, timeframe):
 # ─────────────────────────────
 # IBKR LOGIC
 # ─────────────────────────────
-def fetch_from_ib(symbol, bars, timeframe, contract_info=None):
+def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
     """Fetch historical bars from IBKR."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1h", "1d"]:
+    if timeframe not in ["1m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     if bars == "max":
-        return fetch_max_from_ib(symbol, timeframe, contract_info)
+        return fetch_max_from_ib(symbol, timeframe, contract_info, start_date=start_date)
     
     # For fixed number of bars
     ib = get_ib_connection()
@@ -699,21 +767,72 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None):
                 logger.error(f"3. Symbol format is incorrect")
                 return None
         
-        bar_size = "1 hour" if timeframe == "1h" else "1 day"
+        # Map timeframe to IB bar size setting
+        if timeframe == "1m":
+            bar_size = "1 min"
+        elif timeframe == "1h":
+            bar_size = "1 hour"
+        else:  # 1d
+            bar_size = "1 day"
         
-        # Ensure proper spacing for IBKR duration format
-        # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
-        # For hourly data, convert to days: 1 hour = 1/24 day
-        if timeframe == '1h':
-            # Convert hours to days (1 hour = 1/24 day)
-            hours_to_days = bars / 24
-            if hours_to_days < 1:
-                # For less than 1 day, use hours instead
-                dur_unit = f"{bars} H"
+        # Handle start_date if provided
+        if start_date:
+            if isinstance(start_date, str):
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
             else:
-                dur_unit = f"{int(hours_to_days)} D"
+                start_dt = start_date
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            
+            # Calculate duration from start_date to now
+            end_dt = datetime.now(timezone.utc)
+            duration_delta = end_dt - start_dt
+            days_diff = duration_delta.days
+            
+            # IBKR duration format: use days, weeks, months, or years
+            if days_diff >= 365:
+                years = days_diff // 365
+                dur_unit = f"{years} Y"
+            elif days_diff >= 30:
+                months = days_diff // 30
+                dur_unit = f"{months} M"
+            elif days_diff >= 7:
+                weeks = days_diff // 7
+                dur_unit = f"{weeks} W"
+            else:
+                dur_unit = f"{max(1, days_diff)} D"
+            
+            # Format endDateTime for IB (YYYYMMDD HH:MM:SS)
+            end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
+            logger.info(f"Using provided start date: {start_dt}, duration: {dur_unit}, end: {end_date_str}")
         else:
-            dur_unit = f"{bars} D"
+            # Ensure proper spacing for IBKR duration format
+            # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+            # For minute data, convert to days: 1 minute = 1/1440 day
+            # For hourly data, convert to days: 1 hour = 1/24 day
+            if timeframe == '1m':
+                # Convert minutes to days (1 minute = 1/1440 day)
+                minutes_to_days = bars / 1440
+                if minutes_to_days < 1:
+                    # For less than 1 day, use minutes (but IB doesn't support minutes in duration)
+                    # So use days with fractional calculation, but IB needs integer days
+                    # For very short periods, use 1 day minimum
+                    dur_unit = "1 D"
+                else:
+                    dur_unit = f"{int(minutes_to_days)} D"
+            elif timeframe == '1h':
+                # Convert hours to days (1 hour = 1/24 day)
+                hours_to_days = bars / 24
+                if hours_to_days < 1:
+                    # For less than 1 day, use hours instead
+                    dur_unit = f"{bars} H"
+                else:
+                    dur_unit = f"{int(hours_to_days)} D"
+            else:  # 1d
+                dur_unit = f"{bars} D"
+            end_date_str = ""  # Use current time
         
         logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
 
@@ -721,7 +840,7 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None):
         def fetch_bars_operation():
             return ib.reqHistoricalData(
                 contract,
-                endDateTime="",
+                endDateTime=end_date_str,
                 durationStr=dur_unit,
                 barSizeSetting=bar_size,
                 whatToShow="TRADES",
@@ -769,16 +888,34 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None):
         # Don't disconnect - we want to reuse the connection
         pass
 
-def fetch_max_from_ib(symbol, timeframe, contract_info=None):
+def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
     """Fetch maximum available historical data from IBKR by looping through requests."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1h", "1d"]:
+    if timeframe not in ["1m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     all_data = []
     total_bars_fetched = 0
-    end_date = ""  # Start from most recent data
+    
+    # Handle start_date if provided
+    if start_date:
+        if isinstance(start_date, str):
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        else:
+            start_dt = start_date
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        # Convert to IB format (YYYYMMDD HH:MM:SS) - this will be the initial end_date
+        # We'll work backwards from now to start_date
+        end_date = ""  # Start from most recent data
+        target_start_date = start_dt
+        logger.info(f"Using provided start date: {start_dt}, will fetch from {start_dt} to now")
+    else:
+        end_date = ""  # Start from most recent data
+        target_start_date = None
     
     logger.info(f"Starting maximum data fetch for {symbol} @ {timeframe}")
     
@@ -817,15 +954,27 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None):
                     logger.error(f"3. Symbol format is incorrect")
                     break
             
-            bar_size = "1 hour" if timeframe == "1h" else "1 day"
+            # Map timeframe to IB bar size setting
+            if timeframe == "1m":
+                bar_size = "1 min"
+            elif timeframe == "1h":
+                bar_size = "1 hour"
+            else:  # 1d
+                bar_size = "1 day"
+            
             # Ensure proper spacing for IBKR duration format
             # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
+            # For minute data, convert to days: 1 minute = 1/1440 day
             # For hourly data, convert to days: 1 hour = 1/24 day
-            if timeframe == '1h':
+            if timeframe == '1m':
+                # Convert minutes to days (1 minute = 1/1440 day)
+                minutes_to_days = IB_BAR_CAP / 1440
+                dur_unit = f"{max(1, int(minutes_to_days))} D"  # Minimum 1 day
+            elif timeframe == '1h':
                 # Convert hours to days (1 hour = 1/24 day)
                 hours_to_days = IB_BAR_CAP / 24
                 dur_unit = f"{int(hours_to_days)} D"
-            else:
+            else:  # 1d
                 dur_unit = f"{IB_BAR_CAP} D"
             
             logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
@@ -1010,8 +1159,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch historical bars from Alpaca or IBKR.")
     parser.add_argument("--symbol", required=True, help="Symbol to fetch (e.g. NFLX)")
     parser.add_argument("--provider", required=True, choices=["alpaca", "ib"], help="Data provider")
-    parser.add_argument("--timeframe", required=True, choices=["1h", "1d"], help="Timeframe to fetch")
+    parser.add_argument("--timeframe", required=True, choices=["1m", "1h", "1d"], help="Timeframe to fetch")
     parser.add_argument("--bars", default=1000, help="Number of bars to fetch or 'max' for maximum available")
+    parser.add_argument("--since", type=str, help="Start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
 
     args = parser.parse_args()
 
@@ -1035,16 +1185,16 @@ if __name__ == "__main__":
     try:
         if provider == "alpaca":
             if bars == "max":
-                fetch_from_alpaca(symbol, bars, timeframe)
+                fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
             else:
                 bars = min(bars, ALPACA_BAR_CAP)
-                fetch_from_alpaca(symbol, bars, timeframe)
+                fetch_from_alpaca(symbol, bars, timeframe, start_date=args.since)
         elif provider == "ib":
             if bars == "max":
-                fetch_from_ib(symbol, bars, timeframe)
+                fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
             else:
                 bars = min(bars, IB_BAR_CAP)
-                fetch_from_ib(symbol, bars, timeframe)
+                fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
     except Exception as e:
         logger.error(f"Failed to fetch data: {e}")
         exit(1)

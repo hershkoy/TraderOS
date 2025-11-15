@@ -358,3 +358,9 @@ python scripts\daily_scanner.py --output-report
 
 # weekend scan (hl after ll + squeeze):
 run_scanner.bat
+
+
+# Downloading historical data:
+ninja trader -> tools -> historical data -> export
+or 
+python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01

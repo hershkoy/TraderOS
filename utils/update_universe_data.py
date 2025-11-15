@@ -376,8 +376,8 @@ class UniverseDataUpdater:
         # Validation
         if self.provider not in ['alpaca', 'ib']:
             raise ValueError("Provider must be 'alpaca' or 'ib'")
-        if self.timeframe not in ['1h', '1d']:
-            raise ValueError("Timeframe must be '1h' or '1d'")
+        if self.timeframe not in ['1m', '1h', '1d']:
+            raise ValueError("Timeframe must be '1m', '1h', or '1d'")
         
         logger.info(f"Initialized UniverseDataUpdater for {self.provider} @ {self.timeframe}")
         logger.info(f"Retry configuration: max_retries={max_retries}, base_delay={retry_base_delay}s")
@@ -643,7 +643,7 @@ class UniverseDataUpdater:
         logger.warning(f"[CONVERT] No valid IB symbol found for {symbol}, using original")
         return {'ib_symbol': symbol, 'con_id': None, 'primary_exchange': None}
     
-    def fetch_ticker_data(self, symbol: str, use_max_bars: bool = False) -> bool:
+    def fetch_ticker_data(self, symbol: str, use_max_bars: bool = False, start_date: Optional[str] = None) -> bool:
         """
         Fetch data for a single ticker with retry logic for IB API timeouts
         
@@ -666,12 +666,19 @@ class UniverseDataUpdater:
                     logger.info(f"[INFO] Fetching maximum available bars for {symbol}")
                 else:
                     # Use fixed amounts for reliability
-                    # For daily data: 5 years = ~1260 bars, For hourly data: 1 year = ~8760 bars
-                    bars = 1260 if self.timeframe == "1d" else 8760
+                    # For daily data: 5 years = ~1260 bars
+                    # For hourly data: 1 year = ~8760 bars
+                    # For minute data: 5 years = ~390 trading days/year * 390 minutes/day * 5 years = ~760,500 bars
+                    if self.timeframe == "1d":
+                        bars = 1260
+                    elif self.timeframe == "1h":
+                        bars = 8760
+                    else:  # 1m
+                        bars = 760500  # 5 years of 1-minute data
                     logger.info(f"[INFO] Fetching {bars} bars for {symbol}")
                 
                 if self.provider == "alpaca":
-                    result = fetch_from_alpaca(symbol, bars, self.timeframe)
+                    result = fetch_from_alpaca(symbol, bars, self.timeframe, start_date=start_date)
                 elif self.provider == "ib":
                     # Convert symbol format for IB compatibility
                     contract_info = self._convert_symbol_for_ib(symbol)
@@ -681,7 +688,7 @@ class UniverseDataUpdater:
                     
                     # Pass contract info to avoid re-qualification
                     logger.info(f"[CONTRACT] Using cached contract info: conId {contract_info['con_id']}, exchange {contract_info['primary_exchange']}")
-                    result = fetch_from_ib(ib_symbol, bars, self.timeframe, contract_info)
+                    result = fetch_from_ib(ib_symbol, bars, self.timeframe, contract_info, start_date=start_date)
                 else:
                     logger.error(f"Unknown provider: {self.provider}")
                     return False
@@ -732,7 +739,8 @@ class UniverseDataUpdater:
                            start_from_index: int = 0,
                            use_max_bars: bool = False,
                            skip_existing: bool = False,
-                           universe_file: Optional[str] = None) -> Dict[str, Any]:
+                           universe_file: Optional[str] = None,
+                           start_date: Optional[str] = None) -> Dict[str, Any]:
         """
         Update market data for all tickers in the universe
         
@@ -745,6 +753,7 @@ class UniverseDataUpdater:
             use_max_bars: If True, fetch maximum available bars, otherwise use fixed amounts
             skip_existing: If True, skip tickers that already have data for the timeframe
             universe_file: Optional custom universe file to load tickers from
+            start_date: Optional start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
             
         Returns:
             Dict with update statistics
@@ -814,7 +823,7 @@ class UniverseDataUpdater:
                 try:
                     # For IB provider, we need to run in main thread due to event loop requirements
                     # Use a simple approach without threading
-                    fetch_result = self.fetch_ticker_data(symbol, use_max_bars)
+                    fetch_result = self.fetch_ticker_data(symbol, use_max_bars, start_date=start_date)
                     
                     if fetch_result:
                         successful += 1
@@ -1234,7 +1243,16 @@ class UniverseDataUpdater:
     
     def _create_ib_contract(self, symbol: str):
         """Create an IB contract with proper primary exchange to avoid ambiguity"""
-        from ib_insync import Stock
+        from ib_insync import Stock, Index
+        
+        # Define index symbols that need special handling
+        INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'SPY', 'QQQ', 'IWM', 'DIA'}
+        
+        # Check if this is an index
+        if symbol.upper() in INDEX_SYMBOLS:
+            # For indices, use Index class with CBOE exchange
+            logger.info(f"[CONTRACT] Creating index contract for {symbol} with CBOE exchange")
+            return Index(symbol=symbol, exchange='CBOE', currency='USD')
         
         # Define primary exchanges for common symbols to avoid ambiguity
         NASDAQ_SYMBOLS = {
@@ -1300,6 +1318,9 @@ class UniverseDataUpdater:
                     
                     # Try to get a small amount of historical data to confirm it's tradeable
                     try:
+                        # Use appropriate bar size based on timeframe we're testing for
+                        # For testing purposes, use 1 hour bars regardless of target timeframe
+                        # to keep the test quick
                         bars = ib.reqHistoricalData(
                             contract,
                             endDateTime='',
@@ -1519,6 +1540,18 @@ Examples:
   
   # Enable enhanced IB debugging to see permission errors
   python update_universe_data.py --provider ib --timeframe 1h --debug-ib --test-symbol STE
+  
+  # Fetch SPX 1-minute data for 5 years (uses max bars, will loop through requests)
+  python update_universe_data.py --provider ib --timeframe 1m --max-bars --universe-file spx.txt
+  
+  # Or use fetch_data.py directly for a single symbol
+  python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max
+  
+  # Fetch data since a specific date (e.g., last 5 years from 2020-01-01)
+  python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01
+  
+  # Fetch data since a specific date and time
+  python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01T09:30:00
         """
     )
     
@@ -1531,7 +1564,7 @@ Examples:
     
     parser.add_argument(
         "--timeframe", 
-        choices=["1h", "1d"], 
+        choices=["1m", "1h", "1d"], 
         default="1d",
         help="Timeframe to fetch (default: 1d)"
     )
@@ -1650,6 +1683,12 @@ Examples:
         help="Enable enhanced IB logging for debugging permission and contract issues"
     )
     
+    parser.add_argument(
+        "--since", 
+        type=str, 
+        help="Start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS). Fetches data from this date to now."
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -1760,7 +1799,8 @@ Examples:
             start_from_index=start_index,
             use_max_bars=args.max_bars,
             skip_existing=args.skip_existing,
-            universe_file=args.universe_file
+            universe_file=args.universe_file,
+            start_date=args.since
         )
         
         if "error" in results:
