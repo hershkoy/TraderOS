@@ -9,7 +9,7 @@ REM Activate virtual environment
 call venv\Scripts\activate.bat
 
 REM Run the scanner with HL After LL scanner by default
-python scanner_runner.py --scanner hl_after_ll --log-level INFO
+python scanner_runner.py --scanner hl_after_ll squeeze --log-level INFO
 
 REM Keep window open to see results
 pause

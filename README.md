@@ -334,14 +334,11 @@ python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --
 slow:
 python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --continuous --dates-per-batch 10 --delay-between-batches 180 --log-level DEBUG --log-file "logs/debug_session.log"
 
-detect revesal in (SPX) 1m chart, using heikin ashi
+# detect revesal in (SPX) 1m chart, using heikin ashi
 python scripts\ha_reversal_scanner.py --debug
-
 
 # Fetch expiration closest to 7 DTE
 python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --std-dev 2.0
-
-
 
 # Auto-fetch and analyze
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --target-delta 0.10
@@ -350,10 +347,14 @@ python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --quant
 
 # Place order:
 risky/balanced/conservative
-python scripts/ib_option_chain_to_csv.py --input-csv reports/QQQ_P_options.csv --place-order --risk-profile risky --quantity 1 --account DU123456
+python scripts/spreads_trader.py --input-csv reports/QQQ_P_options.csv --place-order --risk-profile balanced --quantity 1 --account DU123456
 
+python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --risk-profile balanced --quantity 1 --account DU123456
 
-
-
-#daily scanner:
+# daily scanner:
 python scripts\daily_scanner.py --output-report
+
+
+
+# weekend scan (hl after ll + squeeze):
+run_scanner.bat
