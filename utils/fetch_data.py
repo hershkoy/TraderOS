@@ -10,7 +10,7 @@ import logging
 import random
 import threading
 import socket
-from ib_insync import util
+from ib_insync import IB, util 
 try:
     from utils.timescaledb_client import get_timescaledb_client
 except ImportError:
@@ -100,38 +100,27 @@ def find_listening_port(host: str = "127.0.0.1", ports: list = None) -> int:
 
 def get_ib_connection():
     """Get or create a shared IBKR connection"""
-    global _ib_connection
-    
-    with _ib_lock:
-        if _ib_connection is None or not _ib_connection.isConnected():
-            _ensure_ib_loop()
-            from ib_insync import IB
-            
-            # Clean up previous connection if it exists
-            if _ib_connection is not None:
-                try:
-                    if _ib_connection.isConnected():
-                        _ib_connection.disconnect()
-                except:
-                    pass
-                _ib_connection = None
 
-            HOST = "127.0.0.1"
-            PORTS = [7497, 7496, 4002, 4001]  # TWS paper, TWS live, Gateway paper, Gateway live           
-            logger.info(f"Checking for listening ports on {HOST}...")
-            port_tmp = find_listening_port(HOST, PORTS)
-            port = 4001
-            logger.info(f"Found listening port:4001:{port_tmp}|{port}|")
+    util.logToConsole() 
 
-            PORT = port
-            CLIENT_ID = 2
-            
-            _ib_connection = IB()
-            logger.info(f"Connecting to {HOST}:{PORT} with client ID {CLIENT_ID}...")
-            _ib_connection.connect(HOST, PORT, clientId=CLIENT_ID, timeout=10)
-            logger.info(f"IBKR connection established on port {PORT} with client ID {CLIENT_ID}")
+    HOST = "127.0.0.1"
+    PORTS = [7497, 7496, 4002, 4001]  # TWS paper, TWS live, Gateway paper, Gateway live           
+    logger.info(f"Checking for listening ports on {HOST}...")
+    port_tmp = find_listening_port(HOST, PORTS)
+    port = 4001
+    logger.info(f"Found listening port:4001:{port_tmp}|{port}|")
+
+    PORT = port
+    CLIENT_ID = 1
+
+    _ib_connection = IB()
+    logger.info(f"Connecting to {HOST}:{PORT} with client ID {CLIENT_ID}...")
+    _ib_connection.connect(HOST, PORT, clientId=CLIENT_ID, timeout=10)
+    logger.info(f"IBKR connection established on port {PORT} with client ID {CLIENT_ID}")
+    logger.info(f"Server Time: {_ib_connection.reqCurrentTime()}")
+
         
-        return _ib_connection
+    return _ib_connection
 
 def create_ib_contract_with_primary_exchange(symbol):
     """Create an IB contract with proper primary exchange to avoid ambiguity"""
