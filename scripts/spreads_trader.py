@@ -390,7 +390,8 @@ def create_ib_spread_order(
     candidate: SpreadCandidate,
     quantity: int,
     account: str = '',
-    tif: str = "DAY"
+    tif: str = "DAY",
+    port: Optional[int] = None
 ) -> Trade:
     """
     Create a SELL vertical put spread order in IB for the given candidate.
@@ -402,11 +403,12 @@ def create_ib_spread_order(
         quantity: Number of spreads
         account: IB account ID (empty string for default account)
         tif: Time in force (default: DAY)
+        port: IB API port number (default: from IB_PORT env var or 4001)
     
     Returns:
         Trade object
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "DJX"}
     exchange = "CBOE" if symbol.upper() in INDEX_SYMBOLS else "SMART"
@@ -490,7 +492,8 @@ def monitor_and_adjust_spread_order(
     initial_price: float,
     min_price: float = 0.23,
     initial_wait_minutes: int = 2,
-    price_reduction_per_minute: float = 0.01
+    price_reduction_per_minute: float = 0.01,
+    port: Optional[int] = None
 ) -> Trade:
     """
     Monitor a spread order and adjust price according to strategy.
@@ -507,11 +510,12 @@ def monitor_and_adjust_spread_order(
         min_price: Minimum price to go down to (default: 0.23)
         initial_wait_minutes: Minutes to wait at initial price (default: 2)
         price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+        port: IB API port number (default: from IB_PORT env var or 4001)
     
     Returns:
         Trade object (may be filled, cancelled, or still pending)
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     logger.info(f"Monitoring order. Initial price: ${initial_price:.2f} for {initial_wait_minutes} minutes")
     logger.info(f"After {initial_wait_minutes} minutes, will reduce by ${price_reduction_per_minute:.2f} per minute (min: ${min_price:.2f})")
@@ -648,10 +652,21 @@ def auto_fetch_option_chain(
     right: str = "P",
     std_dev: Optional[float] = None,
     max_strikes: int = 100,
-    max_expirations: Optional[int] = None
+    max_expirations: Optional[int] = None,
+    port: Optional[int] = None
 ) -> str:
     """
     Automatically fetch option chain and return path to generated CSV.
+    
+    Args:
+        symbol: Underlying symbol
+        expiry: Expiration date (optional)
+        dte: Days to expiration (optional)
+        right: Option right (default: P)
+        std_dev: Standard deviation filter (optional)
+        max_strikes: Maximum strikes to fetch (default: 100)
+        max_expirations: Maximum expirations to fetch (optional)
+        port: IB API port number (optional)
     
     Returns:
         Path to the generated CSV file
@@ -681,7 +696,8 @@ def auto_fetch_option_chain(
         dte_max=None,
         target_dte=dte,
         specific_expirations=[expiry] if expiry else None,
-        std_dev=std_dev
+        std_dev=std_dev,
+        port=port
     )
     
     if not success:
@@ -846,6 +862,13 @@ def main():
         help="Maximum strikes to fetch when auto-fetching (default: 100)",
     )
     
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="IB API port number (default: from IB_PORT env var or 4001)",
+    )
+    
     args = parser.parse_args()
     
     # Determine CSV path - either use provided or auto-fetch
@@ -865,7 +888,8 @@ def main():
             right=args.right,
             std_dev=args.std_dev,
             max_strikes=args.max_strikes,
-            max_expirations=1 if args.expiry else None  # If expiry specified, only fetch that one
+            max_expirations=1 if args.expiry else None,  # If expiry specified, only fetch that one
+            port=args.port
         )
         
         # Extract symbol and expiry from CSV if not provided
@@ -981,7 +1005,7 @@ def main():
     INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "DJX"}
     exchange = "CBOE" if args.symbol.upper() in INDEX_SYMBOLS else "SMART"
     
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=args.port)
     
     # --- Build & qualify legs ---
     short_opt = Option(
@@ -1135,7 +1159,8 @@ def main():
             initial_price=initial_price,
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
-            price_reduction_per_minute=args.price_reduction_per_minute
+            price_reduction_per_minute=args.price_reduction_per_minute,
+            port=args.port
         )
         
         if trade.orderStatus.status == 'Filled':
