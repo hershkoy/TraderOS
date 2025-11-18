@@ -98,8 +98,16 @@ def find_listening_port(host: str = "127.0.0.1", ports: list = None) -> int:
     
     return None
 
-def get_ib_connection():
-    """Get or create a shared IBKR connection"""
+def get_ib_connection(port=None):
+    """
+    Get or create a shared IBKR connection
+    
+    Args:
+        port: Optional port number (default: from IB_PORT env var or 4001)
+    
+    Returns:
+        IB connection object
+    """
     global _ib_connection
     
     with _ib_lock:
@@ -121,13 +129,17 @@ def get_ib_connection():
         
         # Simple connection like ib_conn.py
         HOST = "127.0.0.1"
-        PORT = 4001
+        
+        # Get port from parameter, environment variable, or default
+        if port is None:
+            port = int(os.getenv("IB_PORT", "4001"))
+        
         CLIENT_ID = 2
         
         _ib_connection = IB()
-        logger.info(f"Connecting to {HOST}:{PORT} with client ID {CLIENT_ID}...")
-        _ib_connection.connect(HOST, PORT, clientId=CLIENT_ID, timeout=10)
-        logger.info(f"IBKR connection established on port {PORT} with client ID {CLIENT_ID}")
+        logger.info(f"Connecting to {HOST}:{port} with client ID {CLIENT_ID}...")
+        _ib_connection.connect(HOST, port, clientId=CLIENT_ID, timeout=10)
+        logger.info(f"IBKR connection established on port {port} with client ID {CLIENT_ID}")
         
         return _ib_connection
 

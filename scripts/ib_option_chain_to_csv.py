@@ -46,7 +46,8 @@ ib_logger.setLevel(logging.WARNING)
 def get_underlying_and_chain(
     underlying_symbol: str,
     exchange: str = 'SMART',
-    currency: str = 'USD'
+    currency: str = 'USD',
+    port: int = None
 ) -> Tuple[Contract, object]:
     """
     Get qualified underlying contract and option chain information.
@@ -54,7 +55,7 @@ def get_underlying_and_chain(
     Returns:
         Tuple of (qualified_underlying_contract, chain_object)
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     # Determine security type and exchange for indices
     # Index options typically trade on CBOE
@@ -119,7 +120,8 @@ def list_expirations(
     exchange: str = 'SMART',
     currency: str = 'USD',
     dte_min: Optional[int] = None,
-    dte_max: Optional[int] = None
+    dte_max: Optional[int] = None,
+    port: int = None
 ) -> List[Tuple[str, int]]:
     """
     List available expirations with Days To Expiration (DTE).
@@ -130,12 +132,13 @@ def list_expirations(
         currency: Currency
         dte_min: Minimum DTE to include (optional)
         dte_max: Maximum DTE to include (optional)
+        port: IB Gateway/TWS port number (optional)
     
     Returns:
         List of tuples: [(expiry_string, dte), ...]
     """
     try:
-        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency)
+        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency, port=port)
         
         logger.info(f"Found {len(chain.expirations)} available expirations")
         
@@ -430,7 +433,8 @@ def fetch_options_to_csv(
     dte_max: Optional[int] = None,
     target_dte: Optional[int] = None,
     specific_expirations: Optional[List[str]] = None,
-    std_dev: Optional[float] = None  # Filter strikes by standard deviation (e.g., 2.0 for "2 SD")
+    std_dev: Optional[float] = None,  # Filter strikes by standard deviation (e.g., 2.0 for "2 SD")
+    port: int = None  # IB Gateway/TWS port number
 ):
     """
     Pulls option chain for the given underlying and writes bid/ask, volume, IV, delta to CSV.
@@ -448,8 +452,9 @@ def fetch_options_to_csv(
         target_dte: Target DTE - finds expiration closest to this value (overrides dte_min/dte_max)
         specific_expirations: List of specific expirations to fetch (overrides DTE filtering)
         std_dev: Filter strikes by standard deviation (e.g., 2.0 for "2 SD", None = no filtering)
+        port: IB Gateway/TWS port number (optional)
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     try:
         # Request market data - try live first, fallback to delayed if not available
@@ -485,7 +490,7 @@ def fetch_options_to_csv(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Get underlying contract and chain
-        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency)
+        underlying, chain = get_underlying_and_chain(underlying_symbol, exchange, currency, port=port)
         logger.info(f"Found option chain with {len(chain.expirations)} expirations and {len(chain.strikes)} strikes")
         
         # Filter expirations based on DTE or specific list
@@ -709,7 +714,8 @@ def place_and_monitor_option_order(
     account: str = '',
     min_price: float = 0.23,
     initial_wait_minutes: int = 2,
-    price_reduction_per_minute: float = 0.01
+    price_reduction_per_minute: float = 0.01,
+    port: int = None
 ) -> Optional[Trade]:
     """
     Place an option order and monitor it with dynamic pricing strategy.
@@ -727,11 +733,12 @@ def place_and_monitor_option_order(
         min_price: Minimum price to go down to (default: 0.23)
         initial_wait_minutes: Minutes to wait at initial price (default: 2)
         price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+        port: IB Gateway/TWS port number (optional)
     
     Returns:
         Trade object if order is filled, None otherwise
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     # Create limit order (BUY order - starting high and reducing to get filled)
     order = Order()
@@ -907,7 +914,8 @@ def place_order_from_csv_row(
     account: str = '',
     min_price: float = 0.23,
     initial_wait_minutes: int = 2,
-    price_reduction_per_minute: float = 0.01
+    price_reduction_per_minute: float = 0.01,
+    port: int = None
 ) -> Optional[Trade]:
     """
     Place an order for an option based on a CSV row.
@@ -919,11 +927,12 @@ def place_order_from_csv_row(
         min_price: Minimum price to go down to (default: 0.23)
         initial_wait_minutes: Minutes to wait at initial price (default: 2)
         price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+        port: IB Gateway/TWS port number (optional)
     
     Returns:
         Trade object if order is filled, None otherwise
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=port)
     
     # Parse CSV row data
     symbol = row['symbol']
@@ -953,7 +962,7 @@ def place_order_from_csv_row(
     exchange = 'CBOE' if symbol.upper() in INDEX_SYMBOLS else 'SMART'
     
     # Get trading class from chain (we'll need to get it)
-    underlying, chain = get_underlying_and_chain(symbol, exchange, 'USD')
+    underlying, chain = get_underlying_and_chain(symbol, exchange, 'USD', port=port)
     trading_class = getattr(chain, 'tradingClass', None)
     
     # Create option contract
@@ -984,7 +993,8 @@ def place_order_from_csv_row(
         account=account,
         min_price=min_price,
         initial_wait_minutes=initial_wait_minutes,
-        price_reduction_per_minute=price_reduction_per_minute
+        price_reduction_per_minute=price_reduction_per_minute,
+        port=port
     )
 
 
@@ -1003,6 +1013,9 @@ Examples:
   
   # Fetch QQQ puts, 20 strikes, 3 expirations
   python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --max-strikes 20 --max-expirations 3
+  
+  # Use specific port (e.g., TWS paper trading on port 7497)
+  python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --port 7497 --max-strikes 20
   
   # Fetch options with DTE filtering (0-45 days)
   python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte-min 0 --dte-max 45 --max-strikes 20
@@ -1193,6 +1206,13 @@ Examples:
         )
     )
     
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=None,
+        help='IB Gateway/TWS port number (default: from IB_PORT env var or 4001). Common ports: 4001 (Gateway paper), 4002 (Gateway live), 7497 (TWS paper), 7496 (TWS live)'
+    )
+    
     args = parser.parse_args()
     
     # Handle order placement mode
@@ -1293,7 +1313,8 @@ Examples:
             account=args.account,
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
-            price_reduction_per_minute=args.price_reduction_per_minute
+            price_reduction_per_minute=args.price_reduction_per_minute,
+            port=args.port
         )
         
         if trade and trade.orderStatus.status == 'Filled':
@@ -1311,7 +1332,8 @@ Examples:
             exchange=args.exchange,
             currency=args.currency,
             dte_min=args.dte_min,
-            dte_max=args.dte_max
+            dte_max=args.dte_max,
+            port=args.port
         )
         
         if not expirations_with_dte:
@@ -1372,7 +1394,8 @@ Examples:
         dte_max=args.dte_max,
         target_dte=args.dte,
         specific_expirations=specific_expirations,
-        std_dev=args.std_dev
+        std_dev=args.std_dev,
+        port=args.port
     )
     
     if success:
