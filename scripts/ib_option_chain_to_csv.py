@@ -309,14 +309,22 @@ def fetch_options_for_right(
     Returns:
         List of dictionaries containing option data
     """
-    # Use SMART exchange for better routing, but keep tradingClass from chain
-    # SMART will route to the best exchange automatically
-    exchange = 'SMART'
+    # Get trading class from chain
     trading_class = getattr(chain, 'tradingClass', None)
+    
+    # Try to determine the correct exchange from the chain or underlying
+    # For some symbols, we need to use a specific exchange or leave it empty
+    exchange = ''  # Empty string lets IB find the contract automatically
+    if hasattr(chain, 'exchange') and chain.exchange:
+        exchange = chain.exchange
+    elif hasattr(underlying, 'primaryExchange') and underlying.primaryExchange:
+        # For QQQ, options might trade on the same exchange as underlying
+        # But often options trade on CBOE even if stock is on NASDAQ
+        pass  # Keep exchange empty for now
     
     logger.info(
         f"Building {len(expirations) * len(selected_strikes)} {right} option contracts "
-        f"(exchange={exchange}, tradingClass={trading_class})..."
+        f"(exchange='{exchange or 'auto'}', tradingClass={trading_class})..."
     )
     
     option_contracts = []
@@ -327,14 +335,33 @@ def fetch_options_for_right(
                 lastTradeDateOrContractMonth=expiry,
                 strike=strike,
                 right=right,
-                exchange=exchange,
+                exchange=exchange if exchange else '',  # Empty string for auto-discovery
                 tradingClass=trading_class
             )
             option_contracts.append(opt)
     
-    # Qualify option contracts
+    # Qualify option contracts - try in smaller batches to avoid overwhelming IB
     logger.info(f"Qualifying {len(option_contracts)} {right} option contracts...")
-    qualified_contracts = ib.qualifyContracts(*option_contracts)
+    qualified_contracts = []
+    
+    # Qualify in batches of 50 to avoid issues
+    batch_size = 50
+    for i in range(0, len(option_contracts), batch_size):
+        batch = option_contracts[i:i+batch_size]
+        try:
+            qualified_batch = ib.qualifyContracts(*batch)
+            qualified_contracts.extend(qualified_batch)
+            logger.debug(f"Qualified batch {i//batch_size + 1}: {len(qualified_batch)}/{len(batch)} contracts")
+        except Exception as e:
+            logger.warning(f"Error qualifying batch {i//batch_size + 1}: {e}")
+            # Try qualifying one at a time for this batch
+            for contract in batch:
+                try:
+                    qualified = ib.qualifyContracts(contract)
+                    if qualified:
+                        qualified_contracts.extend(qualified)
+                except Exception as e2:
+                    logger.debug(f"Could not qualify contract {contract.symbol} {contract.lastTradeDateOrContractMonth} {contract.right} {contract.strike}: {e2}")
     logger.info(f"Successfully qualified {len(qualified_contracts)} {right} option contracts")
     
     if not qualified_contracts:
@@ -425,9 +452,18 @@ def fetch_options_to_csv(
     ib = get_ib_connection()
     
     try:
-        # Request live market data (MarketDataType 1 = Live, 2 = Frozen, 3 = Delayed, 4 = Delayed-Frozen)
-        ib.reqMarketDataType(1)
-        logger.info("Requested live market data (MarketDataType 1)")
+        # Request market data - try live first, fallback to delayed if not available
+        # MarketDataType 1 = Live, 2 = Frozen, 3 = Delayed, 4 = Delayed-Frozen
+        try:
+            ib.reqMarketDataType(1)
+            logger.info("Requested live market data (MarketDataType 1)")
+        except Exception as e:
+            logger.warning(f"Could not request live market data: {e}. Trying delayed data...")
+            try:
+                ib.reqMarketDataType(3)  # Delayed data
+                logger.info("Requested delayed market data (MarketDataType 3)")
+            except Exception as e2:
+                logger.warning(f"Could not request delayed market data either: {e2}. Continuing anyway...")
         # Determine which rights to fetch
         if right.upper() == 'BOTH':
             rights_to_fetch = ['P', 'C']
@@ -499,17 +535,27 @@ def fetch_options_to_csv(
         # Get current underlying price and IV for filtering
         logger.info(f"Requesting current market price for {underlying_symbol}...")
         ticker = ib.reqMktData(underlying, '', False, False)
-        ib.sleep(2)  # give time to receive price
+        ib.sleep(3)  # give more time to receive price
         
-        underlying_price = ticker.last if ticker.last is not None else ticker.close
-        if underlying_price is None:
-            logger.error(f"Could not get current price for {underlying_symbol}")
-            return False
+        # Try multiple price sources in order of preference
+        underlying_price = None
+        if ticker.last is not None and ticker.last > 0:
+            underlying_price = ticker.last
+        elif ticker.close is not None and ticker.close > 0:
+            underlying_price = ticker.close
+        elif ticker.bid is not None and ticker.ask is not None and ticker.bid > 0 and ticker.ask > 0:
+            underlying_price = (ticker.bid + ticker.ask) / 2.0
+            logger.info(f"Using bid/ask mid for price: {underlying_price}")
         
-        logger.info(f"Underlying {underlying_symbol} current price: {underlying_price}")
+        if underlying_price is None or underlying_price <= 0:
+            logger.warning(f"Could not get current price for {underlying_symbol} (last={ticker.last}, close={ticker.close}, bid={ticker.bid}, ask={ticker.ask})")
+            logger.warning("Will proceed without price filtering - strikes will be selected without std dev filtering")
+            underlying_price = None  # Will skip std dev filtering
+        else:
+            logger.info(f"Underlying {underlying_symbol} current price: {underlying_price}")
         
-        # Filter strikes based on std dev if requested
-        if std_dev is not None:
+        # Filter strikes based on std dev if requested and we have a price
+        if std_dev is not None and underlying_price is not None:
             # Get ATM IV from the first expiration to use for std dev calculation
             # We'll use the first expiration's DTE for the calculation
             first_expiry = expirations[0] if expirations else None
@@ -570,13 +616,18 @@ def fetch_options_to_csv(
         
         # Select strikes - use only strikes that exist in the chain
         if len(all_strikes) > max_strikes:
-            # Choose strikes closest to ATM
-            strikes_sorted_by_distance = sorted(
-                all_strikes,
-                key=lambda s: abs(s - underlying_price)
-            )
-            selected_strikes = sorted(strikes_sorted_by_distance[:max_strikes])
-            logger.info(f"Selected {len(selected_strikes)} strikes closest to ATM (from {len(all_strikes)} available)")
+            # Choose strikes closest to ATM if we have price, otherwise just take first N
+            if underlying_price is not None:
+                strikes_sorted_by_distance = sorted(
+                    all_strikes,
+                    key=lambda s: abs(s - underlying_price)
+                )
+                selected_strikes = sorted(strikes_sorted_by_distance[:max_strikes])
+                logger.info(f"Selected {len(selected_strikes)} strikes closest to ATM (from {len(all_strikes)} available)")
+            else:
+                # No price available, just take first N strikes
+                selected_strikes = sorted(all_strikes[:max_strikes])
+                logger.info(f"Selected first {len(selected_strikes)} strikes (from {len(all_strikes)} available, no price for ATM selection)")
         else:
             selected_strikes = all_strikes
             logger.info(f"Using all {len(selected_strikes)} available strikes")

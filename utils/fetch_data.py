@@ -9,6 +9,8 @@ import time
 import logging
 import random
 import threading
+import socket
+from ib_insync import util
 try:
     from utils.timescaledb_client import get_timescaledb_client
 except ImportError:
@@ -37,9 +39,64 @@ RATE_LIMIT_RETRY_DELAYS = [5, 10, 20, 30, 60]  # Longer delays for rate limits
 MAX_TIMEOUT_RETRIES = 3  # Specific retries for timeout errors
 MAX_RATE_LIMIT_RETRIES = 3  # Specific retries for rate limit errors
 
+# Set up logging (needed for connection functions)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def _ensure_ib_loop():
+    """Ensure the ib_insync background event loop is running."""
+    global _loop_started
+    if not _loop_started:
+        util.startLoop()
+        _loop_started = True
+
+
 # Global IBKR connection manager
 _ib_connection = None
 _ib_lock = threading.Lock()
+_loop_started = False
+
+def is_port_listening(host: str, port: int, timeout: float = 0.5) -> bool:
+    """
+    Check if a port is listening on the given host.
+    
+    Args:
+        host: Hostname or IP address
+        port: Port number to check
+        timeout: Connection timeout in seconds
+    
+    Returns:
+        True if port is listening, False otherwise
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+def find_listening_port(host: str = "127.0.0.1", ports: list = None) -> int:
+    """
+    Find the first port that is listening from a list of ports.
+    
+    Args:
+        host: Hostname or IP address (default: 127.0.0.1)
+        ports: List of ports to check (default: [7497, 7496, 4002, 4001])
+    
+    Returns:
+        Port number if found, None otherwise
+    """
+    if ports is None:
+        ports = [7497, 7496, 4002, 4001]  # TWS paper, TWS live, Gateway paper, Gateway live
+    
+    for port in ports:
+        if is_port_listening(host, port):
+            logger.info(f"Found listening port: {host}:{port}")
+            return port
+    
+    return None
 
 def get_ib_connection():
     """Get or create a shared IBKR connection"""
@@ -47,25 +104,99 @@ def get_ib_connection():
     
     with _ib_lock:
         if _ib_connection is None or not _ib_connection.isConnected():
+            _ensure_ib_loop()
             from ib_insync import IB
             _ib_connection = IB()
             client_id = random.randint(1000, 9999)
             logger.info(f"Creating new IBKR connection with client ID {client_id}")
             
-            # Try to connect with retry logic
+            # Find which port is listening
+            HOST = "127.0.0.1"
+            PORTS = [7497, 7496, 4002, 4001]  # TWS paper, TWS live, Gateway paper, Gateway live
+            
+            logger.info(f"Checking for listening ports on {HOST}...")
+            port = find_listening_port(HOST, PORTS)
+            
+            if port is None:
+                raise ConnectionError(
+                    f"No IBKR service found listening on {HOST}. "
+                    f"Checked ports: {PORTS}. "
+                    f"Please ensure TWS or IB Gateway is running and API is enabled."
+                )
+            
+            # Connect to the listening port with retry logic
             max_connection_attempts = 3
+            connected = False
+            
+            logger.info(f"Connecting to {HOST}:{port}...")
             for attempt in range(max_connection_attempts):
+                # Create a fresh IB instance for each attempt to avoid state issues
                 try:
-                    _ib_connection.connect("127.0.0.1", 4001, clientId=client_id)
-                    logger.info(f"IBKR connection established with client ID {client_id}")
-                    break
-                except Exception as e:
-                    if attempt < max_connection_attempts - 1:
-                        logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying...")
-                        time.sleep(2)
+                    # Clean up previous connection if it exists
+                    if _ib_connection is not None:
+                        try:
+                            if _ib_connection.isConnected():
+                                _ib_connection.disconnect()
+                        except:
+                            pass
+                        _ib_connection = None
+                    
+                    # Create fresh IB instance
+                    _ib_connection = IB()
+                    
+                    # Use a unique client ID per attempt to avoid conflicts
+                    attempt_client_id = client_id + attempt
+                    logger.info(f"Connection attempt {attempt + 1}/{max_connection_attempts} with client ID {attempt_client_id}")
+                    
+                    # Connect with increased timeout (default is 4 seconds, increase to 15 for handshake)
+                    _ib_connection.connect(HOST, port, clientId=attempt_client_id, timeout=15)
+                    #HOST = '127.0.0.1'
+                    #PORT = 7496   
+                    #CLIENT_ID = 1
+                    #_ib_connection.connect(HOST, PORT, clientId=CLIENT_ID, timeout=10)
+                    
+                    # Wait a moment for API to fully initialize and complete handshake
+                    time.sleep(2)
+                    
+                    # Verify connection is actually established
+                    if _ib_connection.isConnected():
+                        logger.info(f"IBKR connection established on port {port} with client ID {attempt_client_id}")
+                        connected = True
+                        break
                     else:
-                        logger.error(f"Failed to connect to IBKR after {max_connection_attempts} attempts: {e}")
-                        raise
+                        raise ConnectionError("Connection established but isConnected() returned False")
+                        
+                except TimeoutError as e:
+                    # Clean up failed connection attempt
+                    _ib_connection = None
+                    
+                    if attempt < max_connection_attempts - 1:
+                        logger.warning(f"Connection attempt {attempt + 1} to port {port} timed out during API handshake. Retrying with longer delay...")
+                        time.sleep(5)  # Longer delay for timeout errors to let API recover
+                    else:
+                        logger.error(f"Failed to connect to {HOST}:{port} after {max_connection_attempts} attempts: Connection timeout")
+                        raise ConnectionError(
+                            f"Connection to IBKR on {HOST}:{port} timed out after {max_connection_attempts} attempts. "
+                            f"The socket connects but the API handshake times out. "
+                            f"Please check:\n"
+                            f"  1. TWS/Gateway API is enabled in settings\n"
+                            f"  2. 'Enable ActiveX and Socket Clients' is checked\n"
+                            f"  3. No firewall is blocking the connection\n"
+                            f"  4. Try restarting TWS/Gateway"
+                        )
+                except Exception as e:
+                    # Clean up failed connection attempt
+                    _ib_connection = None
+                        
+                    if attempt < max_connection_attempts - 1:
+                        logger.warning(f"Connection attempt {attempt + 1} to port {port} failed: {e}. Retrying...")
+                        time.sleep(3)
+                    else:
+                        logger.error(f"Failed to connect to {HOST}:{port} after {max_connection_attempts} attempts: {e}")
+                        raise ConnectionError(f"Failed to connect to IBKR on {HOST}:{port} after {max_connection_attempts} attempts: {e}")
+            
+            if not connected:
+                raise ConnectionError(f"Failed to connect to IBKR on {HOST}:{port}")
         
         return _ib_connection
 
@@ -183,9 +314,7 @@ def reset_ib_connection():
 SAVE_DIR = Path("./data")
 SAVE_DIR.mkdir(exist_ok=True)
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Logger is already defined above for connection functions
 
 # Filter out unwanted IBKR messages
 ib_logger = logging.getLogger('ib_insync.wrapper')
