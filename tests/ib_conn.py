@@ -1,8 +1,8 @@
 from ib_insync import IB, util, Stock 
 
-HOST = 'localhost'
+HOST = '127.0.0.1'
 PORT = 4001      # make sure this really changed
-CLIENT_ID = 1456
+CLIENT_ID = 1
 
 util.logToConsole()  # see low-level messages
 
