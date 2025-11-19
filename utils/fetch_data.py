@@ -9,13 +9,15 @@ import time
 import logging
 import random
 import threading
-import socket
-from ib_insync import IB, util 
+from ib_insync import IB, util
+
 try:
     from utils.timescaledb_client import get_timescaledb_client
+    from utils.ib_port_detector import DEFAULT_PORTS
 except ImportError:
     # Fallback for when running from utils directory
     from timescaledb_client import get_timescaledb_client
+    from ib_port_detector import DEFAULT_PORTS
 
 # ─────────────────────────────
 # CONFIG
@@ -32,6 +34,7 @@ IB_BAR_CAP = 3000       # IBKR's limit per request
 MAX_RETRIES = 5          # Increased from 3 to 5
 RETRY_DELAY = 5
 IB_REQUEST_DELAY = 1     # Delay between IBKR requests
+ALPACA_REQUEST_DELAY = 1  # Delay between Alpaca batch requests
 
 # Enhanced retry configuration for timeout handling
 TIMEOUT_RETRY_DELAYS = [2, 5, 10, 20, 30]  # Progressive delays for timeouts
@@ -56,47 +59,27 @@ _ib_connection = None
 _ib_lock = threading.Lock()
 _loop_started = False
 
-def is_port_listening(host: str, port: int, timeout: float = 0.5) -> bool:
-    """
-    Check if a port is listening on the given host.
-    
-    Args:
-        host: Hostname or IP address
-        port: Port number to check
-        timeout: Connection timeout in seconds
-    
-    Returns:
-        True if port is listening, False otherwise
-    """
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
-    except Exception:
-        return False
 
-def find_listening_port(host: str = "127.0.0.1", ports: list = None) -> int:
-    """
-    Find the first port that is listening from a list of ports.
-    
-    Args:
-        host: Hostname or IP address (default: 127.0.0.1)
-        ports: List of ports to check (default: [7497, 7496, 4002, 4001])
-    
-    Returns:
-        Port number if found, None otherwise
-    """
-    if ports is None:
-        ports = [7497, 7496, 4002, 4001]  # TWS paper, TWS live, Gateway paper, Gateway live
-    
-    for port in ports:
-        if is_port_listening(host, port):
-            logger.info(f"Found listening port: {host}:{port}")
-            return port
-    
-    return None
+def _candidate_ib_ports(explicit_port):
+    """Build the list of ports to try when connecting to IB."""
+    ports_to_try = []
+    if explicit_port is not None:
+        ports_to_try.append(int(explicit_port))
+        return ports_to_try
+
+    env_port = os.getenv("IB_PORT")
+    if env_port:
+        try:
+            env_port_int = int(env_port)
+            ports_to_try.append(env_port_int)
+        except ValueError:
+            logger.warning("Invalid IB_PORT environment value: %s", env_port)
+
+    for default_port in DEFAULT_PORTS:
+        if default_port not in ports_to_try:
+            ports_to_try.append(default_port)
+
+    return ports_to_try
 
 def get_ib_connection(port=None):
     """
@@ -130,18 +113,52 @@ def get_ib_connection(port=None):
         # Simple connection like ib_conn.py
         HOST = "127.0.0.1"
         
-        # Get port from parameter, environment variable, or default
-        if port is None:
-            port = int(os.getenv("IB_PORT", "4001"))
-        
         CLIENT_ID = 2
-        
+        candidate_ports = _candidate_ib_ports(port)
+        last_error = None
         _ib_connection = IB()
-        logger.info(f"Connecting to {HOST}:{port} with client ID {CLIENT_ID}...")
-        _ib_connection.connect(HOST, port, clientId=CLIENT_ID, timeout=10)
-        logger.info(f"IBKR connection established on port {port} with client ID {CLIENT_ID}")
-        
-        return _ib_connection
+
+        for candidate in candidate_ports:
+            try:
+                logger.info(
+                    "Attempting IBKR connection to %s:%s (client ID %s)",
+                    HOST,
+                    candidate,
+                    CLIENT_ID,
+                )
+                _ib_connection.connect(
+                    HOST,
+                    candidate,
+                    clientId=CLIENT_ID,
+                    timeout=2,
+                )
+                logger.info(
+                    "IBKR connection established on port %s with client ID %s",
+                    candidate,
+                    CLIENT_ID,
+                )
+                return _ib_connection
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning(
+                    "IBKR connection attempt failed on port %s: %s",
+                    candidate,
+                    exc,
+                )
+                try:
+                    if _ib_connection.isConnected():
+                        _ib_connection.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                _ib_connection = IB()
+
+        logger.error(
+            "Unable to establish IBKR connection using ports: %s",
+            ", ".join(str(p) for p in candidate_ports),
+        )
+        if last_error:
+            raise last_error
+        raise ConnectionError("Failed to connect to IBKR on any port")
 
 def create_ib_contract_with_primary_exchange(symbol):
     """Create an IB contract with proper primary exchange to avoid ambiguity"""

@@ -14,6 +14,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.fetch_data import fetch_from_ib
+from utils.ib_port_detector import detect_ib_port
 from utils.ticker_universe import TickerUniverseManager
 
 
@@ -100,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ib-port",
         type=int,
-        help="IB Gateway/Gateway port (overrides IB_PORT env var).",
+        help="IB Gateway/Gateway port (overrides auto-detection & IB_PORT env).",
     )
     parser.add_argument(
         "--verbose",
@@ -254,9 +255,20 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
 
-    if args.ib_port:
-        os.environ["IB_PORT"] = str(args.ib_port)
-        LOGGER.info("Using IB port override: %s", args.ib_port)
+    selected_port: Optional[int] = args.ib_port
+    if selected_port:
+        LOGGER.info("Using IB port override: %s", selected_port)
+    else:
+        selected_port = detect_ib_port()
+        if selected_port is None:
+            LOGGER.error(
+                "Failed to auto-detect an IB port. Please specify one via --ib-port."
+            )
+            return
+        LOGGER.info("Auto-detected IB port: %s", selected_port)
+
+    if selected_port is not None:
+        os.environ["IB_PORT"] = str(selected_port)
 
     symbols = load_universe(args)
     if not symbols:
