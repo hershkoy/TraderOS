@@ -352,7 +352,7 @@ python scripts/spreads_trader.py --input-csv reports/QQQ_P_options.csv --place-o
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --risk-profile balanced --quantity 1 --account DU123456
 
 # daily scanner:
-python scripts\daily_scanner.py --output-report
+python scripts\daily_scanner.py --output-report  --ib-port 4002
 
 
 

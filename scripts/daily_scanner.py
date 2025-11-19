@@ -98,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         help="Filename prefix for generated reports.",
     )
     parser.add_argument(
+        "--ib-port",
+        type=int,
+        help="IB Gateway/Gateway port (overrides IB_PORT env var).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging.",
@@ -248,6 +253,10 @@ def write_report(results: List[ScannerResult], prefix: str) -> Path:
 def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
+
+    if args.ib_port:
+        os.environ["IB_PORT"] = str(args.ib_port)
+        LOGGER.info("Using IB port override: %s", args.ib_port)
 
     symbols = load_universe(args)
     if not symbols:
