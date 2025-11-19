@@ -75,6 +75,10 @@ try:
     from utils.ib_port_detector import detect_ib_port
 except ImportError:  # pragma: no cover
     from ib_port_detector import detect_ib_port  # type: ignore[import]
+try:
+    from utils.ib_account_detector import detect_ib_account
+except ImportError:  # pragma: no cover
+    from ib_account_detector import detect_ib_account  # type: ignore[import]
 
 # Import fetch_options_to_csv from ib_option_chain_to_csv
 try:
@@ -414,23 +418,27 @@ def create_ib_spread_order(
     """
     ib = get_ib_connection(port=port)
     
-    INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "DJX"}
-    exchange = "CBOE" if symbol.upper() in INDEX_SYMBOLS else "SMART"
+    # Use CBOE for all combo orders (legs and BAG must use the same exchange)
+    # SMART + multi-leg combo = rejected as "riskless combination"
+    exchange = "CBOE"
+    
+    logger.info(f"Using exchange: {exchange} for combo order (all components)")
     
     # Build option contracts for short & long legs
+    # Legs MUST use the same exchange as BAG (CBOE, not SMART)
     short_opt = Option(
         symbol=symbol,
         lastTradeDateOrContractMonth=expiry,
         strike=candidate.short.strike,
         right=candidate.short.right,
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
     )
     long_opt = Option(
         symbol=symbol,
         lastTradeDateOrContractMonth=expiry,
         strike=candidate.long.strike,
         right=candidate.long.right,
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
     )
     
     qualified = ib.qualifyContracts(short_opt, long_opt)
@@ -439,24 +447,28 @@ def create_ib_spread_order(
     
     short_q, long_q = qualified
     
+    # Build combo legs - MUST use the same exchange as BAG
+    # openClose=1 means this is an OPENING trade (new position)
     short_leg = ComboLeg(
         conId=short_q.conId,
         ratio=1,
         action="SELL",
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
+        openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
     long_leg = ComboLeg(
         conId=long_q.conId,
         ratio=1,
         action="BUY",
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
+        openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
     
     spread = Contract(
         symbol=symbol,
         secType="BAG",
         currency="USD",
-        exchange=exchange,
+        exchange=exchange,  # Must match leg exchange
     )
     spread.comboLegs = [short_leg, long_leg]
     
@@ -816,7 +828,7 @@ def main():
         "--account",
         type=str,
         default="",
-        help="IB account ID for order placement (e.g., DU123456 for paper trading, U123456 for live). Empty string uses default account.",
+        help="IB account ID for order placement (e.g., DU123456 for paper trading, U123456 for live). Empty string auto-detects from managed accounts.",
     )
     
     parser.add_argument(
@@ -867,7 +879,6 @@ def main():
     )
     
     parser.add_argument(
-    parser.add_argument(
         "--port",
         type=int,
         default=None,
@@ -887,6 +898,15 @@ def main():
             )
         logger.info("Auto-detected IB port: %s", selected_port)
     os.environ["IB_PORT"] = str(selected_port)
+    
+    # Auto-detect account if not provided
+    if not args.account:
+        detected_account = detect_ib_account(port=selected_port)
+        if detected_account:
+            args.account = detected_account
+            logger.info("Auto-detected IB account: %s", args.account)
+        else:
+            logger.warning("Could not auto-detect IB account. Order will use default account.")
 
     # Determine CSV path - either use provided or auto-fetch
     csv_path = args.input_csv
@@ -1019,25 +1039,29 @@ def main():
     # Create IB order
     print("\nCreating IB DAY order via API...")
     
-    INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "DJX"}
-    exchange = "CBOE" if args.symbol.upper() in INDEX_SYMBOLS else "SMART"
+    # Use CBOE for all combo orders (legs and BAG must use the same exchange)
+    # SMART + multi-leg combo = rejected as "riskless combination"
+    exchange = "CBOE"
+    
+    logger.info(f"Using exchange: {exchange} for combo order (all components)")
     
     ib = get_ib_connection(port=selected_port)
     
     # --- Build & qualify legs ---
+    # Legs MUST use the same exchange as BAG (CBOE, not SMART)
     short_opt = Option(
         symbol=args.symbol,
         lastTradeDateOrContractMonth=args.expiry,
         strike=selected.short.strike,
         right=selected.short.right,
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
     )
     long_opt = Option(
         symbol=args.symbol,
         lastTradeDateOrContractMonth=args.expiry,
         strike=selected.long.strike,
         right=selected.long.right,
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
     )
     
     qualified = ib.qualifyContracts(short_opt, long_opt)
@@ -1046,24 +1070,28 @@ def main():
     
     short_q, long_q = qualified
     
+    # Build combo legs - MUST use the same exchange as BAG
+    # openClose=1 means this is an OPENING trade (new position)
     short_leg = ComboLeg(
         conId=short_q.conId,
         ratio=1,
         action="SELL",
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
+        openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
     long_leg = ComboLeg(
         conId=long_q.conId,
         ratio=1,
         action="BUY",
-        exchange=exchange,
+        exchange=exchange,  # Must match BAG exchange
+        openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
     
     spread_contract = Contract(
         symbol=args.symbol,
         secType="BAG",
         currency="USD",
-        exchange=exchange,
+        exchange=exchange,  # Must match leg exchange
     )
     spread_contract.comboLegs = [short_leg, long_leg]
     
@@ -1155,6 +1183,7 @@ def main():
     
     if args.account:
         order.account = args.account
+        logger.info("Using account: %s", args.account)
     
     trade = ib.placeOrder(spread_contract, order)
     
