@@ -371,53 +371,90 @@ def fetch_options_for_right(
         logger.warning(f"No qualified {right} option contracts found")
         return []
     
-    # Request market data for all contracts
-    logger.info(f"Requesting market data for {len(qualified_contracts)} {right} contracts...")
-    tickers = [ib.reqMktData(c, '', False, False) for c in qualified_contracts]
+    # Request market data in batches to respect IB's 100 instrument limit
+    # Use 45 to leave significant safety margin for any other active subscriptions
+    MARKET_DATA_BATCH_SIZE = 45
+    total_contracts = len(qualified_contracts)
+    logger.info(f"Requesting market data for {total_contracts} {right} contracts in batches of {MARKET_DATA_BATCH_SIZE}...")
     
-    # Wait a bit for data to come in
-    ib.sleep(3)
-    
-    # Collect data
     rows = []
     data_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logger.info(f"Collecting market data at {data_timestamp}")
     
-    for contract, t in zip(qualified_contracts, tickers):
-        # OptionGreeks lives in tickers[i].modelGreeks
-        greeks = t.modelGreeks
+    # Process contracts in batches
+    num_batches = (total_contracts + MARKET_DATA_BATCH_SIZE - 1) // MARKET_DATA_BATCH_SIZE
+    for batch_idx in range(0, total_contracts, MARKET_DATA_BATCH_SIZE):
+        batch = qualified_contracts[batch_idx:batch_idx + MARKET_DATA_BATCH_SIZE]
+        batch_num = batch_idx // MARKET_DATA_BATCH_SIZE + 1
         
-        # Get market data type info (if available)
-        market_data_type = 'Live'  # Default since we request type 1
-        # Check if we can determine actual data type from ticker
-        # Note: ib_insync doesn't expose this directly, but we log what we requested
+        logger.info(f"Processing batch {batch_num}/{num_batches}: {len(batch)} contracts (total: {batch_idx + len(batch)}/{total_contracts})")
         
-        row = {
-            'symbol': contract.symbol,
-            'secType': contract.secType,
-            'expiry': contract.lastTradeDateOrContractMonth,
-            'right': contract.right,
-            'strike': contract.strike,
-            'bid': t.bid if t.bid is not None else '',
-            'ask': t.ask if t.ask is not None else '',
-            'last': t.last if t.last is not None else '',
-            'volume': t.volume if t.volume is not None else '',
-            'iv': greeks.impliedVol if greeks and greeks.impliedVol is not None else '',
-            'delta': greeks.delta if greeks and greeks.delta is not None else '',
-            'gamma': greeks.gamma if greeks and greeks.gamma is not None else '',
-            'vega': greeks.vega if greeks and greeks.vega is not None else '',
-            'theta': greeks.theta if greeks and greeks.theta is not None else '',
-            'data_timestamp': data_timestamp,
-            'market_data_type': market_data_type
-        }
+        # Request market data for this batch
+        tickers = [ib.reqMktData(c, '', False, False) for c in batch]
         
-        rows.append(row)
+        # Wait a bit for data to come in
+        ib.sleep(3)
+        
+        # Collect data for this batch
+        if batch_num == 1:
+            logger.info(f"Collecting market data at {data_timestamp}")
+        
+        for contract, t in zip(batch, tickers):
+            # OptionGreeks lives in tickers[i].modelGreeks
+            greeks = t.modelGreeks
+            
+            # Get market data type info (if available)
+            market_data_type = 'Live'  # Default since we request type 1
+            # Check if we can determine actual data type from ticker
+            # Note: ib_insync doesn't expose this directly, but we log what we requested
+            
+            row = {
+                'symbol': contract.symbol,
+                'secType': contract.secType,
+                'expiry': contract.lastTradeDateOrContractMonth,
+                'right': contract.right,
+                'strike': contract.strike,
+                'bid': t.bid if t.bid is not None else '',
+                'ask': t.ask if t.ask is not None else '',
+                'last': t.last if t.last is not None else '',
+                'volume': t.volume if t.volume is not None else '',
+                'iv': greeks.impliedVol if greeks and greeks.impliedVol is not None else '',
+                'delta': greeks.delta if greeks and greeks.delta is not None else '',
+                'gamma': greeks.gamma if greeks and greeks.gamma is not None else '',
+                'vega': greeks.vega if greeks and greeks.vega is not None else '',
+                'theta': greeks.theta if greeks and greeks.theta is not None else '',
+                'data_timestamp': data_timestamp,
+                'market_data_type': market_data_type
+            }
+            
+            rows.append(row)
+        
+        # CRITICAL: Cancel ALL market data subscriptions for this batch BEFORE starting next batch
+        logger.info(f"Cancelling market data subscriptions for batch {batch_num} before next batch...")
+        cancelled_count = 0
+        for t in tickers:
+            try:
+                # Cancel using both ticker and contract to ensure cancellation
+                # Some versions of ib_insync prefer one or the other
+                try:
+                    ib.cancelMktData(t)
+                except:
+                    pass
+                try:
+                    ib.cancelMktData(t.contract)
+                except:
+                    pass
+                cancelled_count += 1
+            except Exception as e:
+                logger.debug(f"Error cancelling market data for {t.contract}: {e}")
+        
+        logger.info(f"Cancelled {cancelled_count}/{len(tickers)} subscriptions for batch {batch_num}")
+        
+        # Wait longer after cancellation to ensure IB fully processes it before next batch
+        if batch_idx + MARKET_DATA_BATCH_SIZE < total_contracts:
+            logger.info("Waiting 3 seconds for cancellations to fully process before next batch...")
+            ib.sleep(3.0)  # Increased delay to ensure cancellations are fully processed by IB
     
-    # Cancel all market data subscriptions
-    logger.info(f"Cancelling market data subscriptions for {right} contracts...")
-    for t in tickers:
-        ib.cancelMktData(t.contract)
-    
+    logger.info(f"Successfully collected market data for {len(rows)} {right} contracts")
     return rows
 
 
@@ -559,6 +596,14 @@ def fetch_options_to_csv(
         else:
             logger.info(f"Underlying {underlying_symbol} current price: {underlying_price}")
         
+        # Cancel underlying market data subscription to free up slot for option contracts
+        try:
+            ib.cancelMktData(underlying)
+            ib.sleep(0.5)  # Give IB time to process cancellation
+            logger.debug("Cancelled underlying market data subscription")
+        except Exception as e:
+            logger.debug(f"Error cancelling underlying market data: {e}")
+        
         # Filter strikes based on std dev if requested and we have a price
         if std_dev is not None and underlying_price is not None:
             # Get ATM IV from the first expiration to use for std dev calculation
@@ -572,6 +617,8 @@ def fetch_options_to_csv(
                     # Find closest strike to ATM
                     atm_strike = min(all_strikes, key=lambda s: abs(s - underlying_price))
                     
+                    atm_ticker = None
+                    qualified_atm_contract = None
                     try:
                         # Try to get IV from ATM call option using SMART exchange
                         chain_trading_class = getattr(chain, 'tradingClass', None)
@@ -585,16 +632,25 @@ def fetch_options_to_csv(
                         )
                         qualified_atm = ib.qualifyContracts(atm_call)
                         if qualified_atm:
+                            qualified_atm_contract = qualified_atm[0]
                             # Ensure we're requesting live data for ATM IV lookup
                             ib.reqMarketDataType(1)
-                            atm_ticker = ib.reqMktData(qualified_atm[0], '', False, False)
+                            atm_ticker = ib.reqMktData(qualified_atm_contract, '', False, False)
                             ib.sleep(1)
                             if atm_ticker.modelGreeks and atm_ticker.modelGreeks.impliedVol:
                                 iv_to_use = atm_ticker.modelGreeks.impliedVol
                                 logger.info(f"Got ATM IV from option: {iv_to_use*100:.2f}%")
-                            ib.cancelMktData(qualified_atm[0])
                     except Exception as e:
                         logger.debug(f"Could not get ATM IV: {e}")
+                    finally:
+                        # Always cancel ATM option subscription
+                        if qualified_atm_contract:
+                            try:
+                                ib.cancelMktData(qualified_atm_contract)
+                                ib.sleep(0.5)  # Give IB time to process cancellation
+                                logger.debug("Cancelled ATM option market data subscription")
+                            except Exception as e:
+                                logger.debug(f"Error cancelling ATM option market data: {e}")
                     
                     # Fallback to default IV if we couldn't get it
                     if iv_to_use is None or iv_to_use <= 0:
