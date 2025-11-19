@@ -473,13 +473,16 @@ def create_ib_spread_order(
     spread.comboLegs = [short_leg, long_leg]
     
     # Use estimated credit as limit; user can adjust in TWS if desired
-    limit_price = round(candidate.credit, 2)
+    limit_price = round(candidate.credit, 2)  # positive credit internally
+    
+    # For a SELL credit spread, IB expects a NEGATIVE combo price
+    ib_limit_price = -abs(limit_price)
     
     order = Order()
     order.action = "SELL"
     order.orderType = "LMT"
     order.totalQuantity = quantity
-    order.lmtPrice = limit_price
+    order.lmtPrice = ib_limit_price
     order.tif = tif  # DAY as requested
     
     if account:
@@ -489,12 +492,13 @@ def create_ib_spread_order(
     trade = ib.placeOrder(spread, order)
     
     logger.info(
-        "Placed IB order: SELL %s %s %dx %s/%s @ %.2f (TIF=%s)",
+        "Placed IB order: SELL %s %s %dx %s/%s @ %.2f (credit=%.2f, TIF=%s)",
         symbol,
         expiry,
         quantity,
         candidate.short.strike,
         candidate.long.strike,
+        ib_limit_price,
         limit_price,
         tif,
     )
@@ -596,10 +600,21 @@ def monitor_and_adjust_spread_order(
                     continue
                 
                 # Update order price
-                current_price = round(new_price, 2)
-                trade.order.lmtPrice = current_price
+                current_price = round(new_price, 2)  # positive internally
                 
-                logger.info(f"Reducing limit price to ${current_price:.2f}")
+                # Convert to IB price based on order action
+                if trade.order.action == "SELL":
+                    ib_price = -current_price  # negative for SELL credit spread
+                else:
+                    ib_price = current_price  # positive for BUY debit spread
+                
+                trade.order.lmtPrice = ib_price
+                
+                logger.info(
+                    "Reducing limit price to $%.2f (IB combo price %.2f)",
+                    current_price,
+                    ib_price,
+                )
                 
                 # Modify order (placeOrder with same orderId modifies existing order)
                 try:
@@ -797,6 +812,14 @@ def main():
         type=int,
         default=1,
         help="Number of spreads to trade if creating orders (default: 1)",
+    )
+    
+    parser.add_argument(
+        "--order-action",
+        type=str,
+        choices=["SELL", "BUY"],
+        default="BUY",
+        help="Order action: BUY to open debit spread or close credit spread (default), SELL to open credit spread",
     )
     
     parser.add_argument(
@@ -1029,8 +1052,12 @@ def main():
         )
         return
     
-    # Calculate initial price (mid credit + 15% for SELL orders)
-    initial_price_raw = round(selected.credit * 1.15, 2)
+    # Calculate initial price (mid credit + 15% for SELL orders, or use credit as-is for BUY)
+    if args.order_action == "SELL":
+        initial_price_raw = round(selected.credit * 1.15, 2)
+    else:
+        # For BUY orders, use the credit as the debit (no markup needed)
+        initial_price_raw = round(selected.credit, 2)
     logger.info(
         f"Mid credit: ${selected.credit:.2f}, "
         f"Raw initial order price (mid + 15%): ${initial_price_raw:.2f}"
@@ -1130,6 +1157,15 @@ def main():
             f"mid={(combo_bid + combo_ask) / 2:.2f}"
         )
         
+        # Ensure combo market values are positive for credit spreads
+        if combo_bid < 0 or combo_ask < 0:
+            logger.warning(
+                f"Combo market has negative values (bid={combo_bid:.2f}, ask={combo_ask:.2f}). "
+                f"Using absolute values for credit spread."
+            )
+            combo_bid = abs(combo_bid)
+            combo_ask = abs(combo_ask)
+        
         # Clamp initial price into [bid, ask] to satisfy NBBO rules
         # For a SELL, we must not be below bid or above ask.
         min_allowed = combo_bid
@@ -1162,8 +1198,32 @@ def main():
         )
         initial_price = round(args.min_price, 2)
     
+    # Ensure limit price is always positive for internal calculations
+    if initial_price < 0:
+        logger.warning(
+            f"Initial price ${initial_price:.2f} is negative. Using absolute value for credit spread."
+        )
+        initial_price = abs(initial_price)
+    
     initial_price = round(initial_price, 2)
-    logger.info(f"Final initial limit price: ${initial_price:.2f}")
+    display_price = initial_price  # Keep positive for logs & reporting
+    
+    # Convert to IB combo price based on order action:
+    # SELL credit spread → negative price
+    # BUY debit spread → positive price
+    if args.order_action == "SELL":
+        ib_limit_price = -display_price  # Negative for credit spread
+        price_description = "credit"
+    else:
+        ib_limit_price = display_price  # Positive for debit spread
+        price_description = "debit"
+    
+    logger.info(
+        "Final initial %s: $%.2f, sending IB combo limit: %.2f",
+        price_description,
+        display_price,
+        ib_limit_price,
+    )
     
     # Cancel market data subscriptions before placing order
     # (Optional - harmless if skipped, but cleaner to cancel)
@@ -1175,10 +1235,10 @@ def main():
     
     # --- Create the order ---
     order = Order()
-    order.action = "SELL"
+    order.action = args.order_action  # Use user-specified action (SELL or BUY)
     order.orderType = "LMT"
     order.totalQuantity = args.quantity
-    order.lmtPrice = initial_price
+    order.lmtPrice = ib_limit_price
     order.tif = "DAY"
     
     if args.account:
@@ -1188,13 +1248,16 @@ def main():
     trade = ib.placeOrder(spread_contract, order)
     
     logger.info(
-        "Placed IB order: SELL %s %s %dx %s/%s @ %.2f (TIF=DAY)",
+        "Placed IB order: %s %s %s %dx %s/%s @ %.2f (%s=%.2f, TIF=DAY)",
+        args.order_action,
         args.symbol,
         args.expiry,
         args.quantity,
         selected.short.strike,
         selected.long.strike,
-        initial_price,
+        ib_limit_price,
+        price_description,
+        display_price,
     )
     
     if args.monitor_order:
@@ -1202,7 +1265,7 @@ def main():
         trade = monitor_and_adjust_spread_order(
             trade=trade,
             spread=spread_contract,
-            initial_price=initial_price,
+            initial_price=display_price,  # positive, as "credit"
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
             price_reduction_per_minute=args.price_reduction_per_minute,
