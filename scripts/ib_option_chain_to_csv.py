@@ -30,6 +30,10 @@ except ImportError:
     sys.exit(1)
 
 from utils.fetch_data import get_ib_connection, cleanup_ib_connection
+try:
+    from utils.ib_port_detector import detect_ib_port
+except ImportError:  # pragma: no cover
+    from ib_port_detector import detect_ib_port  # type: ignore[import]
 
 # Set up logging
 logging.basicConfig(
@@ -1266,10 +1270,23 @@ Examples:
         '--port',
         type=int,
         default=None,
-        help='IB Gateway/TWS port number (default: from IB_PORT env var or 4001). Common ports: 4001 (Gateway paper), 4002 (Gateway live), 7497 (TWS paper), 7496 (TWS live)'
+        help='IB Gateway/TWS port number (overrides auto-detect & IB_PORT env).',
     )
     
     args = parser.parse_args()
+    
+    selected_port = args.port
+    if selected_port:
+        logger.info("Using IB port override: %s", selected_port)
+    else:
+        selected_port = detect_ib_port()
+        if selected_port is None:
+            logger.error(
+                "Unable to auto-detect an IB port. Please set IB_PORT env or pass --port."
+            )
+            sys.exit(1)
+        logger.info("Auto-detected IB port: %s", selected_port)
+    os.environ["IB_PORT"] = str(selected_port)
     
     # Handle order placement mode
     if args.place_order:
@@ -1370,7 +1387,7 @@ Examples:
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
             price_reduction_per_minute=args.price_reduction_per_minute,
-            port=args.port
+            port=selected_port
         )
         
         if trade and trade.orderStatus.status == 'Filled':
@@ -1389,7 +1406,7 @@ Examples:
             currency=args.currency,
             dte_min=args.dte_min,
             dte_max=args.dte_max,
-            port=args.port
+            port=selected_port
         )
         
         if not expirations_with_dte:
@@ -1451,7 +1468,7 @@ Examples:
         target_dte=args.dte,
         specific_expirations=specific_expirations,
         std_dev=args.std_dev,
-        port=args.port
+        port=selected_port
     )
     
     if success:

@@ -71,6 +71,10 @@ except ImportError:
     sys.exit(1)
 
 from utils.fetch_data import get_ib_connection, cleanup_ib_connection
+try:
+    from utils.ib_port_detector import detect_ib_port
+except ImportError:  # pragma: no cover
+    from ib_port_detector import detect_ib_port  # type: ignore[import]
 
 # Import fetch_options_to_csv from ib_option_chain_to_csv
 try:
@@ -863,14 +867,27 @@ def main():
     )
     
     parser.add_argument(
+    parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help="IB API port number (default: from IB_PORT env var or 4001)",
+        help="IB API port number (overrides auto-detect & IB_PORT env).",
     )
     
     args = parser.parse_args()
     
+    selected_port = args.port
+    if selected_port:
+        logger.info("Using IB port override: %s", selected_port)
+    else:
+        selected_port = detect_ib_port()
+        if selected_port is None:
+            parser.error(
+                "Unable to auto-detect an IB port. Please specify one with --port."
+            )
+        logger.info("Auto-detected IB port: %s", selected_port)
+    os.environ["IB_PORT"] = str(selected_port)
+
     # Determine CSV path - either use provided or auto-fetch
     csv_path = args.input_csv
     
@@ -889,7 +906,7 @@ def main():
             std_dev=args.std_dev,
             max_strikes=args.max_strikes,
             max_expirations=1 if args.expiry else None,  # If expiry specified, only fetch that one
-            port=args.port
+            port=selected_port
         )
         
         # Extract symbol and expiry from CSV if not provided
@@ -1005,7 +1022,7 @@ def main():
     INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "DJX"}
     exchange = "CBOE" if args.symbol.upper() in INDEX_SYMBOLS else "SMART"
     
-    ib = get_ib_connection(port=args.port)
+    ib = get_ib_connection(port=selected_port)
     
     # --- Build & qualify legs ---
     short_opt = Option(
@@ -1160,7 +1177,7 @@ def main():
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
             price_reduction_per_minute=args.price_reduction_per_minute,
-            port=args.port
+            port=selected_port
         )
         
         if trade.orderStatus.status == 'Filled':
