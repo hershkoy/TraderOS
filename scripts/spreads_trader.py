@@ -518,18 +518,17 @@ def monitor_and_adjust_spread_order(
     """
     Monitor a spread order and adjust price according to strategy.
     
-    Pricing strategy (for SELL orders):
-    - Start with initial_price for initial_wait_minutes
-    - Then reduce price by price_reduction_per_minute every minute
-    - Stop if price would go below min_price
+    Pricing strategy:
+    - For SELL orders: Start with initial_price, then reduce by price_reduction_per_minute
+    - For BUY orders: Start with initial_price (negative), then make less negative (add price_reduction_per_minute)
     
     Args:
         trade: Trade object from placed order
         spread: Spread contract
-        initial_price: Initial limit price
-        min_price: Minimum price to go down to (default: 0.23)
+        initial_price: Initial limit price (positive for SELL, negative for BUY in IB format)
+        min_price: Minimum absolute price (default: 0.23)
         initial_wait_minutes: Minutes to wait at initial price (default: 2)
-        price_reduction_per_minute: Price reduction per minute after initial wait (default: 0.01)
+        price_reduction_per_minute: Price adjustment per minute after initial wait (default: 0.01)
         port: IB API port number (default: from IB_PORT env var or 4001)
     
     Returns:
@@ -537,8 +536,14 @@ def monitor_and_adjust_spread_order(
     """
     ib = get_ib_connection(port=port)
     
-    logger.info(f"Monitoring order. Initial price: ${initial_price:.2f} for {initial_wait_minutes} minutes")
-    logger.info(f"After {initial_wait_minutes} minutes, will reduce by ${price_reduction_per_minute:.2f} per minute (min: ${min_price:.2f})")
+    is_buy_order = trade.order.action == "BUY"
+    
+    if is_buy_order:
+        logger.info(f"Monitoring BUY order. Initial price: ${initial_price:.2f} for {initial_wait_minutes} minutes")
+        logger.info(f"After {initial_wait_minutes} minutes, will make less negative by ${price_reduction_per_minute:.2f} per minute (min: ${-min_price:.2f})")
+    else:
+        logger.info(f"Monitoring SELL order. Initial price: ${initial_price:.2f} for {initial_wait_minutes} minutes")
+        logger.info(f"After {initial_wait_minutes} minutes, will reduce by ${price_reduction_per_minute:.2f} per minute (min: ${min_price:.2f})")
     
     start_time = datetime.now()
     initial_wait_end = start_time + timedelta(minutes=initial_wait_minutes)
@@ -584,37 +589,48 @@ def monitor_and_adjust_spread_order(
         
         # Apply pricing strategy
         if current_time >= initial_wait_end:
-            # Time to start reducing price
+            # Time to start adjusting price
             minutes_since_reduction_start = (current_time - last_price_reduction_time).total_seconds() / 60.0
             
             if minutes_since_reduction_start >= 1.0:
-                # Reduce price by price_reduction_per_minute
-                new_price = current_price - price_reduction_per_minute
-                
-                # Check minimum price
-                if new_price < min_price:
-                    logger.info(f"Price reduction would go below minimum (${min_price:.2f}). Stopping price reduction.")
-                    logger.info(f"Order will remain at ${current_price:.2f} until filled or cancelled")
-                    # Continue monitoring but don't reduce price further
-                    last_price_reduction_time = current_time  # Reset to prevent further reductions
-                    continue
+                if is_buy_order:
+                    # For BUY: make price less negative (closer to zero) by adding
+                    new_price = current_price + price_reduction_per_minute
+                    
+                    # Check minimum price (most negative we're willing to go)
+                    min_ib_price = -min_price
+                    if new_price > min_ib_price:
+                        logger.info(f"Price adjustment would go above minimum (${min_ib_price:.2f}). Stopping price adjustment.")
+                        logger.info(f"Order will remain at ${current_price:.2f} until filled or cancelled")
+                        # Continue monitoring but don't adjust price further
+                        last_price_reduction_time = current_time  # Reset to prevent further adjustments
+                        continue
+                else:
+                    # For SELL: reduce price (make less positive)
+                    new_price = current_price - price_reduction_per_minute
+                    
+                    # Check minimum price
+                    if new_price < min_price:
+                        logger.info(f"Price reduction would go below minimum (${min_price:.2f}). Stopping price reduction.")
+                        logger.info(f"Order will remain at ${current_price:.2f} until filled or cancelled")
+                        # Continue monitoring but don't reduce price further
+                        last_price_reduction_time = current_time  # Reset to prevent further reductions
+                        continue
                 
                 # Update order price
-                current_price = round(new_price, 2)  # positive internally
+                current_price = round(new_price, 2)
+                trade.order.lmtPrice = current_price
                 
-                # Convert to IB price based on order action
-                if trade.order.action == "SELL":
-                    ib_price = -current_price  # negative for SELL credit spread
+                if is_buy_order:
+                    logger.info(
+                        "Adjusting limit price to $%.2f (making less negative)",
+                        current_price,
+                    )
                 else:
-                    ib_price = current_price  # positive for BUY debit spread
-                
-                trade.order.lmtPrice = ib_price
-                
-                logger.info(
-                    "Reducing limit price to $%.2f (IB combo price %.2f)",
-                    current_price,
-                    ib_price,
-                )
+                    logger.info(
+                        "Reducing limit price to $%.2f",
+                        current_price,
+                    )
                 
                 # Modify order (placeOrder with same orderId modifies existing order)
                 try:
@@ -1069,16 +1085,23 @@ def main():
         print(f"\nERROR: {error_msg}")
         sys.exit(1)
     
-    # Calculate initial price (mid credit + 15% for SELL orders, or use credit as-is for BUY)
+    # Calculate initial price
+    # For SELL: credit received = short.mid - long.mid (positive, add 15% markup)
+    # For BUY: debit paid = long.mid - short.mid (negative, pay 15% less for better fill)
     if args.order_action == "SELL":
-        initial_price_raw = round(selected.credit * 1.15, 2)
+        initial_price_raw = round(selected.credit * 1.15, 2)  # Positive credit
+        logger.info(
+            f"Mid credit: ${selected.credit:.2f}, "
+            f"Raw initial order price (mid + 15%): ${initial_price_raw:.2f}"
+        )
     else:
-        # For BUY orders, use the credit as the debit (no markup needed)
-        initial_price_raw = round(selected.credit, 2)
-    logger.info(
-        f"Mid credit: ${selected.credit:.2f}, "
-        f"Raw initial order price (mid + 15%): ${initial_price_raw:.2f}"
-    )
+        # For BUY: we pay long.mid - short.mid = -selected.credit (negative)
+        # Pay 15% less (make less negative) for better fill
+        initial_price_raw = round(-selected.credit * 0.85, 2)  # Negative debit, pay less
+        logger.info(
+            f"Mid credit: ${selected.credit:.2f}, "
+            f"Raw initial order price (pay 15% less): ${initial_price_raw:.2f}"
+        )
     
     # Create IB order
     print("\nCreating IB DAY order via API...")
@@ -1166,74 +1189,92 @@ def main():
         short_bid > 0 and short_ask > 0 and
         long_bid > 0 and long_ask > 0
     ):
-        # Synthetic combo market: credit spread = short_put - long_put
-        combo_bid = short_bid - long_ask
-        combo_ask = short_ask - long_bid
-        logger.info(
-            f"Synthetic combo market: bid={combo_bid:.2f}, ask={combo_ask:.2f}, "
-            f"mid={(combo_bid + combo_ask) / 2:.2f}"
-        )
-        
-        # Ensure combo market values are positive for credit spreads
-        if combo_bid < 0 or combo_ask < 0:
-            logger.warning(
-                f"Combo market has negative values (bid={combo_bid:.2f}, ask={combo_ask:.2f}). "
-                f"Using absolute values for credit spread."
+        # Calculate combo market based on order action:
+        # For SELL (opening credit spread): short_bid - long_ask (positive credit received)
+        # For BUY (opening credit spread): long_ask - short_bid (negative, paying to buy)
+        if args.order_action == "SELL":
+            # SELL: we receive credit = short_bid - long_ask (positive)
+            combo_bid = short_bid - long_ask
+            combo_ask = short_ask - long_bid
+            logger.info(
+                f"Synthetic combo market (SELL): bid={combo_bid:.2f}, ask={combo_ask:.2f}, "
+                f"mid={(combo_bid + combo_ask) / 2:.2f}"
             )
-            combo_bid = abs(combo_bid)
-            combo_ask = abs(combo_ask)
+        else:
+            # BUY: we pay debit = long_ask - short_bid (negative for credit spread)
+            combo_bid = long_ask - short_bid  # Negative (buying at ask, selling at bid)
+            combo_ask = long_bid - short_ask  # More negative
+            logger.info(
+                f"Synthetic combo market (BUY): bid={combo_bid:.2f}, ask={combo_ask:.2f}, "
+                f"mid={(combo_bid + combo_ask) / 2:.2f}"
+            )
         
         # Clamp initial price into [bid, ask] to satisfy NBBO rules
-        # For a SELL, we must not be below bid or above ask.
-        min_allowed = combo_bid
-        max_allowed = combo_ask
-        
-        if initial_price < min_allowed:
-            logger.info(
-                f"Initial price ${initial_price:.2f} is below synthetic bid "
-                f"${min_allowed:.2f}. Raising to bid."
-            )
-            initial_price = min_allowed
-        
-        if initial_price > max_allowed:
-            logger.info(
-                f"Initial price ${initial_price:.2f} is above synthetic ask "
-                f"${max_allowed:.2f}. Lowering to ask."
-            )
-            initial_price = max_allowed
+        # For SELL: must be between bid and ask (both positive)
+        # For BUY: must be between bid and ask (both negative, bid > ask)
+        if args.order_action == "SELL":
+            min_allowed = combo_bid
+            max_allowed = combo_ask
+            if initial_price < min_allowed:
+                logger.info(
+                    f"Initial price ${initial_price:.2f} is below synthetic bid "
+                    f"${min_allowed:.2f}. Raising to bid."
+                )
+                initial_price = min_allowed
+            if initial_price > max_allowed:
+                logger.info(
+                    f"Initial price ${initial_price:.2f} is above synthetic ask "
+                    f"${max_allowed:.2f}. Lowering to ask."
+                )
+                initial_price = max_allowed
+        else:
+            # For BUY: bid > ask (both negative), so min_allowed is ask, max_allowed is bid
+            min_allowed = combo_ask  # More negative
+            max_allowed = combo_bid  # Less negative
+            if initial_price > max_allowed:
+                logger.info(
+                    f"Initial price ${initial_price:.2f} is above synthetic bid "
+                    f"${max_allowed:.2f}. Lowering to bid."
+                )
+                initial_price = max_allowed
+            if initial_price < min_allowed:
+                logger.info(
+                    f"Initial price ${initial_price:.2f} is below synthetic ask "
+                    f"${min_allowed:.2f}. Raising to ask."
+                )
+                initial_price = min_allowed
     else:
         logger.warning(
             "Could not compute synthetic combo market from leg quotes; "
             "proceeding with raw initial price (may be rejected)."
         )
     
-    # Respect your script's minimum credit floor
-    if initial_price < args.min_price:
+    # Respect your script's minimum credit floor (only for SELL orders)
+    if args.order_action == "SELL" and initial_price < args.min_price:
         logger.info(
             f"Initial price ${initial_price:.2f} is below min-price ${args.min_price:.2f}. "
             f"Raising up to min-price."
         )
         initial_price = round(args.min_price, 2)
     
-    # Ensure limit price is always positive for internal calculations
-    if initial_price < 0:
-        logger.warning(
-            f"Initial price ${initial_price:.2f} is negative. Using absolute value for credit spread."
-        )
-        initial_price = abs(initial_price)
-    
     initial_price = round(initial_price, 2)
-    display_price = initial_price  # Keep positive for logs & reporting
     
     # Convert to IB combo price based on order action:
-    # SELL credit spread → negative price
-    # BUY debit spread → positive price
+    # SELL credit spread → negative price (IB convention)
+    # BUY credit spread → negative price (IB convention, we're buying the combo)
     if args.order_action == "SELL":
-        ib_limit_price = -display_price  # Negative for credit spread
+        # For SELL: IB expects negative price for credit spread
+        ib_limit_price = -abs(initial_price)  # Negative
         price_description = "credit"
+        display_price = abs(initial_price)  # Positive for logs
     else:
-        ib_limit_price = display_price  # Positive for debit spread
-        price_description = "debit"
+        # For BUY: IB expects negative price (buying credit spread = paying negative amount)
+        ib_limit_price = initial_price  # Already negative or will be made negative
+        if ib_limit_price > 0:
+            # If somehow positive, make it negative
+            ib_limit_price = -ib_limit_price
+        price_description = "credit (buying combo)"
+        display_price = abs(ib_limit_price)  # Positive for logs
     
     logger.info(
         "Final initial %s: $%.2f, sending IB combo limit: %.2f",
@@ -1282,7 +1323,7 @@ def main():
         trade = monitor_and_adjust_spread_order(
             trade=trade,
             spread=spread_contract,
-            initial_price=display_price,  # positive, as "credit"
+            initial_price=ib_limit_price,  # IB price format (negative for both SELL and BUY credit spreads)
             min_price=args.min_price,
             initial_wait_minutes=args.initial_wait_minutes,
             price_reduction_per_minute=args.price_reduction_per_minute,
