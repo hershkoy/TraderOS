@@ -347,9 +347,9 @@ python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --quant
 
 # Place order:
 risky/balanced/conservative
-python scripts/spreads_trader.py --input-csv reports/QQQ_P_options.csv --place-order --risk-profile balanced --quantity 1 --account DU123456
+python scripts/spreads_trader.py --input-csv reports/QQQ_P_options.csv --place-order --risk-profile balanced --quantity 1 
 
-python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --risk-profile balanced --quantity 1 --account DU123456
+python scripts/spreads_trader.py --symbol QQQ --dte 7 --create-orders-en --risk-profile balanced --quantity 2 
 
 # daily scanner:
 python scripts\daily_scanner.py --output-report  

@@ -855,6 +855,12 @@ def main():
     )
     
     parser.add_argument(
+        "--live-en",
+        action="store_true",
+        help="Enable trading in live accounts (accounts starting with 'U'). Required when placing orders in real accounts.",
+    )
+    
+    parser.add_argument(
         "--min-price",
         type=float,
         default=0.23,
@@ -1051,6 +1057,17 @@ def main():
             "Re-run with --create-orders-en to place IB orders."
         )
         return
+    
+    # Safeguard: Prevent orders in live accounts without --live-en flag
+    if args.account and args.account.startswith("U") and not args.live_en:
+        error_msg = (
+            f"SAFETY CHECK FAILED: Attempting to place order in live account '{args.account}' "
+            f"without --live-en flag. This is blocked to prevent accidental live trading.\n"
+            f"Add --live-en to your command if you intend to trade in a live account."
+        )
+        logger.error(error_msg)
+        print(f"\nERROR: {error_msg}")
+        sys.exit(1)
     
     # Calculate initial price (mid credit + 15% for SELL orders, or use credit as-is for BUY)
     if args.order_action == "SELL":

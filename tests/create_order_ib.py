@@ -6,11 +6,14 @@ Simple test script to debug IB order creation.
 Auto-detects account and port, then creates a test order.
 
 Usage:
-    # Combo order (limit price required)
-    python tests/create_order_ib.py --symbol QQQ --expiry 20251126 --strike-short 560 --strike-long 556 --limit-price 0.33
+    # Combo order - BUY spread (default: BUY the buy leg, SELL the sell leg)
+    python tests/create_order_ib.py --symbol QQQ --expiry 20251126 --buy 545 --sell 551 --limit-price 0.33
+    
+    # Combo order - SELL spread (reversed: SELL the buy leg, BUY the sell leg)
+    python tests/create_order_ib.py --symbol QQQ --expiry 20251126 --buy 545 --sell 551 --limit-price -0.33 --action SELL
     
     # Single-leg order (limit price optional, uses market if not provided)
-    python tests/create_order_ib.py --symbol QQQ --expiry 20251126 --strike 560 --right P --action SELL --limit-price 1.50
+    python tests/create_order_ib.py --symbol QQQ --expiry 20251126 --strike 560 --right P --limit-price 1.50
 """
 
 import argparse
@@ -117,26 +120,30 @@ def create_simple_option_order(
 def create_combo_order(
     symbol: str,
     expiry: str,
-    strike_short: float,
-    strike_long: float,
+    strike_buy: float,
+    strike_sell: float,
     right: str,
     quantity: int,
     account: str,
     limit_price: float,
+    action: str,
     port: Optional[int] = None
 ) -> Trade:
     """
-    Create a vertical spread combo order (SELL short leg, BUY long leg).
+    Create a vertical spread combo order.
     
     Args:
         symbol: Underlying symbol
         expiry: Expiration date (IB format, e.g., 20251126)
-        strike_short: Strike price for short leg (higher strike for puts)
-        strike_long: Strike price for long leg (lower strike for puts)
+        strike_buy: Strike price for the leg to buy
+        strike_sell: Strike price for the leg to sell
         right: Option right ('P' or 'C')
         quantity: Number of spreads
         account: IB account ID
         limit_price: Limit price for the spread (required)
+        action: Order action ('BUY' or 'SELL')
+            - BUY (default): BUY the buy leg, SELL the sell leg
+            - SELL: SELL the buy leg, BUY the sell leg (reversed)
         port: IB API port number
     
     Returns:
@@ -150,44 +157,53 @@ def create_combo_order(
     
     logger.info(f"Using exchange: {exchange} for combo order (all components)")
     
-    # Build option contracts for short & long legs
+    # Build option contracts for buy & sell legs
     # Legs MUST use the same exchange as BAG (CBOE, not SMART)
-    short_opt = Option(
+    buy_opt = Option(
         symbol=symbol,
         lastTradeDateOrContractMonth=expiry,
-        strike=strike_short,
+        strike=strike_buy,
         right=right,
         exchange=exchange,  # Must match BAG exchange
     )
-    long_opt = Option(
+    sell_opt = Option(
         symbol=symbol,
         lastTradeDateOrContractMonth=expiry,
-        strike=strike_long,
+        strike=strike_sell,
         right=right,
         exchange=exchange,  # Must match BAG exchange
     )
     
-    qualified = ib.qualifyContracts(short_opt, long_opt)
+    qualified = ib.qualifyContracts(buy_opt, sell_opt)
     if len(qualified) != 2:
         raise RuntimeError("Could not qualify both legs with IB")
     
-    short_q, long_q = qualified
-    logger.info(f"Qualified short leg: {short_q}")
-    logger.info(f"Qualified long leg: {long_q}")
+    buy_q, sell_q = qualified
+    logger.info(f"Qualified buy leg: {buy_q}")
+    logger.info(f"Qualified sell leg: {sell_q}")
     
     # Build combo legs - MUST use the same exchange as BAG
     # openClose=1 means this is an OPENING trade (new position)
-    short_leg = ComboLeg(
-        conId=short_q.conId,
+    # When action=BUY (default): BUY the buy leg, SELL the sell leg
+    # When action=SELL: SELL the buy leg, BUY the sell leg (reversed)
+    if action == "BUY":
+        buy_leg_action = "BUY"
+        sell_leg_action = "SELL"
+    else:  # SELL
+        buy_leg_action = "SELL"
+        sell_leg_action = "BUY"
+    
+    buy_leg = ComboLeg(
+        conId=buy_q.conId,
         ratio=1,
-        action="SELL",
+        action=buy_leg_action,
         exchange=exchange,  # Must match BAG exchange
         openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
-    long_leg = ComboLeg(
-        conId=long_q.conId,
+    sell_leg = ComboLeg(
+        conId=sell_q.conId,
         ratio=1,
-        action="BUY",
+        action=sell_leg_action,
         exchange=exchange,  # Must match BAG exchange
         openClose=1,  # Opening trade (required to avoid "riskless combination" rejection)
     )
@@ -198,11 +214,11 @@ def create_combo_order(
         currency="USD",
         exchange=exchange,  # Must match leg exchange
     )
-    spread.comboLegs = [short_leg, long_leg]
+    spread.comboLegs = [buy_leg, sell_leg]
     
     # Create order
     order = Order()
-    order.action = "SELL"  # SELL the spread (credit spread)
+    order.action = action
     order.orderType = "LMT"
     order.totalQuantity = quantity
     order.lmtPrice = round(limit_price, 2)
@@ -210,8 +226,8 @@ def create_combo_order(
     order.account = account
     
     logger.info(
-        f"Placing combo order: SELL {quantity}x {symbol} {expiry} "
-        f"{strike_short}/{strike_long} {right} @ ${limit_price:.2f}"
+        f"Placing combo order: {action} {quantity}x {symbol} {expiry} "
+        f"{strike_buy}/{strike_sell} {right} @ ${limit_price:.2f}"
     )
     
     trade = ib.placeOrder(spread, order)
@@ -256,15 +272,15 @@ def main():
     )
     
     parser.add_argument(
-        "--strike-short",
+        "--buy",
         type=float,
-        help="Strike price for short leg (required for combo orders)",
+        help="Strike price for the leg to buy (required for combo orders)",
     )
     
     parser.add_argument(
-        "--strike-long",
+        "--sell",
         type=float,
-        help="Strike price for long leg (required for combo orders)",
+        help="Strike price for the leg to sell (required for combo orders)",
     )
     
     parser.add_argument(
@@ -290,9 +306,9 @@ def main():
     parser.add_argument(
         "--action",
         type=str,
-        default="SELL",
+        default="BUY",
         choices=["BUY", "SELL"],
-        help="Order action for single-leg orders (default: SELL)",
+        help="Order action (default: BUY). For combo orders: BUY=normal (buy buy leg, sell sell leg), SELL=reversed (sell buy leg, buy sell leg)",
     )
     
     parser.add_argument(
@@ -333,20 +349,21 @@ def main():
         logger.info(f"Auto-detected IB account: {selected_account}")
     
     # Determine order type and create order
-    if args.strike_short and args.strike_long:
+    if args.buy is not None and args.sell is not None:
         # Combo order - limit price is required
         if args.limit_price is None:
             parser.error("--limit-price is required for combo orders")
-        logger.info("Creating combo order (vertical spread)...")
+        logger.info(f"Creating combo order (vertical spread) {args.action}...")
         trade = create_combo_order(
             symbol=args.symbol,
             expiry=args.expiry,
-            strike_short=args.strike_short,
-            strike_long=args.strike_long,
+            strike_buy=args.buy,
+            strike_sell=args.sell,
             right=args.right,
             quantity=args.quantity,
             account=selected_account,
             limit_price=args.limit_price,
+            action=args.action,
             port=selected_port
         )
     elif args.strike:
@@ -364,7 +381,7 @@ def main():
             limit_price=args.limit_price
         )
     else:
-        parser.error("Either --strike (for single-leg) or --strike-short and --strike-long (for combo) must be provided")
+        parser.error("Either --strike (for single-leg) or --buy and --sell (for combo) must be provided")
     
     # Monitor order status briefly
     logger.info("Monitoring order status for 5 seconds...")
