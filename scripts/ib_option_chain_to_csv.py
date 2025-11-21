@@ -56,44 +56,83 @@ def get_underlying_and_chain(
     """
     Get qualified underlying contract and option chain information.
     
+    Handles special cases like SPXW (weekly options) which map to SPX as underlying
+    but use SPXW as the trading class.
+    
     Returns:
         Tuple of (qualified_underlying_contract, chain_object)
     """
     ib = get_ib_connection(port=port)
     
+    # Map weekly option classes to their underlying symbols
+    # SPXW, SPXQ are option trading classes, not underlying symbols
+    WEEKLY_OPTION_CLASSES = {'SPXW', 'SPXQ'}
+    original_symbol = underlying_symbol.upper()
+    actual_underlying_symbol = underlying_symbol.upper()
+    
+    # Map weekly classes to underlying
+    if original_symbol == 'SPXW':
+        logger.info("Detected SPXW weekly options. Using SPX as underlying.")
+        actual_underlying_symbol = 'SPX'
+    elif original_symbol == 'SPXQ':
+        logger.info("Detected SPXQ quarterly options. Using SPX as underlying.")
+        actual_underlying_symbol = 'SPX'
+    
     # Determine security type and exchange for indices
     # Index options typically trade on CBOE
     INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
-    if underlying_symbol.upper() in INDEX_SYMBOLS:
+    if actual_underlying_symbol in INDEX_SYMBOLS:
         # For indices, use Index class with CBOE exchange
-        logger.info(f"Detected index symbol {underlying_symbol}, using Index contract with CBOE exchange")
-        underlying = Index(symbol=underlying_symbol, exchange='CBOE', currency=currency)
+        logger.info(f"Detected index symbol {actual_underlying_symbol}, using Index contract with CBOE exchange")
+        underlying = Index(symbol=actual_underlying_symbol, exchange='CBOE', currency=currency)
     else:
         # For stocks/ETFs, use Stock class
-        underlying = Stock(symbol=underlying_symbol, exchange=exchange, currency=currency)
+        underlying = Stock(symbol=actual_underlying_symbol, exchange=exchange, currency=currency)
     
     # Qualify contract
-    logger.info(f"Qualifying underlying contract for {underlying_symbol}...")
+    logger.info(f"Qualifying underlying contract for {actual_underlying_symbol}...")
     qualified_underlying = ib.qualifyContracts(underlying)
     if not qualified_underlying:
-        raise ValueError(f"No qualified contracts found for {underlying_symbol}")
+        raise ValueError(f"No qualified contracts found for {actual_underlying_symbol}")
     
     underlying = qualified_underlying[0]
-    logger.info(f"Underlying contract qualified: {underlying_symbol} -> conId: {underlying.conId}")
+    logger.info(f"Underlying contract qualified: {actual_underlying_symbol} -> conId: {underlying.conId}")
     
     # Get option chain parameters
-    logger.info(f"Requesting option chain parameters for {underlying_symbol}...")
+    logger.info(f"Requesting option chain parameters for {actual_underlying_symbol}...")
     chains = ib.reqSecDefOptParams(
-        underlying_symbol,
+        actual_underlying_symbol,
         '',   # futFopExchange - usually empty for stocks/ETFs
         underlying.secType,
         underlying.conId
     )
     
     if not chains:
-        raise ValueError(f'No option chains found for {underlying_symbol}')
+        raise ValueError(f'No option chains found for {actual_underlying_symbol}')
     
-    chain = chains[0]  # usually one main chain
+    # If original symbol was a weekly class (e.g., SPXW), find the matching chain
+    if original_symbol in WEEKLY_OPTION_CLASSES:
+        # Find chain with matching tradingClass
+        matching_chain = None
+        for chain in chains:
+            chain_trading_class = getattr(chain, 'tradingClass', None)
+            if chain_trading_class == original_symbol:
+                matching_chain = chain
+                logger.info(f"Found chain with tradingClass={original_symbol}")
+                break
+        
+        if matching_chain:
+            chain = matching_chain
+        else:
+            # Fallback to first chain if no match found
+            logger.warning(f"Could not find chain with tradingClass={original_symbol}, using first available chain")
+            chain = chains[0]
+            if hasattr(chain, 'tradingClass'):
+                logger.info(f"Using chain with tradingClass={chain.tradingClass}")
+    else:
+        # For regular symbols, use first chain (usually only one)
+        chain = chains[0]
+    
     return underlying, chain
 
 
@@ -319,6 +358,10 @@ def fetch_options_for_right(
     # Get trading class from chain
     trading_class = getattr(chain, 'tradingClass', None)
     
+    # Use underlying symbol from qualified contract (not input symbol which might be SPXW)
+    # The underlying contract will have the correct underlying symbol (e.g., SPX)
+    option_symbol = underlying.symbol
+    
     # Try to determine the correct exchange from the chain or underlying
     # For some symbols, we need to use a specific exchange or leave it empty
     exchange = ''  # Empty string lets IB find the contract automatically
@@ -331,19 +374,19 @@ def fetch_options_for_right(
     
     logger.info(
         f"Building {len(expirations) * len(selected_strikes)} {right} option contracts "
-        f"(exchange='{exchange or 'auto'}', tradingClass={trading_class})..."
+        f"(symbol={option_symbol}, exchange='{exchange or 'auto'}', tradingClass={trading_class})..."
     )
     
     option_contracts = []
     for expiry in expirations:
         for strike in selected_strikes:
             opt = Option(
-                symbol=underlying_symbol,
+                symbol=option_symbol,  # Use underlying symbol (SPX), not input symbol (SPXW)
                 lastTradeDateOrContractMonth=expiry,
                 strike=strike,
                 right=right,
                 exchange=exchange if exchange else '',  # Empty string for auto-discovery
-                tradingClass=trading_class
+                tradingClass=trading_class  # This will be SPXW if input was SPXW
             )
             option_contracts.append(opt)
     
@@ -625,14 +668,15 @@ def fetch_options_to_csv(
                     qualified_atm_contract = None
                     try:
                         # Try to get IV from ATM call option using SMART exchange
+                        # Use underlying symbol from qualified contract (not input symbol which might be SPXW)
                         chain_trading_class = getattr(chain, 'tradingClass', None)
                         atm_call = Option(
-                            symbol=underlying_symbol,
+                            symbol=underlying.symbol,  # Use underlying symbol (SPX), not input symbol (SPXW)
                             lastTradeDateOrContractMonth=first_expiry,
                             strike=atm_strike,
                             right='C',
                             exchange='SMART',
-                            tradingClass=chain_trading_class
+                            tradingClass=chain_trading_class  # This will be SPXW if input was SPXW
                         )
                         qualified_atm = ib.qualifyContracts(atm_call)
                         if qualified_atm:
@@ -1017,22 +1061,33 @@ def place_order_from_csv_row(
     initial_price = mid_price * 1.15  # Mid + 15%
     logger.info(f"Mid price: ${mid_price:.2f}, Initial order price (mid + 15%): ${initial_price:.2f}")
     
-    # Determine exchange
+    # Determine exchange - check if symbol is a weekly class that maps to an index
+    WEEKLY_OPTION_CLASSES = {'SPXW', 'SPXQ'}
     INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
-    exchange = 'CBOE' if symbol.upper() in INDEX_SYMBOLS else 'SMART'
     
-    # Get trading class from chain (we'll need to get it)
+    # Map weekly classes to underlying for exchange determination
+    underlying_symbol_for_exchange = symbol.upper()
+    if underlying_symbol_for_exchange in WEEKLY_OPTION_CLASSES:
+        underlying_symbol_for_exchange = 'SPX'  # SPXW/SPXQ map to SPX
+    
+    exchange = 'CBOE' if underlying_symbol_for_exchange in INDEX_SYMBOLS else 'SMART'
+    
+    # Get trading class from chain (this will handle SPXW -> SPX mapping)
     underlying, chain = get_underlying_and_chain(symbol, exchange, 'USD', port=port)
     trading_class = getattr(chain, 'tradingClass', None)
     
+    # Use underlying symbol from qualified contract (not the CSV symbol which might be SPXW)
+    # The underlying contract will have the correct underlying symbol (e.g., SPX)
+    option_symbol = underlying.symbol
+    
     # Create option contract
     option = Option(
-        symbol=symbol,
+        symbol=option_symbol,  # Use underlying symbol (SPX), not input symbol (SPXW)
         lastTradeDateOrContractMonth=expiry,
         strike=strike,
         right=right,
         exchange=exchange,
-        tradingClass=trading_class
+        tradingClass=trading_class  # This will be SPXW if input was SPXW
     )
     
     # Qualify contract

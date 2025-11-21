@@ -338,7 +338,7 @@ python scripts/polygon_backfill_contracts.py --underlying QQQ --days-back 730 --
 python scripts\ha_reversal_scanner.py --debug
 
 # Fetch expiration closest to 7 DTE
-python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --std-dev 2.0 --port 4001
+python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --dte 7 --std-dev 2.0 --max-strikes 600
 
 # Auto-fetch and analyze
 python scripts/spreads_trader.py --symbol QQQ --dte 7 --target-delta 0.10 --port 7496
