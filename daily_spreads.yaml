@@ -1,0 +1,16 @@
+# Daily Credit Spreads Configuration
+# This file defines multiple spread orders to be executed in parallel
+
+orders:
+  - symbol: QQQ
+    dte: 7
+    create_orders_en: true
+    quantity: 2
+    risk_profile: balanced
+    
+  - symbol: IWM
+    dte: 7
+    create_orders_en: true
+    quantity: 2
+    risk_profile: balanced
+

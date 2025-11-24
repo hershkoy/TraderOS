@@ -57,6 +57,10 @@ import math
 import os
 import sys
 import tempfile
+import time
+import yaml
+import subprocess
+import threading
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timedelta
@@ -829,6 +833,197 @@ def auto_fetch_option_chain(
     logger.info(f"Option chain saved to {csv_path}")
     return csv_path
 
+# ---------- Config file processing ----------
+
+def load_config_file(config_path: str) -> Dict:
+    """Load YAML configuration file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+def process_single_order_from_config(order_config: Dict, script_path: str, port: Optional[int] = None) -> Tuple[str, int, str]:
+    """
+    Process a single order from config by running spreads_trader.py as subprocess.
+    
+    Args:
+        order_config: Order configuration dictionary
+        script_path: Path to spreads_trader.py script
+        port: IB API port number (detected in main process and passed here)
+    
+    Returns:
+        Tuple of (symbol, return_code, output)
+    """
+    symbol = order_config.get('symbol', 'UNKNOWN')
+    
+    # Build command line arguments
+    # Use -u flag for unbuffered output so logs appear immediately
+    cmd = [
+        sys.executable,
+        '-u',  # Unbuffered output
+        script_path,
+        '--symbol', symbol,
+    ]
+    
+    # Add port (from main process detection or config, in that order)
+    if port is not None:
+        cmd.extend(['--port', str(port)])
+    elif 'port' in order_config:
+        cmd.extend(['--port', str(order_config['port'])])
+    
+    # Add optional parameters
+    if 'dte' in order_config:
+        cmd.extend(['--dte', str(order_config['dte'])])
+    if 'expiry' in order_config:
+        cmd.extend(['--expiry', str(order_config['expiry'])])
+    if 'quantity' in order_config:
+        cmd.extend(['--quantity', str(order_config['quantity'])])
+    if 'risk_profile' in order_config:
+        cmd.extend(['--risk-profile', str(order_config['risk_profile'])])
+    if 'right' in order_config:
+        cmd.extend(['--right', str(order_config['right'])])
+    if 'spread_width' in order_config:
+        cmd.extend(['--spread-width', str(order_config['spread_width'])])
+    if 'target_delta' in order_config:
+        cmd.extend(['--target-delta', str(order_config['target_delta'])])
+    if 'min_credit' in order_config:
+        cmd.extend(['--min-credit', str(order_config['min_credit'])])
+    if 'min_price' in order_config:
+        cmd.extend(['--min-price', str(order_config['min_price'])])
+    if 'order_action' in order_config:
+        cmd.extend(['--order-action', str(order_config['order_action'])])
+    if order_config.get('create_orders_en', False):
+        cmd.append('--create-orders-en')
+    if order_config.get('monitor_order', True):
+        cmd.append('--monitor-order')
+    if order_config.get('no_monitor_order', False):
+        cmd.append('--no-monitor-order')
+    if 'account' in order_config:
+        cmd.extend(['--account', str(order_config['account'])])
+    if order_config.get('live_en', False):
+        cmd.append('--live-en')
+    
+    # Run subprocess with output going directly to stdout/stderr
+    # This ensures all output is captured by the batch file's log redirection
+    try:
+        result = subprocess.run(
+            cmd,
+            text=True,
+            timeout=3600,  # 1 hour timeout per order
+            # Don't capture output - let it go to stdout/stderr so batch file captures it
+            # But we still need return code, so we'll capture and also print
+            stdout=None,  # Let it go to parent's stdout
+            stderr=subprocess.STDOUT  # Merge stderr to stdout
+        )
+        # Capture output for error reporting, but it's already been printed
+        return (symbol, result.returncode, "")
+    except subprocess.TimeoutExpired:
+        error_msg = f"Timeout after 1 hour for {symbol}"
+        print(error_msg, flush=True)
+        return (symbol, -1, error_msg)
+    except Exception as e:
+        error_msg = f"Error running subprocess: {str(e)}"
+        print(error_msg, flush=True)
+        return (symbol, -1, error_msg)
+
+def process_config_file(config_path: str, max_workers: Optional[int] = None):
+    """
+    Process multiple orders from YAML config file in parallel.
+    
+    Args:
+        config_path: Path to YAML config file
+        max_workers: Maximum number of parallel workers (default: number of orders)
+    """
+    config = load_config_file(config_path)
+    orders = config.get('orders', [])
+    
+    if not orders:
+        logger.error("No orders found in config file")
+        return
+    
+    logger.info(f"Processing {len(orders)} orders from config file: {config_path}")
+    
+    # Detect IB port once in main process (to avoid conflicts in subprocesses)
+    detected_port = None
+    if 'port' in config:
+        detected_port = config['port']
+        logger.info(f"Using port from config: {detected_port}")
+    else:
+        try:
+            detected_port = detect_ib_port()
+            if detected_port is None:
+                logger.error("Unable to auto-detect an IB port. Please specify one in config file or with --port.")
+                return
+            logger.info(f"Auto-detected IB port: {detected_port}")
+        except Exception as e:
+            logger.error(f"Error detecting IB port: {e}")
+            return
+    
+    # Get script path
+    script_path = os.path.abspath(__file__)
+    
+    # Process orders in parallel using subprocess and threading
+    # Each order runs in its own Python process to avoid IB connection conflicts
+    results = []
+    results_lock = threading.Lock()
+    
+    def run_order(order):
+        """Run a single order and store result."""
+        symbol = order.get('symbol', 'UNKNOWN')
+        # Add separator to distinguish between different orders in log
+        print(f"\n{'='*60}", flush=True)
+        print(f"Starting order for {symbol}", flush=True)
+        print(f"{'='*60}", flush=True)
+        
+        symbol, return_code, error_msg = process_single_order_from_config(order, script_path, port=detected_port)
+        
+        print(f"{'='*60}", flush=True)
+        if return_code == 0:
+            print(f"Order for {symbol} completed successfully", flush=True)
+        else:
+            print(f"Order for {symbol} failed with return code {return_code}", flush=True)
+            if error_msg:
+                print(f"Error: {error_msg}", flush=True)
+        print(f"{'='*60}\n", flush=True)
+        
+        with results_lock:
+            results.append((symbol, return_code, error_msg))
+    
+    # Create threads for each order
+    # Add small delay between starts to avoid IB connection conflicts
+    threads = []
+    for i, order in enumerate(orders):
+        thread = threading.Thread(target=run_order, args=(order,))
+        thread.start()
+        threads.append(thread)
+        # Small delay between starting threads to avoid connection conflicts
+        if i < len(orders) - 1:  # Don't delay after last one
+            time.sleep(0.5)
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
+    
+    # Print summary
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    successful = sum(1 for _, rc, _ in results if rc == 0)
+    failed = len(results) - successful
+    print(f"Total orders: {len(results)}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {failed}")
+    print("=" * 60)
+    
+    if failed > 0:
+        print("\nFailed orders:")
+        for symbol, return_code, output in results:
+            if return_code != 0:
+                print(f"  - {symbol} (return code: {return_code})")
+                # Print last few lines of output for debugging
+                output_lines = output.strip().split('\n')
+                if output_lines:
+                    print(f"    Last output: {output_lines[-1][:100]}")
+
 # ---------- main ----------
 
 def main():
@@ -1006,7 +1201,28 @@ def main():
         help="IB API port number (overrides auto-detect & IB_PORT env).",
     )
     
+    parser.add_argument(
+        "--conf-file",
+        type=str,
+        default=None,
+        help="Path to YAML config file with multiple orders. When provided, processes all orders in parallel and ignores other arguments.",
+    )
+    
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="Maximum number of parallel workers when using --conf-file (default: number of orders).",
+    )
+    
     args = parser.parse_args()
+    
+    # If config file is provided, process it and exit
+    if args.conf_file:
+        if not os.path.exists(args.conf_file):
+            parser.error(f"Config file not found: {args.conf_file}")
+        process_config_file(args.conf_file, max_workers=args.max_workers)
+        return
     
     selected_port = args.port
     if selected_port:
