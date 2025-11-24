@@ -16,6 +16,7 @@ python scanner_runner.py --scanner hl_after_ll squeeze --log-level INFO
 if errorlevel 1 (
     echo.
     echo ERROR: Scanner failed with exit code %ERRORLEVEL%
+    echo Check the logs directory for detailed error messages.
     echo.
     pause
     exit /b %ERRORLEVEL%

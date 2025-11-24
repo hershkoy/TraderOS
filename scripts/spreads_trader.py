@@ -363,8 +363,8 @@ def describe_candidate(label: str, c: SpreadCandidate) -> str:
         f"({int(c.width)}-wide)",
     ]
     if d_abs is not None:
-        lines.append(f"Delta ≈ {c.short.delta:.3f} (|Δ| ≈ {d_abs:.3f})")
-    lines.append(f"Credit ≈ ${c.credit:.2f}")
+        lines.append(f"Delta ~ {c.short.delta:.3f} (|delta| ~ {d_abs:.3f})")
+    lines.append(f"Credit ~ ${c.credit:.2f}")
     if c.short.volume and not math.isnan(c.short.volume):
         lines.append(f"Short leg volume: {int(c.short.volume)}")
     return "\n".join(lines)
@@ -675,8 +675,8 @@ def choose_candidate_by_profile(
         idx = n - 1
         description = "most conservative (lowest |delta|)"
     elif profile == "balanced":
-        idx = n // 2
-        description = "balanced (middle |delta|)"
+        idx = 0
+        description = "balanced (primary candidate, highest |delta|)"
     else:
         raise ValueError(f"Unsupported profile: {profile}")
     
