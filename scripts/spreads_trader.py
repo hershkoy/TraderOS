@@ -69,7 +69,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from ib_insync import Contract, Option, ComboLeg, Order, Trade
+    from ib_insync import Contract, Option, ComboLeg, Order, Trade, IB
 except ImportError:
     print("Error: ib_insync not found. Install with: pip install ib_insync")
     sys.exit(1)
@@ -249,6 +249,10 @@ def find_spread_candidates(
     Short put delta is negative -> we use abs(delta).
     Long put is width points lower in strike.
     """
+    # Ensure target_delta has a valid value
+    if target_delta is None:
+        target_delta = 0.10
+    
     strike_map = build_strike_map(rows)
     
     # Filter rows with usable greeks + quotes
@@ -276,6 +280,8 @@ def find_spread_candidates(
     logger.info(f"Found {len(usable)} usable options with delta and quotes")
     
     # Sort by closeness to target delta (absolute)
+    # Defensive check: filter out any rows with None delta that might have slipped through
+    usable = [r for r in usable if r.delta is not None and not math.isnan(r.delta)]
     usable.sort(key=lambda r: abs(abs(r.delta) - target_delta))
     
     candidates: List[SpreadCandidate] = []
@@ -841,6 +847,382 @@ def load_config_file(config_path: str) -> Dict:
         config = yaml.safe_load(f)
     return config
 
+def process_single_order_direct(
+    order_config: Dict,
+    ib: IB,
+    ib_lock: threading.Lock,
+    port: int,
+    account: Optional[str] = None
+) -> Optional[Trade]:
+    """
+    Process a single order directly (without subprocess) using shared IB connection.
+    
+    Args:
+        order_config: Order configuration dictionary
+        ib: Shared IB connection object
+        ib_lock: Thread lock for synchronizing IB access
+        port: IB API port number
+        account: IB account ID (optional)
+    
+    Returns:
+        Trade object if order was placed successfully, None otherwise
+    """
+    symbol = order_config.get('symbol', 'UNKNOWN')
+    dte = order_config.get('dte', 7)
+    expiry = order_config.get('expiry')
+    right = order_config.get('right', 'P')
+    quantity = order_config.get('quantity', 1)
+    risk_profile = order_config.get('risk_profile', 'balanced')
+    spread_width = order_config.get('spread_width', 4)
+    target_delta = order_config.get('target_delta', 0.10)  # Default to 0.10 if not specified
+    min_credit = order_config.get('min_credit', 0.15)
+    min_price = order_config.get('min_price', 0.23)
+    initial_wait_minutes = order_config.get('initial_wait_minutes', 2)
+    price_reduction_per_minute = order_config.get('price_reduction_per_minute', 0.01)
+    order_action = order_config.get('order_action', 'BUY')
+    create_orders_en = order_config.get('create_orders_en', False)
+    
+    try:
+        # Auto-fetch option chain
+        csv_path = auto_fetch_option_chain(
+            symbol=symbol,
+            expiry=expiry,
+            dte=dte,
+            right=right,
+            std_dev=None,
+            max_strikes=100,
+            max_expirations=1,
+            port=port
+        )
+        
+        # Validate CSV
+        csv_symbol, csv_expiry = validate_csv(csv_path, expected_right=right)
+        if not expiry:
+            expiry = csv_expiry
+        
+        # Load options from CSV
+        rows = load_option_rows(
+            path=csv_path,
+            right=right,
+            expiry=expiry,
+        )
+        
+        # Find spread candidates
+        candidates = find_spread_candidates(
+            rows,
+            width=spread_width,
+            target_delta=target_delta,
+            num_candidates=3,
+            min_credit=min_credit,
+        )
+        
+        # Sort by riskiness
+        candidates_sorted = sorted(
+            candidates,
+            key=lambda c: abs(c.short.delta) if c.short.delta is not None else 0.0,
+            reverse=True,
+        )
+        
+        # Select candidate
+        selected = choose_candidate_by_profile(candidates_sorted, risk_profile)
+        logger.info(f"Selected spread for {symbol}: {selected.short.strike}/{selected.long.strike}")
+        
+        if not create_orders_en:
+            logger.info(f"create_orders_en not set for {symbol}, skipping order placement")
+            return None
+        
+        # Calculate initial price
+        if order_action == "SELL":
+            initial_price_raw = round(selected.credit * 1.15, 2)
+            min_price_ib = min_price
+        else:
+            initial_price_raw, min_price_ib = calculate_buy_limit_price_sequence(
+                initial_estimate=selected.credit,
+                min_price=min_price,
+                price_reduction_per_minute=price_reduction_per_minute
+            )
+        
+        # Build and place order
+        exchange = "CBOE"
+        short_opt = Option(
+            symbol=symbol,
+            lastTradeDateOrContractMonth=expiry,
+            strike=selected.short.strike,
+            right=selected.short.right,
+            exchange=exchange,
+        )
+        long_opt = Option(
+            symbol=symbol,
+            lastTradeDateOrContractMonth=expiry,
+            strike=selected.long.strike,
+            right=selected.long.right,
+            exchange=exchange,
+        )
+        
+        # Synchronize IB access
+        with ib_lock:
+            qualified = ib.qualifyContracts(short_opt, long_opt)
+            if len(qualified) != 2:
+                raise RuntimeError(f"Could not qualify both legs for {symbol}")
+            
+            short_q, long_q = qualified
+            
+            # Get live quotes
+            short_ticker = ib.reqMktData(short_q, "", False, False)
+            long_ticker = ib.reqMktData(long_q, "", False, False)
+            ib.sleep(1.0)
+            
+            short_bid = short_ticker.bid
+            short_ask = short_ticker.ask
+            long_bid = long_ticker.bid
+            long_ask = long_ticker.ask
+            
+            # Cancel market data
+            try:
+                ib.cancelMktData(short_ticker)
+                ib.cancelMktData(long_ticker)
+            except Exception:
+                pass
+        
+        # Calculate combo market and validate price
+        initial_price = initial_price_raw
+        if (
+            short_bid is not None and short_ask is not None and
+            long_bid is not None and long_ask is not None and
+            short_bid > 0 and short_ask > 0 and
+            long_bid > 0 and long_ask > 0
+        ):
+            if order_action == "SELL":
+                combo_bid = short_bid - long_ask
+                combo_ask = short_ask - long_bid
+                initial_price = max(combo_bid, min(combo_ask, initial_price_raw))
+            else:
+                combo_bid = long_ask - short_bid
+                combo_ask = long_bid - short_ask
+                if initial_price_raw > combo_bid:
+                    logger.warning(f"Initial price ${initial_price_raw:.2f} above bid ${combo_bid:.2f} for {symbol}")
+                elif initial_price_raw < combo_ask:
+                    initial_price = combo_ask
+                else:
+                    initial_price = initial_price_raw
+                    logger.info(f"Initial price ${initial_price_raw:.2f} is within NBBO range [${combo_ask:.2f}, ${combo_bid:.2f}]")
+        
+        # Convert to IB format
+        if order_action == "SELL":
+            ib_limit_price = -abs(initial_price)
+        else:
+            ib_limit_price = initial_price if initial_price < 0 else -initial_price
+        
+        # Build order
+        short_leg = ComboLeg(
+            conId=short_q.conId,
+            ratio=1,
+            action="SELL",
+            exchange=exchange,
+            openClose=1,
+        )
+        long_leg = ComboLeg(
+            conId=long_q.conId,
+            ratio=1,
+            action="BUY",
+            exchange=exchange,
+            openClose=1,
+        )
+        
+        spread_contract = Contract(
+            symbol=symbol,
+            secType="BAG",
+            currency="USD",
+            exchange=exchange,
+        )
+        spread_contract.comboLegs = [short_leg, long_leg]
+        
+        order = Order()
+        order.action = order_action
+        order.orderType = "LMT"
+        order.totalQuantity = quantity
+        order.lmtPrice = ib_limit_price
+        order.tif = "DAY"
+        if account:
+            order.account = account
+        
+        # Place order (synchronized)
+        with ib_lock:
+            trade = ib.placeOrder(spread_contract, order)
+        
+        logger.info(
+            f"Placed IB order for {symbol}: {order_action} {quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
+        )
+        
+        # Store monitoring info in trade object
+        trade._monitoring_config = {
+            'initial_price': ib_limit_price,
+            'min_price': min_price_ib if order_action == "BUY" else min_price,
+            'initial_wait_minutes': initial_wait_minutes,
+            'price_reduction_per_minute': price_reduction_per_minute,
+            'order_action': order_action,
+            'symbol': symbol,
+        }
+        
+        return trade
+        
+    except Exception as e:
+        logger.error(f"Error processing order for {symbol}: {e}", exc_info=True)
+        return None
+
+def monitor_all_orders(
+    active_orders: List[Trade],
+    ib: IB,
+    ib_lock: threading.Lock,
+    check_interval_seconds: int = 10
+):
+    """
+    Monitor all active orders in a single loop, checking every x seconds.
+    
+    Args:
+        active_orders: List of Trade objects to monitor (modified in place)
+        ib: Shared IB connection object
+        ib_lock: Thread lock for synchronizing IB access
+        check_interval_seconds: How often to check/adjust orders (default: 10)
+    """
+    if not active_orders:
+        return
+    
+    logger.info(f"Monitoring {len(active_orders)} active orders (checking every {check_interval_seconds}s)")
+    
+    # Track start time and last adjustment time for each order using order ID as key (Trade objects are not hashable)
+    order_start_times = {}
+    order_last_adjustment_times = {}
+    for trade in active_orders:
+        order_id = trade.order.orderId if trade.order.orderId else trade.orderStatus.orderId
+        if order_id:
+            order_start_times[order_id] = datetime.now()
+            order_last_adjustment_times[order_id] = datetime.now()  # Track when we last adjusted
+    
+    last_log_time = datetime.now()
+    
+    while active_orders:
+        time.sleep(check_interval_seconds)
+        
+        current_time = datetime.now()
+        still_active = []
+        
+        # Check all orders in the array
+        for trade in active_orders:
+            status = trade.orderStatus.status
+            config = getattr(trade, '_monitoring_config', {})
+            symbol = config.get('symbol', 'UNKNOWN') if config else 'UNKNOWN'
+            order_id = trade.order.orderId if trade.order.orderId else trade.orderStatus.orderId
+            
+            # Check if filled
+            if status == 'Filled':
+                logger.info(
+                    f"Order for {symbol} FILLED! "
+                    f"Price: ${trade.orderStatus.avgFillPrice:.2f}, "
+                    f"Quantity: {trade.orderStatus.filled}/{trade.order.totalQuantity}"
+                )
+                continue
+            
+            # Check if cancelled/rejected
+            if status in ['Cancelled', 'ApiCancelled', 'Rejected']:
+                reason = trade.orderStatus.whyHeld or 'N/A'
+                logger.warning(f"Order for {symbol} {status.lower()}. Reason: {reason}")
+                continue
+            
+            # Still active - check if we need to adjust price
+            # Only modify orders that are in Submitted status (PendingSubmit orders may not accept modifications)
+            if status in ['Submitted', 'PreSubmitted', 'PendingSubmit']:
+                if not config:
+                    still_active.append(trade)
+                    continue
+                
+                # Get start time and last adjustment time using order ID
+                start_time = order_start_times.get(order_id, current_time) if order_id else current_time
+                last_adjustment_time = order_last_adjustment_times.get(order_id, start_time) if order_id else start_time
+                elapsed_minutes = (current_time - start_time).total_seconds() / 60.0
+                minutes_since_last_adjustment = (current_time - last_adjustment_time).total_seconds() / 60.0
+                
+                initial_wait_minutes = config.get('initial_wait_minutes', 2)
+                price_reduction_per_minute = config.get('price_reduction_per_minute', 0.01)
+                order_action = config.get('order_action', 'BUY')
+                min_price = config.get('min_price', 0.23)
+                current_price = trade.order.lmtPrice
+                
+                # Only adjust price if order is in Submitted status (modifications may not work for PendingSubmit)
+                # Adjust price if initial wait period has passed AND at least 1 minute since last adjustment
+                can_modify = status == 'Submitted' or status == 'PreSubmitted'
+                if can_modify and elapsed_minutes >= initial_wait_minutes and minutes_since_last_adjustment >= 1.0:
+                    if order_action == "BUY":
+                        # Make less negative (for negative prices, we add to make it closer to zero)
+                        # Adjust by one step (price_reduction_per_minute) per minute
+                        new_price = current_price + price_reduction_per_minute
+                        # For negative prices, min_price is also negative. Use min() to cap at minimum (most negative)
+                        # e.g., min(-0.20, -0.23) = -0.23 (correct - don't go below minimum)
+                        new_price = min(new_price, min_price) if min_price < 0 else max(new_price, min_price)
+                    else:
+                        # Reduce price (for positive prices)
+                        new_price = current_price - price_reduction_per_minute
+                        new_price = max(new_price, min_price)  # Don't go below minimum
+                    
+                    # Round to 2 decimal places to match IB precision
+                    new_price = round(new_price, 2)
+                    
+                    if abs(new_price - current_price) > 0.001:  # Use small epsilon for float comparison
+                        # Modify order
+                        try:
+                            with ib_lock:
+                                # Ensure we're modifying the order correctly
+                                trade.order.lmtPrice = new_price
+                                # Place the modified order (modifies trade in place)
+                                ib.placeOrder(trade.contract, trade.order)
+                                # Give IB a moment to process the modification
+                                ib.sleep(0.5)
+                            
+                            # Verify the modification was applied by checking the order
+                            # Note: trade.order.lmtPrice should now reflect the new price
+                            actual_price = trade.order.lmtPrice
+                            if abs(actual_price - new_price) > 0.01:
+                                logger.warning(
+                                    f"Price modification may not have been applied for {symbol}. "
+                                    f"Expected: ${new_price:.2f}, Actual: ${actual_price:.2f}"
+                                )
+                            
+                            # Update last adjustment time
+                            if order_id:
+                                order_last_adjustment_times[order_id] = current_time
+                            
+                            if new_price == min_price:
+                                logger.info(f"Adjusted {symbol} order price to ${new_price:.2f} (minimum reached)")
+                            else:
+                                logger.info(f"Adjusted {symbol} order price to ${new_price:.2f}")
+                        except Exception as e:
+                            logger.error(f"Error modifying {symbol} order price: {e}", exc_info=True)
+                            # Continue monitoring even if modification fails
+                    elif current_price == min_price:
+                        # Already at minimum, no need to adjust
+                        pass
+                
+                still_active.append(trade)
+        
+        # Update active_orders list in place
+        active_orders[:] = still_active
+        
+        if not still_active:
+            logger.info("All orders completed (filled, cancelled, or rejected)")
+            break
+        
+        # Log status periodically (every 30 seconds)
+        if (current_time - last_log_time).total_seconds() >= 30:
+            logger.info(f"Active orders: {len(still_active)}/{len(active_orders)}")
+            for trade in still_active:
+                config = getattr(trade, '_monitoring_config', {})
+                symbol = config.get('symbol', 'UNKNOWN') if config else 'UNKNOWN'
+                status = trade.orderStatus.status
+                filled = trade.orderStatus.filled
+                total = trade.order.totalQuantity  # totalQuantity is on Order, not OrderStatus
+                logger.info(f"  {symbol}: {status}, Filled: {filled}/{total}, Price: ${trade.order.lmtPrice:.2f}")
+            last_log_time = current_time
+
 def process_single_order_from_config(order_config: Dict, script_path: str, port: Optional[int] = None) -> Tuple[str, int, str]:
     """
     Process a single order from config by running spreads_trader.py as subprocess.
@@ -927,11 +1309,11 @@ def process_single_order_from_config(order_config: Dict, script_path: str, port:
 
 def process_config_file(config_path: str, max_workers: Optional[int] = None):
     """
-    Process multiple orders from YAML config file in parallel.
+    Process multiple orders from YAML config file sequentially, then monitor all orders together.
     
     Args:
         config_path: Path to YAML config file
-        max_workers: Maximum number of parallel workers (default: number of orders)
+        max_workers: Not used (kept for compatibility)
     """
     config = load_config_file(config_path)
     orders = config.get('orders', [])
@@ -942,7 +1324,7 @@ def process_config_file(config_path: str, max_workers: Optional[int] = None):
     
     logger.info(f"Processing {len(orders)} orders from config file: {config_path}")
     
-    # Detect IB port once in main process (to avoid conflicts in subprocesses)
+    # Detect IB port
     detected_port = None
     if 'port' in config:
         detected_port = config['port']
@@ -958,71 +1340,69 @@ def process_config_file(config_path: str, max_workers: Optional[int] = None):
             logger.error(f"Error detecting IB port: {e}")
             return
     
-    # Get script path
-    script_path = os.path.abspath(__file__)
+    # Detect account
+    detected_account = None
+    try:
+        detected_account = detect_ib_account(port=detected_port)
+        if detected_account:
+            logger.info(f"Auto-detected IB account: {detected_account}")
+    except Exception as e:
+        logger.warning(f"Could not auto-detect IB account: {e}")
     
-    # Process orders in parallel using subprocess and threading
-    # Each order runs in its own Python process to avoid IB connection conflicts
-    results = []
-    results_lock = threading.Lock()
+    # Create single IB connection
+    ib = get_ib_connection(port=detected_port)
+    ib_lock = threading.Lock()  # Shared lock for IB operations
     
-    def run_order(order):
-        """Run a single order and store result."""
+    # Process orders sequentially (strategy qualification and placing initial orders)
+    active_orders = []  # List of Trade objects
+    errors = []
+    
+    for order in orders:
         symbol = order.get('symbol', 'UNKNOWN')
-        # Add separator to distinguish between different orders in log
         print(f"\n{'='*60}", flush=True)
-        print(f"Starting order for {symbol}", flush=True)
+        print(f"Processing order for {symbol}", flush=True)
         print(f"{'='*60}", flush=True)
         
-        symbol, return_code, error_msg = process_single_order_from_config(order, script_path, port=detected_port)
-        
-        print(f"{'='*60}", flush=True)
-        if return_code == 0:
-            print(f"Order for {symbol} completed successfully", flush=True)
-        else:
-            print(f"Order for {symbol} failed with return code {return_code}", flush=True)
-            if error_msg:
-                print(f"Error: {error_msg}", flush=True)
-        print(f"{'='*60}\n", flush=True)
-        
-        with results_lock:
-            results.append((symbol, return_code, error_msg))
+        try:
+            trade = process_single_order_direct(
+                order_config=order,
+                ib=ib,
+                ib_lock=ib_lock,
+                port=detected_port,
+                account=detected_account or order.get('account')
+            )
+            
+            if trade:
+                active_orders.append(trade)
+                print(f"Order for {symbol} placed successfully", flush=True)
+            else:
+                errors.append((symbol, "Order not placed (create_orders_en may be False)"))
+                print(f"Order for {symbol} not placed", flush=True)
+        except Exception as e:
+            errors.append((symbol, str(e)))
+            logger.error(f"Error processing order for {symbol}: {e}", exc_info=True)
+            print(f"Order for {symbol} failed: {e}", flush=True)
+        finally:
+            print(f"{'='*60}\n", flush=True)
     
-    # Create threads for each order
-    # Add small delay between starts to avoid IB connection conflicts
-    threads = []
-    for i, order in enumerate(orders):
-        thread = threading.Thread(target=run_order, args=(order,))
-        thread.start()
-        threads.append(thread)
-        # Small delay between starting threads to avoid connection conflicts
-        if i < len(orders) - 1:  # Don't delay after last one
-            time.sleep(0.5)
-    
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
+    # Monitor all active orders in a single loop
+    if active_orders:
+        logger.info(f"Starting monitoring loop for {len(active_orders)} active orders...")
+        monitor_all_orders(active_orders, ib, ib_lock, check_interval_seconds=10)
     
     # Print summary
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    successful = sum(1 for _, rc, _ in results if rc == 0)
-    failed = len(results) - successful
-    print(f"Total orders: {len(results)}")
-    print(f"Successful: {successful}")
-    print(f"Failed: {failed}")
+    print(f"Total orders: {len(orders)}")
+    print(f"Placed: {len(active_orders)}")
+    print(f"Failed: {len(errors)}")
     print("=" * 60)
     
-    if failed > 0:
+    if errors:
         print("\nFailed orders:")
-        for symbol, return_code, output in results:
-            if return_code != 0:
-                print(f"  - {symbol} (return code: {return_code})")
-                # Print last few lines of output for debugging
-                output_lines = output.strip().split('\n')
-                if output_lines:
-                    print(f"    Last output: {output_lines[-1][:100]}")
+        for symbol, error_msg in errors:
+            print(f"  - {symbol}: {error_msg[:200]}")
 
 # ---------- main ----------
 
