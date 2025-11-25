@@ -402,6 +402,81 @@ def print_report(candidates: List[SpreadCandidate]):
 
 # ---------- IB order creation ----------
 
+def create_ib_bracket_order(
+    spread_contract: Contract,
+    parent_order: Order,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
+    ib: Optional[IB] = None,
+    port: Optional[int] = None
+) -> Tuple[Trade, Optional[Trade], Optional[Trade]]:
+    """
+    Create a bracket order with optional take profit and stop loss.
+    
+    Args:
+        spread_contract: The spread contract (BAG)
+        parent_order: The parent limit order
+        take_profit_price: Take profit price in IB format (optional)
+        stop_loss_price: Stop loss price in IB format (optional)
+        ib: IB connection (optional, will create if not provided)
+        port: IB API port number (optional)
+    
+    Returns:
+        Tuple of (parent_trade, take_profit_trade, stop_loss_trade)
+        Child trades will be None if not specified
+    """
+    if ib is None:
+        ib = get_ib_connection(port=port)
+    
+    # Place parent order
+    parent_trade = ib.placeOrder(spread_contract, parent_order)
+    parent_order_id = parent_trade.order.orderId
+    
+    take_profit_trade = None
+    stop_loss_trade = None
+    
+    # Create take profit order if specified
+    if take_profit_price is not None:
+        # Take profit order: opposite action to close the position
+        tp_order = Order()
+        tp_order.parentId = parent_order_id
+        tp_order.action = "SELL" if parent_order.action == "BUY" else "BUY"
+        tp_order.orderType = "LMT"
+        tp_order.totalQuantity = parent_order.totalQuantity
+        tp_order.lmtPrice = round(take_profit_price, 2)
+        tp_order.tif = "DAY"
+        if parent_order.account:
+            tp_order.account = parent_order.account
+        
+        take_profit_trade = ib.placeOrder(spread_contract, tp_order)
+        logger.info(
+            f"Placed take profit order: {tp_order.action} @ ${take_profit_price:.2f} "
+            f"(parent order ID: {parent_order_id})"
+        )
+    
+    # Create stop loss order if specified
+    if stop_loss_price is not None:
+        # Stop loss order: opposite action to close the position
+        sl_order = Order()
+        sl_order.parentId = parent_order_id
+        sl_order.action = "SELL" if parent_order.action == "BUY" else "BUY"
+        sl_order.orderType = "LMT"  # Use LMT for stop loss (can be changed to STP if needed)
+        sl_order.totalQuantity = parent_order.totalQuantity
+        sl_order.lmtPrice = round(stop_loss_price, 2)
+        sl_order.tif = "DAY"
+        sl_order.overridePercentageConstraints = True  # Bypass TWS 80% price deviation check
+        if parent_order.account:
+            sl_order.account = parent_order.account
+        
+        stop_loss_trade = ib.placeOrder(spread_contract, sl_order)
+        logger.info(
+            f"Placed stop loss order: {sl_order.action} @ ${stop_loss_price:.2f} "
+            f"(parent order ID: {parent_order_id})"
+        )
+    
+    return parent_trade, take_profit_trade, stop_loss_trade
+
+
 def create_ib_spread_order(
     symbol: str,
     expiry: str,
@@ -514,6 +589,42 @@ def create_ib_spread_order(
     )
     
     return trade
+
+
+def calculate_bracket_prices(
+    limit_price: float,
+    order_action: str,
+    take_profit_price_target: Optional[float] = None,
+    stop_loss_multiplier: Optional[float] = None
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calculate take profit and stop loss prices for bracket orders.
+    
+    Args:
+        limit_price: The limit price in IB format (negative for credit spreads)
+        order_action: "BUY" or "SELL"
+        take_profit_price_target: The absolute price to close at for take profit (e.g., -0.02)
+        stop_loss_multiplier: Stop loss multiplier on limit price (e.g., 1.5 means 1.5x the entry price)
+    
+    Returns:
+        Tuple of (take_profit_price, stop_loss_price) in IB format, or None if not specified
+    
+    Example for BUY at -0.25:
+    - Take profit at -0.02: Close the spread for only 2 cents (big profit)
+    - Stop loss at -0.375 (1.5x): Close at 1.5x entry price (loss)
+    """
+    take_profit_price = None
+    stop_loss_price = None
+    
+    # Take profit: use the target price directly (e.g., -0.02 to close for 2 cents)
+    if take_profit_price_target is not None:
+        take_profit_price = take_profit_price_target
+    
+    # Stop loss: multiply the limit price by the multiplier
+    if stop_loss_multiplier is not None:
+        stop_loss_price = limit_price * stop_loss_multiplier
+    
+    return take_profit_price, stop_loss_price
 
 
 def calculate_buy_limit_price_sequence(
@@ -881,6 +992,8 @@ def process_single_order_direct(
     price_reduction_per_minute = order_config.get('price_reduction_per_minute', 0.01)
     order_action = order_config.get('order_action', 'BUY')
     create_orders_en = order_config.get('create_orders_en', False)
+    take_profit = order_config.get('take_profit')
+    stop_loss = order_config.get('stop_loss') or order_config.get('stop_loss_multiplier')
     
     try:
         # Auto-fetch option chain
@@ -1046,13 +1159,53 @@ def process_single_order_direct(
         if account:
             order.account = account
         
+        # Calculate bracket prices if specified
+        take_profit_price = None
+        stop_loss_price = None
+        
+        if take_profit is not None or stop_loss is not None:
+            # Parse stop_loss: can be "double", a number (multiplier), or None
+            stop_loss_multiplier = None
+            if stop_loss is not None:
+                if isinstance(stop_loss, str) and stop_loss.lower() == "double":
+                    stop_loss_multiplier = 2.0
+                else:
+                    try:
+                        stop_loss_multiplier = float(stop_loss)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid stop_loss value: {stop_loss}, ignoring")
+            
+            take_profit_price, stop_loss_price = calculate_bracket_prices(
+                limit_price=ib_limit_price,
+                order_action=order_action,
+                take_profit_price_target=take_profit,
+                stop_loss_multiplier=stop_loss_multiplier
+            )
+        
         # Place order (synchronized)
         with ib_lock:
-            trade = ib.placeOrder(spread_contract, order)
-        
-        logger.info(
-            f"Placed IB order for {symbol}: {order_action} {quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
-        )
+            if take_profit_price is not None or stop_loss_price is not None:
+                # Use bracket order
+                trade, tp_trade, sl_trade = create_ib_bracket_order(
+                    spread_contract=spread_contract,
+                    parent_order=order,
+                    take_profit_price=take_profit_price,
+                    stop_loss_price=stop_loss_price,
+                    ib=ib
+                )
+                logger.info(
+                    f"Placed IB bracket order for {symbol}: {order_action} {quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
+                )
+                if take_profit_price is not None:
+                    logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
+                if stop_loss_price is not None:
+                    logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
+            else:
+                # Regular order
+                trade = ib.placeOrder(spread_contract, order)
+                logger.info(
+                    f"Placed IB order for {symbol}: {order_action} {quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
+                )
         
         # Store monitoring info in trade object
         trade._monitoring_config = {
@@ -1595,6 +1748,20 @@ def main():
         help="Maximum number of parallel workers when using --conf-file (default: number of orders).",
     )
     
+    parser.add_argument(
+        "--take-profit",
+        type=float,
+        default=None,
+        help="Take profit in dollars (credit). If specified, creates a bracket order with take profit. Example: 0.02 for 2 cents.",
+    )
+    
+    parser.add_argument(
+        "--stop-loss",
+        type=float,
+        default=None,
+        help="Stop loss multiplier or absolute price. If 'double' or 2.0, uses double the limit price. If a number, uses that as multiplier. If absolute price specified, uses that directly.",
+    )
+    
     args = parser.parse_args()
     
     # If config file is provided, process it and exit
@@ -1988,20 +2155,86 @@ def main():
         order.account = args.account
         logger.info("Using account: %s", args.account)
     
-    trade = ib.placeOrder(spread_contract, order)
+    # Calculate bracket prices if specified
+    take_profit_price = None
+    stop_loss_price = None
     
-    logger.info(
-        "Placed IB order: %s %s %s %dx %s/%s @ %.2f (%s=%.2f, TIF=DAY)",
-        args.order_action,
-        args.symbol,
-        args.expiry,
-        args.quantity,
-        selected.short.strike,
-        selected.long.strike,
-        ib_limit_price,
-        price_description,
-        display_price,
-    )
+    if args.take_profit is not None or args.stop_loss is not None:
+        # Parse stop_loss: can be "double", a number (multiplier), or None
+        stop_loss_multiplier = None
+        if args.stop_loss is not None:
+            if isinstance(args.stop_loss, str) and args.stop_loss.lower() == "double":
+                stop_loss_multiplier = 2.0
+            else:
+                try:
+                    stop_loss_multiplier = float(args.stop_loss)
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid stop_loss value: {args.stop_loss}, ignoring")
+        
+        take_profit_price, stop_loss_price = calculate_bracket_prices(
+            limit_price=ib_limit_price,
+            order_action=args.order_action,
+            take_profit_price_target=args.take_profit,
+            stop_loss_multiplier=stop_loss_multiplier
+        )
+        
+        if take_profit_price is not None or stop_loss_price is not None:
+            # Use bracket order
+            trade, tp_trade, sl_trade = create_ib_bracket_order(
+                spread_contract=spread_contract,
+                parent_order=order,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+                ib=ib
+            )
+            
+            logger.info(
+                "Placed IB bracket order: %s %s %s %dx %s/%s @ %.2f (%s=%.2f, TIF=DAY)",
+                args.order_action,
+                args.symbol,
+                args.expiry,
+                args.quantity,
+                selected.short.strike,
+                selected.long.strike,
+                ib_limit_price,
+                price_description,
+                display_price,
+            )
+            
+            if take_profit_price is not None:
+                logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
+            if stop_loss_price is not None:
+                logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
+        else:
+            # No bracket orders, just place regular order
+            trade = ib.placeOrder(spread_contract, order)
+            logger.info(
+                "Placed IB order: %s %s %s %dx %s/%s @ %.2f (%s=%.2f, TIF=DAY)",
+                args.order_action,
+                args.symbol,
+                args.expiry,
+                args.quantity,
+                selected.short.strike,
+                selected.long.strike,
+                ib_limit_price,
+                price_description,
+                display_price,
+            )
+    else:
+        # No bracket orders, just place regular order
+        trade = ib.placeOrder(spread_contract, order)
+        logger.info(
+            "Placed IB order: %s %s %s %dx %s/%s @ %.2f (%s=%.2f, TIF=DAY)",
+            args.order_action,
+            args.symbol,
+            args.expiry,
+            args.quantity,
+            selected.short.strike,
+            selected.long.strike,
+            ib_limit_price,
+            price_description,
+            display_price,
+        )
     
     if args.monitor_order:
         logger.info("Monitoring order and adjusting price according to strategy...")

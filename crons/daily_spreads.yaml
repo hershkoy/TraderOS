@@ -7,10 +7,14 @@ orders:
     create_orders_en: true
     quantity: 2
     risk_profile: balanced
+    take_profit: -0.02  # Close spread at -0.02 (2 cents) for profit
+    stop_loss_multiplier: 1.5  # 1.5x the limit price for stop loss
     
   - symbol: IWM
     dte: 7
     create_orders_en: true
     quantity: 2
     risk_profile: balanced
+    take_profit: -0.02  # Close spread at -0.02 (2 cents) for profit
+    stop_loss_multiplier: 1.5  # 1.5x the limit price for stop loss
 
