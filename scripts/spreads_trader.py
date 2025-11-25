@@ -435,6 +435,9 @@ def create_ib_bracket_order(
     take_profit_trade = None
     stop_loss_trade = None
     
+    # Generate OCA group name for linking take profit and stop loss (One-Cancels-All)
+    oca_group = f"bracket_{parent_order_id}"
+    
     # Create take profit order if specified
     if take_profit_price is not None:
         # Take profit order: opposite action to close the position
@@ -444,14 +447,16 @@ def create_ib_bracket_order(
         tp_order.orderType = "LMT"
         tp_order.totalQuantity = parent_order.totalQuantity
         tp_order.lmtPrice = round(take_profit_price, 2)
-        tp_order.tif = "DAY"
+        tp_order.tif = "GTC"  # GTC like TWS bracket orders
+        tp_order.ocaGroup = oca_group  # OCA group to cancel stop loss if TP fills
+        tp_order.ocaType = 3  # 3 = reduce position with overfill protection
         if parent_order.account:
             tp_order.account = parent_order.account
         
         take_profit_trade = ib.placeOrder(spread_contract, tp_order)
         logger.info(
             f"Placed take profit order: {tp_order.action} @ ${take_profit_price:.2f} "
-            f"(parent order ID: {parent_order_id})"
+            f"(parent order ID: {parent_order_id}, OCA: {oca_group})"
         )
     
     # Create stop loss order if specified
@@ -460,21 +465,94 @@ def create_ib_bracket_order(
         sl_order = Order()
         sl_order.parentId = parent_order_id
         sl_order.action = "SELL" if parent_order.action == "BUY" else "BUY"
-        sl_order.orderType = "LMT"  # Use LMT for stop loss (can be changed to STP if needed)
+        sl_order.orderType = "STP"  # Stop order like TWS bracket orders
         sl_order.totalQuantity = parent_order.totalQuantity
-        sl_order.lmtPrice = round(stop_loss_price, 2)
-        sl_order.tif = "DAY"
+        sl_order.auxPrice = round(stop_loss_price, 2)  # Stop trigger price goes in auxPrice
+        sl_order.tif = "GTC"  # GTC like TWS bracket orders
+        sl_order.ocaGroup = oca_group  # OCA group to cancel take profit if SL fills
+        sl_order.ocaType = 3  # 3 = reduce position with overfill protection
         sl_order.overridePercentageConstraints = True  # Bypass TWS 80% price deviation check
         if parent_order.account:
             sl_order.account = parent_order.account
         
         stop_loss_trade = ib.placeOrder(spread_contract, sl_order)
         logger.info(
-            f"Placed stop loss order: {sl_order.action} @ ${stop_loss_price:.2f} "
-            f"(parent order ID: {parent_order_id})"
+            f"Placed stop loss order: {sl_order.action} STP @ ${stop_loss_price:.2f} "
+            f"(parent order ID: {parent_order_id}, OCA: {oca_group})"
         )
     
     return parent_trade, take_profit_trade, stop_loss_trade
+
+
+def verify_bracket_order_structure(
+    ib: IB,
+    parent_order_id: int,
+    expected_tp_price: Optional[float] = None,
+    expected_sl_price: Optional[float] = None,
+    timeout_seconds: float = 5.0
+) -> bool:
+    """
+    Verify that bracket orders were created correctly in IB.
+    
+    Args:
+        ib: IB connection
+        parent_order_id: Parent order ID
+        expected_tp_price: Expected take profit price
+        expected_sl_price: Expected stop loss price
+        timeout_seconds: How long to wait for orders to appear
+    
+    Returns:
+        True if structure is as expected, False otherwise
+    """
+    import time
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout_seconds:
+        ib.sleep(0.5)
+        trades = ib.openTrades()
+        
+        # Find parent and children
+        parent_found = False
+        tp_found = False
+        sl_found = False
+        
+        for trade in trades:
+            order = trade.order
+            
+            if order.orderId == parent_order_id:
+                parent_found = True
+                logger.info(f"  Parent order {parent_order_id}: {order.action} @ {order.lmtPrice} ({trade.orderStatus.status})")
+            
+            if order.parentId == parent_order_id:
+                # This is a child order
+                price = order.lmtPrice if order.orderType == "LMT" else order.auxPrice
+                
+                if expected_tp_price is not None and abs(price - expected_tp_price) < 0.01:
+                    tp_found = True
+                    logger.info(f"  Take profit order {order.orderId}: {order.action} @ {price} ({order.orderType}, {trade.orderStatus.status})")
+                elif expected_sl_price is not None and abs(price - expected_sl_price) < 0.01:
+                    sl_found = True
+                    logger.info(f"  Stop loss order {order.orderId}: {order.action} @ {price} ({order.orderType}, {trade.orderStatus.status})")
+                else:
+                    logger.warning(f"  Unknown child order {order.orderId}: {order.action} @ {price} ({order.orderType})")
+        
+        # Check if we found what we expected
+        tp_ok = (expected_tp_price is None) or tp_found
+        sl_ok = (expected_sl_price is None) or sl_found
+        
+        if parent_found and tp_ok and sl_ok:
+            logger.info("Bracket order structure verified successfully")
+            return True
+    
+    # Timeout - report what's missing
+    if not parent_found:
+        logger.error(f"Parent order {parent_order_id} not found in open trades")
+    if expected_tp_price is not None and not tp_found:
+        logger.error(f"Take profit order @ {expected_tp_price} not found")
+    if expected_sl_price is not None and not sl_found:
+        logger.error(f"Stop loss order @ {expected_sl_price} not found")
+    
+    return False
 
 
 def create_ib_spread_order(
@@ -1200,6 +1278,15 @@ def process_single_order_direct(
                     logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
                 if stop_loss_price is not None:
                     logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
+                
+                # Verify bracket order structure
+                logger.info("Verifying bracket order structure...")
+                verify_bracket_order_structure(
+                    ib=ib,
+                    parent_order_id=trade.order.orderId,
+                    expected_tp_price=take_profit_price,
+                    expected_sl_price=stop_loss_price
+                )
             else:
                 # Regular order
                 trade = ib.placeOrder(spread_contract, order)
@@ -2205,6 +2292,15 @@ def main():
                 logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
             if stop_loss_price is not None:
                 logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
+            
+            # Verify bracket order structure
+            logger.info("Verifying bracket order structure...")
+            verify_bracket_order_structure(
+                ib=ib,
+                parent_order_id=trade.order.orderId,
+                expected_tp_price=take_profit_price,
+                expected_sl_price=stop_loss_price
+            )
         else:
             # No bracket orders, just place regular order
             trade = ib.placeOrder(spread_contract, order)
