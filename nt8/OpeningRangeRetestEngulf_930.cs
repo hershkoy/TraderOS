@@ -39,7 +39,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "RejectionFactor", GroupName = "Parameters", Order = 4)]
-        public double RejectionFactor { get; set; } = 1.5;
+        public double RejectionFactor { get; set; } = 1.0;  // Lowered from 1.5
 
         [NinjaScriptProperty]
         [Display(Name = "OpeningRangeMinutes", GroupName = "Parameters", Order = 5)]
@@ -56,7 +56,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "RetestBufferTicks", GroupName = "Parameters", Order = 8)]
-        public int RetestBufferTicks { get; set; } = 3;
+        public int RetestBufferTicks { get; set; } = 5;  // Increased from 3
 
         [NinjaScriptProperty]
         [Display(Name = "RequireRetest", GroupName = "Parameters", Order = 9)]
@@ -64,7 +64,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "MaxDistanceFromOR", GroupName = "Parameters", Order = 10)]
-        public int MaxDistanceFromOR { get; set; } = 20;   // ticks
+        public int MaxDistanceFromOR { get; set; } = 30;   // Increased from 20 ticks
 
         [NinjaScriptProperty]
         [Display(Name = "EnableLongs", GroupName = "Parameters", Order = 11)]
@@ -76,11 +76,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "MinORTicks", GroupName = "Parameters", Order = 13)]
-        public int MinORTicks { get; set; } = 10;
+        public int MinORTicks { get; set; } = 5;  // Lowered from 10
 
         [NinjaScriptProperty]
         [Display(Name = "MaxORTicks", GroupName = "Parameters", Order = 14)]
-        public int MaxORTicks { get; set; } = 200;
+        public int MaxORTicks { get; set; } = 400;  // Increased from 200
 
         [NinjaScriptProperty]
         [Display(Name = "UseBiasFilter", GroupName = "Parameters", Order = 15)]
@@ -112,11 +112,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "AvoidPriorDayLevels", GroupName = "Parameters", Order = 22)]
-        public bool AvoidPriorDayLevels { get; set; } = true;
+        public bool AvoidPriorDayLevels { get; set; } = false;  // Changed to false
 
         [NinjaScriptProperty]
         [Display(Name = "PriorDayLevelBufferATR", GroupName = "Parameters", Order = 23)]
-        public double PriorDayLevelBufferATR { get; set; } = 1.0;
+        public double PriorDayLevelBufferATR { get; set; } = 0.15;  // Lowered from 1.0
 
         [NinjaScriptProperty]
         [Display(Name = "UseAtrScaling", GroupName = "Parameters", Order = 24)]
@@ -124,19 +124,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "RetestBufferATR", GroupName = "Parameters", Order = 25)]
-        public double RetestBufferATR { get; set; } = 0.03;
+        public double RetestBufferATR { get; set; } = 0.05;  // Increased from 0.03
 
         [NinjaScriptProperty]
         [Display(Name = "MaxDistanceFromORATR", GroupName = "Parameters", Order = 26)]
-        public double MaxDistanceFromORATR { get; set; } = 0.10;
+        public double MaxDistanceFromORATR { get; set; } = 0.15;  // Increased from 0.10
 
         [NinjaScriptProperty]
         [Display(Name = "MinORATR", GroupName = "Parameters", Order = 27)]
-        public double MinORATR { get; set; } = 0.03;
+        public double MinORATR { get; set; } = 0.02;  // Lowered from 0.03
 
         [NinjaScriptProperty]
         [Display(Name = "MaxORATR", GroupName = "Parameters", Order = 28)]
-        public double MaxORATR { get; set; } = 0.20;
+        public double MaxORATR { get; set; } = 0.75;  // CRITICAL FIX: Increased from 0.20
 
         [NinjaScriptProperty]
         [Display(Name = "UseVolumeFilter", GroupName = "Parameters", Order = 29)]
@@ -144,10 +144,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "MinBreakoutVolMult", GroupName = "Parameters", Order = 30)]
-        public double MinBreakoutVolMult { get; set; } = 1.5;
+        public double MinBreakoutVolMult { get; set; } = 1.2;  // Lowered from 1.5
 
 
-        // === NEW BIAS PARAMETERS ===
+        // === BIAS PARAMETERS ===
 
         [NinjaScriptProperty]
         [Display(Name = "UseGapDirectionalBias", GroupName = "Bias", Order = 31)]
@@ -166,6 +166,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 30)]
         public int OpeningBiasMinutes { get; set; } = 5;
 
+        // === NEW: Relaxed entry modes ===
+
+        [NinjaScriptProperty]
+        [Display(Name = "AllowCloseAboveOR", GroupName = "Entry", Order = 35)]
+        public bool AllowCloseAboveOR { get; set; } = true;  // Enter on close above OR without pattern
+
+        [NinjaScriptProperty]
+        [Display(Name = "MinBodyPercent", GroupName = "Entry", Order = 36)]
+        public double MinBodyPercent { get; set; } = 0.20;  // Min body as % of candle range for engulf
 
 
         // === INTERNAL STATE ===
@@ -185,7 +194,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int barsSinceHighBreak;
         private int barsSinceLowBreak;
 
-        // NEW: number of primary bars since session open
+        // number of primary bars since session open
         private int barsSinceSessionStart;
 
         // volume
@@ -217,10 +226,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool pdBiasBull;
         private bool pdBiasBear;
 
-        // opening 5m bias
+        // opening bias
         private bool openingBiasComputed;
         private bool openingBiasUp;
         private bool openingBiasDown;
+
+        // debouncing - track last signal bar
+        private int lastLongSignalBar = -1;
+        private int lastShortSignalBar = -1;
+
+        // config printed flag
+        private bool configPrinted = false;
 
 
         protected override void OnStateChange()
@@ -273,7 +289,56 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (idxHourly >= 0 && UseHTFBias)
                     emaHourly = EMA(BarsArray[idxHourly], HTFEMAPeriod);
+
+                // Print configuration at startup
+                PrintConfiguration();
             }
+        }
+
+        private void PrintConfiguration()
+        {
+            if (configPrinted) return;
+            configPrinted = true;
+
+            Print("========================================");
+            Print("=== STRATEGY CONFIGURATION ===");
+            Print("========================================");
+            Print(string.Format("RewardRiskRatio: {0}", RewardRiskRatio));
+            Print(string.Format("MaxTradesPerDay: {0}", MaxTradesPerDay));
+            Print(string.Format("MaxBarsAfterBreakout: {0}", MaxBarsAfterBreakout));
+            Print(string.Format("UseEngulfOnly: {0}", UseEngulfOnly));
+            Print(string.Format("RejectionFactor: {0}", RejectionFactor));
+            Print(string.Format("OpeningRangeMinutes: {0}", OpeningRangeMinutes));
+            Print(string.Format("StopTradingMinutesAfterOpen: {0}", StopTradingMinutesAfterOpen));
+            Print(string.Format("RetestBufferTicks: {0}", RetestBufferTicks));
+            Print(string.Format("RequireRetest: {0}", RequireRetest));
+            Print(string.Format("MaxDistanceFromOR: {0} ticks", MaxDistanceFromOR));
+            Print(string.Format("EnableLongs: {0}", EnableLongs));
+            Print(string.Format("EnableShorts: {0}", EnableShorts));
+            Print(string.Format("MinORTicks: {0}", MinORTicks));
+            Print(string.Format("MaxORTicks: {0}", MaxORTicks));
+            Print("--- Filters ---");
+            Print(string.Format("UseBiasFilter: {0}", UseBiasFilter));
+            Print(string.Format("UseHTFBias: {0}", UseHTFBias));
+            Print(string.Format("UseDailyLevelsFilter: {0}", UseDailyLevelsFilter));
+            Print(string.Format("RequireGap: {0}", RequireGap));
+            Print(string.Format("AvoidPriorDayLevels: {0}", AvoidPriorDayLevels));
+            Print(string.Format("PriorDayLevelBufferATR: {0}", PriorDayLevelBufferATR));
+            Print(string.Format("UseVolumeFilter: {0}", UseVolumeFilter));
+            Print("--- ATR Scaling ---");
+            Print(string.Format("UseAtrScaling: {0}", UseAtrScaling));
+            Print(string.Format("MinORATR: {0}", MinORATR));
+            Print(string.Format("MaxORATR: {0}", MaxORATR));
+            Print(string.Format("RetestBufferATR: {0}", RetestBufferATR));
+            Print(string.Format("MaxDistanceFromORATR: {0}", MaxDistanceFromORATR));
+            Print("--- Bias ---");
+            Print(string.Format("UseGapDirectionalBias: {0}", UseGapDirectionalBias));
+            Print(string.Format("UsePDRangeBias: {0}", UsePDRangeBias));
+            Print(string.Format("UseOpening5MinBias: {0}", UseOpening5MinBias));
+            Print("--- Entry ---");
+            Print(string.Format("AllowCloseAboveOR: {0}", AllowCloseAboveOR));
+            Print(string.Format("MinBodyPercent: {0}", MinBodyPercent));
+            Print("========================================");
         }
 
         private double GetDailyATR()
@@ -298,7 +363,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             barsSinceHighBreak = int.MaxValue;
             barsSinceLowBreak  = int.MaxValue;
 
-            // NEW
             barsSinceSessionStart = 0;
 
             orVolumeSum = 0;
@@ -310,6 +374,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             openingBiasComputed = false;
             openingBiasUp = openingBiasDown = false;
+
+            lastLongSignalBar = -1;
+            lastShortSignalBar = -1;
 
             if (idxDaily >= 0 && CurrentBars[idxDaily] >= 1)
             {
@@ -387,24 +454,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ResetSession();
                 D(string.Format("=== NEW SESSION {0} ===", sessionOpenTime));
 
-                barsSinceSessionStart = 0;   // first bar of session
+                barsSinceSessionStart = 0;
             }
             else if (sessionOpenTime != Core.Globals.MinDate)
             {
-                barsSinceSessionStart++;     // subsequent bars
+                barsSinceSessionStart++;
             }
 
             if (sessionOpenTime == Core.Globals.MinDate)
                 return;
 
-            // === 1b) Opening 5-minute bias based on first N bars ===
+            // === 1b) Opening bias based on first N bars ===
             if (UseOpening5MinBias && !openingBiasComputed)
             {
-                int biasBars = Math.Max(1, OpeningBiasMinutes);   // 1-min primary
+                int biasBars = Math.Max(1, OpeningBiasMinutes);
                 if (barsSinceSessionStart == biasBars - 1)
                 {
-                    double openBiasOpen  = Open[biasBars - 1];  // first bar of session
-                    double openBiasClose = Close[0];            // this bar
+                    double openBiasOpen  = Open[biasBars - 1];
+                    double openBiasClose = Close[0];
 
                     double body = openBiasClose - openBiasOpen;
                     double threshold = TickSize * 2;
@@ -461,10 +528,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (UseAtrScaling && atrForOR > 0)
                     {
                         double orToAtr = orRange / atrForOR;
+                        // FIXED: Much wider OR/ATR band (0.02 - 0.75)
                         if (orToAtr < MinORATR || orToAtr > MaxORATR)
                         {
                             orOutOfRange = true;
                             reason = string.Format("OR/ATR={0:F3} (Min={1:F3}, Max={2:F3})", orToAtr, MinORATR, MaxORATR);
+                        }
+                        else
+                        {
+                            D(string.Format("OR/ATR={0:F3} PASSED (Min={1:F3}, Max={2:F3})", orToAtr, MinORATR, MaxORATR));
                         }
                     }
                     else
@@ -571,7 +643,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool biasAllowsLongs  = true;
             bool biasAllowsShorts = true;
             bool htfBullish = true;
-            bool htfBearish = false;
+            bool htfBearish = true;  // Changed: allow both by default
 
             if (UseBiasFilter && ema5Min != null && idx5Min >= 0 &&
                 CurrentBars[idx5Min] >= ema5Min.BarsRequiredToPlot)
@@ -618,39 +690,42 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
                 else
                 {
-                    htfBullish = false;
-                    htfBearish = false;
+                    // Mixed signals - allow both directions (more permissive)
+                    htfBullish = true;
+                    htfBearish = true;
                 }
             }
 
             bool dailyLevelsAllowLong  = true;
             bool dailyLevelsAllowShort = true;
 
+            // FIXED: Much looser daily filter - only block if VERY close to PDH/PDL
             if (UseDailyLevelsFilter && priorDayHigh > 0 && priorDayLow > 0 && atrDaily != null && idxDaily >= 0 &&
                 CurrentBars[idxDaily] >= atrDaily.BarsRequiredToPlot)
             {
                 double atrVal = atrDaily[0];
-                double buffer = atrVal * PriorDayLevelBufferATR;
+                double buffer = atrVal * PriorDayLevelBufferATR;  // Now 0.15 ATR instead of 1.0
 
                 double longTargetEstimate  = openingRangeHigh + (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
                 double shortTargetEstimate = openingRangeLow  - (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
 
-                if (longTargetEstimate >= priorDayHigh - buffer)
+                // Only log once per session, not every bar
+                if (longTargetEstimate >= priorDayHigh - buffer && Close[0] > openingRangeHigh)
                 {
                     dailyLevelsAllowLong = false;
-                    if (Debug)
+                    if (Debug && CurrentBar != lastLongSignalBar)
                         D(string.Format("{0} DAILY FILTER: Long target {1:F2} near PDH {2:F2}", bt, longTargetEstimate, priorDayHigh));
                 }
 
-                if (shortTargetEstimate <= priorDayLow + buffer)
+                if (shortTargetEstimate <= priorDayLow + buffer && Close[0] < openingRangeLow)
                 {
                     dailyLevelsAllowShort = false;
-                    if (Debug)
+                    if (Debug && CurrentBar != lastShortSignalBar)
                         D(string.Format("{0} DAILY FILTER: Short target {1:F2} near PDL {2:F2}", bt, shortTargetEstimate, priorDayLow));
                 }
             }
 
-            // NEW: gap / PD / opening-bias directional filters
+            // Gap / PD / opening-bias directional filters
             if (UseGapDirectionalBias)
             {
                 if (gapUp)
@@ -681,7 +756,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (UseAtrScaling && atr > 0)
                 bufferRetest = RetestBufferATR * atr;
 
-            // === 5) LONG SETUP ===
+            // === 5) LONG SETUP - RELAXED CONDITIONS ===
             bool longSignal = false;
             if (barsSinceHighBreak >= 0 && barsSinceHighBreak <= MaxBarsAfterBreakout)
             {
@@ -696,21 +771,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 bool bullishEngulf = IsBullishEngulfing(0);
                 bool bullishReject = IsBullishRejection(0);
+                bool bullishClose  = Close[0] > Open[0] && Close[0] > openingRangeHigh;  // NEW: simple bullish close above OR
 
-                if (touchedLevel)
-                    D(string.Format("{0} LONG touch  Close={1} Low={2} ORHigh={3}", bt, Close[0], Low[0], openingRangeHigh));
-                if (bullishEngulf)
-                    D(string.Format("{0} LONG engulf candidate", bt));
-                if (bullishReject)
-                    D(string.Format("{0} LONG rejection candidate", bt));
+                // Debounced logging
+                if (CurrentBar != lastLongSignalBar)
+                {
+                    if (touchedLevel)
+                        D(string.Format("{0} LONG touch  Close={1} Low={2} ORHigh={3}", bt, Close[0], Low[0], openingRangeHigh));
+                    if (bullishEngulf)
+                        D(string.Format("{0} LONG engulf candidate", bt));
+                    if (bullishReject)
+                        D(string.Format("{0} LONG rejection candidate", bt));
+                    if (AllowCloseAboveOR && bullishClose && nearLevel)
+                        D(string.Format("{0} LONG bullish close above OR", bt));
+                }
 
                 bool levelCondition = RequireRetest ? touchedLevel : nearLevel;
 
-                if (levelCondition && (bullishEngulf || (!UseEngulfOnly && bullishReject)))
-                    longSignal = true;
+                // RELAXED: Accept engulf OR rejection OR simple bullish close
+                if (levelCondition)
+                {
+                    if (bullishEngulf || (!UseEngulfOnly && bullishReject))
+                        longSignal = true;
+                    else if (AllowCloseAboveOR && bullishClose)
+                        longSignal = true;
+                }
             }
 
-            // === 6) SHORT SETUP ===
+            // === 6) SHORT SETUP - RELAXED CONDITIONS ===
             bool shortSignal = false;
             if (barsSinceLowBreak >= 0 && barsSinceLowBreak <= MaxBarsAfterBreakout)
             {
@@ -725,18 +813,31 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 bool bearishEngulf = IsBearishEngulfing(0);
                 bool bearishReject = IsBearishRejection(0);
+                bool bearishClose  = Close[0] < Open[0] && Close[0] < openingRangeLow;  // NEW: simple bearish close below OR
 
-                if (touchedLevel)
-                    D(string.Format("{0} SHORT touch  Close={1} High={2} ORLow={3}", bt, Close[0], High[0], openingRangeLow));
-                if (bearishEngulf)
-                    D(string.Format("{0} SHORT engulf candidate", bt));
-                if (bearishReject)
-                    D(string.Format("{0} SHORT rejection candidate", bt));
+                // Debounced logging
+                if (CurrentBar != lastShortSignalBar)
+                {
+                    if (touchedLevel)
+                        D(string.Format("{0} SHORT touch  Close={1} High={2} ORLow={3}", bt, Close[0], High[0], openingRangeLow));
+                    if (bearishEngulf)
+                        D(string.Format("{0} SHORT engulf candidate", bt));
+                    if (bearishReject)
+                        D(string.Format("{0} SHORT rejection candidate", bt));
+                    if (AllowCloseAboveOR && bearishClose && nearLevel)
+                        D(string.Format("{0} SHORT bearish close below OR", bt));
+                }
 
                 bool levelCondition = RequireRetest ? touchedLevel : nearLevel;
 
-                if (levelCondition && (bearishEngulf || (!UseEngulfOnly && bearishReject)))
-                    shortSignal = true;
+                // RELAXED: Accept engulf OR rejection OR simple bearish close
+                if (levelCondition)
+                {
+                    if (bearishEngulf || (!UseEngulfOnly && bearishReject))
+                        shortSignal = true;
+                    else if (AllowCloseAboveOR && bearishClose)
+                        shortSignal = true;
+                }
             }
 
             // === 7) EXECUTION GATING ===
@@ -751,6 +852,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (canTradeLong && longSignal)
             {
+                lastLongSignalBar = CurrentBar;
+
                 double entry = Close[0];
                 double stop  = Low[0];
                 double risk  = entry - stop;
@@ -763,7 +866,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss(CalculationMode.Price, stop);
                 SetProfitTarget(CalculationMode.Price, target);
 
-                D(string.Format("{0} ENTER LONG  entry={1} stop={2} target={3}", bt, entry, stop, target));
+                D(string.Format("{0} >>> ENTER LONG  entry={1} stop={2} target={3} risk={4:F2}", bt, entry, stop, target, risk));
                 EnterLong();
                 tradesToday++;
                 return;
@@ -771,6 +874,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (canTradeShort && shortSignal)
             {
+                lastShortSignalBar = CurrentBar;
+
                 double entry = Close[0];
                 double stop  = High[0];
                 double risk  = stop - entry;
@@ -783,24 +888,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss(CalculationMode.Price, stop);
                 SetProfitTarget(CalculationMode.Price, target);
 
-                D(string.Format("{0} ENTER SHORT entry={1} stop={2} target={3}", bt, entry, stop, target));
+                D(string.Format("{0} >>> ENTER SHORT entry={1} stop={2} target={3} risk={4:F2}", bt, entry, stop, target, risk));
                 EnterShort();
                 tradesToday++;
                 return;
             }
+
+            // Update signal bars for debouncing
+            if (longSignal) lastLongSignalBar = CurrentBar;
+            if (shortSignal) lastShortSignalBar = CurrentBar;
         }
 
-        // === PATTERN HELPERS ===
+        // === PATTERN HELPERS - RELAXED ===
 
         private bool IsBullishEngulfing(int idx)
         {
             if (CurrentBar < idx + 2)
                 return false;
 
-            if (Close[idx + 1] >= Open[idx + 1])
+            // Prior bar was bearish (or doji)
+            if (Close[idx + 1] > Open[idx + 1])
                 return false;
 
             bool currentBullish = Close[idx] > Open[idx];
+
+            // RELAXED: Body engulfs at least part of prior bar
+            double currentBody = Math.Abs(Close[idx] - Open[idx]);
+            double currentRange = High[idx] - Low[idx];
+
+            // Body must be at least MinBodyPercent of the candle range
+            if (currentRange > 0 && currentBody / currentRange < MinBodyPercent)
+                return false;
 
             bool bodyEngulfs =
                 Close[idx] >= Open[idx + 1] &&
@@ -814,10 +932,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < idx + 2)
                 return false;
 
-            if (Close[idx + 1] <= Open[idx + 1])
+            // Prior bar was bullish (or doji)
+            if (Close[idx + 1] < Open[idx + 1])
                 return false;
 
             bool currentBearish = Close[idx] < Open[idx];
+
+            // RELAXED: Body must be at least MinBodyPercent of the candle range
+            double currentBody = Math.Abs(Close[idx] - Open[idx]);
+            double currentRange = High[idx] - Low[idx];
+
+            if (currentRange > 0 && currentBody / currentRange < MinBodyPercent)
+                return false;
 
             bool bodyEngulfs =
                 Close[idx] <= Open[idx + 1] &&
@@ -829,23 +955,34 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool IsBullishRejection(int idx)
         {
             double body = Math.Abs(Close[idx] - Open[idx]);
-            if (body <= 0)
+            double lowerWick = Math.Min(Open[idx], Close[idx]) - Low[idx];
+            double range = High[idx] - Low[idx];
+
+            if (range <= 0)
                 return false;
 
-            double lowerWick = Math.Min(Open[idx], Close[idx]) - Low[idx];
+            // RELAXED: Just need significant lower wick relative to body
+            // Also accept if lower wick is significant portion of range
+            bool wickCondition = (body > 0 && lowerWick > body * RejectionFactor) ||
+                                 (lowerWick > range * 0.5);
 
-            return Close[idx] > Open[idx] && lowerWick > body * RejectionFactor;
+            return Close[idx] >= Open[idx] && wickCondition;  // Allow doji too
         }
 
         private bool IsBearishRejection(int idx)
         {
             double body = Math.Abs(Close[idx] - Open[idx]);
-            if (body <= 0)
+            double upperWick = High[idx] - Math.Max(Open[idx], Close[idx]);
+            double range = High[idx] - Low[idx];
+
+            if (range <= 0)
                 return false;
 
-            double upperWick = High[idx] - Math.Max(Open[idx], Close[idx]);
+            // RELAXED: Just need significant upper wick relative to body
+            bool wickCondition = (body > 0 && upperWick > body * RejectionFactor) ||
+                                 (upperWick > range * 0.5);
 
-            return Close[idx] < Open[idx] && upperWick > body * RejectionFactor;
+            return Close[idx] <= Open[idx] && wickCondition;  // Allow doji too
         }
 
         private void D(string msg)
