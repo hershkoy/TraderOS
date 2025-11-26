@@ -130,8 +130,23 @@ def get_underlying_and_chain(
             if hasattr(chain, 'tradingClass'):
                 logger.info(f"Using chain with tradingClass={chain.tradingClass}")
     else:
-        # For regular symbols, use first chain (usually only one)
-        chain = chains[0]
+        # For regular symbols, prefer chain where tradingClass matches the symbol
+        # (e.g., for TSLA, prefer tradingClass='TSLA' over '2TSLA' which is LEAPS)
+        matching_chain = None
+        for c in chains:
+            chain_trading_class = getattr(c, 'tradingClass', None)
+            if chain_trading_class == actual_underlying_symbol:
+                matching_chain = c
+                logger.info(f"Found chain with tradingClass={chain_trading_class} matching symbol")
+                break
+        
+        if matching_chain:
+            chain = matching_chain
+        else:
+            # Fallback to first chain
+            chain = chains[0]
+            if hasattr(chain, 'tradingClass'):
+                logger.info(f"Using chain with tradingClass={chain.tradingClass}")
     
     return underlying, chain
 

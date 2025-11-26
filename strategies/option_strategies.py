@@ -287,67 +287,75 @@ class VerticalSpreadWithHedgingStrategy(OptionStrategy):
         
         logger.info(f"Found {len(usable)} usable options for ratio spread")
         
-        # Find long put candidates (around target_delta_long, typically ATM ~0.50)
-        long_candidates = sorted(
-            [r for r in usable if abs(r.delta) >= 0.40 and abs(r.delta) <= 0.60],
-            key=lambda r: abs(abs(r.delta) - target_delta_long)
+        # Debug: show delta distribution
+        deltas = [abs(r.delta) for r in usable]
+        logger.debug(f"Delta range: {min(deltas):.4f} to {max(deltas):.4f}")
+        logger.debug(f"Sample strikes/deltas: {[(r.strike, abs(r.delta)) for r in usable[:10]]}")
+        
+        # Structure: Sell 1 OTM put, Buy 2 further OTM puts (1x2 put ratio backspread for credit)
+        # This creates a credit when sold put premium > 2x bought put premiums
+        
+        # Find short put candidates (OTM, delta ~0.15-0.25)
+        short_candidates = sorted(
+            [r for r in usable if abs(r.delta) >= 0.10 and abs(r.delta) <= 0.30],
+            key=lambda r: abs(abs(r.delta) - target_delta_short_1)
         )
         
-        if not long_candidates:
-            raise ValueError(f"No suitable long put candidates found (target delta: {target_delta_long})")
+        logger.debug(f"Short candidates (delta 0.10-0.30): {len(short_candidates)}")
+        
+        if not short_candidates:
+            raise ValueError(f"No suitable short put candidates found (target delta: {target_delta_short_1})")
         
         candidates: List[RatioSpreadCandidate] = []
         
-        for long_put in long_candidates[:5]:  # Check top 5 long candidates
-            # Find short put 1 (around target_delta_short_1)
-            short_1_candidates = sorted(
-                [r for r in usable if r.strike < long_put.strike and abs(r.delta) >= 0.15 and abs(r.delta) <= 0.35],
-                key=lambda r: abs(abs(r.delta) - target_delta_short_1)
+        for short_put in short_candidates[:10]:  # Check top 10 short candidates
+            # Find long put 1 (further OTM than short_put, delta ~0.05-0.10)
+            long_1_candidates = sorted(
+                [r for r in usable if r.strike < short_put.strike and abs(r.delta) >= 0.03 and abs(r.delta) <= 0.15],
+                key=lambda r: abs(abs(r.delta) - target_delta_short_2)
             )
             
-            if not short_1_candidates:
+            if len(long_1_candidates) < 2:
                 continue
             
-            for short_put_1 in short_1_candidates[:3]:
-                # Find short put 2 (further OTM than short_put_1)
-                short_2_candidates = sorted(
-                    [r for r in usable if r.strike < short_put_1.strike and abs(r.delta) >= 0.05 and abs(r.delta) <= 0.25],
-                    key=lambda r: abs(abs(r.delta) - target_delta_short_2)
-                )
+            for i, long_put_1 in enumerate(long_1_candidates[:5]):
+                # Find long put 2 (even further OTM or same strike as long_put_1)
+                long_2_candidates = [r for r in long_1_candidates if r.strike <= long_put_1.strike and r != long_put_1]
                 
-                if not short_2_candidates:
-                    continue
+                if not long_2_candidates:
+                    # Use same strike for both longs (buy 2 at same strike)
+                    long_put_2 = long_put_1
+                else:
+                    long_put_2 = long_2_candidates[0]
                 
-                short_put_2 = short_2_candidates[0]
-                
-                # Calculate net credit: 2 * (short premiums) - long premium
-                # Actually it's: short_1.mid + short_2.mid - long_put.mid
-                net_credit = short_put_1.mid + short_put_2.mid - long_put.mid
+                # Calculate net credit: short premium - (long_1 + long_2 premiums)
+                net_credit = short_put.mid - long_put_1.mid - long_put_2.mid
                 
                 if net_credit < min_credit:
+                    logger.debug(f"Skipping: short {short_put.strike} - long {long_put_1.strike}/{long_put_2.strike} = ${net_credit:.2f} < min ${min_credit:.2f}")
                     continue
                 
-                # Calculate max loss (occurs at short_put_1 strike)
-                # Max loss = (long_strike - short_1_strike) * 100 - net_credit * 100
-                max_loss = (long_put.strike - short_put_1.strike) * 100 - net_credit * 100
+                # Calculate max loss (occurs between short and long strikes)
+                # Max loss = (short_strike - long_1_strike) * 100 - net_credit * 100
+                max_loss = (short_put.strike - long_put_1.strike) * 100 - net_credit * 100
                 
                 # Calculate breakevens
-                # Upper breakeven: long_strike - net_credit
-                breakeven_high = long_put.strike - net_credit
-                # Lower breakeven: more complex, depends on the spread structure
-                # For simplicity: short_2_strike - (max_loss / 100)
-                breakeven_low = short_put_2.strike - (max_loss / 100)
+                # Upper breakeven: short_strike - net_credit
+                breakeven_high = short_put.strike - net_credit
+                # Lower breakeven: long strikes provide protection below
+                breakeven_low = long_put_2.strike - (max_loss / 100)
                 
                 candidate = RatioSpreadCandidate(
-                    long_put=long_put,
-                    short_put_1=short_put_1,
-                    short_put_2=short_put_2,
+                    long_put=long_put_1,  # Primary long
+                    short_put_1=short_put,  # The sold put
+                    short_put_2=long_put_2,  # Secondary long (reusing field)
                     net_credit=net_credit,
                     max_loss=max_loss,
                     breakeven_low=breakeven_low,
                     breakeven_high=breakeven_high
                 )
                 candidates.append(candidate)
+                logger.debug(f"Found candidate: sell {short_put.strike}, buy {long_put_1.strike}/{long_put_2.strike}, credit=${net_credit:.2f}")
                 
                 if len(candidates) >= num_candidates:
                     break
@@ -367,9 +375,9 @@ class VerticalSpreadWithHedgingStrategy(OptionStrategy):
         lines = [
             f"{label}",
             "",
-            f"Buy 1x {candidate.long_put.strike:.1f} {candidate.long_put.right}",
             f"Sell 1x {candidate.short_put_1.strike:.1f} {candidate.short_put_1.right}",
-            f"Sell 1x {candidate.short_put_2.strike:.1f} {candidate.short_put_2.right}",
+            f"Buy 1x {candidate.long_put.strike:.1f} {candidate.long_put.right}",
+            f"Buy 1x {candidate.short_put_2.strike:.1f} {candidate.short_put_2.right}",
             "",
             f"Net Credit ~ ${candidate.net_credit:.2f}",
             f"Max Loss ~ ${candidate.max_loss:.2f}",
