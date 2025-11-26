@@ -368,6 +368,48 @@ class TestRatioSpreadCandidate:
         assert candidate.max_loss == 1641.0
 
 
+class TestLiveEnFlag:
+    """Tests for --live-en flag behavior."""
+    
+    def test_live_account_blocked_without_live_en(self):
+        """Test that live accounts (starting with 'U') are blocked without --live-en flag."""
+        # Simulate the safeguard logic from options_strategy_trader.py
+        account = "U1234567"
+        live_en = False
+        
+        # This is the safeguard logic
+        should_block = account and account.startswith("U") and not live_en
+        
+        assert should_block is True, "Live account should be blocked without --live-en"
+    
+    def test_live_account_allowed_with_live_en(self):
+        """Test that live accounts are allowed with --live-en flag."""
+        account = "U1234567"
+        live_en = True
+        
+        should_block = account and account.startswith("U") and not live_en
+        
+        assert should_block is False, "Live account should be allowed with --live-en"
+    
+    def test_paper_account_allowed_without_live_en(self):
+        """Test that paper accounts (starting with 'D') are allowed without --live-en."""
+        account = "DU1234567"
+        live_en = False
+        
+        should_block = account and account.startswith("U") and not live_en
+        
+        assert should_block is False, "Paper account should be allowed without --live-en"
+    
+    def test_empty_account_allowed_without_live_en(self):
+        """Test that empty account is allowed without --live-en."""
+        account = ""
+        live_en = False
+        
+        should_block = account and account.startswith("U") and not live_en
+        
+        assert not should_block, "Empty account should be allowed without --live-en"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

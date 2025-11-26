@@ -96,6 +96,7 @@ python scripts/options_strategy_trader.py [OPTIONS]
 | `--quantity` | 1 | Number of spreads to trade |
 | `--risk-profile` | interactive | Selection mode: interactive, conservative, balanced, risky |
 | `--account` | auto | IB account ID |
+| `--live-en` | false | Enable trading in live accounts (accounts starting with 'U') |
 | `--monitor-order` | false | Monitor order until filled |
 
 ### Risk Management
