@@ -6,17 +6,33 @@ Automated options spread trading system with modular strategy support.
 
 ```
 scripts/
-  options_strategy_trader.py    # Main trading script
+  options_strategy_trader.py    # Main trading script 
 
 strategies/
-  option_strategies.py          # Strategy classes and registry
+  option_strategies.py          # Strategy classes and registry 
+
+utils/
+  ib_order_utils.py             # IB order creation, brackets, monitoring (~350 lines)
+  option_csv_utils.py           # CSV parsing and option data loading 
+  config_processor.py           # YAML config processing, multi-order execution 
 
 crons/
   daily_spreads.yaml            # Configuration for scheduled trades
+  run_credit_spreads.bat        # Batch file to run scheduled trades
 
 tests/
   test_option_strategies.py     # Unit tests for strategy classes
 ```
+
+### Module Responsibilities
+
+| Module | Purpose |
+|--------|---------|
+| `options_strategy_trader.py` | CLI entry point, argument parsing, main orchestration |
+| `option_strategies.py` | Strategy classes (OTM credit spreads, ratio spreads), candidate selection |
+| `ib_order_utils.py` | Bracket orders, order monitoring, price adjustment logic |
+| `option_csv_utils.py` | CSV validation, option row parsing |
+| `config_processor.py` | YAML config loading, multi-order batch processing |
 
 ## Available Strategies
 
