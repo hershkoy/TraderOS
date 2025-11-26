@@ -339,10 +339,6 @@ python scripts\daily_scanner.py --output-report
 
 
 
-# weekend scan (hl after ll + squeeze):
-run_scanner.bat
-
-
 # Downloading historical data:
 ninja trader -> tools -> historical data -> export
 or 
