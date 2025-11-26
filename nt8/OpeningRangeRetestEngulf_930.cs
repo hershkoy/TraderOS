@@ -44,11 +44,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "OpeningRangeMinutes", GroupName = "Parameters", Order = 5)]
         [Range(5, 30)]
-        public int OpeningRangeMinutes { get; set; } = 15;  // default to 15m per transcripts
+        public int OpeningRangeMinutes { get; set; } = 15;
 
         [NinjaScriptProperty]
         [Display(Name = "StopTradingMinutesAfterOpen", GroupName = "Parameters", Order = 6)]
-        public int StopTradingMinutesAfterOpen { get; set; } = 180;   // e.g. first 3 hours
+        public int StopTradingMinutesAfterOpen { get; set; } = 180;
 
         [NinjaScriptProperty]
         [Display(Name = "Debug", GroupName = "Parameters", Order = 7)]
@@ -60,11 +60,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "RequireRetest", GroupName = "Parameters", Order = 9)]
-        public bool RequireRetest { get; set; } = false;   // more permissive by default
+        public bool RequireRetest { get; set; } = false;
 
         [NinjaScriptProperty]
         [Display(Name = "MaxDistanceFromOR", GroupName = "Parameters", Order = 10)]
-        public int MaxDistanceFromOR { get; set; } = 20;   // in ticks
+        public int MaxDistanceFromOR { get; set; } = 20;   // ticks
 
         [NinjaScriptProperty]
         [Display(Name = "EnableLongs", GroupName = "Parameters", Order = 11)]
@@ -124,19 +124,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "RetestBufferATR", GroupName = "Parameters", Order = 25)]
-        public double RetestBufferATR { get; set; } = 0.03;  // 3% of ATR
+        public double RetestBufferATR { get; set; } = 0.03;
 
         [NinjaScriptProperty]
         [Display(Name = "MaxDistanceFromORATR", GroupName = "Parameters", Order = 26)]
-        public double MaxDistanceFromORATR { get; set; } = 0.10;  // 10% of ATR
+        public double MaxDistanceFromORATR { get; set; } = 0.10;
 
         [NinjaScriptProperty]
         [Display(Name = "MinORATR", GroupName = "Parameters", Order = 27)]
-        public double MinORATR { get; set; } = 0.03;  // 3% of ATR
+        public double MinORATR { get; set; } = 0.03;
 
         [NinjaScriptProperty]
         [Display(Name = "MaxORATR", GroupName = "Parameters", Order = 28)]
-        public double MaxORATR { get; set; } = 0.20;  // 20% of ATR
+        public double MaxORATR { get; set; } = 0.20;
 
         [NinjaScriptProperty]
         [Display(Name = "UseVolumeFilter", GroupName = "Parameters", Order = 29)]
@@ -144,45 +144,83 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Display(Name = "MinBreakoutVolMult", GroupName = "Parameters", Order = 30)]
-        public double MinBreakoutVolMult { get; set; } = 1.5;  // 1.5x average OR volume
+        public double MinBreakoutVolMult { get; set; } = 1.5;
+
+
+        // === NEW BIAS PARAMETERS ===
+
+        [NinjaScriptProperty]
+        [Display(Name = "UseGapDirectionalBias", GroupName = "Bias", Order = 31)]
+        public bool UseGapDirectionalBias { get; set; } = false;
+
+        [NinjaScriptProperty]
+        [Display(Name = "UsePDRangeBias", GroupName = "Bias", Order = 32)]
+        public bool UsePDRangeBias { get; set; } = false;
+
+        [NinjaScriptProperty]
+        [Display(Name = "UseOpening5MinBias", GroupName = "Bias", Order = 33)]
+        public bool UseOpening5MinBias { get; set; } = false;
+
+        [NinjaScriptProperty]
+        [Display(Name = "OpeningBiasMinutes", GroupName = "Bias", Order = 34)]
+        [Range(1, 30)]
+        public int OpeningBiasMinutes { get; set; } = 5;
+
 
 
         // === INTERNAL STATE ===
 
+        // OR
         private double openingRangeHigh;
         private double openingRangeLow;
         private bool   rangeComplete;
-        private bool   tradeToday;   // flag to skip trading if OR is out of range
-
-        private int tradesToday;
+        private bool   tradeToday;
+        private int    tradesToday;
 
         private DateTime sessionOpenTime = Core.Globals.MinDate;
         private DateTime orEndTime       = Core.Globals.MinDate;
         private DateTime tradeEndTime    = Core.Globals.MinDate;
 
-        // breakout trackers: int.MaxValue means "no breakout yet"
+        // breakout tracking
         private int barsSinceHighBreak;
         private int barsSinceLowBreak;
 
-        // multi-timeframe bias filter (legacy 5-min)
-        private EMA ema5Min;
+        // NEW: number of primary bars since session open
+        private int barsSinceSessionStart;
 
-        // higher timeframe bias (daily and hourly)
+        // volume
+        private double orVolumeSum;
+        private int    orBarCount;
+        private double avgOrVolume;
+
+        // bias / HTF
+        private EMA ema5Min;
         private EMA emaDaily;
         private EMA emaHourly;
         private ATR atrDaily;
 
-        // previous day levels
+        // multi-series indices
+        private int idx5Min   = -1;
+        private int idxDaily  = -1;
+        private int idxHourly = -1;
+
+        // previous day levels / gap
         private double priorDayHigh;
         private double priorDayLow;
         private double priorDayClose;
         private double sessionOpenPrice;
         private double gapSize;
 
-        // OR volume tracking
-        private double orVolumeSum;
-        private int orBarCount;
-        private double avgOrVolume;
+        // bias flags
+        private bool gapUp;
+        private bool gapDown;
+        private bool pdBiasBull;
+        private bool pdBiasBear;
+
+        // opening 5m bias
+        private bool openingBiasComputed;
+        private bool openingBiasUp;
+        private bool openingBiasDown;
 
 
         protected override void OnStateChange()
@@ -196,108 +234,57 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds = 30;
                 IsInstantiatedOnEachOptimizationIteration = false;
-
-                RewardRiskRatio = 2.0;
-                MaxTradesPerDay = 2;
-                MaxBarsAfterBreakout = 20;
-                UseEngulfOnly = false;
-                RejectionFactor = 1.5;
-                OpeningRangeMinutes = 15;
-                StopTradingMinutesAfterOpen = 180;
-                Debug = true;
-
-                RetestBufferTicks = 3;
-                RequireRetest = false;
-                MaxDistanceFromOR = 20;
-                EnableLongs = true;
-                EnableShorts = true;
-                MinORTicks = 10;
-                MaxORTicks = 200;
-                UseBiasFilter = false;
-                BiasEMAPeriod = 20;
-                UseHTFBias = false;
-                HTFEMAPeriod = 20;
-                UseDailyLevelsFilter = false;
-                RequireGap = false;
-                MinGapTicks = 5;
-                AvoidPriorDayLevels = true;
-                PriorDayLevelBufferATR = 1.0;
-                UseAtrScaling = false;
-                RetestBufferATR = 0.03;
-                MaxDistanceFromORATR = 0.10;
-                MinORATR = 0.03;
-                MaxORATR = 0.20;
-                UseVolumeFilter = false;
-                MinBreakoutVolMult = 1.5;
             }
             else if (State == State.Configure)
             {
-                // Add 5-minute data series for legacy bias filter
+                int nextIdx = 1;
+
                 if (UseBiasFilter)
                 {
                     AddDataSeries(BarsPeriodType.Minute, 5);
+                    idx5Min = nextIdx++;
                 }
 
-                // Add daily and hourly data series for HTF bias, daily levels, or ATR scaling
-                if (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)
+                if (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling || UseGapDirectionalBias || UsePDRangeBias)
                 {
                     AddDataSeries(BarsPeriodType.Day, 1);
-                    if (UseHTFBias || UseDailyLevelsFilter)
-                    {
-                        AddDataSeries(BarsPeriodType.Minute, 60);  // 1-hour (only if needed for HTF bias)
-                    }
+                    idxDaily = nextIdx++;
+                }
+
+                if (UseHTFBias || UseDailyLevelsFilter)
+                {
+                    AddDataSeries(BarsPeriodType.Minute, 60);
+                    idxHourly = nextIdx++;
                 }
             }
             else if (State == State.DataLoaded)
             {
-                // Calculate data series indices based on what's enabled
-                // Order: primary[0], 5min[1 if UseBiasFilter], daily[1 or 2], hourly[2 or 3]
-                int idx5Min = -1;
-                int idxDaily = -1;
-                int idxHourly = -1;
-
-                int currentIdx = 1;
-                if (UseBiasFilter)
-                {
-                    idx5Min = currentIdx++;
-                }
-                if (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)
-                {
-                    idxDaily = currentIdx++;
-                    if (UseHTFBias || UseDailyLevelsFilter)
-                    {
-                        idxHourly = currentIdx++;
-                    }
-                }
-
-                // Initialize EMA on 5-minute series (legacy)
-                if (UseBiasFilter && idx5Min >= 0 && BarsArray.Length > idx5Min)
-                {
+                if (idx5Min >= 0)
                     ema5Min = EMA(BarsArray[idx5Min], BiasEMAPeriod);
-                }
 
-                // Initialize HTF indicators and ATR
-                if (idxDaily >= 0 && BarsArray.Length > idxDaily)
+                if (idxDaily >= 0)
                 {
-                    // Always initialize ATR if daily series is available (needed for ATR scaling or daily levels)
-                    if (UseAtrScaling || UseDailyLevelsFilter)
-                    {
+                    if (UseAtrScaling || UseDailyLevelsFilter || UseGapDirectionalBias || UsePDRangeBias)
                         atrDaily = ATR(BarsArray[idxDaily], 14);
-                    }
 
-                    // Initialize daily EMA if HTF bias is enabled
                     if (UseHTFBias)
-                    {
                         emaDaily = EMA(BarsArray[idxDaily], HTFEMAPeriod);
-                    }
                 }
 
-                // Initialize hourly EMA if HTF bias is enabled
-                if ((UseHTFBias || UseDailyLevelsFilter) && idxHourly >= 0 && BarsArray.Length > idxHourly)
-                {
+                if (idxHourly >= 0 && UseHTFBias)
                     emaHourly = EMA(BarsArray[idxHourly], HTFEMAPeriod);
-                }
             }
+        }
+
+        private double GetDailyATR()
+        {
+            if (atrDaily == null || idxDaily < 0)
+                return 0;
+
+            if (CurrentBars[idxDaily] < atrDaily.BarsRequiredToPlot)
+                return 0;
+
+            return atrDaily[0];
         }
 
         private void ResetSession()
@@ -305,138 +292,194 @@ namespace NinjaTrader.NinjaScript.Strategies
             openingRangeHigh = double.MinValue;
             openingRangeLow  = double.MaxValue;
             rangeComplete    = false;
-            tradeToday       = true;   // default to trading, will be set when OR completes
+            tradeToday       = true;
 
             tradesToday      = 0;
-
             barsSinceHighBreak = int.MaxValue;
             barsSinceLowBreak  = int.MaxValue;
 
-            // Reset OR volume tracking
+            // NEW
+            barsSinceSessionStart = 0;
+
             orVolumeSum = 0;
-            orBarCount = 0;
+            orBarCount  = 0;
             avgOrVolume = 0;
 
-            // Load previous day levels
-            if (UseDailyLevelsFilter && BarsArray.Length > 1)
-            {
-                // Daily index: comes after 5-min if UseBiasFilter is enabled
-                int idxDaily = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)) ? 2 : 
-                               ((UseHTFBias || UseDailyLevelsFilter || UseAtrScaling) ? 1 : -1);
-                if (idxDaily >= 0 && BarsArray.Length > idxDaily && CurrentBars[idxDaily] >= 1)
-                {
-                    priorDayHigh = Highs[idxDaily][1];
-                    priorDayLow = Lows[idxDaily][1];
-                    priorDayClose = Closes[idxDaily][1];
-                    sessionOpenPrice = Open[0];
-                    gapSize = sessionOpenPrice - priorDayClose;
+            gapUp = gapDown = false;
+            pdBiasBull = pdBiasBear = false;
 
-                    D(string.Format("Prior Day: High={0:F2} Low={1:F2} Close={2:F2} | Gap={3:F2} ({4} ticks)",
-                        priorDayHigh, priorDayLow, priorDayClose, gapSize, (int)Math.Round(Math.Abs(gapSize) / TickSize)));
+            openingBiasComputed = false;
+            openingBiasUp = openingBiasDown = false;
+
+            if (idxDaily >= 0 && CurrentBars[idxDaily] >= 1)
+            {
+                priorDayHigh  = Highs[idxDaily][1];
+                priorDayLow   = Lows[idxDaily][1];
+                priorDayClose = Closes[idxDaily][1];
+                sessionOpenPrice = Open[0];
+                gapSize = sessionOpenPrice - priorDayClose;
+
+                int gapTicks = (int)Math.Round(Math.Abs(gapSize) / TickSize);
+                gapUp = gapSize > 0;
+                gapDown = gapSize < 0;
+
+                if (Debug)
+                {
+                    D(string.Format(
+                        "Prior Day: H={0:F2} L={1:F2} C={2:F2} | Open={3:F2} Gap={4:F2} ({5} ticks)",
+                        priorDayHigh, priorDayLow, priorDayClose, sessionOpenPrice, gapSize, gapTicks));
+                }
+
+                if (UsePDRangeBias)
+                {
+                    double buffer = 2 * TickSize;
+                    if (sessionOpenPrice > priorDayHigh + buffer)
+                        pdBiasBull = true;
+                    else if (sessionOpenPrice < priorDayLow - buffer)
+                        pdBiasBear = true;
+
+                    if (Debug)
+                    {
+                        if (pdBiasBull) D("PD RANGE BIAS: Bullish (open above PDH)");
+                        else if (pdBiasBear) D("PD RANGE BIAS: Bearish (open below PDL)");
+                        else D("PD RANGE BIAS: Neutral (open inside prior range)");
+                    }
+                }
+
+                if (RequireGap)
+                {
+                    if (gapTicks < MinGapTicks)
+                    {
+                        tradeToday = false;
+                        D(string.Format("GAP FILTER: gap too small ({0} ticks < {1}) - no trading", gapTicks, MinGapTicks));
+                    }
                 }
             }
 
-            // clear old OR lines
-            string tagHigh = "ORHigh_" + sessionOpenTime.ToString("yyyyMMdd_HHmm");
-            string tagLow  = "ORLow_"  + sessionOpenTime.ToString("yyyyMMdd_HHmm");
-            RemoveDrawObject(tagHigh);
-            RemoveDrawObject(tagLow);
+            if (sessionOpenTime != Core.Globals.MinDate)
+            {
+                string tagHigh = "ORHigh_" + sessionOpenTime.ToString("yyyyMMdd_HHmm");
+                string tagLow  = "ORLow_"  + sessionOpenTime.ToString("yyyyMMdd_HHmm");
+                RemoveDrawObject(tagHigh);
+                RemoveDrawObject(tagLow);
+            }
         }
 
         protected override void OnBarUpdate()
         {
+            if (BarsInProgress != 0)
+                return;
+
             if (CurrentBar < BarsRequiredToTrade)
                 return;
 
             DateTime bt = Times[0][0];
 
-            // === 1) Detect new RTH session ===
+            // === 1) New session handling & bar counter ===
             if (Bars.IsFirstBarOfSession)
             {
                 sessionOpenTime = bt;
-                orEndTime       = sessionOpenTime.AddMinutes(OpeningRangeMinutes);
-                tradeEndTime    = (StopTradingMinutesAfterOpen > 0)
-                                  ? sessionOpenTime.AddMinutes(StopTradingMinutesAfterOpen)
-                                  : DateTime.MaxValue;
+                orEndTime    = sessionOpenTime.AddMinutes(OpeningRangeMinutes);
+                tradeEndTime = (StopTradingMinutesAfterOpen > 0)
+                               ? sessionOpenTime.AddMinutes(StopTradingMinutesAfterOpen)
+                               : DateTime.MaxValue;
 
                 ResetSession();
                 D(string.Format("=== NEW SESSION {0} ===", sessionOpenTime));
+
+                barsSinceSessionStart = 0;   // first bar of session
+            }
+            else if (sessionOpenTime != Core.Globals.MinDate)
+            {
+                barsSinceSessionStart++;     // subsequent bars
             }
 
             if (sessionOpenTime == Core.Globals.MinDate)
-                return; // safety
+                return;
 
-            // === 2) Build opening range from session open to session open + OR minutes ===
+            // === 1b) Opening 5-minute bias based on first N bars ===
+            if (UseOpening5MinBias && !openingBiasComputed)
+            {
+                int biasBars = Math.Max(1, OpeningBiasMinutes);   // 1-min primary
+                if (barsSinceSessionStart == biasBars - 1)
+                {
+                    double openBiasOpen  = Open[biasBars - 1];  // first bar of session
+                    double openBiasClose = Close[0];            // this bar
+
+                    double body = openBiasClose - openBiasOpen;
+                    double threshold = TickSize * 2;
+
+                    if (body > threshold)
+                        openingBiasUp = true;
+                    else if (body < -threshold)
+                        openingBiasDown = true;
+
+                    openingBiasComputed = true;
+
+                    if (Debug)
+                    {
+                        string dir = "Neutral";
+                        if (openingBiasUp) dir = "Bullish";
+                        else if (openingBiasDown) dir = "Bearish";
+
+                        D(string.Format("OPENING {0}m BIAS: {1} (open={2:F2}, close={3:F2})",
+                            OpeningBiasMinutes, dir, openBiasOpen, openBiasClose));
+                    }
+                }
+            }
+
+            // === 2) Build opening range ===
             if (!rangeComplete)
             {
                 if (bt <= orEndTime)
                 {
                     openingRangeHigh = Math.Max(openingRangeHigh, High[0]);
                     openingRangeLow  = Math.Min(openingRangeLow, Low[0]);
-                    
-                    // Track volume during OR building
+
                     if (UseVolumeFilter)
                     {
                         orVolumeSum += Volume[0];
                         orBarCount++;
                     }
-                    
-                    return; // still building range
+
+                    return;
                 }
                 else if (openingRangeHigh > double.MinValue && openingRangeLow < double.MaxValue)
                 {
                     rangeComplete = true;
 
-                    // Calculate average OR volume
                     if (UseVolumeFilter && orBarCount > 0)
-                    {
                         avgOrVolume = orVolumeSum / orBarCount;
-                    }
 
                     double orRange = openingRangeHigh - openingRangeLow;
-                    int orTicks = (int)Math.Round(orRange / TickSize);
+                    int orTicks    = (int)Math.Round(orRange / TickSize);
 
-                    // Get ATR for scaling if enabled
-                    double atrForOR = 0;
-                    if ((UseAtrScaling || UseDailyLevelsFilter) && atrDaily != null)
-                    {
-                        int idxDaily = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)) ? 2 : 
-                                       ((UseHTFBias || UseDailyLevelsFilter || UseAtrScaling) ? 1 : -1);
-                        if (idxDaily >= 0 && BarsArray.Length > idxDaily && CurrentBars[idxDaily] >= atrDaily.BarsRequiredToPlot)
-                        {
-                            atrForOR = atrDaily[0];
-                        }
-                    }
-
-                    // Check if OR is within acceptable range (tick-based or ATR-based)
-                    tradeToday = true;
+                    double atrForOR = GetDailyATR();
                     bool orOutOfRange = false;
-                    string orRejectReason = "";
+                    string reason = "";
 
                     if (UseAtrScaling && atrForOR > 0)
                     {
-                        // ATR-based OR filter
                         double orToAtr = orRange / atrForOR;
                         if (orToAtr < MinORATR || orToAtr > MaxORATR)
                         {
                             orOutOfRange = true;
-                            orRejectReason = string.Format("OR/ATR={0:F3} (Min={1:F3}, Max={2:F3})", orToAtr, MinORATR, MaxORATR);
+                            reason = string.Format("OR/ATR={0:F3} (Min={1:F3}, Max={2:F3})", orToAtr, MinORATR, MaxORATR);
                         }
                     }
                     else
                     {
-                        // Tick-based OR filter (legacy)
                         if (orTicks < MinORTicks || orTicks > MaxORTicks)
                         {
                             orOutOfRange = true;
-                            orRejectReason = string.Format("Ticks={0} (Min={1}, Max={2})", orTicks, MinORTicks, MaxORTicks);
+                            reason = string.Format("Ticks={0} (Min={1}, Max={2})", orTicks, MinORTicks, MaxORTicks);
                         }
                     }
 
                     if (orOutOfRange)
                     {
                         tradeToday = false;
-                        D(string.Format("{0} OR OUT OF RANGE, no trading. {1}", bt, orRejectReason));
+                        D(string.Format("{0} OR OUT OF RANGE, no trading. {1}", bt, reason));
                     }
 
                     D(string.Format(
@@ -450,10 +493,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            if (!rangeComplete)
-                return;
-
-            if (!tradeToday)
+            if (!rangeComplete || !tradeToday)
                 return;
 
             if (bt > tradeEndTime)
@@ -462,32 +502,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (tradesToday >= MaxTradesPerDay)
                 return;
 
-            // === 3) Track breakout state (first breakout only) ===
+            // === 3) Track breakout state ===
             if (barsSinceHighBreak != int.MaxValue)
                 barsSinceHighBreak++;
             if (barsSinceLowBreak != int.MaxValue)
                 barsSinceLowBreak++;
 
-            // First close above OR high -> mark breakout (with volume filter if enabled)
             if (barsSinceHighBreak == int.MaxValue && Close[0] > openingRangeHigh)
             {
                 bool validBreakout = true;
-                
+
                 if (UseVolumeFilter && avgOrVolume > 0)
                 {
-                    double volMult = Volume[0] / avgOrVolume;
-                    if (volMult < MinBreakoutVolMult)
+                    double mult = Volume[0] / avgOrVolume;
+                    if (mult < MinBreakoutVolMult)
                     {
                         validBreakout = false;
-                        if (Debug)
-                            D(string.Format("{0} BREAKOUT HIGH REJECTED: Volume={1:F0} AvgVol={2:F0} Mult={3:F2} < {4:F2}",
-                                bt, Volume[0], avgOrVolume, volMult, MinBreakoutVolMult));
+                        D(string.Format("{0} BREAKOUT HIGH REJECTED: Vol={1:F0} AvgVol={2:F0} Mult={3:F2} < {4:F2}",
+                            bt, Volume[0], avgOrVolume, mult, MinBreakoutVolMult));
                     }
                     else
                     {
-                        if (Debug)
-                            D(string.Format("{0} BREAKOUT HIGH  Close={1} ORHigh={2} VolMult={3:F2}", 
-                                bt, Close[0], openingRangeHigh, volMult));
+                        D(string.Format("{0} BREAKOUT HIGH  Close={1} ORHigh={2} VolMult={3:F2}",
+                            bt, Close[0], openingRangeHigh, mult));
                     }
                 }
                 else
@@ -499,26 +536,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                     barsSinceHighBreak = 0;
             }
 
-            // First close below OR low -> mark breakout (with volume filter if enabled)
             if (barsSinceLowBreak == int.MaxValue && Close[0] < openingRangeLow)
             {
                 bool validBreakout = true;
-                
+
                 if (UseVolumeFilter && avgOrVolume > 0)
                 {
-                    double volMult = Volume[0] / avgOrVolume;
-                    if (volMult < MinBreakoutVolMult)
+                    double mult = Volume[0] / avgOrVolume;
+                    if (mult < MinBreakoutVolMult)
                     {
                         validBreakout = false;
-                        if (Debug)
-                            D(string.Format("{0} BREAKOUT LOW REJECTED: Volume={1:F0} AvgVol={2:F0} Mult={3:F2} < {4:F2}",
-                                bt, Volume[0], avgOrVolume, volMult, MinBreakoutVolMult));
+                        D(string.Format("{0} BREAKOUT LOW REJECTED: Vol={1:F0} AvgVol={2:F0} Mult={3:F2} < {4:F2}",
+                            bt, Volume[0], avgOrVolume, mult, MinBreakoutVolMult));
                     }
                     else
                     {
-                        if (Debug)
-                            D(string.Format("{0} BREAKOUT LOW   Close={1} ORLow={2} VolMult={3:F2}", 
-                                bt, Close[0], openingRangeLow, volMult));
+                        D(string.Format("{0} BREAKOUT LOW   Close={1} ORLow={2} VolMult={3:F2}",
+                            bt, Close[0], openingRangeLow, mult));
                     }
                 }
                 else
@@ -530,177 +564,138 @@ namespace NinjaTrader.NinjaScript.Strategies
                     barsSinceLowBreak = 0;
             }
 
-            // Only when flat
             if (Position.MarketPosition != MarketPosition.Flat)
                 return;
 
-            // === BIAS FILTER: Check higher timeframe EMA alignment ===
-            bool biasAllowsLongs = true;
+            // === 4) Bias filters ===
+            bool biasAllowsLongs  = true;
             bool biasAllowsShorts = true;
             bool htfBullish = true;
             bool htfBearish = false;
 
-            // Legacy 5-minute bias filter
-            if (UseBiasFilter && ema5Min != null)
+            if (UseBiasFilter && ema5Min != null && idx5Min >= 0 &&
+                CurrentBars[idx5Min] >= ema5Min.BarsRequiredToPlot)
             {
-                // Calculate 5-min index: it's always index 1 if UseBiasFilter is enabled
-                int idx5Min = 1;
-                if (BarsArray.Length > idx5Min && CurrentBars[idx5Min] >= ema5Min.BarsRequiredToPlot)
-                {
-                    double close5Min = Closes[idx5Min][0];
-                    double emaValue = ema5Min[0];
+                double close5 = Closes[idx5Min][0];
+                double ema5   = ema5Min[0];
 
-                    if (close5Min > emaValue)
-                    {
-                        biasAllowsLongs = true;
-                        biasAllowsShorts = false;
-                    }
-                    else
-                    {
-                        biasAllowsLongs = false;
-                        biasAllowsShorts = true;
-                    }
+                if (close5 > ema5)
+                {
+                    biasAllowsLongs  = true;
+                    biasAllowsShorts = false;
+                }
+                else
+                {
+                    biasAllowsLongs  = false;
+                    biasAllowsShorts = true;
                 }
             }
 
-            // Higher timeframe bias (daily + hourly)
-            if (UseHTFBias && emaDaily != null && emaHourly != null)
+            if (UseHTFBias && emaDaily != null && emaHourly != null &&
+                idxDaily >= 0 && idxHourly >= 0 &&
+                CurrentBars[idxDaily] >= emaDaily.BarsRequiredToPlot &&
+                CurrentBars[idxHourly] >= emaHourly.BarsRequiredToPlot)
             {
-                // Calculate indices: daily and hourly come after 5-min if it exists
-                int idxDaily = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)) ? 2 : 
-                               ((UseHTFBias || UseDailyLevelsFilter || UseAtrScaling) ? 1 : -1);
-                int idxHourly = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter)) ? 3 : 
-                                ((UseHTFBias || UseDailyLevelsFilter) ? 2 : -1);
+                double dClose = Closes[idxDaily][0];
+                double dEMA   = emaDaily[0];
+                double hClose = Closes[idxHourly][0];
+                double hEMA   = emaHourly[0];
 
-                if (idxDaily >= 0 && idxHourly >= 0 &&
-                    CurrentBars[idxDaily] >= emaDaily.BarsRequiredToPlot &&
-                    CurrentBars[idxHourly] >= emaHourly.BarsRequiredToPlot)
+                bool dBull = dClose > dEMA;
+                bool hBull = hClose > hEMA;
+                bool dBear = dClose < dEMA;
+                bool hBear = hClose < hEMA;
+
+                if (dBull && hBull)
                 {
-                    double dailyClose = Closes[idxDaily][0];
-                    double dailyEMA = emaDaily[0];
-                    double hourlyClose = Closes[idxHourly][0];
-                    double hourlyEMA = emaHourly[0];
-
-                    // Both daily and hourly must agree for bias
-                    bool dailyBullish = dailyClose > dailyEMA;
-                    bool hourlyBullish = hourlyClose > hourlyEMA;
-                    bool dailyBearish = dailyClose < dailyEMA;
-                    bool hourlyBearish = hourlyClose < hourlyEMA;
-
-                    if (dailyBullish && hourlyBullish)
-                    {
-                        htfBullish = true;
-                        htfBearish = false;
-                        if (Debug && (CurrentBar % 10 == 0))
-                            D(string.Format("{0} HTF BIAS: Bullish (Daily: {1:F2}>{2:F2}, Hourly: {3:F2}>{4:F2})",
-                                bt, dailyClose, dailyEMA, hourlyClose, hourlyEMA));
-                    }
-                    else if (dailyBearish && hourlyBearish)
-                    {
-                        htfBullish = false;
-                        htfBearish = true;
-                        if (Debug && (CurrentBar % 10 == 0))
-                            D(string.Format("{0} HTF BIAS: Bearish (Daily: {1:F2}<{2:F2}, Hourly: {3:F2}<{4:F2})",
-                                bt, dailyClose, dailyEMA, hourlyClose, hourlyEMA));
-                    }
-                    else
-                    {
-                        // Mixed signals - no bias, no trades
-                        htfBullish = false;
-                        htfBearish = false;
-                        if (Debug && (CurrentBar % 10 == 0))
-                            D(string.Format("{0} HTF BIAS: Mixed - no trades", bt));
-                    }
+                    htfBullish = true;
+                    htfBearish = false;
+                }
+                else if (dBear && hBear)
+                {
+                    htfBullish = false;
+                    htfBearish = true;
+                }
+                else
+                {
+                    htfBullish = false;
+                    htfBearish = false;
                 }
             }
 
-            // === DAILY LEVELS FILTER ===
-            bool dailyLevelsAllowLong = true;
+            bool dailyLevelsAllowLong  = true;
             bool dailyLevelsAllowShort = true;
 
-            if (UseDailyLevelsFilter && priorDayHigh > 0 && priorDayLow > 0)
+            if (UseDailyLevelsFilter && priorDayHigh > 0 && priorDayLow > 0 && atrDaily != null && idxDaily >= 0 &&
+                CurrentBars[idxDaily] >= atrDaily.BarsRequiredToPlot)
             {
-                // Gap requirement
-                if (RequireGap)
+                double atrVal = atrDaily[0];
+                double buffer = atrVal * PriorDayLevelBufferATR;
+
+                double longTargetEstimate  = openingRangeHigh + (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
+                double shortTargetEstimate = openingRangeLow  - (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
+
+                if (longTargetEstimate >= priorDayHigh - buffer)
                 {
-                    int gapTicks = (int)Math.Round(Math.Abs(gapSize) / TickSize);
-                    if (gapTicks < MinGapTicks)
-                    {
-                        dailyLevelsAllowLong = false;
-                        dailyLevelsAllowShort = false;
-                        if (Debug)
-                            D(string.Format("{0} DAILY FILTER: Gap too small ({1} ticks < {2})", bt, gapTicks, MinGapTicks));
-                    }
+                    dailyLevelsAllowLong = false;
+                    if (Debug)
+                        D(string.Format("{0} DAILY FILTER: Long target {1:F2} near PDH {2:F2}", bt, longTargetEstimate, priorDayHigh));
                 }
 
-                // Avoid trading into prior day's high/low
-                int idxDaily = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)) ? 2 : 
-                               ((UseHTFBias || UseDailyLevelsFilter || UseAtrScaling) ? 1 : -1);
-                if (AvoidPriorDayLevels && atrDaily != null && idxDaily >= 0 && BarsArray.Length > idxDaily && CurrentBars[idxDaily] >= atrDaily.BarsRequiredToPlot)
+                if (shortTargetEstimate <= priorDayLow + buffer)
                 {
-                    double atrValue = atrDaily[0];
-                    double priorDayBuffer = atrValue * PriorDayLevelBufferATR;
-
-                    // For long: check if target would hit prior day high
-                    double longTargetEstimate = openingRangeHigh + (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
-                    if (longTargetEstimate >= priorDayHigh - priorDayBuffer)
-                    {
-                        dailyLevelsAllowLong = false;
-                        if (Debug)
-                            D(string.Format("{0} DAILY FILTER: Long target ({1:F2}) too close to prior high ({2:F2})",
-                                bt, longTargetEstimate, priorDayHigh));
-                    }
-
-                    // For short: check if target would hit prior day low
-                    double shortTargetEstimate = openingRangeLow - (openingRangeHigh - openingRangeLow) * RewardRiskRatio;
-                    if (shortTargetEstimate <= priorDayLow + priorDayBuffer)
-                    {
-                        dailyLevelsAllowShort = false;
-                        if (Debug)
-                            D(string.Format("{0} DAILY FILTER: Short target ({1:F2}) too close to prior low ({2:F2})",
-                                bt, shortTargetEstimate, priorDayLow));
-                    }
+                    dailyLevelsAllowShort = false;
+                    if (Debug)
+                        D(string.Format("{0} DAILY FILTER: Short target {1:F2} near PDL {2:F2}", bt, shortTargetEstimate, priorDayLow));
                 }
             }
 
-            // Get ATR for scaling calculations
-            double atr = 0;
-            if ((UseAtrScaling || UseDailyLevelsFilter) && atrDaily != null)
+            // NEW: gap / PD / opening-bias directional filters
+            if (UseGapDirectionalBias)
             {
-                int idxDaily = (UseBiasFilter && (UseHTFBias || UseDailyLevelsFilter || UseAtrScaling)) ? 2 : 
-                               ((UseHTFBias || UseDailyLevelsFilter || UseAtrScaling) ? 1 : -1);
-                if (idxDaily >= 0 && BarsArray.Length > idxDaily && CurrentBars[idxDaily] >= atrDaily.BarsRequiredToPlot)
-                {
-                    atr = atrDaily[0];
-                }
+                if (gapUp)
+                    biasAllowsShorts = false;
+                else if (gapDown)
+                    biasAllowsLongs = false;
             }
 
-            // buffer for retest zone (ATR-scaled or tick-based)
-            double buffer = RetestBufferTicks * TickSize;
+            if (UsePDRangeBias)
+            {
+                if (pdBiasBull)
+                    biasAllowsShorts = false;
+                else if (pdBiasBear)
+                    biasAllowsLongs = false;
+            }
+
+            if (UseOpening5MinBias && openingBiasComputed)
+            {
+                if (openingBiasUp)
+                    biasAllowsShorts = false;
+                else if (openingBiasDown)
+                    biasAllowsLongs = false;
+            }
+
+            double atr = GetDailyATR();
+
+            double bufferRetest = RetestBufferTicks * TickSize;
             if (UseAtrScaling && atr > 0)
-            {
-                buffer = RetestBufferATR * atr;
-            }
+                bufferRetest = RetestBufferATR * atr;
 
-            // === 4) LONG SETUP (more permissive) ===
+            // === 5) LONG SETUP ===
             bool longSignal = false;
             if (barsSinceHighBreak >= 0 && barsSinceHighBreak <= MaxBarsAfterBreakout)
             {
-                // distance from OR high (ATR-scaled or tick-based)
                 double distance = Math.Abs(Close[0] - openingRangeHigh);
-                double maxDist = MaxDistanceFromOR * TickSize;
+                double maxDist  = MaxDistanceFromOR * TickSize;
                 if (UseAtrScaling && atr > 0)
-                {
                     maxDist = MaxDistanceFromORATR * atr;
-                }
-                bool nearLevel = distance <= maxDist;
 
-                // strict retest: bar trades through OR-high zone (with buffer)
-                bool touchedLevel    = Low[0] <= openingRangeHigh + buffer &&
-                                       High[0] >= openingRangeHigh - buffer;
+                bool nearLevel    = distance <= maxDist;
+                bool touchedLevel = Low[0] <= openingRangeHigh + bufferRetest &&
+                                    High[0] >= openingRangeHigh - bufferRetest;
 
-                bool bullishEngulf   = IsBullishEngulfing(0);
-                bool bullishReject   = IsBullishRejection(0);
+                bool bullishEngulf = IsBullishEngulfing(0);
+                bool bullishReject = IsBullishRejection(0);
 
                 if (touchedLevel)
                     D(string.Format("{0} LONG touch  Close={1} Low={2} ORHigh={3}", bt, Close[0], Low[0], openingRangeHigh));
@@ -715,24 +710,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                     longSignal = true;
             }
 
-            // === 5) SHORT SETUP (more permissive) ===
+            // === 6) SHORT SETUP ===
             bool shortSignal = false;
             if (barsSinceLowBreak >= 0 && barsSinceLowBreak <= MaxBarsAfterBreakout)
             {
-                // distance from OR low (ATR-scaled or tick-based)
                 double distance = Math.Abs(Close[0] - openingRangeLow);
-                double maxDist = MaxDistanceFromOR * TickSize;
+                double maxDist  = MaxDistanceFromOR * TickSize;
                 if (UseAtrScaling && atr > 0)
-                {
                     maxDist = MaxDistanceFromORATR * atr;
-                }
-                bool nearLevel = distance <= maxDist;
 
-                bool touchedLevel    = High[0] >= openingRangeLow - buffer &&
-                                       Low[0]  <= openingRangeLow + buffer;
+                bool nearLevel    = distance <= maxDist;
+                bool touchedLevel = High[0] >= openingRangeLow - bufferRetest &&
+                                    Low[0]  <= openingRangeLow + bufferRetest;
 
-                bool bearishEngulf   = IsBearishEngulfing(0);
-                bool bearishReject   = IsBearishRejection(0);
+                bool bearishEngulf = IsBearishEngulfing(0);
+                bool bearishReject = IsBearishRejection(0);
 
                 if (touchedLevel)
                     D(string.Format("{0} SHORT touch  Close={1} High={2} ORLow={3}", bt, Close[0], High[0], openingRangeLow));
@@ -747,30 +739,31 @@ namespace NinjaTrader.NinjaScript.Strategies
                     shortSignal = true;
             }
 
-            // === 6) EXECUTE ENTRIES ===
-            // Combine all filters: manual enable, bias (legacy or HTF), daily levels
-            bool canTradeLong = EnableLongs && biasAllowsLongs && dailyLevelsAllowLong;
-            if (UseHTFBias)
-                canTradeLong = canTradeLong && htfBullish;
-
+            // === 7) EXECUTION GATING ===
+            bool canTradeLong  = EnableLongs  && biasAllowsLongs  && dailyLevelsAllowLong;
             bool canTradeShort = EnableShorts && biasAllowsShorts && dailyLevelsAllowShort;
+
             if (UseHTFBias)
-                canTradeShort = canTradeShort && htfBearish;
+            {
+                canTradeLong  &= htfBullish;
+                canTradeShort &= htfBearish;
+            }
 
             if (canTradeLong && longSignal)
             {
-                double entryPrice = Close[0];
-                double stopPrice  = Low[0];
-                double risk       = entryPrice - stopPrice;
+                double entry = Close[0];
+                double stop  = Low[0];
+                double risk  = entry - stop;
+
                 if (risk <= TickSize * 2)
                     return;
 
-                double targetPrice = entryPrice + risk * RewardRiskRatio;
+                double target = entry + risk * RewardRiskRatio;
 
-                SetStopLoss(CalculationMode.Price, stopPrice);
-                SetProfitTarget(CalculationMode.Price, targetPrice);
+                SetStopLoss(CalculationMode.Price, stop);
+                SetProfitTarget(CalculationMode.Price, target);
 
-                D(string.Format("{0} ENTER LONG  entry={1} stop={2} target={3}", bt, entryPrice, stopPrice, targetPrice));
+                D(string.Format("{0} ENTER LONG  entry={1} stop={2} target={3}", bt, entry, stop, target));
                 EnterLong();
                 tradesToday++;
                 return;
@@ -778,18 +771,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (canTradeShort && shortSignal)
             {
-                double entryPrice = Close[0];
-                double stopPrice  = High[0];
-                double risk       = stopPrice - entryPrice;
+                double entry = Close[0];
+                double stop  = High[0];
+                double risk  = stop - entry;
+
                 if (risk <= TickSize * 2)
                     return;
 
-                double targetPrice = entryPrice - risk * RewardRiskRatio;
+                double target = entry - risk * RewardRiskRatio;
 
-                SetStopLoss(CalculationMode.Price, stopPrice);
-                SetProfitTarget(CalculationMode.Price, targetPrice);
+                SetStopLoss(CalculationMode.Price, stop);
+                SetProfitTarget(CalculationMode.Price, target);
 
-                D(string.Format("{0} ENTER SHORT entry={1} stop={2} target={3}", bt, entryPrice, stopPrice, targetPrice));
+                D(string.Format("{0} ENTER SHORT entry={1} stop={2} target={3}", bt, entry, stop, target));
                 EnterShort();
                 tradesToday++;
                 return;
@@ -803,7 +797,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < idx + 2)
                 return false;
 
-            // previous bar must be bearish
             if (Close[idx + 1] >= Open[idx + 1])
                 return false;
 
@@ -821,7 +814,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < idx + 2)
                 return false;
 
-            // previous bar must be bullish
             if (Close[idx + 1] <= Open[idx + 1])
                 return false;
 
@@ -856,7 +848,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             return Close[idx] < Open[idx] && upperWick > body * RejectionFactor;
         }
 
-        // === DEBUG PRINT ===
         private void D(string msg)
         {
             if (Debug)
