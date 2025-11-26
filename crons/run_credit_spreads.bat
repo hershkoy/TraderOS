@@ -14,7 +14,7 @@ echo.
 
 REM Run script with config file (processes all orders in parallel)
 echo Running spreads from daily_spreads.yaml...
-python scripts/spreads_trader.py --conf-file crons\daily_spreads.yaml >> %logfile% 2>&1
+python scripts/options_strategy_trader.py --conf-file crons\daily_spreads.yaml >> %logfile% 2>&1
 if errorlevel 1 (
     echo ERROR: Spreads trader failed with exit code %ERRORLEVEL%
 ) else (

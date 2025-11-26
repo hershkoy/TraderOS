@@ -3,6 +3,7 @@
 
 orders:
   - symbol: QQQ
+    strategy: otm_credit_spreads
     dte: 7
     create_orders_en: true
     quantity: 2
@@ -11,6 +12,7 @@ orders:
     stop_loss_multiplier: 1.5  # 1.5x the limit price for stop loss
     
   - symbol: IWM
+    strategy: otm_credit_spreads
     dte: 7
     create_orders_en: true
     quantity: 2

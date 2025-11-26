@@ -1,44 +1,31 @@
 #!/usr/bin/env python3
 """
-spreads_trader.py
+options_strategy_trader.py
 
-Read an option-chain CSV (from ib_option_chain_to_csv.py), propose a few
-put-credit-spread candidates around a target delta, and optionally create
-IB combo orders for the chosen spread.
+Read an option-chain CSV (from ib_option_chain_to_csv.py), propose spread
+candidates based on selected strategy, and optionally create IB combo orders.
 
 If --input-csv is omitted, it will automatically fetch the option chain
 using ib_option_chain_to_csv functionality.
 
+Supported strategies:
+- otm_credit_spreads: Sell OTM put spread for credit
+- vertical_spread_with_hedging: Put ratio spread (buy 1, sell 2)
+
 Usage examples:
-    # Just analyze a CSV, no orders
-    python scripts/spreads_trader.py \
+    # Just analyze a CSV with default strategy
+    python scripts/options_strategy_trader.py \
         --input-csv reports/SPY_P_options_20251113_221134.csv \
-        --symbol SPY --expiry 20251120
+        --symbol SPY --expiry 20251120 --strategy otm_credit_spreads
 
-    # Auto-fetch chain and analyze (no CSV file needed)
-    python scripts/spreads_trader.py \
-        --symbol SPY --expiry 20251120 --dte 7
-
-    # Analyze and create a DAY order for 2 spreads
-    python scripts/spreads_trader.py \
-        --input-csv reports/SPY_P_options_20251113_221134.csv \
-        --symbol SPY --expiry 20251120 \
-        --quantity 2 \
-        --create-orders-en
+    # Auto-fetch chain and analyze
+    python scripts/options_strategy_trader.py \
+        --symbol SPY --expiry 20251120 --dte 7 --strategy otm_credit_spreads
 
     # Auto-select balanced spread and place order with monitoring
-    python scripts/spreads_trader.py \
-        --input-csv reports/QQQ_P_options.csv \
-        --symbol QQQ --expiry 20251120 \
-        --risk-profile balanced \
-        --quantity 1 \
-        --account DU123456 \
-        --create-orders-en \
-        --monitor-order
-
-    # Auto-fetch, auto-select, and place order
-    python scripts/spreads_trader.py \
+    python scripts/options_strategy_trader.py \
         --symbol QQQ --dte 7 \
+        --strategy otm_credit_spreads \
         --risk-profile balanced \
         --quantity 1 \
         --account DU123456 \
@@ -84,6 +71,12 @@ try:
 except ImportError:  # pragma: no cover
     from ib_account_detector import detect_ib_account  # type: ignore[import]
 
+# Import strategy classes
+from strategies.option_strategies import (
+    OptionRow, VerticalSpreadCandidate, RatioSpreadCandidate,
+    get_strategy, list_strategies, OTMCreditSpreadsStrategy
+)
+
 # Import fetch_options_to_csv from ib_option_chain_to_csv
 try:
     from scripts.ib_option_chain_to_csv import fetch_options_to_csv
@@ -109,35 +102,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------- Data structures ----------
+# OptionRow, VerticalSpreadCandidate, RatioSpreadCandidate imported from strategies.option_strategies
 
-@dataclass
-class OptionRow:
-    symbol: str
-    expiry: str
-    right: str
-    strike: float
-    bid: float
-    ask: float
-    delta: Optional[float]
-    volume: Optional[float]
-
-    @property
-    def mid(self) -> Optional[float]:
-        if math.isnan(self.bid) or math.isnan(self.ask):
-            return None
-        if self.bid == "" or self.ask == "":
-            return None
-        try:
-            return (float(self.bid) + float(self.ask)) / 2.0
-        except Exception:
-            return None
-
-@dataclass
-class SpreadCandidate:
-    short: OptionRow
-    long: OptionRow
-    width: float
-    credit: float  # estimated mid credit
+# Legacy alias for backward compatibility
+SpreadCandidate = VerticalSpreadCandidate
 
 # ---------- CSV parsing / candidate selection ----------
 
@@ -239,153 +207,63 @@ def build_strike_map(rows: List[OptionRow]) -> Dict[float, OptionRow]:
 
 def find_spread_candidates(
     rows: List[OptionRow],
+    strategy_name: str = "otm_credit_spreads",
     width: float = 4.0,
     target_delta: float = 0.10,
     num_candidates: int = 3,
-    min_credit: float = 0.15
-) -> List[SpreadCandidate]:
+    min_credit: float = 0.15,
+    **kwargs
+) -> List:
     """
-    Find num_candidates vertical put spreads with short leg around target_delta.
-    Short put delta is negative -> we use abs(delta).
-    Long put is width points lower in strike.
+    Find spread candidates using the specified strategy.
+    
+    Args:
+        rows: List of OptionRow objects
+        strategy_name: Name of strategy to use (default: otm_credit_spreads)
+        width: Width of spread (for vertical spreads)
+        target_delta: Target delta for short leg
+        num_candidates: Number of candidates to return
+        min_credit: Minimum credit required
+        **kwargs: Additional strategy-specific parameters
+    
+    Returns:
+        List of spread candidates (type depends on strategy)
     """
-    # Ensure target_delta has a valid value
-    if target_delta is None:
-        target_delta = 0.10
-    
-    strike_map = build_strike_map(rows)
-    
-    # Filter rows with usable greeks + quotes
-    usable = []
-    for r in rows:
-        if r.delta is None or math.isnan(r.delta):
-            continue
-        if r.mid is None:
-            continue
-        d_abs = abs(r.delta)
-        if d_abs < 0.02 or d_abs > 0.35:  # arbitrary sanity range
-            continue
-        usable.append(r)
-    
-    if not usable:
-        # Provide diagnostic info
-        total_with_delta = sum(1 for r in rows if r.delta is not None and not math.isnan(r.delta))
-        total_with_mid = sum(1 for r in rows if r.mid is not None)
-        raise ValueError(
-            f"No usable options with delta and quotes. "
-            f"Found {total_with_delta} options with delta, {total_with_mid} with mid prices, "
-            f"but none in delta range [0.02, 0.35]"
-        )
-    
-    logger.info(f"Found {len(usable)} usable options with delta and quotes")
-    
-    # Sort by closeness to target delta (absolute)
-    # Defensive check: filter out any rows with None delta that might have slipped through
-    usable = [r for r in usable if r.delta is not None and not math.isnan(r.delta)]
-    usable.sort(key=lambda r: abs(abs(r.delta) - target_delta))
-    
-    candidates: List[SpreadCandidate] = []
-    skipped_no_long = 0
-    skipped_low_credit = 0
-    
-    for r in usable:
-        # Try exact width first
-        long_strike = r.strike - width
-        long_row = strike_map.get(long_strike)
-        actual_width = width  # Default to requested width
-        
-        # If exact strike not found, try to find closest available strike
-        if not long_row or long_row.mid is None:
-            # Find available strikes below, sorted by how close they are to desired width
-            available_strikes = [s for s in strike_map.keys() if s < r.strike]
-            if available_strikes:
-                # Sort by how close the width is to desired width
-                available_strikes.sort(key=lambda s: abs((r.strike - s) - width))
-                # Use the strike that gives width closest to desired, but at least width/2 away
-                for candidate_long_strike in available_strikes:
-                    actual_width_candidate = r.strike - candidate_long_strike
-                    if actual_width_candidate >= width * 0.5:  # At least half the width
-                        long_row = strike_map.get(candidate_long_strike)
-                        if long_row and long_row.mid is not None:
-                            long_strike = candidate_long_strike
-                            actual_width = actual_width_candidate
-                            if abs(actual_width - width) > 0.5:  # Only log if significantly different
-                                logger.debug(f"Using adjusted width: {r.strike}/{long_strike} (width={actual_width:.1f} instead of {width:.1f})")
-                            break
-        
-        if not long_row or long_row.mid is None:
-            skipped_no_long += 1
-            continue
-        
-        credit = r.mid - long_row.mid
-        if credit < min_credit:
-            skipped_low_credit += 1
-            logger.debug(f"Skipping {r.strike}/{long_strike} spread: credit ${credit:.2f} < min ${min_credit:.2f}")
-            continue
-        
-        # Use actual width (may differ from requested if we adjusted)
-        candidates.append(SpreadCandidate(short=r, long=long_row, width=actual_width, credit=credit))
-        if len(candidates) >= num_candidates:
-            break
-    
-    if not candidates:
-        # Provide detailed diagnostic info
-        logger.warning(f"Skipped {skipped_no_long} candidates: long strike not found")
-        logger.warning(f"Skipped {skipped_low_credit} candidates: credit too low (min: ${min_credit:.2f})")
-        
-        # Try to find what the actual credit range is
-        sample_credits = []
-        for r in usable[:5]:  # Check first 5 usable options
-            long_strike = r.strike - width
-            long_row = strike_map.get(long_strike)
-            if long_row and long_row.mid is not None:
-                credit = r.mid - long_row.mid
-                sample_credits.append(credit)
-        
-        if sample_credits:
-            max_credit = max(sample_credits)
-            min_credit_found = min(sample_credits)
-            raise ValueError(
-                f"No spread candidates met the filters. "
-                f"Found {len(usable)} usable short legs, but:\n"
-                f"  - {skipped_no_long} skipped: long strike not found (width={width})\n"
-                f"  - {skipped_low_credit} skipped: credit < ${min_credit:.2f}\n"
-                f"  - Sample credit range: ${min_credit_found:.2f} - ${max_credit:.2f}\n"
-                f"  - Try: --min-credit {max(0.05, min_credit_found - 0.05):.2f} or --spread-width {width + 1}"
-            )
-        else:
-            raise ValueError(
-                f"No spread candidates met the filters. "
-                f"Found {len(usable)} usable short legs, but none had matching long strikes. "
-                f"Try adjusting --spread-width (current: {width})"
-            )
-    
-    return candidates
+    strategy = get_strategy(strategy_name)
+    return strategy.find_candidates(
+        rows,
+        width=width,
+        target_delta=target_delta,
+        num_candidates=num_candidates,
+        min_credit=min_credit,
+        **kwargs
+    )
 
 # ---------- Reporting ----------
 
-def describe_candidate(label: str, c: SpreadCandidate) -> str:
-    d_abs = abs(c.short.delta) if c.short.delta is not None and not math.isnan(c.short.delta) else None
-    lines = [
-        f"{label}",
-        "",
-        f"Sell {c.short.strike:.0f} {c.short.right} / Buy {c.long.strike:.0f} {c.long.right} "
-        f"({int(c.width)}-wide)",
-    ]
-    if d_abs is not None:
-        lines.append(f"Delta ~ {c.short.delta:.3f} (|delta| ~ {d_abs:.3f})")
-    lines.append(f"Credit ~ ${c.credit:.2f}")
-    if c.short.volume and not math.isnan(c.short.volume):
-        lines.append(f"Short leg volume: {int(c.short.volume)}")
-    return "\n".join(lines)
+def describe_candidate(label: str, c, strategy_name: str = "otm_credit_spreads") -> str:
+    """Describe a candidate using the appropriate strategy."""
+    strategy = get_strategy(strategy_name)
+    return strategy.describe_candidate(label, c)
 
-def print_report(candidates: List[SpreadCandidate]):
-    # Sort by riskiness: higher |delta| = less conservative
-    candidates_sorted = sorted(
-        candidates,
-        key=lambda c: abs(c.short.delta) if c.short.delta is not None else 0.0,
-        reverse=True,
-    )
+def print_report(candidates: List, strategy_name: str = "otm_credit_spreads"):
+    """Print report of spread candidates."""
+    strategy = get_strategy(strategy_name)
+    
+    # Sort by riskiness: higher |delta| = less conservative (for vertical spreads)
+    if hasattr(candidates[0], 'short') and hasattr(candidates[0].short, 'delta'):
+        candidates_sorted = sorted(
+            candidates,
+            key=lambda c: abs(c.short.delta) if c.short.delta is not None else 0.0,
+            reverse=True,
+        )
+    else:
+        # For ratio spreads, sort by net credit
+        candidates_sorted = sorted(
+            candidates,
+            key=lambda c: c.net_credit if hasattr(c, 'net_credit') else 0.0,
+            reverse=True,
+        )
     
     label_map = [
         "Primary candidate (balanced)",
@@ -393,11 +271,11 @@ def print_report(candidates: List[SpreadCandidate]):
         "Extra conservative",
     ]
     
-    print("\n=== Spread Candidates ===\n")
+    print(f"\n=== {strategy_name} Candidates ===\n")
     for idx, c in enumerate(candidates_sorted):
         label = label_map[idx] if idx < len(label_map) else f"Candidate {idx+1}"
         print(f"[{idx+1}]")
-        print(describe_candidate(label, c))
+        print(strategy.describe_candidate(label, c))
         print("-" * 50)
 
 # ---------- IB order creation ----------
@@ -1057,6 +935,7 @@ def process_single_order_direct(
         Trade object if order was placed successfully, None otherwise
     """
     symbol = order_config.get('symbol', 'UNKNOWN')
+    strategy_name = order_config.get('strategy', 'otm_credit_spreads')
     dte = order_config.get('dte', 7)
     expiry = order_config.get('expiry')
     right = order_config.get('right', 'P')
@@ -1072,6 +951,8 @@ def process_single_order_direct(
     create_orders_en = order_config.get('create_orders_en', False)
     take_profit = order_config.get('take_profit')
     stop_loss = order_config.get('stop_loss') or order_config.get('stop_loss_multiplier')
+    
+    logger.info(f"Using strategy: {strategy_name}")
     
     try:
         # Auto-fetch option chain
@@ -1098,9 +979,10 @@ def process_single_order_direct(
             expiry=expiry,
         )
         
-        # Find spread candidates
+        # Find spread candidates using strategy
         candidates = find_spread_candidates(
             rows,
+            strategy_name=strategy_name,
             width=spread_width,
             target_delta=target_delta,
             num_candidates=3,
@@ -1666,6 +1548,14 @@ def main():
     )
     
     parser.add_argument(
+        "--strategy",
+        type=str,
+        default="otm_credit_spreads",
+        choices=list_strategies(),
+        help=f"Strategy to use for spread selection. Available: {', '.join(list_strategies())} (default: otm_credit_spreads)",
+    )
+    
+    parser.add_argument(
         "--expiry",
         type=str,
         default=None,
@@ -1935,9 +1825,11 @@ def main():
         expiry=args.expiry,
     )
     
-    # Propose spread candidates
+    # Propose spread candidates using strategy
+    logger.info(f"Using strategy: {args.strategy}")
     candidates = find_spread_candidates(
         rows,
+        strategy_name=args.strategy,
         width=args.spread_width,
         target_delta=args.target_delta,
         num_candidates=args.num_candidates,
@@ -1945,19 +1837,22 @@ def main():
     )
     
     # Sort candidates by riskiness: higher |delta| = less conservative
-    candidates_sorted = sorted(
-        candidates,
-        key=lambda c: abs(c.short.delta) if c.short.delta is not None else 0.0,
-        reverse=True,
-    )
+    if hasattr(candidates[0], 'short') and hasattr(candidates[0].short, 'delta'):
+        candidates_sorted = sorted(
+            candidates,
+            key=lambda c: abs(c.short.delta) if c.short.delta is not None else 0.0,
+            reverse=True,
+        )
+    else:
+        candidates_sorted = candidates  # For other strategies
     
-    print_report(candidates_sorted)
+    print_report(candidates_sorted, strategy_name=args.strategy)
     
     # Selection: auto vs interactive
     if args.risk_profile != "interactive":
         selected = choose_candidate_by_profile(candidates_sorted, args.risk_profile)
         print("\nAuto-selected spread:\n")
-        print(describe_candidate("Chosen spread", selected))
+        print(describe_candidate("Chosen spread", selected, strategy_name=args.strategy))
     else:
         # Interactive selection
         choice = input(
@@ -1981,7 +1876,7 @@ def main():
         selected = candidates_sorted[idx]
         
         print("\nYou selected:\n")
-        print(describe_candidate("Chosen spread", selected))
+        print(describe_candidate("Chosen spread", selected, strategy_name=args.strategy))
     
     # Support --place-order as alias for --create-orders-en
     if args.place_order and not args.create_orders_en:
