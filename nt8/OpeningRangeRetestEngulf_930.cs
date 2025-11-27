@@ -176,6 +176,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "MinBodyPercent", GroupName = "Entry", Order = 36)]
         public double MinBodyPercent { get; set; } = 0.20;  // Min body as % of candle range for engulf
 
+        // === BUILD ID ===
+        private const string STRATEGY_BUILD_ID = "v1.0.0-20251127";
 
         // === INTERNAL STATE ===
 
@@ -250,6 +252,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds = 30;
                 IsInstantiatedOnEachOptimizationIteration = false;
+                IncludeTradeHistoryInBacktest = true;
             }
             else if (State == State.Configure)
             {
@@ -290,8 +293,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (idxHourly >= 0 && UseHTFBias)
                     emaHourly = EMA(BarsArray[idxHourly], HTFEMAPeriod);
 
-                // Print configuration at startup
+                // Print build ID and configuration at startup
+                Print(string.Format("=== STRATEGY BUILD ID: {0} ===", STRATEGY_BUILD_ID));
                 PrintConfiguration();
+            }
+            else if (State == State.Terminated)
+            {
+                if (SystemPerformance.AllTrades.Count > 0)
+                    PrintPerformanceSummary();
+                else
+                    Print("=== STRATEGY PERFORMANCE SUMMARY: no trades ===");
             }
         }
 
@@ -989,6 +1000,49 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (Debug)
                 Print(msg);
+        }
+
+        private void PrintPerformanceSummary()
+        {
+            var trades = SystemPerformance.AllTrades;
+            var perf   = trades.TradesPerformance;
+
+            int totalTrades   = trades.Count;
+            int winningTrades = trades.WinningTrades.Count;
+            int losingTrades  = trades.LosingTrades.Count;
+
+            double netProfit    = perf.Currency.CumProfit;
+            double grossProfit  = perf.GrossProfit;
+            double grossLoss    = perf.GrossLoss;
+            double maxDrawdown  = perf.Currency.Drawdown;
+            double profitFactor = perf.ProfitFactor;
+            double sharpe       = perf.SharpeRatio;
+            double tradesPerDay = perf.TradesPerDay;
+
+            double winRate = totalTrades > 0 
+                             ? 100.0 * winningTrades / totalTrades 
+                             : 0.0;
+            double winLossRatio = losingTrades > 0 
+                                  ? (double)winningTrades / losingTrades 
+                                  : double.NaN;
+
+            Print("========================================");
+            Print("=== STRATEGY PERFORMANCE SUMMARY ===");
+            Print(string.Format("=== BUILD ID: {0} ===", STRATEGY_BUILD_ID));
+            Print("========================================");
+            Print(string.Format("Total trades      : {0}", totalTrades));
+            Print(string.Format("Winning trades    : {0}", winningTrades));
+            Print(string.Format("Losing trades     : {0}", losingTrades));
+            Print(string.Format("Win rate          : {0:F2} %", winRate));
+            Print(string.Format("Win/Loss ratio    : {0:F2}", winLossRatio));
+            Print(string.Format("Net profit        : {0:C2}", netProfit));
+            Print(string.Format("Gross profit      : {0:C2}", grossProfit));
+            Print(string.Format("Gross loss        : {0:C2}", grossLoss));
+            Print(string.Format("Max drawdown      : {0:C2}", maxDrawdown));
+            Print(string.Format("Profit factor     : {0:F2}", profitFactor));
+            Print(string.Format("Sharpe ratio      : {0:F2}", sharpe));
+            Print(string.Format("Avg trades / day  : {0:F2}", tradesPerDay));
+            Print("========================================");
         }
     }
 }
