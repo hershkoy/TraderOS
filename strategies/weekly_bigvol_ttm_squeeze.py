@@ -106,13 +106,23 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         if self.p.printlog:
             from datetime import datetime
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f'[{timestamp}] {self.datetime.datetime(0)} [{level}] {txt}')
+            try:
+                data_time = self.datetime.datetime(0)
+                print(f'[{timestamp}] {data_time} [{level}] {txt}')
+            except (IndexError, AttributeError):
+                # Data not available yet (e.g., during __init__)
+                print(f'[{timestamp}] [INIT] [{level}] {txt}')
 
     def debug_log(self, txt):
         if self.p.log_level.upper() == 'DEBUG' and self.p.printlog:
             from datetime import datetime
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f'[{timestamp}] {self.datetime.datetime(0)} [DEBUG] {txt}')
+            try:
+                data_time = self.datetime.datetime(0)
+                print(f'[{timestamp}] {data_time} [DEBUG] {txt}')
+            except (IndexError, AttributeError):
+                # Data not available yet (e.g., during __init__)
+                print(f'[{timestamp}] [INIT] [DEBUG] {txt}')
 
     @staticmethod
     def get_data_requirements():
@@ -163,6 +173,10 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.entry_price = None
         self.entry_week_idx = None
         
+        # Track previous weekly bar index and datetime to detect updates
+        self._prev_week_idx = -1
+        self._prev_week_datetime = None
+        
         # Warmup flag
         self._ready = False
 
@@ -187,29 +201,63 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         Check if squeeze is "on" (BB inside KC) at weekly bar index i.
         Simplified version - in full implementation, would calculate BB and KC.
         For V1, we'll use a heuristic: if momentum is near zero, likely in squeeze.
+        In Backtrader, i=0 is the current bar, i=-1 is the previous bar.
         """
-        if i < 0 or len(self.mom) <= abs(i):
+        if len(self.mom) == 0:
+            return False
+        # For negative indices, check if we have enough data
+        if i < 0 and len(self.mom) < abs(i):
+            return False
+        if i >= len(self.mom):
             return False
         # Heuristic: squeeze on when momentum is small (between -0.5 and 0.5 std devs)
         # This is a simplification - full version would calculate BB/KC
-        mom_val = float(self.mom.slope[i])
-        return abs(mom_val) < 0.5  # Simplified threshold
+        try:
+            mom_val = float(self.mom.slope[i])
+            return abs(mom_val) < 0.5  # Simplified threshold
+        except (IndexError, TypeError):
+            return False
 
     def _is_ignition_bar(self, i):
         """
         Condition A: Check if weekly bar at index i is an "ignition bar".
         Returns True if all ignition conditions are met.
+        In Backtrader, i=0 is the current bar, i=-1 is the previous bar.
         """
         w = self.d_w
         
-        if i < 0 or len(w) <= abs(i):
+        # In Backtrader, [0] is current, [-1] is previous, etc.
+        # Check if we have enough data
+        if len(w) == 0:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION A (Ignition): No weekly data available")
+            return False
+        
+        # For current bar (i=0), we need at least 1 bar
+        # For previous bar (i=-1), we need at least 1 bar
+        # For i=-2, we need at least 2 bars, etc.
+        if i < 0 and len(w) < abs(i):
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION A (Ignition): Index {i} out of range (len={len(w)})")
+            return False
+        if i >= len(w):
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION A (Ignition): Index {i} out of range (len={len(w)})")
             return False
         
         try:
             vol = float(w.volume[i])
             volsma = float(self.vol_sma[i])
+            vol_threshold = self.p.vol_mult * volsma
             
-            if volsma == 0 or vol <= self.p.vol_mult * volsma:
+            if volsma == 0:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): VolSMA is 0")
+                return False
+            
+            if vol <= vol_threshold:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} <= {vol_threshold:.0f} (need > {self.p.vol_mult}x SMA {volsma:.0f})")
                 return False
             
             hi = float(w.high[i])
@@ -218,27 +266,38 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             rng = hi - lo
             
             if rng <= 0:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Range <= 0 (high={hi:.2f}, low={lo:.2f})")
                 return False
             
             # Body position: close in top half of range
             bodypos = (cl - lo) / rng
             if bodypos < self.p.body_pos_min:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): BodyPos {bodypos:.2f} < {self.p.body_pos_min} (close={cl:.2f}, low={lo:.2f}, high={hi:.2f})")
                 return False
             
             # Close above 30-week MA
             ma30_val = float(self.ma30[i])
             if cl <= ma30_val:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Close {cl:.2f} <= MA30 {ma30_val:.2f}")
                 return False
             
             # Optional: highest volume in last N weeks
             vol_highest = float(self.vol_highest[i])
-            if vol < vol_highest * 0.9:  # At least 90% of highest
+            vol_min_threshold = vol_highest * 0.9
+            if vol < vol_min_threshold:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} < {vol_min_threshold:.0f} (90% of highest {vol_highest:.0f})")
                 return False
             
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION A (Ignition): PASSED - vol={vol:.0f} ({vol/volsma:.2f}x SMA), bodypos={bodypos:.2f}, close={cl:.2f} > MA30={ma30_val:.2f}")
             return True
             
         except (IndexError, ValueError, TypeError) as e:
-            self.debug_log(f"Ignition check error at {i}: {e}")
+            self.debug_log(f"CONDITION A (Ignition): Error at {i}: {e}")
             return False
 
     def _check_ttm_confirmation(self, i):
@@ -248,19 +307,44 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         1. There was squeeze-on in last N weeks
         2. Momentum crosses from negative to positive
         3. Momentum is "steep" enough
+        In Backtrader, i=0 is the current bar, i=-1 is the previous bar.
         """
-        if i < 0 or len(self.mom) <= abs(i) + 1:
+        # Need at least 2 bars for zero-cross check (current and previous)
+        if len(self.mom) < 2:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION B (TTM): Not enough momentum data (len={len(self.mom)}, need at least 2)")
+            return False
+        
+        # For i=0 (current), we need at least 2 bars (0 and -1)
+        # For i=-1 (previous), we need at least 2 bars (-1 and -2)
+        if i < 0 and len(self.mom) < abs(i) + 1:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION B (TTM): Index {i} out of range (len(mom)={len(self.mom)})")
+            return False
+        if i >= len(self.mom):
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION B (TTM): Index {i} out of range (len(mom)={len(self.mom)})")
             return False
         
         try:
             # Check for squeeze-on in last N weeks
+            # Look back from current bar (i=0 means look at -1, -2, etc.)
             squeeze_found = False
-            for j in range(1, min(self.p.squeeze_lookback + 1, i + 2)):
-                if i - j >= 0 and self._is_squeeze_on(i - j):
-                    squeeze_found = True
-                    break
+            squeeze_week = None
+            # When i=0, we look back at -1, -2, ..., -squeeze_lookback
+            # When i=-1, we look back at -2, -3, ..., -(squeeze_lookback+1)
+            for j in range(1, self.p.squeeze_lookback + 1):
+                lookback_idx = i - j  # This will be negative for i=0
+                # Check if we have enough data for this lookback
+                if len(self.mom) >= abs(lookback_idx) + 1:
+                    if self._is_squeeze_on(lookback_idx):
+                        squeeze_found = True
+                        squeeze_week = lookback_idx
+                        break
             
             if not squeeze_found:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION B (TTM): No squeeze-on found in last {self.p.squeeze_lookback} weeks")
                 return False
             
             # Zero-cross: prev <= 0, curr > 0
@@ -268,16 +352,22 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             mom_curr = float(self.mom.slope[i])
             
             if not (mom_prev <= 0 and mom_curr > 0):
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION B (TTM): No zero-cross (mom_prev={mom_prev:.4f}, mom_curr={mom_curr:.4f})")
                 return False
             
             # Steepness check: momentum > minimum threshold
             if mom_curr <= self.p.mom_slope_min:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION B (TTM): Momentum {mom_curr:.4f} <= threshold {self.p.mom_slope_min}")
                 return False
             
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION B (TTM): PASSED - squeeze found at week {squeeze_week}, zero-cross: {mom_prev:.4f} -> {mom_curr:.4f}")
             return True
             
         except (IndexError, ValueError, TypeError) as e:
-            self.debug_log(f"TTM confirmation check error at {i}: {e}")
+            self.debug_log(f"CONDITION B (TTM): Error at {i}: {e}")
             return False
 
     def _check_trend_filter(self, i):
@@ -287,8 +377,23 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         1. Close > 30-week MA
         2. 30-week MA is rising
         3. Optional: not too extended above MA
+        In Backtrader, i=0 is the current bar, i=-1 is the previous bar.
         """
-        if i < 0 or len(self.d_w) <= abs(i) + 1:
+        # Need at least 2 bars to check if MA is rising (current and previous)
+        if len(self.d_w) < 2:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION C (Trend): Not enough weekly data (len={len(self.d_w)}, need at least 2)")
+            return False
+        
+        # For i=0 (current), we need at least 2 bars (0 and -1)
+        # For i=-1 (previous), we need at least 2 bars (-1 and -2)
+        if i < 0 and len(self.d_w) < abs(i) + 1:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION C (Trend): Index {i} out of range (len={len(self.d_w)})")
+            return False
+        if i >= len(self.d_w):
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION C (Trend): Index {i} out of range (len={len(self.d_w)})")
             return False
         
         try:
@@ -299,20 +404,29 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             
             # Close above 30-week MA
             if cl <= ma30_curr:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION C (Trend): Close {cl:.2f} <= MA30 {ma30_curr:.2f}")
                 return False
             
             # 30-week MA is rising
             if ma30_curr <= ma30_prev:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION C (Trend): MA30 not rising ({ma30_prev:.2f} -> {ma30_curr:.2f})")
                 return False
             
             # Optional: not too extended (within 25% of MA)
-            if cl > ma30_curr * (1.0 + self.p.max_extended_pct):
+            max_extended = ma30_curr * (1.0 + self.p.max_extended_pct)
+            if cl > max_extended:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION C (Trend): Close {cl:.2f} > max extended {max_extended:.2f} ({self.p.max_extended_pct*100:.0f}% above MA30)")
                 return False
             
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"CONDITION C (Trend): PASSED - close={cl:.2f} > MA30={ma30_curr:.2f} (rising), within {self.p.max_extended_pct*100:.0f}% limit")
             return True
             
         except (IndexError, ValueError, TypeError) as e:
-            self.debug_log(f"Trend filter check error at {i}: {e}")
+            self.debug_log(f"CONDITION C (Trend): Error at {i}: {e}")
             return False
 
     def _enter_long(self):
@@ -444,17 +558,76 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # Warmup check
         min_periods = max(self.p.vol_lookback, self.p.ma30_period, self.p.mom_period + 1, self.p.atr_period)
         if not self._ready:
-            if len(self.d_w) >= min_periods:
+            daily_len = len(self.d_d)
+            weekly_len = len(self.d_w)
+            if weekly_len >= min_periods:
                 self._ready = True
-                self.debug_log("Warmup complete")
+                bars_after_warmup = weekly_len - min_periods
+                self.debug_log(f"Warmup complete: daily bars={daily_len}, weekly bars={weekly_len}, min_required={min_periods}")
+                if bars_after_warmup == 0:
+                    self.debug_log(f"WARNING: No weekly bars available after warmup! Need more data.")
+                else:
+                    self.debug_log(f"Will process {bars_after_warmup} weekly bars after warmup")
+                # Initialize tracking - set to None so first weekly bar after warmup will be processed
+                # The datetime check will handle detecting new weekly bars
+                self._prev_week_datetime = None
+                self._prev_week_idx = -1
+                self.debug_log(f"Ready to process weekly bars (starting from warmup completion)")
             else:
+                if self.p.log_level.upper() == 'DEBUG' and daily_len % 10 == 0:  # Log every 10th daily bar during warmup
+                    self.debug_log(f"Warmup: daily={daily_len}, weekly={weekly_len}, need={min_periods}")
                 return
 
         # Only act on weekly bar closes
         # In Backtrader, weekly resampled data only updates when a new week completes
-        # We check if we're at a new weekly bar by comparing current length to previous
+        # We check if we're at a new weekly bar by comparing datetime (more reliable than length)
         
         current_week_idx = len(self.d_w) - 1
+        current_daily_idx = len(self.d_d) - 1
+        
+        # Check if weekly bar has updated by comparing datetime
+        try:
+            if len(self.d_w) == 0:
+                return  # No weekly data yet
+            
+            current_week_datetime = self.d_w.datetime.datetime(-1)
+            
+            # Check if this is a new weekly bar
+            if self._prev_week_datetime is not None and current_week_datetime == self._prev_week_datetime:
+                # Weekly bar hasn't updated yet - this is normal, we're on a daily bar
+                if self.p.log_level.upper() == 'DEBUG' and current_daily_idx % 20 == 0:  # Log every 20th daily bar to reduce noise
+                    try:
+                        daily_date = self.d_d.datetime.datetime(0) if len(self.d_d) > 0 else "N/A"
+                        self.debug_log(f"Daily bar {current_daily_idx} ({daily_date}): Waiting for weekly bar update (current week: {current_week_datetime})")
+                    except Exception:
+                        pass
+                return  # Weekly bar hasn't updated yet, skip
+            
+            # Weekly bar has updated!
+            self._prev_week_datetime = current_week_datetime
+            self._prev_week_idx = current_week_idx
+            
+        except (IndexError, AttributeError) as e:
+            # Weekly data not ready yet
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Weekly data not ready: {e}")
+            return
+        
+        # Debug: Log weekly bar analysis
+        w = self.d_w
+        try:
+            week_date = w.datetime.datetime(-1) if len(w) > 0 else "N/A"
+            close = float(w.close[-1]) if len(w) > 0 else 0.0
+            volume = float(w.volume[-1]) if len(w) > 0 else 0.0
+            daily_date = self.d_d.datetime.datetime(0) if len(self.d_d) > 0 else "N/A"
+            
+            self.debug_log(f"")
+            self.debug_log(f"{'='*80}")
+            self.debug_log(f"WEEKLY BAR #{current_week_idx} COMPLETED | Date: {week_date} | Daily bar: {current_daily_idx} ({daily_date})")
+            self.debug_log(f"  Close: ${close:.2f} | Volume: {volume:,.0f}")
+            self.debug_log(f"{'='*80}")
+        except Exception as e:
+            self.debug_log(f"Error logging weekly bar info: {e}")
         
         # Manage exits first (if in position)
         if self.position:
@@ -466,9 +639,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return  # Wait for pending order
 
         # 1) Detect ignition bars (Condition A)
-        if self._is_ignition_bar(-1):  # Current week
+        # In Backtrader, [0] is the current bar, not [-1]
+        ignition_result = self._is_ignition_bar(0)  # Current week
+        if ignition_result:
             self.last_ignition_idx = current_week_idx
-            self.debug_log(f"Ignition bar detected at week {current_week_idx}")
+            self.debug_log(f"*** IGNITION BAR DETECTED at week {current_week_idx} ***")
 
         # 2) If we have an ignition, check for TTM + trend confirmation
         if self.last_ignition_idx is not None:
@@ -476,14 +651,23 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             weeks_since_ignition = current_week_idx - self.last_ignition_idx
             if weeks_since_ignition > self.p.max_delay_weeks:
                 # Too old, reset
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Ignition expired: {weeks_since_ignition} weeks > max {self.p.max_delay_weeks} weeks")
                 self.last_ignition_idx = None
                 return
 
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Checking confirmation conditions (ignition was {weeks_since_ignition} weeks ago at week {self.last_ignition_idx})")
+
             # Check TTM confirmation (Condition B)
-            ttm_ok = self._check_ttm_confirmation(-1)
+            ttm_ok = self._check_ttm_confirmation(0)
             
             # Check trend filter (Condition C)
-            trend_ok = self._check_trend_filter(-1)
+            trend_ok = self._check_trend_filter(0)
+
+            if self.p.log_level.upper() == 'DEBUG':
+                status = "PASSED" if ttm_ok and trend_ok else "FAILED"
+                self.debug_log(f"CONFIRMATION CHECK: TTM={ttm_ok}, Trend={trend_ok} -> {status}")
 
             if ttm_ok and trend_ok:
                 # All conditions met - enter long
@@ -491,12 +675,20 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 self._enter_long()
                 # Reset ignition tracker after entry
                 self.last_ignition_idx = None
+        else:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log("No active ignition bar - skipping confirmation checks")
 
     def stop(self):
         """Called at the end of the backtest."""
         try:
             stats = self.get_trade_statistics()
+            total_weekly_bars = len(self.d_w)
+            total_daily_bars = len(self.d_d)
             self.log(f"SUMMARY: total_trades={stats.get('total_trades')} win_rate={stats.get('win_rate'):.1f}% profit_factor={stats.get('profit_factor'):.2f}", level='INFO')
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Backtest complete: processed {total_weekly_bars} weekly bars from {total_daily_bars} daily bars")
+                self.debug_log(f"Last weekly bar index processed: {self._prev_week_idx}")
         except Exception:
             pass
 
