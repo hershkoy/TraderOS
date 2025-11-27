@@ -251,7 +251,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EntryHandling = EntryHandling.AllEntries;
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds = 30;
-                IsInstantiatedOnEachOptimizationIteration = false;
+                IsInstantiatedOnEachOptimizationIteration = true;
                 IncludeTradeHistoryInBacktest = true;
             }
             else if (State == State.Configure)

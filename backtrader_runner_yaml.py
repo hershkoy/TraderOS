@@ -627,6 +627,13 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
             openinterest=None
         )
         cerebro.adddata(data_feed, name="NFLX")
+        
+        # Check if strategy requires weekly resampling
+        if data_reqs.get('requires_resampling', False) and 'weekly' in data_reqs.get('additional_timeframes', []):
+            # Resample daily to weekly
+            wfeed = cerebro.resampledata(data_feed, timeframe=bt.TimeFrame.Weeks, compression=1)
+            return [data_feed, wfeed]
+        
         return [data_feed]
     
     elif data_reqs['base_timeframe'] == 'hourly' and data_reqs['requires_resampling']:
