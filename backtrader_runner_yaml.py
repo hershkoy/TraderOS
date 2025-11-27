@@ -673,7 +673,11 @@ def main():
     ap.add_argument('--parquet', type=str, 
                    help='Path to Parquet file (e.g. data/ALPACA/NFLX/1h/nflx_1h.parquet) - deprecated, use --symbol instead')
     ap.add_argument('--symbol', type=str, 
-                   help='Stock symbol (e.g. NFLX) - required if not using --parquet')
+                   help='Stock symbol (e.g. NFLX) - required if not using --parquet or --universe')
+    ap.add_argument('--universe', action='store_true',
+                   help='Run backtest on universe of symbols from database')
+    ap.add_argument('--max-symbols', type=int, default=None,
+                   help='Maximum number of symbols to test (for universe backtesting)')
     ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
                    help='Data provider (default: ALPACA)')
     ap.add_argument('--timeframe', type=str, choices=['1h', '1d'], default='1h',
@@ -719,6 +723,143 @@ def main():
     # Load data based on strategy requirements
     data_reqs = strategy_class.get_data_requirements()
     
+    # Handle universe backtesting
+    if args.universe:
+        # Universe backtesting mode
+        print("Universe backtesting mode enabled")
+        try:
+            from utils.ticker_universe import get_combined_universe
+            symbols = get_combined_universe(force_refresh=False)
+            if args.max_symbols:
+                symbols = symbols[:args.max_symbols]
+            print(f"Running backtest on {len(symbols)} symbols")
+        except Exception as e:
+            print(f"Error loading universe: {e}")
+            return
+        
+        # Run backtest on each symbol
+        all_results = []
+        successful = 0
+        failed = 0
+        
+        for i, symbol in enumerate(symbols, 1):
+            print(f"\n[{i}/{len(symbols)}] Processing {symbol}...")
+            try:
+                # Load data for this symbol
+                if data_reqs['base_timeframe'] == 'daily':
+                    df_data = load_timescaledb_daily(symbol, args.provider)
+                else:
+                    df_data = load_timescaledb_1h(symbol, args.provider)
+                
+                # Apply date filter
+                fromdate = global_config.get('fromdate', '2018-01-01')
+                todate = global_config.get('todate', '2069-12-31')
+                df_data = df_data.loc[(df_data.index >= pd.to_datetime(fromdate)) & 
+                                     (df_data.index <= pd.to_datetime(todate))]
+                
+                # Check minimum data
+                data_config = config.get('data', {})
+                min_points = data_config.get('min_data_points', 30)
+                edge_trim = data_config.get('edge_trim', 5)
+                
+                if len(df_data) < min_points:
+                    print(f"  Skipping {symbol}: insufficient data ({len(df_data)} < {min_points})")
+                    failed += 1
+                    continue
+                
+                df_data = df_data.iloc[:-edge_trim]
+                
+                # Setup Cerebro for this symbol
+                cerebro = bt.Cerebro(stdstats=False)
+                cerebro.broker.setcash(global_config.get('cash', 100000.0))
+                cerebro.broker.set_checksubmit(False)
+                cerebro.broker.set_coo(False)
+                
+                backtrader_config = config.get('backtrader', {})
+                timezone = backtrader_config.get('timezone', 'UTC')
+                cerebro.addtz(timezone)
+                
+                # Setup data feeds
+                data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config)
+                
+                # Prepare strategy parameters
+                strategy_params = strategy_config.copy()
+                strategy_params['size'] = global_config.get('size', 1)
+                strategy_params['printlog'] = False  # Suppress logs for universe mode
+                strategy_params['log_level'] = 'ERROR'  # Only errors
+                
+                cerebro.addstrategy(strategy_class, **strategy_params)
+                
+                # Run backtest
+                try:
+                    results = cerebro.run()
+                    if results and len(results) > 0:
+                        strategy = results[0]
+                        stats = strategy.get_trade_statistics() if hasattr(strategy, 'get_trade_statistics') else {}
+                        final_value = cerebro.broker.getvalue()
+                        initial_value = global_config.get('cash', 100000.0)
+                        total_return = (final_value - initial_value) / initial_value * 100
+                        
+                        all_results.append({
+                            'symbol': symbol,
+                            'initial_value': initial_value,
+                            'final_value': final_value,
+                            'total_return': total_return,
+                            'total_trades': stats.get('total_trades', 0),
+                            'win_rate': stats.get('win_rate', 0.0),
+                            'profit_factor': stats.get('profit_factor', 0.0),
+                            'strategy': strategy
+                        })
+                        successful += 1
+                        print(f"  {symbol}: {total_return:.2f}% return, {stats.get('total_trades', 0)} trades")
+                    else:
+                        failed += 1
+                except Exception as e:
+                    print(f"  {symbol}: Backtest failed - {e}")
+                    failed += 1
+                    
+            except Exception as e:
+                print(f"  {symbol}: Error - {e}")
+                failed += 1
+        
+        # Generate aggregated report
+        print(f"\n{'='*60}")
+        print(f"Universe Backtest Summary")
+        print(f"{'='*60}")
+        print(f"Total symbols: {len(symbols)}")
+        print(f"Successful: {successful}")
+        print(f"Failed: {failed}")
+        
+        if all_results:
+            # Calculate aggregate statistics
+            total_return_avg = sum(r['total_return'] for r in all_results) / len(all_results)
+            total_trades_sum = sum(r['total_trades'] for r in all_results)
+            win_rate_avg = sum(r['win_rate'] for r in all_results) / len(all_results)
+            
+            print(f"\nAggregate Statistics:")
+            print(f"  Average Return: {total_return_avg:.2f}%")
+            print(f"  Total Trades: {total_trades_sum}")
+            print(f"  Average Win Rate: {win_rate_avg:.2f}%")
+            
+            # Save results to CSV
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_dir = Path("reports") / f"{args.strategy}_universe_backtest_{timestamp}"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            
+            results_df = pd.DataFrame([{
+                'symbol': r['symbol'],
+                'initial_value': r['initial_value'],
+                'final_value': r['final_value'],
+                'total_return': r['total_return'],
+                'total_trades': r['total_trades'],
+                'win_rate': r['win_rate'],
+                'profit_factor': r['profit_factor']
+            } for r in all_results])
+            results_df.to_csv(report_dir / "universe_results.csv", index=False)
+            print(f"\nResults saved to: {report_dir / 'universe_results.csv'}")
+        
+        return
+    
     # Handle data loading - support both old parquet path and new TimescaleDB parameters
     if args.parquet:
         # Legacy parquet path support
@@ -739,7 +880,7 @@ def main():
             print(f"Loading hourly data for {args.strategy} strategy...")
             df_data = load_timescaledb_1h(args.symbol, args.provider)
     else:
-        raise ValueError("Either --parquet or --symbol must be provided")
+        raise ValueError("Either --parquet, --symbol, or --universe must be provided")
     
     # Apply date filter
     fromdate = global_config.get('fromdate', '2018-01-01')

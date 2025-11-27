@@ -135,28 +135,36 @@ strategies:
       log_level: INFO
 ```
 
-### Multi-Symbol Backtesting
+### Universe Backtesting
 
-For universe backtesting, you'll need to create a custom runner that:
+The runner now supports universe backtesting directly:
 
-1. Loads symbols from ticker universe
-2. Runs the strategy on each symbol
-3. Aggregates results
+```bash
+# Run on entire universe
+python backtrader_runner_yaml.py \
+    --strategy weekly_bigvol_ttm_squeeze \
+    --universe \
+    --provider ALPACA \
+    --timeframe 1d \
+    --fromdate 2014-01-01 \
+    --todate 2024-12-31
 
-Example structure:
-
-```python
-from utils.ticker_universe import get_combined_universe
-from backtrader_runner_yaml import setup_data_feeds, generate_reports
-import backtrader as bt
-
-symbols = get_combined_universe()[:100]  # First 100 symbols
-
-for symbol in symbols:
-    # Load data, setup cerebro, run strategy
-    # Aggregate results
-    pass
+# Limit to first 100 symbols
+python backtrader_runner_yaml.py \
+    --strategy weekly_bigvol_ttm_squeeze \
+    --universe \
+    --max-symbols 100 \
+    --provider ALPACA \
+    --timeframe 1d
 ```
+
+Universe backtesting will:
+1. Load symbols from ticker universe database
+2. Run the strategy on each symbol individually
+3. Aggregate results into a CSV report
+4. Display summary statistics
+
+Results are saved to `reports/{strategy}_universe_backtest_{timestamp}/universe_results.csv`
 
 ## Parameters
 

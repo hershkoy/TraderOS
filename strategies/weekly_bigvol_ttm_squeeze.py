@@ -28,6 +28,47 @@ except ImportError:
     to_weekly = None
 
 
+# Custom Linear Regression Slope Indicator
+class LinRegSlope(bt.Indicator):
+    """
+    Linear Regression Slope indicator.
+    Calculates the slope of a linear regression over a period.
+    """
+    lines = ('slope',)
+    params = (('period', 12),)
+
+    def __init__(self):
+        self.addminperiod(self.p.period)
+
+    def next(self):
+        if len(self.data) < self.p.period:
+            self.lines.slope[0] = 0.0
+            return
+
+        # Calculate linear regression slope
+        # Using least squares: slope = (n*sum(xy) - sum(x)*sum(y)) / (n*sum(x^2) - sum(x)^2)
+        n = self.p.period
+        sum_x = 0.0
+        sum_y = 0.0
+        sum_xy = 0.0
+        sum_x2 = 0.0
+
+        for i in range(n):
+            x = float(i)  # Time index (0, 1, 2, ..., n-1)
+            y = float(self.data[-n + i])
+            sum_x += x
+            sum_y += y
+            sum_xy += x * y
+            sum_x2 += x * x
+
+        denominator = n * sum_x2 - sum_x * sum_x
+        if abs(denominator) < 1e-10:
+            self.lines.slope[0] = 0.0
+        else:
+            slope = (n * sum_xy - sum_x * sum_y) / denominator
+            self.lines.slope[0] = slope
+
+
 class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
     params = dict(
         # Volume ignition (Condition A)
@@ -109,7 +150,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.vol_highest = bt.ind.Highest(w.volume, period=self.p.max_volume_lookback)
         
         # Momentum (linear regression slope) for TTM Squeeze
-        self.mom = bt.ind.LinRegSlope(w.close, period=self.p.mom_period)
+        self.mom = LinRegSlope(w.close, period=self.p.mom_period)
         
         # Track ignition weeks and squeeze state
         self.last_ignition_idx = None
@@ -134,12 +175,12 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         """
         if squeeze_val is None:
             # Fallback: use simple momentum if squeeze_scanner not available
-            return float(self.mom[0]) if len(self.mom) > 0 else 0.0
+            return float(self.mom.slope[0]) if len(self.mom) > 0 else 0.0
         
         # We need to build a DataFrame from weekly bars for squeeze_scanner
         # This is a bit awkward in Backtrader, so we'll use a simplified approach
         # For now, use the momentum slope as proxy (squeeze_scanner uses linreg too)
-        return float(self.mom[0]) if len(self.mom) > 0 else 0.0
+        return float(self.mom.slope[0]) if len(self.mom) > 0 else 0.0
 
     def _is_squeeze_on(self, i):
         """
@@ -151,7 +192,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return False
         # Heuristic: squeeze on when momentum is small (between -0.5 and 0.5 std devs)
         # This is a simplification - full version would calculate BB/KC
-        mom_val = float(self.mom[i])
+        mom_val = float(self.mom.slope[i])
         return abs(mom_val) < 0.5  # Simplified threshold
 
     def _is_ignition_bar(self, i):
@@ -223,8 +264,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 return False
             
             # Zero-cross: prev <= 0, curr > 0
-            mom_prev = float(self.mom[i - 1])
-            mom_curr = float(self.mom[i])
+            mom_prev = float(self.mom.slope[i - 1])
+            mom_curr = float(self.mom.slope[i])
             
             if not (mom_prev <= 0 and mom_curr > 0):
                 return False
