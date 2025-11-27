@@ -13,11 +13,11 @@ from ib_insync import IB, util
 
 try:
     from utils.timescaledb_client import get_timescaledb_client
-    from utils.ib_port_detector import DEFAULT_PORTS
+    from utils.ib_port_detector import DEFAULT_PORTS, detect_ib_port
 except ImportError:
     # Fallback for when running from utils directory
     from timescaledb_client import get_timescaledb_client
-    from ib_port_detector import DEFAULT_PORTS
+    from ib_port_detector import DEFAULT_PORTS, detect_ib_port
 
 # ─────────────────────────────
 # CONFIG
@@ -75,6 +75,19 @@ def _candidate_ib_ports(explicit_port):
         except ValueError:
             logger.warning("Invalid IB_PORT environment value: %s", env_port)
 
+    # If no explicit port and no env var, try auto-detection
+    if not ports_to_try:
+        try:
+            detected_port = detect_ib_port()
+            if detected_port is not None:
+                logger.info("Auto-detected IB port: %s", detected_port)
+                ports_to_try.append(detected_port)
+                # Set it in environment for future use
+                os.environ["IB_PORT"] = str(detected_port)
+        except Exception as e:
+            logger.debug("Auto-detection failed: %s, falling back to default ports", e)
+
+    # Fall back to default ports if auto-detection didn't work
     for default_port in DEFAULT_PORTS:
         if default_port not in ports_to_try:
             ports_to_try.append(default_port)
@@ -926,7 +939,13 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                     # For very short periods, use 1 day minimum
                     dur_unit = "1 D"
                 else:
-                    dur_unit = f"{int(minutes_to_days)} D"
+                    days = int(minutes_to_days)
+                    # IBKR requires years for durations > 365 days
+                    if days > 365:
+                        years = max(1, days // 365)
+                        dur_unit = f"{years} Y"
+                    else:
+                        dur_unit = f"{days} D"
             elif timeframe == '1h':
                 # Convert hours to days (1 hour = 1/24 day)
                 hours_to_days = bars / 24
@@ -934,9 +953,20 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                     # For less than 1 day, use hours instead
                     dur_unit = f"{bars} H"
                 else:
-                    dur_unit = f"{int(hours_to_days)} D"
+                    days = int(hours_to_days)
+                    # IBKR requires years for durations > 365 days
+                    if days > 365:
+                        years = max(1, days // 365)
+                        dur_unit = f"{years} Y"
+                    else:
+                        dur_unit = f"{days} D"
             else:  # 1d
-                dur_unit = f"{bars} D"
+                # IBKR requires years for durations > 365 days
+                if bars > 365:
+                    years = max(1, bars // 365)
+                    dur_unit = f"{years} Y"
+                else:
+                    dur_unit = f"{bars} D"
             end_date_str = ""  # Use current time
         
         logger.info(f"IBKR duration string: '{dur_unit}' (length: {len(dur_unit)})")
@@ -1074,13 +1104,30 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
             if timeframe == '1m':
                 # Convert minutes to days (1 minute = 1/1440 day)
                 minutes_to_days = IB_BAR_CAP / 1440
-                dur_unit = f"{max(1, int(minutes_to_days))} D"  # Minimum 1 day
+                days = max(1, int(minutes_to_days))
+                # IBKR requires years for durations > 365 days
+                if days > 365:
+                    years = max(1, days // 365)
+                    dur_unit = f"{years} Y"
+                else:
+                    dur_unit = f"{days} D"
             elif timeframe == '1h':
                 # Convert hours to days (1 hour = 1/24 day)
                 hours_to_days = IB_BAR_CAP / 24
-                dur_unit = f"{int(hours_to_days)} D"
+                days = int(hours_to_days)
+                # IBKR requires years for durations > 365 days
+                if days > 365:
+                    years = max(1, days // 365)
+                    dur_unit = f"{years} Y"
+                else:
+                    dur_unit = f"{days} D"
             else:  # 1d
-                dur_unit = f"{IB_BAR_CAP} D"
+                # IBKR requires years for durations > 365 days
+                if IB_BAR_CAP > 365:
+                    years = max(1, IB_BAR_CAP // 365)
+                    dur_unit = f"{years} Y"
+                else:
+                    dur_unit = f"{IB_BAR_CAP} D"
             
             # Log what date range is being requested
             if end_date:
