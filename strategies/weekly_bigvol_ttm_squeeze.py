@@ -82,16 +82,27 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         mom_period=12,                 # Momentum period (weeks)
         mom_slope_min=0.0,             # Minimum momentum slope threshold
         squeeze_lookback=10,           # Lookback for squeeze-on detection (weeks)
-        max_delay_weeks=26,            # Max weeks between ignition and TTM confirmation
+        max_delay_weeks=26,            # Max weeks between ignition and entry trigger
+        max_ignition_to_entry_weeks=26, # Max weeks from ignition to TTM cross (20-26 weeks)
         
-        # Trend filter (Condition C)
+        # Trend filter (Condition C) - light weekly filter
         ma10_period=10,                # 10-week MA
         ma30_period=30,                # 30-week MA
         max_extended_pct=0.25,         # Max 25% above 30-week MA
         
+        # Daily entry parameters
+        entry_window_days=40,          # Days to look for daily entry after TTM cross
+        pivot_lookback_days=20,        # Days to look back for pivot high
+        breakout_epsilon=0.005,        # 0.5% tolerance below pivot (allows close slightly below pivot to count as breakout)
+        daily_vol_mult=1.5,            # Daily volume multiplier (1.5-2.0)
+        daily_vol_lookback=20,         # Days for daily volume average
+        ema20_period=20,               # Daily EMA20 period
+        atr20_period=20,               # Daily ATR20 period
+        allow_ema20_pullback=False,    # Enable EMA20 pullback entry (V1: False)
+        
         # Risk management
         risk_per_trade=0.01,           # 1% of equity per trade
-        atr_period=14,                 # ATR period for stops
+        atr_period=14,                 # Weekly ATR period (for reference)
         atr_mult=1.5,                  # ATR multiplier for stop
         buffer_pct=0.01,               # 1% buffer for structure-based stop
         
@@ -162,10 +173,24 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # Momentum (linear regression slope) for TTM Squeeze
         self.mom = LinRegSlope(w.close, period=self.p.mom_period)
         
-        # Track ignition weeks and squeeze state
+        # Daily indicators (for entry timing)
+        d = self.d_d
+        self.ema20 = bt.ind.EMA(d.close, period=self.p.ema20_period)
+        self.atr20 = bt.ind.ATR(d, period=self.p.atr20_period)
+        self.daily_vol_sma = bt.ind.SMA(d.volume, period=self.p.daily_vol_lookback)
+        self.daily_pivot_high = bt.ind.Highest(d.high, period=self.p.pivot_lookback_days)
+        
+        # Track ignition weeks and TTM cross
         self.last_ignition_idx = None
-        self.squeeze_vals = []  # Store squeeze values for zero-cross detection
-        self.squeeze_on_flags = []  # Store squeeze-on flags
+        self.last_ignition_week_date = None
+        self.last_ttm_cross_idx = None
+        self.last_ttm_cross_week_date = None
+        
+        # Armed state (A + B detected, ready for daily entry)
+        self.armed = False
+        self.entry_window_end_date = None
+        self.pivot_high = None  # Will be calculated from daily bars
+        self.ttm_cross_daily_start_idx = None  # Daily bar index when TTM cross week ended
         
         # Position management
         self.order = None
@@ -277,12 +302,20 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                     self.debug_log(f"CONDITION A (Ignition): BodyPos {bodypos:.2f} < {self.p.body_pos_min} (close={cl:.2f}, low={lo:.2f}, high={hi:.2f})")
                 return False
             
-            # Close above 30-week MA
+            # Close above 10-week MA OR 30-week MA (more generous for early turns)
+            ma10_val = float(self.ma10[i]) if len(self.ma10) > i else None
             ma30_val = float(self.ma30[i])
-            if cl <= ma30_val:
-                if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): Close {cl:.2f} <= MA30 {ma30_val:.2f}")
-                return False
+            if ma10_val is not None:
+                if cl <= ma10_val and cl <= ma30_val:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"CONDITION A (Ignition): Close {cl:.2f} <= MA10 {ma10_val:.2f} AND <= MA30 {ma30_val:.2f}")
+                    return False
+            else:
+                # Fallback to MA30 only if MA10 not available
+                if cl <= ma30_val:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"CONDITION A (Ignition): Close {cl:.2f} <= MA30 {ma30_val:.2f}")
+                    return False
             
             # Optional: highest volume in last N weeks
             vol_highest = float(self.vol_highest[i])
@@ -429,24 +462,430 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             self.debug_log(f"CONDITION C (Trend): Error at {i}: {e}")
             return False
 
-    def _enter_long(self):
-        """Enter long position with risk-based position sizing."""
+    def _check_entry_retest(self, i):
+        """
+        STAGE 3 - Option A: Retest Entry (Ryley's favorite)
+        Weekly bar pulls back toward 10w/30w MAs, low stays above prior swing low or MA30,
+        and the bar closes positive.
+        """
+        w = self.d_w
+        
+        if len(w) < 2 or len(self.ma10) < 1 or len(self.ma30) < 1:
+            return False
+        
+        try:
+            cl = float(w.close[i])
+            op = float(w.open[i])
+            lo = float(w.low[i])
+            hi = float(w.high[i])
+            ma10_val = float(self.ma10[i])
+            ma30_val = float(self.ma30[i])
+            
+            # 1. Weekly bar closes positive (green candle)
+            if cl <= op:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option A (Retest): Bar closed negative (close={cl:.2f} <= open={op:.2f})")
+                return False
+            
+            # 2. Low stays above MA30 OR above prior swing low
+            # Find prior swing low (lowest low in last 5-10 weeks)
+            lookback = min(10, len(w) - 1)
+            prior_lows = []
+            for j in range(1, lookback + 1):
+                if i - j >= 0:
+                    prior_lows.append(float(w.low[i - j]))
+            
+            prior_swing_low = min(prior_lows) if prior_lows else None
+            ma30_support = lo > ma30_val
+            swing_low_support = prior_swing_low is not None and lo > prior_swing_low
+            
+            if not (ma30_support or swing_low_support):
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option A (Retest): Low {lo:.2f} not above MA30 {ma30_val:.2f} or prior swing low {prior_swing_low:.2f if prior_swing_low else 'N/A'}")
+                return False
+            
+            # 3. Price is pulling back toward MAs (close is near or below MA10, but above MA30)
+            # This indicates a retest rather than a breakout
+            near_ma10 = abs(cl - ma10_val) / ma10_val < 0.05  # Within 5% of MA10
+            above_ma30 = cl > ma30_val
+            
+            if not (near_ma10 or (cl < ma10_val and above_ma30)):
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option A (Retest): Not pulling back to MAs (close={cl:.2f}, MA10={ma10_val:.2f}, MA30={ma30_val:.2f})")
+                return False
+            
+            # 4. Not too extended above 30-week MA
+            if cl > ma30_val * (1.0 + self.p.max_extended_pct):
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option A (Retest): Too extended above MA30 ({cl:.2f} > {ma30_val * (1.0 + self.p.max_extended_pct):.2f})")
+                return False
+            
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option A (Retest): PASSED - green bar, low above support, retesting MAs")
+            return True
+            
+        except (IndexError, ValueError, TypeError) as e:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option A (Retest): Error at {i}: {e}")
+            return False
+
+    def _check_entry_higher_low(self, i):
+        """
+        STAGE 3 - Option B: Higher-Low Entry (also Ryley's go-to)
+        A higher weekly low forms after the TTM confirmation.
+        Price shows clear support and closes > prior week's high OR > that mini pivot.
+        """
+        w = self.d_w
+        
+        if len(w) < 3:  # Need at least current, previous, and one more for comparison
+            return False
+        
+        try:
+            cl = float(w.close[i])
+            lo = float(w.low[i])
+            hi = float(w.high[i])
+            
+            # Find the low point after TTM cross (this is our reference pivot)
+            # Look for the lowest low between TTM cross and now
+            if self.last_ttm_cross_idx is None:
+                return False
+            
+            # Find lowest low since TTM cross
+            ttm_cross_week = self.last_ttm_cross_idx
+            if i <= ttm_cross_week:
+                return False  # Current bar must be after TTM cross
+            
+            # Look for the pivot low after TTM cross
+            pivot_low = None
+            pivot_week = None
+            for j in range(ttm_cross_week, i + 1):
+                if j >= 0 and j < len(w):
+                    low_val = float(w.low[j])
+                    if pivot_low is None or low_val < pivot_low:
+                        pivot_low = low_val
+                        pivot_week = j
+            
+            if pivot_low is None:
+                return False
+            
+            # 1. Current low is higher than the pivot low (higher low pattern)
+            if lo <= pivot_low:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option B (Higher Low): Current low {lo:.2f} not higher than pivot low {pivot_low:.2f}")
+                return False
+            
+            # 2. Close > prior week's high OR close > pivot high
+            prev_high = float(w.high[i - 1]) if i > 0 else None
+            pivot_high = float(w.high[pivot_week]) if pivot_week is not None else None
+            
+            close_above_prev_high = prev_high is not None and cl > prev_high
+            close_above_pivot = pivot_high is not None and cl > pivot_high
+            
+            if not (close_above_prev_high or close_above_pivot):
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option B (Higher Low): Close {cl:.2f} not above prev high {prev_high:.2f if prev_high else 'N/A'} or pivot high {pivot_high:.2f if pivot_high else 'N/A'}")
+                return False
+            
+            # 3. Not too extended above 30-week MA
+            if len(self.ma30) > i:
+                ma30_val = float(self.ma30[i])
+                if cl > ma30_val * (1.0 + self.p.max_extended_pct):
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"ENTRY Option B (Higher Low): Too extended above MA30")
+                    return False
+            
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option B (Higher Low): PASSED - higher low formed, close above structure")
+            return True
+            
+        except (IndexError, ValueError, TypeError) as e:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option B (Higher Low): Error at {i}: {e}")
+            return False
+
+    def _check_entry_breakout(self, i):
+        """
+        STAGE 3 - Option C: Breakout Entry
+        Price breaks above the weekly high of a mini consolidation.
+        And not >25% extended above the 30-week MA.
+        """
+        w = self.d_w
+        
+        if len(w) < 5:  # Need enough bars to identify consolidation
+            return False
+        
+        try:
+            cl = float(w.close[i])
+            hi = float(w.high[i])
+            
+            # Find consolidation high (highest high in last 3-8 weeks, excluding current)
+            lookback_start = min(3, len(w) - 1)
+            lookback_end = min(8, len(w) - 1)
+            consolidation_highs = []
+            
+            for j in range(lookback_start, lookback_end + 1):
+                if i - j > 0:  # Exclude current bar
+                    consolidation_highs.append(float(w.high[i - j]))
+            
+            if not consolidation_highs:
+                return False
+            
+            consolidation_high = max(consolidation_highs)
+            
+            # 1. Price breaks above consolidation high
+            if cl <= consolidation_high:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"ENTRY Option C (Breakout): Close {cl:.2f} not above consolidation high {consolidation_high:.2f}")
+                return False
+            
+            # 2. Not too extended above 30-week MA
+            if len(self.ma30) > i:
+                ma30_val = float(self.ma30[i])
+                if cl > ma30_val * (1.0 + self.p.max_extended_pct):
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"ENTRY Option C (Breakout): Too extended above MA30 ({cl:.2f} > {ma30_val * (1.0 + self.p.max_extended_pct):.2f})")
+                    return False
+            
+            # 3. Ensure we're in an uptrend (close > MA30)
+            if len(self.ma30) > i:
+                ma30_val = float(self.ma30[i])
+                if cl <= ma30_val:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"ENTRY Option C (Breakout): Close {cl:.2f} not above MA30 {ma30_val:.2f}")
+                    return False
+            
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option C (Breakout): PASSED - broke above consolidation {consolidation_high:.2f}")
+            return True
+            
+        except (IndexError, ValueError, TypeError) as e:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"ENTRY Option C (Breakout): Error at {i}: {e}")
+            return False
+
+    def _check_daily_entry(self):
+        """Check daily bars for entry signals when ticker is armed."""
+        if not self.armed or self.position or self.order is not None:
+            return
+        
+        # Ensure we have enough daily data
+        if len(self.d_d) < self.p.pivot_lookback_days:
+            return  # Not enough data yet
+        
+        try:
+            d = self.d_d
+            
+            # Update pivot_high: highest CLOSE in the last N days (not high, to avoid wicks)
+            # Optionally restrict to days since TTM cross for more relevant structure
+            # Use Backtrader's negative indexing: [0] = current, [-1] = previous, etc.
+            pivot_highs = []
+            
+            # Calculate current bar index and determine start index for pivot calculation
+            curr_idx = len(d) - 1
+            start_idx = max(0, curr_idx - self.p.pivot_lookback_days + 1)
+            
+            # Optionally restrict pivot to days since TTM cross (more relevant structure)
+            if self.ttm_cross_daily_start_idx is not None:
+                # Start from just before TTM cross (or lookback, whichever is more recent)
+                start_idx = max(start_idx, self.ttm_cross_daily_start_idx - 1)
+            
+            # Look back from current bar (excluding current bar) up to start_idx
+            # We want the highest close in the consolidation zone
+            available_bars = len(d)
+            if available_bars == 0:
+                return  # No data
+            
+            # Build pivot from closes (not highs) from start_idx to current-1
+            # Exclude current bar since we're checking if it breaks above the pivot
+            for i in range(start_idx, curr_idx):
+                try:
+                    if i >= 0 and i < available_bars:
+                        # Use close, not high, to avoid wicks
+                        close_val = float(d.close[i])
+                        pivot_highs.append(close_val)
+                except (IndexError, TypeError, ValueError):
+                    continue
+            
+            # Alternative: if we can't use absolute indices, use negative indexing
+            if not pivot_highs:
+                lookback = min(self.p.pivot_lookback_days, available_bars - 1)  # -1 to exclude current
+                for i in range(1, lookback + 1):  # Start from 1 to exclude current bar
+                    try:
+                        if available_bars > i:
+                            close_val = float(d.close[-i])  # Previous bars
+                            pivot_highs.append(close_val)
+                    except (IndexError, TypeError, ValueError):
+                        continue
+            
+            if pivot_highs:
+                self.pivot_high = max(pivot_highs)
+            else:
+                # Fallback: use current close if no history
+                try:
+                    self.pivot_high = float(d.close[0])
+                except (IndexError, TypeError, ValueError, AttributeError):
+                    # If all else fails, skip this bar
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log("Could not calculate pivot_high, skipping daily entry check")
+                    return
+            
+            if self.pivot_high is None:
+                return  # Can't calculate entry without pivot
+            
+            # Check daily breakout entry
+            breakout_entry = self._check_daily_breakout_entry()
+            
+            # Check EMA20 pullback entry (if enabled)
+            pullback_entry = False
+            if self.p.allow_ema20_pullback:
+                pullback_entry = self._check_daily_ema20_pullback_entry()
+            
+            # Enter if either condition met
+            if breakout_entry or pullback_entry:
+                entry_type = "Breakout" if breakout_entry else "EMA20 Pullback"
+                self.log(f"DAILY ENTRY TRIGGERED: {entry_type} | Pivot High: ${self.pivot_high:.2f}")
+                self._enter_long_daily()
+                # Disarm after entry
+                self.armed = False
+                
+        except Exception as e:
+            self.debug_log(f"Daily entry check error: {e}")
+
+    def _check_daily_breakout_entry(self):
+        """Daily breakout entry rule."""
+        if len(self.d_d) == 0:
+            return False
+        
+        # Check if indicators have enough data
+        try:
+            if len(self.ema20) < 2:  # Need at least 2 for EMA20 comparison
+                return False
+            if len(self.daily_vol_sma) == 0:
+                return False
+        except (AttributeError, TypeError):
+            return False
+        
+        try:
+            d = self.d_d
+            cl = float(d.close[0])
+            vol = float(d.volume[0])
+            ema20_val = float(self.ema20[0])
+            ema20_prev = float(self.ema20[-1]) if len(self.ema20) > 1 else ema20_val
+            vol_avg = float(self.daily_vol_sma[0])
+            
+            # 1. Close > pivot_high * (1 - epsilon) - allows close slightly below pivot to count
+            # This treats "within X% of the pivot" as a breakout (more forgiving)
+            if self.pivot_high is None:
+                return False
+            # Allow close to be within epsilon% BELOW the pivot (flipped logic)
+            breakout_threshold = self.pivot_high * (1.0 - self.p.breakout_epsilon)
+            if cl <= breakout_threshold:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Daily Breakout: Close {cl:.2f} <= breakout threshold {breakout_threshold:.2f} (pivot={self.pivot_high:.2f}, tolerance={self.p.breakout_epsilon*100:.1f}%)")
+                return False
+            
+            # 2. Volume > vol_mult * avg_volume_20d
+            vol_threshold = vol_avg * self.p.daily_vol_mult
+            if vol <= vol_threshold:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Daily Breakout: Volume {vol:.0f} <= threshold {vol_threshold:.0f}")
+                return False
+            
+            # 3. Close > EMA20d and EMA20d is rising
+            if cl <= ema20_val:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Daily Breakout: Close {cl:.2f} <= EMA20 {ema20_val:.2f}")
+                return False
+            
+            if ema20_val <= ema20_prev:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Daily Breakout: EMA20 not rising ({ema20_prev:.2f} -> {ema20_val:.2f})")
+                return False
+            
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Daily Breakout: PASSED - close={cl:.2f} > pivot={self.pivot_high:.2f}, vol={vol:.0f}, EMA20 rising")
+            return True
+            
+        except (IndexError, ValueError, TypeError) as e:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Daily Breakout check error: {e}")
+            return False
+
+    def _check_daily_ema20_pullback_entry(self):
+        """Daily EMA20 pullback entry rule."""
+        if len(self.d_d) == 0:
+            return False
+        
+        # Check if indicators have enough data
+        try:
+            if len(self.ema20) == 0 or len(self.daily_vol_sma) == 0:
+                return False
+        except (AttributeError, TypeError):
+            return False
+        
+        try:
+            d = self.d_d
+            cl = float(d.close[0])
+            op = float(d.open[0])
+            lo = float(d.low[0])
+            vol = float(d.volume[0])
+            ema20_val = float(self.ema20[0])
+            vol_avg = float(self.daily_vol_sma[0])
+            
+            # 1. Low <= EMA20d (pulled back to EMA)
+            if lo > ema20_val:
+                return False
+            
+            # 2. Close > open (bullish candle)
+            if cl <= op:
+                return False
+            
+            # 3. Volume >= avg_volume_20d
+            if vol < vol_avg:
+                return False
+            
+            # 4. Close still above 30-week MA (weekly context)
+            if len(self.ma30) > 0:
+                w = self.d_w
+                weekly_close = float(w.close[0])
+                ma30_val = float(self.ma30[0])
+                if weekly_close <= ma30_val:
+                    return False
+            
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Daily EMA20 Pullback: PASSED - low={lo:.2f} <= EMA20={ema20_val:.2f}, green candle, vol={vol:.0f}")
+            return True
+            
+        except (IndexError, ValueError, TypeError) as e:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Daily EMA20 Pullback check error: {e}")
+            return False
+
+    def _enter_long_daily(self):
+        """Enter long position from daily entry signal with risk-based position sizing."""
         if self.order is not None:
             return
         
         try:
-            w = self.d_w
             d = self.d_d
             
-            # Entry price: next daily bar's open (approximation)
+            # Entry price: current close (or next bar's open in live trading)
             entry_price = float(d.close[0])
+            signal_low = float(d.low[0])  # Low of signal bar
             
-            # Calculate stop price
-            setup_low = float(w.low[-1])  # Low of signal week
-            stop_price_struct = setup_low * (1.0 - self.p.buffer_pct)
-            atr_val = float(self.atrw[-1])
-            stop_price_atr = entry_price - self.p.atr_mult * atr_val
-            stop_price = min(stop_price_struct, stop_price_atr)
+            # Calculate stop price (tighter of two options)
+            # Option 1: Below signal bar low minus 1-2%
+            stop_price_signal = signal_low * (1.0 - self.p.buffer_pct)
+            
+            # Option 2: Entry price - 1.5 * ATR20d
+            if len(self.atr20) > 0:
+                atr20_val = float(self.atr20[0])
+                stop_price_atr = entry_price - self.p.atr_mult * atr20_val
+            else:
+                stop_price_atr = stop_price_signal
+            
+            # Use the tighter stop
+            stop_price = max(stop_price_signal, stop_price_atr)
             
             # Position sizing based on risk
             risk_per_share = max(entry_price - stop_price, 0.01)
@@ -461,16 +900,15 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             self.order = self.buy(data=self.d_d, size=size)
             self.current_stop = stop_price
             self.entry_price = entry_price
-            self.entry_week_idx = len(self.d_w) - 1
             
-            self.log(f"BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f}, Size: {size}")
+            self.log(f"DAILY BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f}, Size: {size}")
             self.track_trade_entry(entry_price, size)
             
             # Place stop order
             self.sell(exectype=bt.Order.Stop, price=stop_price, size=size)
             
         except Exception as e:
-            self.debug_log(f"Entry error: {e}")
+            self.debug_log(f"Daily entry error: {e}")
 
     def _manage_exits(self):
         """Manage position exits based on weekly trend filters."""
@@ -537,7 +975,9 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         """Handle trade notifications."""
         if trade.isclosed:
             pnl = trade.pnl
-            pnl_pct = (pnl / (trade.price * abs(trade.size))) * 100 if trade.price else 0.0
+            # Calculate PnL percentage, avoiding division by zero
+            denominator = trade.price * abs(trade.size) if trade.size else 1.0
+            pnl_pct = (pnl / denominator) * 100 if denominator > 0 else 0.0
             self.log(f'TRADE CLOSED, pnl={pnl:.2f} ({pnl_pct:.2f}%)')
 
     def start(self):
@@ -578,6 +1018,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                     self.debug_log(f"Warmup: daily={daily_len}, weekly={weekly_len}, need={min_periods}")
                 return
 
+        # DAILY LOGIC: Check for entry when armed (runs on EVERY bar, including daily bars)
+        # This must run before the weekly bar check to ensure we check every daily bar
+        if self.armed and not self.position and self.order is None:
+            self._check_daily_entry()
+        
         # Only act on weekly bar closes
         # In Backtrader, weekly resampled data only updates when a new week completes
         # We check if we're at a new weekly bar by comparing datetime (more reliable than length)
@@ -595,6 +1040,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             # Check if this is a new weekly bar
             if self._prev_week_datetime is not None and current_week_datetime == self._prev_week_datetime:
                 # Weekly bar hasn't updated yet - this is normal, we're on a daily bar
+                # We already checked for daily entry above, so we can return now
                 if self.p.log_level.upper() == 'DEBUG' and current_daily_idx % 20 == 0:  # Log every 20th daily bar to reduce noise
                     try:
                         daily_date = self.d_d.datetime.datetime(0) if len(self.d_d) > 0 else "N/A"
@@ -638,46 +1084,72 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         if self.order is not None:
             return  # Wait for pending order
 
-        # 1) Detect ignition bars (Condition A)
-        # In Backtrader, [0] is the current bar, not [-1]
+        # STAGE 1: Detect ignition bars (Weekly Big Volume)
         ignition_result = self._is_ignition_bar(0)  # Current week
         if ignition_result:
             self.last_ignition_idx = current_week_idx
-            self.debug_log(f"*** IGNITION BAR DETECTED at week {current_week_idx} ***")
+            try:
+                self.last_ignition_week_date = self.d_w.datetime.datetime(0)
+            except:
+                pass
+            self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
 
-        # 2) If we have an ignition, check for TTM + trend confirmation
+        # STAGE 2: Check for TTM Confirmation (Zero Cross) - ARM THE TICKER
         if self.last_ignition_idx is not None:
-            # Check delay window
-            weeks_since_ignition = current_week_idx - self.last_ignition_idx
-            if weeks_since_ignition > self.p.max_delay_weeks:
-                # Too old, reset
-                if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"Ignition expired: {weeks_since_ignition} weeks > max {self.p.max_delay_weeks} weeks")
-                self.last_ignition_idx = None
-                return
-
-            if self.p.log_level.upper() == 'DEBUG':
-                self.debug_log(f"Checking confirmation conditions (ignition was {weeks_since_ignition} weeks ago at week {self.last_ignition_idx})")
-
-            # Check TTM confirmation (Condition B)
-            ttm_ok = self._check_ttm_confirmation(0)
+            # Check if TTM crosses from negative to positive
+            ttm_cross_result = self._check_ttm_confirmation(0)
+            if ttm_cross_result:
+                # TTM cross must occur after ignition
+                if self.last_ttm_cross_idx is None or current_week_idx > self.last_ttm_cross_idx:
+                    self.last_ttm_cross_idx = current_week_idx
+                    try:
+                        self.last_ttm_cross_week_date = self.d_w.datetime.datetime(0)
+                        # Calculate entry window end date (TTM cross week + entry_window_days)
+                        from datetime import timedelta
+                        self.entry_window_end_date = self.last_ttm_cross_week_date + timedelta(days=self.p.entry_window_days)
+                        # Mark the daily bar index when TTM cross week ended
+                        self.ttm_cross_daily_start_idx = len(self.d_d) - 1
+                    except:
+                        pass
+                    
+                    # Light weekly trend filter: price above 30-week MA, not too extended
+                    w = self.d_w
+                    if len(self.ma30) > 0:
+                        cl = float(w.close[0])
+                        ma30_val = float(self.ma30[0])
+                        if cl > ma30_val and cl <= ma30_val * (1.0 + self.p.max_extended_pct):
+                            # ARM THE TICKER
+                            self.armed = True
+                            self.debug_log(f"*** STAGE 2: TTM CROSS DETECTED at week {current_week_idx} | TICKER ARMED FOR DAILY ENTRY ***")
+                        else:
+                            if self.p.log_level.upper() == 'DEBUG':
+                                self.debug_log(f"TTM cross detected but weekly filter failed: close={cl:.2f}, MA30={ma30_val:.2f}, extended={cl > ma30_val * (1.0 + self.p.max_extended_pct)}")
+                    else:
+                        # If MA30 not ready, still arm (generous)
+                        self.armed = True
+                        self.debug_log(f"*** STAGE 2: TTM CROSS DETECTED at week {current_week_idx} | TICKER ARMED (MA30 not ready) ***")
             
-            # Check trend filter (Condition C)
-            trend_ok = self._check_trend_filter(0)
-
-            if self.p.log_level.upper() == 'DEBUG':
-                status = "PASSED" if ttm_ok and trend_ok else "FAILED"
-                self.debug_log(f"CONFIRMATION CHECK: TTM={ttm_ok}, Trend={trend_ok} -> {status}")
-
-            if ttm_ok and trend_ok:
-                # All conditions met - enter long
-                self.log(f"ALL CONDITIONS MET | Ignition: week {self.last_ignition_idx}, TTM: OK, Trend: OK")
-                self._enter_long()
-                # Reset ignition tracker after entry
+            # Check if ignition expired
+            weeks_since_ignition = current_week_idx - self.last_ignition_idx
+            if weeks_since_ignition > self.p.max_ignition_to_entry_weeks:
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"Ignition expired: {weeks_since_ignition} weeks > max {self.p.max_ignition_to_entry_weeks} weeks")
                 self.last_ignition_idx = None
-        else:
-            if self.p.log_level.upper() == 'DEBUG':
-                self.debug_log("No active ignition bar - skipping confirmation checks")
+                self.last_ignition_week_date = None
+                self.armed = False
+
+        # Check if entry window expired (check on every bar, not just weekly)
+        if self.armed and self.entry_window_end_date is not None:
+            try:
+                current_date = self.d_d.datetime.datetime(0)
+                if current_date > self.entry_window_end_date:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"Entry window expired: {current_date} > {self.entry_window_end_date}")
+                    self.armed = False
+                    self.last_ignition_idx = None
+                    self.last_ttm_cross_idx = None
+            except:
+                pass
 
     def stop(self):
         """Called at the end of the backtest."""
