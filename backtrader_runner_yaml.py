@@ -21,7 +21,13 @@ from plotly.offline import plot
 
 # Import strategies
 from strategies import get_strategy, list_strategies
-from utils.timescaledb_loader import load_parquet_1h, load_daily_data, load_timescaledb_1h, load_timescaledb_daily
+from utils.timescaledb_loader import (
+    load_parquet_1h,
+    load_daily_data,
+    load_timescaledb_1h,
+    load_timescaledb_15m,
+    load_timescaledb_daily,
+)
 
 # Global variable to store strategy backup in case of backtrader failure
 _strategy_backup = None
@@ -645,6 +651,33 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
         
         return [data_1h, dfeed, wfeed]
     
+    elif data_reqs['base_timeframe'] == '15m':
+        data_15m = bt.feeds.PandasData(
+            dataname=df_data,
+            datetime=None,
+            open='open',
+            high='high',
+            low='low',
+            close='close',
+            volume='volume',
+            openinterest=None,
+            timeframe=bt.TimeFrame.Minutes,
+            compression=15
+        )
+        cerebro.adddata(data_15m)
+        feeds = [data_15m]
+        
+        if data_reqs.get('requires_resampling', False):
+            addl = [tf.lower() for tf in data_reqs.get('additional_timeframes', [])]
+            if 'daily' in addl:
+                dfeed = cerebro.resampledata(data_15m, timeframe=bt.TimeFrame.Days, compression=1)
+                feeds.append(dfeed)
+            if 'weekly' in addl:
+                wfeed = cerebro.resampledata(data_15m, timeframe=bt.TimeFrame.Weeks, compression=1)
+                feeds.append(wfeed)
+        
+        return feeds
+    
     # NEW BRANCH: Auto-add 4h resample when strategy requests it
     elif data_reqs['base_timeframe'] == 'hourly' and _strategy_requests_4h(strategy_class):
         # Base 1h feed (PandasData is fine for IB dataframes)
@@ -680,8 +713,8 @@ def main():
                    help='Maximum number of symbols to test (for universe backtesting)')
     ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
                    help='Data provider (default: ALPACA)')
-    ap.add_argument('--timeframe', type=str, choices=['1h', '1d'], default='1h',
-                   help='Data timeframe (default: 1h)')
+    ap.add_argument('--timeframe', type=str, choices=['15m', '1h', '1d'], default='1h',
+                   help='Data timeframe (default: 1h; new option: 15m)')
     ap.add_argument('--strategy', type=str, default='mean_reversion',
                    help=f'Strategy to use. Available: {", ".join(list_strategies())}')
     
@@ -722,6 +755,8 @@ def main():
     
     # Load data based on strategy requirements
     data_reqs = strategy_class.get_data_requirements()
+    if data_reqs.get('base_timeframe') == '15m' and args.timeframe != '15m':
+        print(f"Warning: --timeframe {args.timeframe} ignored; {args.strategy} expects 15m base data.")
     
     # Handle universe backtesting
     if args.universe:
@@ -746,10 +781,14 @@ def main():
             print(f"\n[{i}/{len(symbols)}] Processing {symbol}...")
             try:
                 # Load data for this symbol
+                start = global_config.get('fromdate')
+                end = global_config.get('todate')
                 if data_reqs['base_timeframe'] == 'daily':
-                    df_data = load_timescaledb_daily(symbol, args.provider)
+                    df_data = load_timescaledb_daily(symbol, args.provider, start_date=start, end_date=end)
+                elif data_reqs['base_timeframe'] == '15m':
+                    df_data = load_timescaledb_15m(symbol, args.provider, start_date=start, end_date=end)
                 else:
-                    df_data = load_timescaledb_1h(symbol, args.provider)
+                    df_data = load_timescaledb_1h(symbol, args.provider, start_date=start, end_date=end)
                 
                 # Apply date filter
                 fromdate = global_config.get('fromdate', '2018-01-01')
@@ -867,18 +906,26 @@ def main():
         if data_reqs['base_timeframe'] == 'daily':
             print(f"Loading daily data for {args.strategy} strategy...")
             df_data = load_daily_data(Path(args.parquet))
+        elif data_reqs['base_timeframe'] == '15m':
+            print(f"Loading 15m data for {args.strategy} strategy...")
+            df_data = load_parquet_1h(Path(args.parquet))
         else:
             print(f"Loading hourly data for {args.strategy} strategy...")
             df_data = load_parquet_1h(Path(args.parquet))
     elif args.symbol:
         # New TimescaleDB support
-        print(f"Loading data from TimescaleDB for {args.symbol} {args.timeframe} from {args.provider}")
+        print(f"Loading data from TimescaleDB for {args.symbol} ({args.timeframe}) from {args.provider}")
+        start = global_config.get('fromdate')
+        end = global_config.get('todate')
         if data_reqs['base_timeframe'] == 'daily':
             print(f"Loading daily data for {args.strategy} strategy...")
-            df_data = load_timescaledb_daily(args.symbol, args.provider)
+            df_data = load_timescaledb_daily(args.symbol, args.provider, start_date=start, end_date=end)
+        elif data_reqs['base_timeframe'] == '15m':
+            print(f"Loading 15m data for {args.strategy} strategy...")
+            df_data = load_timescaledb_15m(args.symbol, args.provider, start_date=start, end_date=end)
         else:
             print(f"Loading hourly data for {args.strategy} strategy...")
-            df_data = load_timescaledb_1h(args.symbol, args.provider)
+            df_data = load_timescaledb_1h(args.symbol, args.provider, start_date=start, end_date=end)
     else:
         raise ValueError("Either --parquet, --symbol, or --universe must be provided")
     
@@ -991,7 +1038,7 @@ def main():
 </html>'''
             
             with open(report_dir / "basic_report.html", "w") as f:
-                basic_report.write(basic_report)
+                f.write(basic_report)
                 
             print(f"\nBasic report generated in: {report_dir}")
             print(f"Open {report_dir / 'basic_report.html'} for results")

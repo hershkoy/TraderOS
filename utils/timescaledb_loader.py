@@ -121,6 +121,14 @@ def load_timescaledb_1h(symbol: str, provider: Optional[str] = None,
     """
     return load_timescaledb_data(symbol, '1h', provider, start_date, end_date, limit)
 
+def load_timescaledb_15m(symbol: str, provider: Optional[str] = None,
+                         start_date: Optional[str] = None, end_date: Optional[str] = None,
+                         limit: Optional[int] = None) -> pd.DataFrame:
+    """
+    Load 15-minute data from TimescaleDB (new support for intraday strategies)
+    """
+    return load_timescaledb_data(symbol, '15m', provider, start_date, end_date, limit)
+
 def load_timescaledb_daily(symbol: str, provider: Optional[str] = None,
                           start_date: Optional[str] = None, end_date: Optional[str] = None,
                           limit: Optional[int] = None) -> pd.DataFrame:
@@ -229,19 +237,26 @@ def list_available_symbols(provider: Optional[str] = None, timeframe: Optional[s
 # Backward compatibility functions
 def load_parquet_1h(parquet_path: Path) -> pd.DataFrame:
     """
-    Backward compatibility function - now loads from TimescaleDB
-    Extracts symbol and timeframe from the old parquet path format
+    Backward compatibility function - now loads from TimescaleDB.
+    Extracts symbol/provider/timeframe from the legacy parquet path format.
     """
-    # Parse the old parquet path format: data/PROVIDER/SYMBOL/TIMEFRAME/symbol_timeframe.parquet
     path_parts = parquet_path.parts
     
     if len(path_parts) >= 4:
         provider = path_parts[-4]  # e.g., 'ALPACA'
         symbol = path_parts[-3]    # e.g., 'NFLX'
-        timeframe = path_parts[-2] # e.g., '1h'
+        timeframe = path_parts[-2].lower() # e.g., '1h', '15m'
         
         logger.info(f"Converting parquet path to TimescaleDB query: {symbol} {timeframe} from {provider}")
-        return load_timescaledb_1h(symbol, provider)
+        if timeframe == '15m':
+            return load_timescaledb_15m(symbol, provider)
+        elif timeframe == '1h':
+            return load_timescaledb_1h(symbol, provider)
+        elif timeframe in ('1d', 'daily'):
+            return load_timescaledb_daily(symbol, provider)
+        else:
+            # Fallback to generic loader if timeframe is something else
+            return load_timescaledb_data(symbol, timeframe, provider)
     else:
         raise ValueError(f"Invalid parquet path format: {parquet_path}")
 
