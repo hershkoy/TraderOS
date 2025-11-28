@@ -13,7 +13,7 @@ A comprehensive script to fetch maximum available bars for all tickers in the ti
 - **Batch Processing**: Process tickers in configurable batches with delays
 - **Resume Capability**: Resume interrupted updates from any point
 - **Multiple Providers**: Support for both Alpaca and IBKR data providers
-- **Flexible Timeframes**: Hourly (1h) and daily (1d) data support
+- **Flexible Timeframes**: 1m, 15m, 1h, and 1d data support
 - **Rate Limiting**: Built-in delays to respect API rate limits
 - **Comprehensive Logging**: Detailed logs with progress tracking
 - **Dry Run Mode**: Preview what would be processed without fetching data
@@ -29,6 +29,9 @@ A comprehensive script to fetch maximum available bars for all tickers in the ti
 
 # normal usage
 python utils/update_universe_data.py --provider ib --timeframe 1h --max-bars --skip-existing
+
+# Fetch intraday 15m data (IB provider shown, Alpaca also supported)
+python utils/update_universe_data.py --provider ib --timeframe 15m --max-bars
 
 # Update all tickers with Alpaca daily data
 python utils/update_universe_data.py --provider alpaca --timeframe 1d
@@ -74,7 +77,7 @@ python utils/update_universe_data.py --provider alpaca --timeframe 1d --resume-f
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--provider` | Data provider: `alpaca` or `ib` | `alpaca` |
-| `--timeframe` | Timeframe: `1h` or `1d` | `1d` |
+| `--timeframe` | Timeframe: `1m`, `15m`, `1h`, or `1d` | `1d` |
 | `--batch-size` | Tickers per batch | `10` |
 | `--delay-batches` | Seconds between batches | `5.0` |
 | `--delay-tickers` | Seconds between tickers | `1.0` |

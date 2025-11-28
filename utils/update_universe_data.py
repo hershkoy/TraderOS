@@ -350,7 +350,7 @@ class UniverseDataUpdater:
         
         Args:
             provider: Data provider ('alpaca' or 'ib')
-            timeframe: Timeframe to fetch ('1h' or '1d')
+            timeframe: Timeframe to fetch ('1m', '15m', '1h', or '1d')
             max_retries: Maximum number of retries for timeout errors (default: 3)
             retry_base_delay: Base delay in seconds for exponential backoff (default: 2.0)
         """
@@ -376,8 +376,8 @@ class UniverseDataUpdater:
         # Validation
         if self.provider not in ['alpaca', 'ib']:
             raise ValueError("Provider must be 'alpaca' or 'ib'")
-        if self.timeframe not in ['1m', '1h', '1d']:
-            raise ValueError("Timeframe must be '1m', '1h', or '1d'")
+        if self.timeframe not in ['1m', '15m', '1h', '1d']:
+            raise ValueError("Timeframe must be '1m', '15m', '1h', or '1d'")
         
         logger.info(f"Initialized UniverseDataUpdater for {self.provider} @ {self.timeframe}")
         logger.info(f"Retry configuration: max_retries={max_retries}, base_delay={retry_base_delay}s")
@@ -673,6 +673,8 @@ class UniverseDataUpdater:
                         bars = 1260
                     elif self.timeframe == "1h":
                         bars = 8760
+                    elif self.timeframe == "15m":
+                        bars = 32760  # ~5 years of 15-minute data (~6.5k bars/year)
                     else:  # 1m
                         bars = 760500  # 5 years of 1-minute data
                     logger.info(f"[INFO] Fetching {bars} bars for {symbol}")
@@ -1564,7 +1566,7 @@ Examples:
     
     parser.add_argument(
         "--timeframe", 
-        choices=["1m", "1h", "1d"], 
+        choices=["1m", "15m", "1h", "1d"], 
         default="1d",
         help="Timeframe to fetch (default: 1d)"
     )
