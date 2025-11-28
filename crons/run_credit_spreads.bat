@@ -14,7 +14,12 @@ echo.
 
 REM Run script with config file (processes all orders in parallel)
 echo Running spreads from daily_spreads.yaml...
-python scripts/options_strategy_trader.py --conf-file crons\daily_spreads.yaml >> %logfile% 2>&1
+
+REM Check if live-en argument is provided
+set live_arg=
+if "%1"=="live-en" set live_arg=--live-en
+
+python scripts/options_strategy_trader.py --conf-file crons\daily_spreads.yaml %live_arg% >> %logfile% 2>&1
 if errorlevel 1 (
     echo ERROR: Spreads trader failed with exit code %ERRORLEVEL%
 ) else (
