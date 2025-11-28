@@ -21,7 +21,8 @@ python backtrader_runner_yaml.py ^
 --log-level DEBUG ^
 --timeframe 15m ^
 --fromdate 2023-06-01 ^
---todate 2025-12-31
+--todate 2025-12-31 ^
+--log-to-file
 """
 
 import backtrader as bt
@@ -102,12 +103,12 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         max_extended_pct=0.25,         # Max 25% above 30-week MA
         
         # Intraday entry parameters (Stage 3)
-        entry_window_days=14,          # Calendar days to look for intraday entry after TTM cross
+        entry_window_weeks=4,          # Weeks to look for intraday entry after TTM cross
         pivot_lookback_days=20,        # Daily bars used to define higher-timeframe pivot
         poc_lookback_bars=32,          # Number of 15m bars (~1 trading day) for volume profile
         poc_bin_pct=0.003,             # Bin size as % of price (0.3%)
         poc_min_price_step=0.05,       # Minimum bin width in dollars
-        poc_buffer_pct=0.001,          # Require POC above pivot by at least 0.1%
+        poc_buffer_pct=0.0,          # Require POC above pivot by at least 0.1%
         ema_fast_15=8,                 # Fast EMA on 15m for short-term trend
         ema_slow_15=21,                # Slow EMA on 15m for short-term trend
         atr20_period=20,               # Daily ATR20 period (for risk)
@@ -206,6 +207,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.armed = False
         self.entry_window_end_date = None
         self.pivot_level = None  # Higher-timeframe pivot that intraday must clear
+        self.ttm_cross_intraday_start_idx = None
+        self.ttm_cross_intraday_start_dt = None
         
         # Position management
         self.order = None
@@ -693,12 +696,21 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         Approximate Point of Control (POC) from recent 15m bars using a simple volume profile.
         Returns price of the volume-weighted bin with the most activity.
         """
-        if len(self.d_15) < self.p.poc_lookback_bars:
+        total_bars = len(self.d_15)
+        if total_bars == 0:
             return None
+        
+        # Determine how far back we can look
+        start_offset = min(self.p.poc_lookback_bars, total_bars)
+        if self.ttm_cross_intraday_start_idx is not None:
+            bars_since_cross = total_bars - self.ttm_cross_intraday_start_idx
+            if bars_since_cross <= 0:
+                return None
+            start_offset = min(start_offset, bars_since_cross)
         
         prices = []
         volumes = []
-        for i in range(1, self.p.poc_lookback_bars + 1):
+        for i in range(1, start_offset + 1):
             try:
                 prices.append(float(self.d_15.close[-i]))
                 volumes.append(float(self.d_15.volume[-i]))
@@ -750,10 +762,14 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         
         poc = self._compute_poc_15m()
         if poc is None:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log("Intraday entry check: POC unavailable")
             return
         
         pivot = self.pivot_level
         if poc <= pivot * (1.0 + self.p.poc_buffer_pct):
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Intraday entry check: POC {poc:.2f} <= pivot threshold {pivot * (1.0 + self.p.poc_buffer_pct):.2f}")
             return
         
         try:
@@ -762,6 +778,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return
         
         if price <= pivot:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Intraday entry check: Price {price:.2f} <= pivot {pivot:.2f}")
             return
         
         try:
@@ -771,6 +789,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return
         
         if ema_fast <= ema_slow:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"Intraday entry check: EMA fast {ema_fast:.2f} <= EMA slow {ema_slow:.2f}")
             return
         
         self.log(f"INTRADAY ENTRY TRIGGERED | Pivot={pivot:.2f} | POC={poc:.2f} | Price={price:.2f}")
@@ -782,6 +802,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.armed = False
         self.entry_window_end_date = None
         self.pivot_level = None
+        self.ttm_cross_intraday_start_idx = None
+        self.ttm_cross_intraday_start_dt = None
 
     def _enter_long_intraday(self):
         """Enter long position from 15m entry signal with risk-based position sizing."""
@@ -1026,9 +1048,9 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                     self.last_ttm_cross_idx = current_week_idx
                     try:
                         self.last_ttm_cross_week_date = self.d_w.datetime.datetime(-1)
-                        # Calculate entry window end date (TTM cross week + entry_window_days)
+                        # Calculate entry window end date (TTM cross week + entry_window_weeks)
                         from datetime import timedelta
-                        self.entry_window_end_date = self.last_ttm_cross_week_date + timedelta(days=self.p.entry_window_days)
+                        self.entry_window_end_date = self.last_ttm_cross_week_date + timedelta(weeks=self.p.entry_window_weeks)
                     except:
                         pass
                     
@@ -1049,6 +1071,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                         if weekly_filter_pass and self.pivot_level is not None:
                             # ARM THE TICKER
                             self.armed = True
+                            self.ttm_cross_intraday_start_idx = len(self.d_15) - 1 if len(self.d_15) > 0 else None
+                            try:
+                                self.ttm_cross_intraday_start_dt = self.d_15.datetime.datetime(0)
+                            except Exception:
+                                self.ttm_cross_intraday_start_dt = None
                             self.debug_log(f"*** STAGE 2: TTM CROSS DETECTED at week {current_week_idx} | TICKER ARMED FOR 15m ENTRY | Pivot={self.pivot_level:.2f} ***")
                         else:
                             if self.p.log_level.upper() == 'DEBUG':
@@ -1060,6 +1087,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                         # If MA30 not ready, still arm (generous)
                         if self.pivot_level is not None:
                             self.armed = True
+                            self.ttm_cross_intraday_start_idx = len(self.d_15) - 1 if len(self.d_15) > 0 else None
+                            try:
+                                self.ttm_cross_intraday_start_dt = self.d_15.datetime.datetime(0)
+                            except Exception:
+                                self.ttm_cross_intraday_start_dt = None
                             self.debug_log(f"*** STAGE 2: TTM CROSS DETECTED at week {current_week_idx} | TICKER ARMED (MA30 not ready) ***")
                         else:
                             if self.p.log_level.upper() == 'DEBUG':

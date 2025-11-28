@@ -10,6 +10,8 @@ import backtrader as bt
 import json
 from datetime import datetime
 import matplotlib.pyplot as plt
+import sys
+import atexit
 
 # Completely disable all plotting functionality
 bt.Cerebro.plot = lambda *args, **kwargs: None
@@ -726,6 +728,8 @@ def main():
     ap.add_argument('--quiet', action='store_true', help='Suppress trading logs (overrides config)')
     ap.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
                    default='INFO', help='Set logging level')
+    ap.add_argument('--log-to-file', action='store_true',
+                   help='Mirror stdout/stderr into logs/<strategy>_<timestamp>.log')
     
     # Optional overrides for strategy parameters (will be passed to strategy if applicable)
     ap.add_argument('--box', type=float, help='PnF box size (overrides config for pnf strategy)')
@@ -734,6 +738,45 @@ def main():
     ap.add_argument('--devfactor', type=float, help='Std dev factor (overrides config for mean_reversion strategy)')
     
     args = ap.parse_args()
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    log_file_handle = None
+    cleanup_called = False
+
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, data):
+            for stream in self.streams:
+                stream.write(data)
+            return len(data)
+        def flush(self):
+            for stream in self.streams:
+                stream.flush()
+
+    def _cleanup_logging():
+        nonlocal log_file_handle, cleanup_called, original_stdout, original_stderr
+        if cleanup_called:
+            return
+        cleanup_called = True
+        if log_file_handle:
+            log_file_handle.flush()
+            log_file_handle.close()
+            log_file_handle = None
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+
+    if args.log_to_file:
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = log_dir / f"{args.strategy}_{timestamp}.log"
+        log_file_handle = open(log_path, "w", buffering=1, encoding="utf-8")
+        sys.stdout = _Tee(original_stdout, log_file_handle)
+        sys.stderr = _Tee(original_stderr, log_file_handle)
+        atexit.register(_cleanup_logging)
+        print(f"Logging output to {log_path}")
 
     # Load configuration
     print(f"Loading configuration from: {args.config}")
@@ -1073,6 +1116,8 @@ def main():
     #         print(f"Chart plotting failed: {e}")
     
     print(f"The end")
+    if args.log_to_file:
+        _cleanup_logging()
 
 if __name__ == '__main__':
     main()
