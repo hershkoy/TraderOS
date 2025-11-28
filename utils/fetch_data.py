@@ -398,10 +398,12 @@ def detect_max_available_bars(symbol, timeframe):
     """
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     from alpaca.data.enums import DataFeed
     
     tf_map = {
+        "1m": TimeFrame.Minute,
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -428,6 +430,8 @@ def detect_max_available_bars(symbol, timeframe):
             # Go back much further to see what's actually available
             if timeframe == "1m":
                 start_time = end_time - timedelta(days=365)  # Try 1 year for minute data
+            elif timeframe == "15m":
+                start_time = end_time - timedelta(days=730)  # Try ~2 years for 15m data
             elif timeframe == "1h":
                 start_time = end_time - timedelta(days=2000)  # Try 5+ years
             else:  # 1d
@@ -483,9 +487,13 @@ def detect_max_available_bars(symbol, timeframe):
         # If we got less than the limit, that's probably all the data available
         logger.info(f"📈 Got {actual_bars} bars, which appears to be the maximum available for {symbol} @ {timeframe}")
         
-        # Calculate expected vs actual
-        if timeframe == "1h":
-            expected_per_year = 8.5 * 5 * 52  # 8.5 hours × 5 days × 52 weeks
+        # Calculate expected vs actual for awareness
+        if timeframe in {"1h", "15m"}:
+            if timeframe == "1h":
+                expected_per_year = 8.5 * 5 * 52  # 8.5 hours × 5 days × 52 weeks
+            else:  # 15m
+                bars_per_day = 390 / 15  # Approx. 26 bars per trading day
+                expected_per_year = bars_per_day * 5 * 52
             years_covered = (end_time - start_time).days / 365.25
             expected_total = int(expected_per_year * years_covered)
             logger.warning(f"⚠️  Expected ~{expected_total} bars for {years_covered:.1f} years, but only got {actual_bars}")
@@ -498,6 +506,8 @@ def detect_max_available_bars(symbol, timeframe):
         # Return conservative defaults
         if timeframe == "1h":
             return (2000, datetime.now(timezone.utc) - timedelta(days=1000), datetime.now(timezone.utc))
+        elif timeframe == "15m":
+            return (5000, datetime.now(timezone.utc) - timedelta(days=730), datetime.now(timezone.utc))
         else:
             return (1000, datetime.now(timezone.utc) - timedelta(days=1000), datetime.now(timezone.utc))
 
@@ -530,6 +540,10 @@ def fetch_smart_max_from_alpaca(symbol, timeframe, start_date=None):
         if timeframe == "1m":
             days = (end_time - start_time).days
             max_available = int(days * 390 * 5 / 7)  # Rough estimate
+        elif timeframe == "15m":
+            days = (end_time - start_time).days
+            bars_per_day = 390 / 15  # Approx. 26 bars per trading day
+            max_available = int(days * bars_per_day * 5 / 7)
         elif timeframe == "1h":
             days = (end_time - start_time).days
             max_available = int(days * 6.5 * 5 / 7)  # Rough estimate
@@ -573,11 +587,12 @@ def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, 
     """Fetch a single request from Alpaca using a specific time range."""
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     from alpaca.data.enums import DataFeed
-
+    
     tf_map = {
         "1m": TimeFrame.Minute,
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -640,11 +655,12 @@ def fetch_single_alpaca_request(symbol, bars, timeframe, start_date=None):
     """Fetch a single request from Alpaca."""
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     from alpaca.data.enums import DataFeed
-
+    
     tf_map = {
         "1m": TimeFrame.Minute,
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -677,6 +693,11 @@ def fetch_single_alpaca_request(symbol, bars, timeframe, start_date=None):
             # Assume ~390 trading minutes per day (6.5 hours * 60), ~5 trading days per week
             # So we need roughly (bars / 390) * 7/5 days to get enough bars
             days_needed = max(1, int((bars / 390) * 7 / 5))
+            start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
+        elif timeframe == "15m":
+            # ~26 bars per trading day for 15-minute data
+            bars_per_day = 390 / 15
+            days_needed = max(1, int((bars / bars_per_day) * 7 / 5))
             start_time = datetime.now(timezone.utc) - timedelta(days=days_needed)
         elif timeframe == "1h":
             # Assume ~6.5 trading hours per day, ~5 trading days per week
@@ -740,11 +761,12 @@ def fetch_max_from_alpaca(symbol, timeframe):
     """Fetch maximum available historical data from Alpaca by looping through requests."""
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     from alpaca.data.enums import DataFeed
-
+    
     tf_map = {
         "1m": TimeFrame.Minute,
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
         "1h": TimeFrame.Hour,
         "1d": TimeFrame.Day,
     }
@@ -768,6 +790,8 @@ def fetch_max_from_alpaca(symbol, timeframe):
         if timeframe == "1m":
             # For 1-minute data, go back by the number of minutes (capped at ALPACA_BAR_CAP)
             start_time = end_time - timedelta(minutes=ALPACA_BAR_CAP)
+        elif timeframe == "15m":
+            start_time = end_time - timedelta(minutes=ALPACA_BAR_CAP * 15)
         elif timeframe == "1h":
             start_time = end_time - timedelta(hours=ALPACA_BAR_CAP)
         else:  # 1d
@@ -848,11 +872,137 @@ def fetch_max_from_alpaca(symbol, timeframe):
 # ─────────────────────────────
 # IBKR LOGIC
 # ─────────────────────────────
+
+IB_INTRADAY_BATCH_DAYS = {
+    "1m": 30,    # ~1 month chunks
+    "15m": 365,  # up to 1 year per batch to avoid IB timeouts
+}
+
+IB_INTRADAY_BARS_PER_DAY = {
+    "1m": 390,
+    "15m": 390 / 15,
+}
+
+
+def _prepare_ib_duration_from_days(days: int) -> str:
+    """Return an IB-friendly duration string from a day count."""
+    if days >= 365:
+        years = max(1, days // 365)
+        return f"{years} Y"
+    if days >= 30:
+        months = max(1, days // 30)
+        return f"{months} M"
+    if days >= 7:
+        weeks = max(1, days // 7)
+        return f"{weeks} W"
+    return f"{max(1, days)} D"
+
+
+def _convert_ib_bars_to_df(bars_data):
+    """Convert IB bar list to standardized DataFrame with UTC timestamps."""
+    if not bars_data:
+        return None
+    df = pd.DataFrame([b.__dict__ for b in bars_data])[['date', 'open', 'high', 'low', 'close', 'volume']]
+    df.rename(columns={"date": "timestamp"}, inplace=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d  %H:%M:%S")
+    if df["timestamp"].dt.tz is None:
+        df["timestamp"] = df["timestamp"].dt.tz_localize("US/Eastern").dt.tz_convert("UTC")
+    else:
+        df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+    return df
+
+
+def _estimate_days_from_bars(bars: int, timeframe: str) -> int:
+    """Approximate number of calendar days needed to cover requested bars."""
+    bars_per_day = IB_INTRADAY_BARS_PER_DAY.get(timeframe)
+    if not bars_per_day:
+        return max(1, bars // 390)
+    trading_days_needed = bars / bars_per_day
+    calendar_days = int(trading_days_needed * 7 / 5)  # convert trading days to calendar days
+    return max(1, calendar_days)
+
+
+def _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt):
+    """Fetch intraday data in multiple IB-friendly batches to avoid timeouts."""
+    max_days = IB_INTRADAY_BATCH_DAYS.get(timeframe, 180)
+    bar_size = "1 min" if timeframe == "1m" else "15 mins"
+    
+    all_batches = []
+    current_end = end_dt
+    
+    while current_end > start_dt:
+        batch_start = max(start_dt, current_end - timedelta(days=max_days))
+        duration_days = max(1, (current_end - batch_start).days)
+        dur_unit = _prepare_ib_duration_from_days(duration_days)
+        end_str = current_end.strftime("%Y%m%d %H:%M:%S")
+        
+        logger.info(
+            f"Requesting IBKR {timeframe} data for {symbol}: "
+            f"{batch_start.strftime('%Y-%m-%d')} -> {current_end.strftime('%Y-%m-%d')} "
+            f"(duration {dur_unit})"
+        )
+        
+        def fetch_batch_operation():
+            return ib.reqHistoricalData(
+                contract,
+                endDateTime=end_str,
+                durationStr=dur_unit,
+                barSizeSetting=bar_size,
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+        
+        batch_bars = intelligent_retry_with_backoff(
+            fetch_batch_operation,
+            f"IBKR {timeframe} batch for {symbol}",
+            reset_connection_on_failure=True,
+            max_retries=MAX_RETRIES,
+        )
+        
+        if not batch_bars:
+            logger.warning(f"No more IBKR data returned for {symbol} ({timeframe}) in current batch.")
+            break
+        
+        batch_df = _convert_ib_bars_to_df(batch_bars)
+        if batch_df is None or batch_df.empty:
+            logger.warning("Converted IBKR batch is empty, stopping batching loop.")
+            break
+        
+        all_batches.append(batch_df)
+        
+        earliest_ts = batch_df["timestamp"].min()
+        # Step back slightly to avoid duplicate bars in next batch
+        step_back_minutes = 1 if timeframe == "1m" else 15
+        current_end = earliest_ts - timedelta(minutes=step_back_minutes)
+        
+        if current_end <= start_dt:
+            break
+        
+        time.sleep(IB_REQUEST_DELAY)
+    
+    if not all_batches:
+        return None
+    
+    combined_df = (
+        pd.concat(all_batches, ignore_index=True)
+        .drop_duplicates(subset=["timestamp"])
+        .sort_values("timestamp")
+    )
+    
+    # Trim to requested window
+    combined_df = combined_df[combined_df["timestamp"] >= start_dt]
+    combined_df = combined_df[combined_df["timestamp"] <= end_dt]
+    
+    logger.info(f"Combined {len(combined_df)} {timeframe} bars for {symbol} after batching.")
+    return combined_df
+
+
 def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
     """Fetch historical bars from IBKR."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1m", "1h", "1d"]:
+    if timeframe not in ["1m", "15m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     if bars == "max":
@@ -888,12 +1038,46 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
         # Map timeframe to IB bar size setting
         if timeframe == "1m":
             bar_size = "1 min"
+        elif timeframe == "15m":
+            bar_size = "15 mins"
         elif timeframe == "1h":
             bar_size = "1 hour"
         else:  # 1d
             bar_size = "1 day"
         
-        # Handle start_date if provided
+        # Special handling for 15m timeframe to avoid IB timeouts
+        if timeframe == "15m":
+            end_dt = datetime.now(timezone.utc)
+            
+            if start_date:
+                if isinstance(start_date, str):
+                    start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                else:
+                    start_dt = start_date
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                logger.info(f"Using provided start date for 15m data: {start_dt}")
+            else:
+                days_needed = _estimate_days_from_bars(bars, timeframe)
+                start_dt = end_dt - timedelta(days=days_needed)
+                logger.info(f"No start date provided. Estimated {days_needed} days needed for {bars} bars.")
+            
+            batched_df = _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt)
+            if batched_df is None or batched_df.empty:
+                logger.warning(f"No IBKR data returned for {symbol} ({timeframe}) after batching.")
+                return None
+            
+            # Trim to requested bar count if needed
+            if isinstance(bars, int):
+                batched_df = batched_df.tail(bars)
+            
+            df = prepare_nautilus_dataframe(batched_df, symbol, "IB", timeframe)
+            logger.info(f"Fetched {len(df)} {timeframe} bars for {symbol} using batched IBKR requests.")
+            return df
+        
+        # Handle start_date if provided for other timeframes
         if start_date:
             if isinstance(start_date, str):
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -909,18 +1093,7 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
             duration_delta = end_dt - start_dt
             days_diff = duration_delta.days
             
-            # IBKR duration format: use days, weeks, months, or years
-            if days_diff >= 365:
-                years = days_diff // 365
-                dur_unit = f"{years} Y"
-            elif days_diff >= 30:
-                months = days_diff // 30
-                dur_unit = f"{months} M"
-            elif days_diff >= 7:
-                weeks = days_diff // 7
-                dur_unit = f"{weeks} W"
-            else:
-                dur_unit = f"{max(1, days_diff)} D"
+            dur_unit = _prepare_ib_duration_from_days(days_diff if days_diff > 0 else 1)
             
             # Format endDateTime for IB (YYYYMMDD HH:MM:SS)
             end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
@@ -941,6 +1114,17 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                 else:
                     days = int(minutes_to_days)
                     # IBKR requires years for durations > 365 days
+                    if days > 365:
+                        years = max(1, days // 365)
+                        dur_unit = f"{years} Y"
+                    else:
+                        dur_unit = f"{days} D"
+            elif timeframe == '15m':
+                minutes_to_days = (bars * 15) / 1440
+                if minutes_to_days < 1:
+                    dur_unit = "1 D"
+                else:
+                    days = int(minutes_to_days)
                     if days > 365:
                         years = max(1, days // 365)
                         dur_unit = f"{years} Y"
@@ -1027,7 +1211,7 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
     """Fetch maximum available historical data from IBKR by looping through requests."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1m", "1h", "1d"]:
+    if timeframe not in ["1m", "15m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     all_data = []
@@ -1092,6 +1276,8 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
             # Map timeframe to IB bar size setting
             if timeframe == "1m":
                 bar_size = "1 min"
+            elif timeframe == "15m":
+                bar_size = "15 mins"
             elif timeframe == "1h":
                 bar_size = "1 hour"
             else:  # 1d
@@ -1106,6 +1292,14 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
                 minutes_to_days = IB_BAR_CAP / 1440
                 days = max(1, int(minutes_to_days))
                 # IBKR requires years for durations > 365 days
+                if days > 365:
+                    years = max(1, days // 365)
+                    dur_unit = f"{years} Y"
+                else:
+                    dur_unit = f"{days} D"
+            elif timeframe == '15m':
+                minutes_to_days = (IB_BAR_CAP * 15) / 1440
+                days = max(1, int(minutes_to_days))
                 if days > 365:
                     years = max(1, days // 365)
                     dur_unit = f"{years} Y"
@@ -1353,7 +1547,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch historical bars from Alpaca or IBKR.")
     parser.add_argument("--symbol", required=True, help="Symbol to fetch (e.g. NFLX)")
     parser.add_argument("--provider", required=True, choices=["alpaca", "ib"], help="Data provider")
-    parser.add_argument("--timeframe", required=True, choices=["1m", "1h", "1d"], help="Timeframe to fetch")
+    parser.add_argument("--timeframe", required=True, choices=["1m", "15m", "1h", "1d"], help="Timeframe to fetch")
     parser.add_argument("--bars", default=1000, help="Number of bars to fetch or 'max' for maximum available")
     parser.add_argument("--since", type=str, help="Start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
 
