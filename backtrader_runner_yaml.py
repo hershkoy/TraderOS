@@ -618,7 +618,7 @@ def _strategy_requests_4h(strategy_class) -> bool:
 
     return False
 
-def setup_data_feeds(cerebro, strategy_class, df_data, config):
+def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None):
     """Setup data feeds based on strategy requirements"""
     data_reqs = strategy_class.get_data_requirements()
     
@@ -634,7 +634,9 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
             volume='volume',
             openinterest=None
         )
-        cerebro.adddata(data_feed, name="NFLX")
+        if symbol:
+            data_feed._name = symbol
+        cerebro.adddata(data_feed, name=symbol if symbol else None)
         
         # Check if strategy requires weekly resampling
         if data_reqs.get('requires_resampling', False) and 'weekly' in data_reqs.get('additional_timeframes', []):
@@ -646,7 +648,9 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
     
     elif data_reqs['base_timeframe'] == 'hourly' and data_reqs['requires_resampling']:
         data_1h = Parquet1hPandas(dataname=df_data)
-        cerebro.adddata(data_1h)
+        if symbol:
+            data_1h._name = symbol
+        cerebro.adddata(data_1h, name=symbol if symbol else None)
         
         dfeed = cerebro.resampledata(data_1h, timeframe=bt.TimeFrame.Days, compression=1)
         wfeed = cerebro.resampledata(data_1h, timeframe=bt.TimeFrame.Weeks, compression=1)
@@ -666,7 +670,9 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
             timeframe=bt.TimeFrame.Minutes,
             compression=15
         )
-        cerebro.adddata(data_15m)
+        if symbol:
+            data_15m._name = symbol
+        cerebro.adddata(data_15m, name=symbol if symbol else None)
         feeds = [data_15m]
         
         if data_reqs.get('requires_resampling', False):
@@ -684,7 +690,9 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
     elif data_reqs['base_timeframe'] == 'hourly' and _strategy_requests_4h(strategy_class):
         # Base 1h feed (PandasData is fine for IB dataframes)
         data_1h = bt.feeds.PandasData(dataname=df_data)
-        cerebro.adddata(data_1h)
+        if symbol:
+            data_1h._name = symbol
+        cerebro.adddata(data_1h, name=symbol if symbol else None)
 
         # Auto-add 4h resample as data1
         # 4 hours = 240 minutes
@@ -695,7 +703,9 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config):
     
     else:
         data_feed = bt.feeds.PandasData(dataname=df_data)
-        cerebro.adddata(data_feed)
+        if symbol:
+            data_feed._name = symbol
+        cerebro.adddata(data_feed, name=symbol if symbol else None)
         return [data_feed]
 
 # -----------------------------
@@ -750,10 +760,14 @@ def main():
         def write(self, data):
             for stream in self.streams:
                 stream.write(data)
+                # Flush immediately after each write to ensure real-time logging
+                if hasattr(stream, 'flush'):
+                    stream.flush()
             return len(data)
         def flush(self):
             for stream in self.streams:
-                stream.flush()
+                if hasattr(stream, 'flush'):
+                    stream.flush()
 
     def _cleanup_logging():
         nonlocal log_file_handle, cleanup_called, original_stdout, original_stderr
@@ -772,11 +786,15 @@ def main():
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"{args.strategy}_{timestamp}.log"
+        # Use unbuffered mode (buffering=0) or line buffering (buffering=1) with explicit flush
+        # Line buffering (1) flushes on newline, which is good for immediate logging
         log_file_handle = open(log_path, "w", buffering=1, encoding="utf-8")
         sys.stdout = _Tee(original_stdout, log_file_handle)
         sys.stderr = _Tee(original_stderr, log_file_handle)
         atexit.register(_cleanup_logging)
-        print(f"Logging output to {log_path}")
+        # Force immediate write and flush
+        print(f"Logging output to {log_path}", flush=True)
+        log_file_handle.flush()
 
     # Load configuration
     print(f"Loading configuration from: {args.config}")
@@ -804,15 +822,15 @@ def main():
     # Handle universe backtesting
     if args.universe:
         # Universe backtesting mode
-        print("Universe backtesting mode enabled")
+        print("Universe backtesting mode enabled", flush=True)
         try:
             from utils.ticker_universe import get_combined_universe
             symbols = get_combined_universe(force_refresh=False)
             if args.max_symbols:
                 symbols = symbols[:args.max_symbols]
-            print(f"Running backtest on {len(symbols)} symbols")
+            print(f"Running backtest on {len(symbols)} symbols", flush=True)
         except Exception as e:
-            print(f"Error loading universe: {e}")
+            print(f"Error loading universe: {e}", flush=True)
             return
         
         # Run backtest on each symbol
@@ -821,7 +839,7 @@ def main():
         failed = 0
         
         for i, symbol in enumerate(symbols, 1):
-            print(f"\n[{i}/{len(symbols)}] Processing {symbol}...")
+            print(f"\n[{i}/{len(symbols)}] Processing {symbol}...", flush=True)
             try:
                 # Load data for this symbol
                 start = global_config.get('fromdate')
@@ -845,7 +863,7 @@ def main():
                 edge_trim = data_config.get('edge_trim', 5)
                 
                 if len(df_data) < min_points:
-                    print(f"  Skipping {symbol}: insufficient data ({len(df_data)} < {min_points})")
+                    print(f"  Skipping {symbol}: insufficient data ({len(df_data)} < {min_points})", flush=True)
                     failed += 1
                     continue
                 
@@ -862,13 +880,14 @@ def main():
                 cerebro.addtz(timezone)
                 
                 # Setup data feeds
-                data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config)
+                data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=symbol)
                 
                 # Prepare strategy parameters
                 strategy_params = strategy_config.copy()
                 strategy_params['size'] = global_config.get('size', 1)
-                strategy_params['printlog'] = False  # Suppress logs for universe mode
-                strategy_params['log_level'] = 'ERROR'  # Only errors
+                # Respect user's log level even in universe mode
+                strategy_params['printlog'] = True  # Enable logging to capture in log file
+                strategy_params['log_level'] = args.log_level  # Use user's log level
                 
                 cerebro.addstrategy(strategy_class, **strategy_params)
                 
@@ -893,15 +912,15 @@ def main():
                             'strategy': strategy
                         })
                         successful += 1
-                        print(f"  {symbol}: {total_return:.2f}% return, {stats.get('total_trades', 0)} trades")
+                        print(f"  {symbol}: {total_return:.2f}% return, {stats.get('total_trades', 0)} trades", flush=True)
                     else:
                         failed += 1
                 except Exception as e:
-                    print(f"  {symbol}: Backtest failed - {e}")
+                    print(f"  {symbol}: Backtest failed - {e}", flush=True)
                     failed += 1
                     
             except Exception as e:
-                print(f"  {symbol}: Error - {e}")
+                print(f"  {symbol}: Error - {e}", flush=True)
                 failed += 1
         
         # Generate aggregated report
@@ -1003,7 +1022,7 @@ def main():
     cerebro.addtz(timezone)
 
     # Setup data feeds
-    data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config)
+    data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=args.symbol)
 
     # Custom tracking is now handled by the strategy itself
     # No need for Backtrader analyzers or observers that can cause compatibility issues

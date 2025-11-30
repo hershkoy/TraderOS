@@ -132,10 +132,10 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             try:
                 data_time = self.datetime.datetime(0)
-                print(f'[{timestamp}] {data_time} [{level}] {txt}')
+                print(f'[{timestamp}] {data_time} [{level}] {txt}', flush=True)
             except (IndexError, AttributeError):
                 # Data not available yet (e.g., during __init__)
-                print(f'[{timestamp}] [INIT] [{level}] {txt}')
+                print(f'[{timestamp}] [INIT] [{level}] {txt}', flush=True)
 
     def debug_log(self, txt):
         if self.p.log_level.upper() == 'DEBUG' and self.p.printlog:
@@ -143,10 +143,10 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             try:
                 data_time = self.datetime.datetime(0)
-                print(f'[{timestamp}] {data_time} [DEBUG] {txt}')
+                print(f'[{timestamp}] {data_time} [DEBUG] {txt}', flush=True)
             except (IndexError, AttributeError):
                 # Data not available yet (e.g., during __init__)
-                print(f'[{timestamp}] [INIT] [DEBUG] {txt}')
+                print(f'[{timestamp}] [INIT] [DEBUG] {txt}', flush=True)
 
     @staticmethod
     def get_data_requirements():
@@ -222,8 +222,35 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         
         # Warmup flag
         self._ready = False
+        
+        # Get symbol name from data feed
+        self.symbol = self._get_symbol_name()
 
         self.debug_log("Initialized Weekly Big Volume + TTM Squeeze strategy (15m base)")
+    
+    def _get_symbol_name(self):
+        """Get symbol name from data feed."""
+        try:
+            # Try to get name from data feed
+            if hasattr(self.d_15, '_name') and self.d_15._name:
+                return self.d_15._name
+            # Try from parent data if available
+            if hasattr(self.d_15, 'p') and hasattr(self.d_15.p, 'dataname'):
+                # If dataname is a string, try to extract symbol
+                dataname = self.d_15.p.dataname
+                if isinstance(dataname, str):
+                    # Try to extract symbol from path or name
+                    import os
+                    basename = os.path.basename(dataname)
+                    if basename:
+                        return basename.split('.')[0].upper()
+            # Fallback: try to get from any data feed
+            for data in self.datas:
+                if hasattr(data, '_name') and data._name:
+                    return data._name
+            return "UNKNOWN"
+        except Exception:
+            return "UNKNOWN"
 
     def _calculate_squeeze_val(self):
         """
@@ -267,6 +294,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         Returns True if all ignition conditions are met.
         In Backtrader, i=0 is the current bar, i=-1 is the previous bar.
         """
+        if self.p.log_level.upper() == 'DEBUG':
+            try:
+                week_date = self.d_w.datetime.datetime(i) if len(self.d_w) > 0 else "N/A"
+                self.debug_log(f"[{self.symbol}] _is_ignition_bar called for index {i} (week date: {week_date})")
+            except:
+                self.debug_log(f"[{self.symbol}] _is_ignition_bar called for index {i}")
+        
         w = self.d_w
         
         # In Backtrader, [0] is current, [-1] is previous, etc.
@@ -348,7 +382,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return True
             
         except (IndexError, ValueError, TypeError) as e:
-            self.debug_log(f"CONDITION A (Ignition): Error at {i}: {e}")
+            self.debug_log(f"[{self.symbol}] CONDITION A (Ignition): Error at {i}: {e}")
+            return False
+        except Exception as e:
+            # Catch any other unexpected exceptions
+            self.debug_log(f"[{self.symbol}] CONDITION A (Ignition): Unexpected error at {i}: {type(e).__name__}: {e}")
+            import traceback
+            self.debug_log(f"[{self.symbol}] Traceback: {traceback.format_exc()}")
             return False
 
     def _check_ttm_confirmation(self, i):
@@ -793,7 +833,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 self.debug_log(f"Intraday entry check: EMA fast {ema_fast:.2f} <= EMA slow {ema_slow:.2f}")
             return
         
-        self.log(f"INTRADAY ENTRY TRIGGERED | Pivot={pivot:.2f} | POC={poc:.2f} | Price={price:.2f}")
+        self.log(f"[{self.symbol}] INTRADAY ENTRY TRIGGERED | Pivot={pivot:.2f} | POC={poc:.2f} | Price={price:.2f}")
         self._enter_long_intraday()
         self._reset_armed_state()
     
@@ -846,7 +886,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             self.entry_price = entry_price
             self.entry_week_idx = len(self.d_w) - 1
             
-            self.log(f"INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f}, Size: {size}")
+            self.log(f"[{self.symbol}] INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f}, Size: {size}")
             self.track_trade_entry(entry_price, size)
             
             # Place stop order
@@ -898,18 +938,34 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
 
             if order.status in [order.Completed]:
                 if order.isbuy():
-                    self.log(f'BUY EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
+                    self.log(f'[{self.symbol}] BUY EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
                 elif order.issell():
-                    self.log(f'SELL EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
+                    self.log(f'[{self.symbol}] SELL EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
                     if self.position.size == 0:
-                        # Position fully closed
+                        # Position fully closed - reset state to allow new signals
                         self.current_stop = None
                         self.entry_price = None
                         self.entry_week_idx = None
+                        # CRITICAL: Clear order reference immediately when position closes
+                        # This ensures we don't skip signal checks due to stale order references
+                        self.order = None
+                        # Reset armed state and ignition/ttm tracking so we can detect NEW signals
+                        self._reset_armed_state()
+                        # Reset ignition and TTM cross tracking to allow detection of NEW signals
+                        # This ensures we don't get stuck looking for signals from the previous trade
+                        self.last_ignition_idx = None
+                        self.last_ignition_week_date = None
+                        self.last_ttm_cross_idx = None
+                        self.last_ttm_cross_week_date = None
+                        self.debug_log(f"[{self.symbol}] Trade closed - resetting signal tracking to allow new signals")
 
             elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-                self.log(f"ORDER {order.getstatusname()}")
+                self.log(f"[{self.symbol}] ORDER {order.getstatusname()}")
+                # Clear order reference if it was canceled/rejected
+                if self.order is order:
+                    self.order = None
 
+            # Clear order reference if this was the tracked order
             if self.order is order:
                 self.order = None
                 
@@ -923,7 +979,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             # Calculate PnL percentage, avoiding division by zero
             denominator = trade.price * abs(trade.size) if trade.size else 1.0
             pnl_pct = (pnl / denominator) * 100 if denominator > 0 else 0.0
-            self.log(f'TRADE CLOSED, pnl={pnl:.2f} ({pnl_pct:.2f}%)')
+            self.log(f'[{self.symbol}] TRADE CLOSED, pnl={pnl:.2f} ({pnl_pct:.2f}%)')
+            # Safety check: clear any stale order references when trade closes
+            if not self.position and self.order is not None:
+                self.debug_log(f"[{self.symbol}] Clearing order reference after trade close (safety check)")
+                self.order = None
 
     def start(self):
         """Called once at the start of the backtest."""
@@ -1013,7 +1073,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             
             self.debug_log(f"")
             self.debug_log(f"{'='*80}")
-            self.debug_log(f"WEEKLY BAR #{current_week_idx} COMPLETED | Date: {week_date} | 15m bar: {current_intraday_idx} ({intraday_date})")
+            self.debug_log(f"[{self.symbol}] WEEKLY BAR #{current_week_idx} COMPLETED | Date: {week_date} | 15m bar: {current_intraday_idx} ({intraday_date})")
             self.debug_log(f"  Close: ${close:.2f} | Volume: {volume:,.0f}")
             self.debug_log(f"{'='*80}")
         except Exception as e:
@@ -1025,10 +1085,26 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             return
 
         # If no position, check for entry signals
+        # Safety check: if position is closed and order exists, verify it's not stale
+        # Only clear if we can confirm the order is completed/canceled (stale reference)
+        if not self.position and self.order is not None:
+            try:
+                # Check if order is actually completed/canceled (stale reference)
+                if hasattr(self.order, 'status'):
+                    order_status = self.order.status
+                    if order_status in [self.order.Completed, self.order.Canceled, self.order.Margin, self.order.Rejected]:
+                        self.debug_log(f"[{self.symbol}] Clearing stale order reference (status: {self.order.getstatusname()})")
+                        self.order = None
+            except Exception:
+                # If we can't check, leave it - might be a legitimate pending order
+                pass
+        
         if self.order is not None:
+            self.debug_log(f"[{self.symbol}] Skipping signal checks: pending order")
             return  # Wait for pending order
 
         # STAGE 1: Detect ignition bars (Weekly Big Volume)
+        self.debug_log(f"[{self.symbol}] Checking Condition A (Ignition) for week {current_week_idx}")
         ignition_result = self._is_ignition_bar(-1)  # Evaluate most recent completed week
         if ignition_result:
             self.last_ignition_idx = current_week_idx
