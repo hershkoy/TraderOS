@@ -1071,10 +1071,68 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             volume = float(w.volume[-1]) if len(w) > 0 else 0.0
             intraday_date = self.d_15.datetime.datetime(0) if len(self.d_15) > 0 else "N/A"
             
+            # Log daily volumes that make up this weekly bar for debugging
+            daily_volumes = []
+            if len(self.d_d) > 0:
+                try:
+                    # Find daily bars that fall within this week
+                    # Weekly bar date is the end of the week (typically Friday)
+                    week_end = w.datetime.datetime(-1) if len(w) > 0 else None
+                    if week_end:
+                        # Calculate week start (Monday of the same week)
+                        # Get the weekday: 0=Monday, 6=Sunday
+                        from datetime import timedelta
+                        week_end_weekday = week_end.weekday()
+                        # Calculate days to subtract to get to Monday (0=Monday, so subtract weekday)
+                        days_to_monday = week_end_weekday
+                        week_start = week_end - timedelta(days=days_to_monday)
+                        # Normalize to date only for comparison (ignore time component)
+                        week_start_date = week_start.date()
+                        week_end_date = week_end.date()
+                        
+                        # Get all daily bars that fall within this week (Monday to Friday)
+                        for i in range(min(10, len(self.d_d))):  # Look back up to 10 days to find the week
+                            try:
+                                daily_date = self.d_d.datetime.datetime(-1 - i)
+                                daily_vol = float(self.d_d.volume[-1 - i]) if len(self.d_d.volume) > i else 0.0
+                                # Check if this daily bar is within the week (Monday to Friday)
+                                # Compare dates only, ignoring time component
+                                daily_date_only = daily_date.date() if hasattr(daily_date, 'date') else daily_date
+                                if week_start_date <= daily_date_only <= week_end_date:
+                                    daily_volumes.append((daily_date.strftime('%Y-%m-%d'), daily_vol))
+                            except (IndexError, AttributeError, ValueError):
+                                break
+                        # Sort by date to show in chronological order
+                        daily_volumes.sort(key=lambda x: x[0])
+                except Exception as e:
+                    self.debug_log(f"Error getting daily volumes: {e}")
+                    import traceback
+                    self.debug_log(f"Traceback: {traceback.format_exc()}")
+            
             self.debug_log(f"")
             self.debug_log(f"{'='*80}")
             self.debug_log(f"[{self.symbol}] WEEKLY BAR #{current_week_idx} COMPLETED | Date: {week_date} | 15m bar: {current_intraday_idx} ({intraday_date})")
             self.debug_log(f"  Close: ${close:.2f} | Volume: {volume:,.0f}")
+            if daily_volumes:
+                daily_sum = sum(vol for _, vol in daily_volumes)
+                self.debug_log(f"  Daily volumes for this week ({len(daily_volumes)} days found, expected 5 for full week):")
+                for date_str, vol in daily_volumes:  # Already sorted chronologically
+                    self.debug_log(f"    {date_str}: {vol:,.0f}")
+                self.debug_log(f"  Daily volume sum: {daily_sum:,.0f} (weekly bar: {volume:,.0f})")
+                # Check if there's a discrepancy
+                if abs(daily_sum - volume) > volume * 0.1:  # More than 10% difference
+                    self.debug_log(f"  WARNING: Daily volume sum ({daily_sum:,.0f}) differs significantly from weekly bar volume ({volume:,.0f})")
+                    self.debug_log(f"    Difference: {abs(daily_sum - volume):,.0f} ({abs(daily_sum - volume) / volume * 100:.1f}%)")
+                    if len(daily_volumes) < 5:
+                        self.debug_log(f"    Only {len(daily_volumes)} daily bars found - may be missing days in daily data")
+                    self.debug_log(f"    Note: Weekly bar is calculated from 15m data, daily bars are resampled separately")
+                # Warning if daily volumes seem suspiciously low (potential data quality issue)
+                if daily_sum > 0 and volume > 0:
+                    # Check if any single day has very low volume (might indicate missing data)
+                    max_daily_vol = max(vol for _, vol in daily_volumes)
+                    if max_daily_vol < 100000 and volume < 1000000:  # Less than 100k per day, less than 1M total
+                        self.debug_log(f"  WARNING: Suspiciously low volume detected - may indicate data quality issue")
+                        self.debug_log(f"    Max daily volume: {max_daily_vol:,.0f} (expected typically 500k-5M+ for active stocks)")
             self.debug_log(f"{'='*80}")
         except Exception as e:
             self.debug_log(f"Error logging weekly bar info: {e}")

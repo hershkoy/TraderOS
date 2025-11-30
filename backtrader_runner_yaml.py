@@ -163,6 +163,37 @@ def load_daily_data(parquet_path: Path):
     print(f"Resampled to {len(df_daily)} daily bars from {df_daily.index.min()} to {df_daily.index.max()}")
     return df_daily
 
+def resample_to_weekly_pandas(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resample any OHLCV DataFrame to weekly bars using pandas.
+    More accurate and transparent than Backtrader's on-the-fly resampling.
+    
+    Weekly bars end on Friday (W-FRI) and aggregate:
+    - open: first value of the week
+    - high: max value of the week
+    - low: min value of the week
+    - close: last value of the week
+    - volume: sum of all volumes in the week
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame must be indexed by datetime")
+    
+    # Remove timezone if present (pandas resampling works better without tz)
+    if df.index.tz is not None:
+        df = df.copy()
+        df.index = df.index.tz_localize(None)
+    
+    # Resample to weekly (W-FRI = week ending on Friday)
+    df_weekly = df.resample('W-FRI').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    return df_weekly
+
 # -----------------------------
 # Report Generation Functions
 # -----------------------------
@@ -681,8 +712,39 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None):
                 dfeed = cerebro.resampledata(data_15m, timeframe=bt.TimeFrame.Days, compression=1)
                 feeds.append(dfeed)
             if 'weekly' in addl:
-                wfeed = cerebro.resampledata(data_15m, timeframe=bt.TimeFrame.Weeks, compression=1)
-                feeds.append(wfeed)
+                # Use pandas pre-aggregation for more accurate and transparent weekly data
+                # This ensures volume is correctly summed and we can verify the aggregation
+                try:
+                    df_weekly = resample_to_weekly_pandas(df_data)
+                    print(f"Pre-aggregated {len(df_weekly)} weekly bars using pandas (from {len(df_data)} 15m bars)")
+                    print(f"  Weekly date range: {df_weekly.index.min()} to {df_weekly.index.max()}")
+                    # Sample volume check for debugging
+                    if len(df_weekly) > 0:
+                        sample_vol = df_weekly['volume'].iloc[-1]
+                        print(f"  Sample weekly volume (most recent): {sample_vol:,.0f}")
+                    
+                    wfeed = bt.feeds.PandasData(
+                        dataname=df_weekly,
+                        datetime=None,
+                        open='open',
+                        high='high',
+                        low='low',
+                        close='close',
+                        volume='volume',
+                        openinterest=None,
+                        timeframe=bt.TimeFrame.Weeks,
+                        compression=1
+                    )
+                    if symbol:
+                        wfeed._name = symbol
+                    # CRITICAL: Add the feed to cerebro (resampledata does this automatically, but manual feeds need explicit add)
+                    cerebro.adddata(wfeed, name=symbol if symbol else None)
+                    feeds.append(wfeed)
+                except Exception as e:
+                    print(f"Warning: Failed to pre-aggregate weekly data with pandas: {e}")
+                    print(f"  Falling back to Backtrader resampling")
+                    wfeed = cerebro.resampledata(data_15m, timeframe=bt.TimeFrame.Weeks, compression=1)
+                    feeds.append(wfeed)
         
         return feeds
     

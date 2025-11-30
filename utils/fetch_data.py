@@ -58,6 +58,7 @@ def _ensure_ib_loop():
 _ib_connection = None
 _ib_lock = threading.Lock()
 _loop_started = False
+_ib_client_id = 2  # Default client ID
 
 
 def _candidate_ib_ports(explicit_port):
@@ -94,17 +95,32 @@ def _candidate_ib_ports(explicit_port):
 
     return ports_to_try
 
-def get_ib_connection(port=None):
+def set_ib_client_id(client_id):
+    """
+    Set the IBKR client ID to use for connections.
+    
+    Args:
+        client_id: Client ID integer (must be unique per connection)
+    """
+    global _ib_client_id
+    _ib_client_id = int(client_id)
+    logger.info(f"IBKR client ID set to {_ib_client_id}")
+
+def get_ib_connection(port=None, client_id=None):
     """
     Get or create a shared IBKR connection
     
     Args:
         port: Optional port number (default: from IB_PORT env var or 4001)
+        client_id: Optional client ID (default: from global _ib_client_id or 2)
     
     Returns:
         IB connection object
     """
-    global _ib_connection
+    global _ib_connection, _ib_client_id
+    
+    # Use provided client_id, or fall back to global, or default to 2
+    effective_client_id = client_id if client_id is not None else _ib_client_id
     
     with _ib_lock:
         # Check if we already have a valid connection
@@ -126,7 +142,6 @@ def get_ib_connection(port=None):
         # Simple connection like ib_conn.py
         HOST = "127.0.0.1"
         
-        CLIENT_ID = 2
         candidate_ports = _candidate_ib_ports(port)
         last_error = None
         _ib_connection = IB()
@@ -137,18 +152,18 @@ def get_ib_connection(port=None):
                     "Attempting IBKR connection to %s:%s (client ID %s)",
                     HOST,
                     candidate,
-                    CLIENT_ID,
+                    effective_client_id,
                 )
                 _ib_connection.connect(
                     HOST,
                     candidate,
-                    clientId=CLIENT_ID,
+                    clientId=effective_client_id,
                     timeout=2,
                 )
                 logger.info(
                     "IBKR connection established on port %s with client ID %s",
                     candidate,
-                    CLIENT_ID,
+                    effective_client_id,
                 )
                 return _ib_connection
             except Exception as exc:  # noqa: BLE001
@@ -626,10 +641,11 @@ def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, 
             if not df.empty:
                 logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
             
-            # Take only the most recent 'bars' records
+            # When start_time is provided, take first N bars from start date
+            # This function always has a start_time, so use head()
             if len(df) > bars:
-                df = df.tail(bars).reset_index(drop=True)
-                logger.info(f"Truncated to {len(df)} most recent bars")
+                df = df.head(bars).reset_index(drop=True)
+                logger.info(f"Truncated to {len(df)} bars from start date")
             elif len(df) < bars:
                 logger.warning(f"Only got {len(df)} bars, less than requested {bars}")
             
@@ -732,10 +748,15 @@ def fetch_single_alpaca_request(symbol, bars, timeframe, start_date=None):
             if not df.empty:
                 logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
             
-            # Take only the most recent 'bars' records
+            # When start_date is provided, take first N bars from start date
+            # Otherwise, take most recent N bars (tail)
             if len(df) > bars:
-                df = df.tail(bars).reset_index(drop=True)
-                logger.info(f"Truncated to {len(df)} most recent bars")
+                if start_date:
+                    df = df.head(bars).reset_index(drop=True)
+                    logger.info(f"Truncated to {len(df)} bars from start date")
+                else:
+                    df = df.tail(bars).reset_index(drop=True)
+                    logger.info(f"Truncated to {len(df)} most recent bars")
             elif len(df) < bars:
                 logger.warning(f"Only got {len(df)} bars, less than requested {bars}")
             
@@ -1070,8 +1091,14 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                 return None
             
             # Trim to requested bar count if needed
+            # When start_date is provided, use head() to get first N bars from start date
+            # Otherwise, use tail() to get most recent N bars
             if isinstance(bars, int):
-                batched_df = batched_df.tail(bars)
+                if start_date:
+                    batched_df = batched_df.head(bars).reset_index(drop=True)
+                    logger.info(f"Filtered to {len(batched_df)} bars starting from {start_dt}")
+                else:
+                    batched_df = batched_df.tail(bars).reset_index(drop=True)
             
             df = prepare_nautilus_dataframe(batched_df, symbol, "IB", timeframe)
             logger.info(f"Fetched {len(df)} {timeframe} bars for {symbol} using batched IBKR requests.")
@@ -1088,16 +1115,49 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                 if start_dt.tzinfo is None:
                     start_dt = start_dt.replace(tzinfo=timezone.utc)
             
-            # Calculate duration from start_date to now
-            end_dt = datetime.now(timezone.utc)
-            duration_delta = end_dt - start_dt
-            days_diff = duration_delta.days
-            
-            dur_unit = _prepare_ib_duration_from_days(days_diff if days_diff > 0 else 1)
-            
-            # Format endDateTime for IB (YYYYMMDD HH:MM:SS)
-            end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
-            logger.info(f"Using provided start date: {start_dt}, duration: {dur_unit}, end: {end_date_str}")
+            # If bars is specified, calculate endDateTime to be approximately start_date + bars
+            # This helps IB return data starting closer to the requested start date
+            if isinstance(bars, int):
+                # For daily data, estimate trading days (roughly bars * 1.4 to account for weekends/holidays)
+                # For other timeframes, use a similar approach
+                if timeframe == "1d":
+                    # For daily: bars trading days ≈ bars * 1.4 calendar days (accounts for weekends)
+                    # Add a small buffer to ensure we get enough data
+                    estimated_days = int(bars * 1.5) + 5  # Add 5 day buffer
+                    end_dt = start_dt + timedelta(days=min(estimated_days, 365))  # Cap at 1 year
+                elif timeframe == "1h":
+                    # For hourly: bars hours ≈ bars / 6.5 trading days
+                    estimated_days = max(1, int(bars / 6.5 * 1.4)) + 2
+                    end_dt = start_dt + timedelta(days=min(estimated_days, 365))
+                elif timeframe == "1m":
+                    # For 1m: bars minutes ≈ bars / 390 trading days
+                    estimated_days = max(1, int(bars / 390 * 1.4)) + 1
+                    end_dt = start_dt + timedelta(days=min(estimated_days, 30))  # Cap at 30 days for 1m
+                else:
+                    # Default: use start_date + reasonable period
+                    end_dt = start_dt + timedelta(days=min(bars * 2, 365))
+                
+                # Ensure end_dt doesn't exceed current time
+                now_dt = datetime.now(timezone.utc)
+                if end_dt > now_dt:
+                    end_dt = now_dt
+                
+                duration_delta = end_dt - start_dt
+                days_diff = duration_delta.days
+                dur_unit = _prepare_ib_duration_from_days(days_diff if days_diff > 0 else 1)
+                
+                # Format endDateTime for IB (YYYYMMDD HH:MM:SS)
+                # IB expects this in the exchange's local timezone, but we'll use UTC and let IB convert
+                end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
+                logger.info(f"Using provided start date: {start_dt.date()}, calculated end: {end_dt.date()}, duration: {dur_unit}, endDateTime: {end_date_str}")
+            else:
+                # If bars is "max" or not specified, use current time as end
+                end_dt = datetime.now(timezone.utc)
+                duration_delta = end_dt - start_dt
+                days_diff = duration_delta.days
+                dur_unit = _prepare_ib_duration_from_days(days_diff if days_diff > 0 else 1)
+                end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
+                logger.info(f"Using provided start date: {start_dt}, duration: {dur_unit}, end: {end_date_str}")
         else:
             # Ensure proper spacing for IBKR duration format
             # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
@@ -1195,6 +1255,41 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
         else:
             # Already timezone-aware, just convert to UTC
             df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+        
+        # If start_date was provided, filter to start from that date and limit to requested bars
+        if start_date:
+            if isinstance(start_date, str):
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            else:
+                start_dt = start_date
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            
+            # Filter to start from start_date
+            original_len = len(df)
+            df = df[df["timestamp"] >= start_dt].copy()
+            
+            if len(df) == 0:
+                logger.warning(f"No data available on or after {start_dt}. IB may not have data for this date.")
+                return None
+            
+            # Check if first bar is significantly after requested start date
+            first_bar_date = df["timestamp"].min()
+            days_after_start = (first_bar_date - start_dt).days
+            if days_after_start > 7:  # More than a week after requested start
+                logger.warning(f"First available bar is {first_bar_date.date()} ({days_after_start} days after requested start date {start_dt.date()}). "
+                             f"IB may not have data for the requested start date, or it may have been a non-trading day.")
+            elif days_after_start > 0:
+                logger.info(f"First available bar is {first_bar_date.date()} ({days_after_start} day(s) after requested start date {start_dt.date()})")
+            
+            # Limit to requested number of bars (first N bars from start date)
+            if isinstance(bars, int) and len(df) > bars:
+                df = df.head(bars).reset_index(drop=True)
+                logger.info(f"Filtered to {len(df)} bars starting from {first_bar_date.date()}")
+            elif isinstance(bars, int) and len(df) < bars:
+                logger.warning(f"Only got {len(df)} bars, less than requested {bars}")
 
         # Transform to Nautilus format
         df = prepare_nautilus_dataframe(df, symbol, "IB", timeframe)
@@ -1550,8 +1645,14 @@ if __name__ == "__main__":
     parser.add_argument("--timeframe", required=True, choices=["1m", "15m", "1h", "1d"], help="Timeframe to fetch")
     parser.add_argument("--bars", default=1000, help="Number of bars to fetch or 'max' for maximum available")
     parser.add_argument("--since", type=str, help="Start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
+    parser.add_argument("--no-save", action="store_true", help="Output data to console without saving to database")
+    parser.add_argument("--ib-client-id", type=int, help="IBKR client ID to use for connection (default: 2)")
 
     args = parser.parse_args()
+    
+    # Set IB client ID if provided
+    if args.ib_client_id is not None:
+        set_ib_client_id(args.ib_client_id)
 
     symbol    = args.symbol.upper()
     provider  = args.provider.lower()
@@ -1585,14 +1686,45 @@ if __name__ == "__main__":
                 bars = min(bars, IB_BAR_CAP)
                 df = fetch_from_ib(symbol, bars, timeframe, start_date=args.since)
         
-        # Save to database if data was fetched
+        # Save to database or output to console based on --no-save flag
         if df is not None and not df.empty:
-            provider_upper = provider.upper()
-            logger.info(f"Saving {len(df)} records to TimescaleDB for {symbol} {timeframe} from {provider_upper}...")
-            if save_to_timescaledb(df, symbol, provider_upper, timeframe):
-                logger.info(f"Successfully saved data to database")
+            if args.no_save:
+                # Output to console without saving to database
+                provider_upper = provider.upper()
+                logger.info(f"Fetched {len(df)} records for {symbol} {timeframe} from {provider_upper}")
+                
+                # Convert ts_event back to readable datetime for display
+                if 'ts_event' in df.columns:
+                    # ts_event is in nanoseconds, convert to datetime
+                    df_display = df.copy()
+                    df_display['timestamp'] = pd.to_datetime(df_display['ts_event'], unit='ns', utc=True)
+                    min_ts = df_display['timestamp'].min()
+                    max_ts = df_display['timestamp'].max()
+                    logger.info(f"Data range: {min_ts} to {max_ts}")
+                    
+                    # Reorder columns for better readability (timestamp first)
+                    cols = ['timestamp'] + [c for c in df_display.columns if c != 'timestamp']
+                    df_display = df_display[cols]
+                else:
+                    # Fallback if ts_event is not present
+                    min_ts = "N/A"
+                    max_ts = "N/A"
+                    df_display = df
+                
+                print("\n" + "="*80)
+                print(f"Data for {symbol} ({timeframe}) from {provider_upper}")
+                print("="*80)
+                print(df_display.to_string())
+                print("="*80)
+                logger.info(f"Data output to console (not saved to database)")
             else:
-                logger.error(f"Failed to save data to database")
+                # Save to database
+                provider_upper = provider.upper()
+                logger.info(f"Saving {len(df)} records to TimescaleDB for {symbol} {timeframe} from {provider_upper}...")
+                if save_to_timescaledb(df, symbol, provider_upper, timeframe):
+                    logger.info(f"Successfully saved data to database")
+                else:
+                    logger.error(f"Failed to save data to database")
         elif df is None or df.empty:
             logger.warning("No data was fetched, nothing to save")
             
