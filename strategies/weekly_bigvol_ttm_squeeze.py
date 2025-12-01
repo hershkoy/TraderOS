@@ -27,6 +27,7 @@ python backtrader_runner_yaml.py ^
 
 import backtrader as bt
 import math
+import numpy as np
 
 # Import the custom tracking mixin
 from utils.custom_tracking import CustomTrackingMixin
@@ -38,6 +39,103 @@ except ImportError:
     # Fallback if import fails
     squeeze_val = None
     to_weekly = None
+
+
+# Custom Weighted Volume Statistics Indicator
+class WeightedVolStats(bt.Indicator):
+    """
+    Weighted volume statistics (mean and stddev) with exponential decay.
+    More recent weeks get higher weights, emphasizing recent volume patterns.
+    """
+    lines = ('weighted_mean', 'weighted_stddev')
+    params = (
+        ('period', 52),
+        ('decay_factor', 0.95),  # Higher = more emphasis on recent (0.9-0.98 typical)
+    )
+
+    def __init__(self):
+        self.addminperiod(self.p.period)
+
+    def next(self):
+        if len(self.data) < self.p.period:
+            self.lines.weighted_mean[0] = 0.0
+            self.lines.weighted_stddev[0] = 0.0
+            return
+
+        # Calculate exponential weights (most recent = highest weight)
+        weights = []
+        total_weight = 0.0
+        for i in range(self.p.period):
+            # Weight decreases exponentially: w_i = decay_factor^(period-1-i)
+            # Most recent (i=period-1) gets weight = decay_factor^0 = 1.0
+            # Oldest (i=0) gets weight = decay_factor^(period-1)
+            weight = self.p.decay_factor ** (self.p.period - 1 - i)
+            weights.append(weight)
+            total_weight += weight
+
+        # Normalize weights so they sum to 1
+        weights = [w / total_weight for w in weights]
+
+        # Calculate weighted mean
+        weighted_mean = 0.0
+        for i in range(self.p.period):
+            value = float(self.data[-self.p.period + i])
+            weighted_mean += weights[i] * value
+
+        # Calculate weighted variance (and then stddev)
+        weighted_variance = 0.0
+        for i in range(self.p.period):
+            value = float(self.data[-self.p.period + i])
+            weighted_variance += weights[i] * (value - weighted_mean) ** 2
+
+        weighted_stddev = math.sqrt(weighted_variance) if weighted_variance > 0 else 0.0
+
+        self.lines.weighted_mean[0] = weighted_mean
+        self.lines.weighted_stddev[0] = weighted_stddev
+
+
+# Robust Volume Statistics Indicator (MAD-based, resistant to outliers)
+class RobustVolStats(bt.Indicator):
+    """
+    Robust volume statistics using Median Absolute Deviation (MAD).
+    Resistant to outliers (e.g., massive volume spikes that inflate mean/stddev).
+    """
+    lines = ('median', 'mad')
+    params = (('period', 12),)  # Shorter lookback (12 weeks = quarterly)
+
+    def __init__(self):
+        self.addminperiod(self.p.period)
+
+    def next(self):
+        if len(self.data) < self.p.period:
+            self.lines.median[0] = 0.0
+            self.lines.mad[0] = 1e-9  # Small value to avoid division by zero
+            return
+
+        # Get window of recent volumes
+        window = []
+        for i in range(1, self.p.period + 1):
+            try:
+                window.append(float(self.data[-i]))
+            except (IndexError, TypeError, ValueError):
+                break
+
+        if len(window) < self.p.period:
+            self.lines.median[0] = 0.0
+            self.lines.mad[0] = 1e-9
+            return
+
+        # Calculate median
+        med = float(np.median(window))
+
+        # Calculate MAD (Median Absolute Deviation)
+        deviations = [abs(v - med) for v in window]
+        mad = float(np.median(deviations)) if deviations else 1e-9
+        if mad < 1e-9:
+            mad = 1e-9  # Avoid division by zero
+
+        self.lines.median[0] = med
+        self.lines.mad[0] = mad
 
 
 # Custom Linear Regression Slope Indicator
@@ -83,13 +181,18 @@ class LinRegSlope(bt.Indicator):
 
 class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
     params = dict(
-        # Volume ignition (Condition A) - using z-score for better anomaly detection
-        vol_lookback=52,              # Weeks for volume statistics (1 year)
-        vol_zscore_min=2.5,           # Minimum z-score for volume anomaly (2.5 = top ~1% if normal distribution)
-        vol_mult=3.0,                  # Fallback: multiplier threshold (deprecated, use z-score instead)
+        # Volume ignition (Condition A) - using robust multi-threshold detection
+        vol_lookback=52,              # Weeks for long-term volume statistics (for weighted stats)
+        vol_short_lookback=12,        # Weeks for short-term/robust stats (quarterly, less polluted by outliers)
+        vol_zscore_min=2.5,           # Minimum weighted z-score for volume anomaly
+        vol_robust_z_min=2.0,         # Minimum robust z-score (MAD-based, resistant to outliers)
+        vol_roc_min=0.5,              # Minimum rate of change vs median (50% above median)
+        vol_weight_decay=0.85,        # Exponential decay factor for volume weights (0.80-0.90 recommended)
+        vol_mult=3.0,                  # Fallback: multiplier threshold (deprecated)
         body_pos_min=0.5,             # Minimum body position (close in top half)
-        max_volume_lookback=52,       # Lookback for "highest volume in N weeks"
-        vol_highest_pct=0.75,          # Minimum volume as % of highest in lookback window (0.8 = 80%)
+        max_volume_lookback=52,       # Lookback for "highest volume in N weeks" (for reference only)
+        vol_highest_pct=0.0,          # Disabled: was too restrictive (0.0 = disabled, was 0.75)
+        vol_use_multi_threshold=True, # Use 2-of-3 rule: robust_z OR weighted_z OR ROC
         
         # TTM Squeeze (Condition B) - using squeeze_scanner logic
         lengthKC=20,                   # Keltner Channel length (matches squeeze_scanner)
@@ -184,7 +287,25 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # ATR for stops
         self.atrw = bt.ind.ATR(w, period=self.p.atr_period)
         
-        # Volume stats - using z-score for better anomaly detection
+        # Volume stats - multi-threshold detection (robust + weighted + ROC)
+        # Long-term weighted stats (52 weeks, for context)
+        self.vol_weighted_stats = WeightedVolStats(
+            w.volume, 
+            period=self.p.vol_lookback,
+            decay_factor=self.p.vol_weight_decay
+        )
+        # Short-term weighted stats (12 weeks, less polluted by outliers)
+        self.vol_weighted_stats_short = WeightedVolStats(
+            w.volume,
+            period=self.p.vol_short_lookback,
+            decay_factor=self.p.vol_weight_decay
+        )
+        # Robust stats (MAD-based, resistant to outliers)
+        self.vol_robust_stats = RobustVolStats(
+            w.volume,
+            period=self.p.vol_short_lookback
+        )
+        # Keep simple SMA/StdDev for backward compatibility/fallback
         self.vol_sma = bt.ind.SMA(w.volume, period=self.p.vol_lookback)
         self.vol_stddev = bt.ind.StdDev(w.volume, period=self.p.vol_lookback)
         self.vol_highest = bt.ind.Highest(w.volume, period=self.p.max_volume_lookback)
@@ -332,39 +453,96 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         
         try:
             vol = float(w.volume[i])
-            volsma = float(self.vol_sma[i])
-            volstddev = float(self.vol_stddev[i])
             
-            if volsma == 0:
-                if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): VolSMA is 0")
-                return False
+            # MULTI-THRESHOLD DETECTION (2-of-3 rule)
+            # This catches volume spikes that humans can visually see, even with outliers in history
             
-            # Calculate z-score: (volume - mean) / stddev
-            # Higher z-score = more anomalous (statistically significant volume spike)
-            if volstddev > 0:
-                vol_zscore = (vol - volsma) / volstddev
+            passed_tests = []
+            test_details = {}
+            
+            # Test 1: Robust Z-Score (MAD-based, resistant to outliers)
+            if len(self.vol_robust_stats.median) > 0:
+                med = float(self.vol_robust_stats.median[i])
+                mad = float(self.vol_robust_stats.mad[i])
+                
+                if mad > 1e-9 and med > 0:
+                    # Robust z-score: 0.6745 * (vol - median) / MAD
+                    # The 0.6745 factor makes it comparable to standard z-score
+                    robust_z = 0.6745 * (vol - med) / mad
+                    test_details['robust_z'] = robust_z
+                    test_details['median'] = med
+                    test_details['mad'] = mad
+                    
+                    if robust_z >= self.p.vol_robust_z_min:
+                        passed_tests.append('robust_z')
+                else:
+                    test_details['robust_z'] = None
             else:
-                # Fallback to multiplier if stddev is 0 or too small
-                vol_zscore = (vol / volsma) - 1.0 if volsma > 0 else 0.0
-                if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): VolStdDev is {volstddev:.0f}, using fallback multiplier method")
+                test_details['robust_z'] = None
             
-            if vol_zscore < self.p.vol_zscore_min:
-                # Fallback check using multiplier for backward compatibility
-                vol_threshold = self.p.vol_mult * volsma
-                if vol <= vol_threshold:
-                    if self.p.log_level.upper() == 'DEBUG':
-                        self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} < {self.p.vol_zscore_min} (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f}, threshold={vol_threshold:.0f})")
-                    return False
-                # If multiplier check passes but z-score doesn't, still fail (z-score is primary)
+            # Test 2: Short-term Weighted Z-Score (12-week context, less polluted)
+            if len(self.vol_weighted_stats_short.weighted_mean) > 0:
+                volmean_short = float(self.vol_weighted_stats_short.weighted_mean[i])
+                volstddev_short = float(self.vol_weighted_stats_short.weighted_stddev[i])
+                
+                if volstddev_short > 0 and volmean_short > 0:
+                    weighted_z_short = (vol - volmean_short) / volstddev_short
+                    test_details['weighted_z_short'] = weighted_z_short
+                    test_details['weighted_mean_short'] = volmean_short
+                    test_details['weighted_stddev_short'] = volstddev_short
+                    
+                    if weighted_z_short >= self.p.vol_zscore_min:
+                        passed_tests.append('weighted_z_short')
+                else:
+                    test_details['weighted_z_short'] = None
+            else:
+                test_details['weighted_z_short'] = None
+            
+            # Test 3: Rate of Change vs Median (ROC)
+            if len(self.vol_robust_stats.median) > 0:
+                med = float(self.vol_robust_stats.median[i])
+                
+                if med > 0:
+                    roc = (vol / med) - 1.0  # ROC as percentage above median
+                    test_details['roc'] = roc
+                    test_details['roc_pct'] = roc * 100
+                    
+                    if roc >= self.p.vol_roc_min:
+                        passed_tests.append('roc')
+                else:
+                    test_details['roc'] = None
+            else:
+                test_details['roc'] = None
+            
+            # Apply 2-of-3 rule (or 1-of-3 if multi_threshold disabled)
+            min_passed = 2 if self.p.vol_use_multi_threshold else 1
+            volume_test_passed = len(passed_tests) >= min_passed
+            
+            if not volume_test_passed:
                 if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} < {self.p.vol_zscore_min} but multiplier check passed (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f})")
+                    details_str = []
+                    if test_details.get('robust_z') is not None:
+                        details_str.append(f"robust_z={test_details['robust_z']:.2f} (need {self.p.vol_robust_z_min:.1f})")
+                    if test_details.get('weighted_z_short') is not None:
+                        details_str.append(f"weighted_z_short={test_details['weighted_z_short']:.2f} (need {self.p.vol_zscore_min:.1f})")
+                    if test_details.get('roc') is not None:
+                        details_str.append(f"ROC={test_details['roc']*100:.1f}% (need {self.p.vol_roc_min*100:.0f}%)")
+                    details = ", ".join(details_str) if details_str else "insufficient data"
+                    self.debug_log(f"CONDITION A (Ignition): Volume test FAILED - vol={vol:.0f}, passed={len(passed_tests)}/{min_passed} tests ({details})")
                 return False
             else:
-                # Z-score check passed - log it
+                # Volume test passed - log which tests passed
                 if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} >= {self.p.vol_zscore_min} PASSED (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f})")
+                    passed_str = ", ".join(passed_tests)
+                    details_str = []
+                    if 'robust_z' in passed_tests:
+                        details_str.append(f"robust_z={test_details['robust_z']:.2f} (median={test_details['median']:.0f}, MAD={test_details['mad']:.0f})")
+                    if 'weighted_z_short' in passed_tests:
+                        details_str.append(f"weighted_z_short={test_details['weighted_z_short']:.2f} (mean={test_details['weighted_mean_short']:.0f})")
+                    if 'roc' in passed_tests:
+                        details_str.append(f"ROC={test_details['roc']*100:.1f}%")
+                    details = " | ".join(details_str)
+                    self.debug_log(f"CONDITION A (Ignition): Volume test PASSED - vol={vol:.0f}, passed tests: {passed_str} ({details})")
             
             hi = float(w.high[i])
             lo = float(w.low[i])
@@ -398,18 +576,22 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                         self.debug_log(f"CONDITION A (Ignition): Close {cl:.2f} <= MA30 {ma30_val:.2f}")
                     return False
             
-            # Optional: highest volume in last N weeks
-            vol_highest = float(self.vol_highest[i])
-            vol_min_threshold = vol_highest * self.p.vol_highest_pct
-            if vol < vol_min_threshold:
-                if self.p.log_level.upper() == 'DEBUG':
-                    pct_str = f"{self.p.vol_highest_pct * 100:.0f}%"
-                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} < {vol_min_threshold:.0f} ({pct_str} of highest {vol_highest:.0f})")
-                return False
+            # Optional: highest volume check (disabled by default, was too restrictive)
+            if self.p.vol_highest_pct > 0:
+                vol_highest = float(self.vol_highest[i])
+                vol_min_threshold = vol_highest * self.p.vol_highest_pct
+                if vol < vol_min_threshold:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        pct_str = f"{self.p.vol_highest_pct * 100:.0f}%"
+                        self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} < {vol_min_threshold:.0f} ({pct_str} of highest {vol_highest:.0f})")
+                    return False
             
+            # All volume tests passed - log final confirmation
             if self.p.log_level.upper() == 'DEBUG':
-                vol_ratio = vol / volsma if volsma > 0 else 0.0
-                self.debug_log(f"CONDITION A (Ignition): PASSED - vol={vol:.0f} (z-score={vol_zscore:.2f}, {vol_ratio:.2f}x SMA), bodypos={bodypos:.2f}, close={cl:.2f} > MA30={ma30_val:.2f}")
+                # Get median for ratio display
+                med_display = test_details.get('median', 0)
+                med_ratio = vol / med_display if med_display > 0 else 0.0
+                self.debug_log(f"CONDITION A (Ignition): PASSED - vol={vol:.0f} ({med_ratio:.2f}x median), bodypos={bodypos:.2f}, close={cl:.2f} > MA30={ma30_val:.2f}")
             return True
             
         except (IndexError, ValueError, TypeError) as e:
