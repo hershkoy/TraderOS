@@ -220,8 +220,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         
         # Risk management
         risk_per_trade=0.01,           # 1% of equity per trade
-        stop_loss_pct=0.07,            # Stop loss: 7% below entry price
-        take_profit_pct=0.14,           # Take profit: 14% above entry price (2:1 risk reward)
+        stop_loss_pct=0.15,            # Stop loss: 7% below entry price
+        take_profit_pct=0.30,           # Take profit: 14% above entry price (2:1 risk reward)
         atr_period=14,                 # Weekly ATR period (for reference)
         atr_mult=1.5,                  # ATR multiplier for stop
         buffer_pct=0.01,               # 1% buffer for structure-based stop
@@ -344,6 +344,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.entry_week_idx = None
         self._pending_stop_order = None
         self._pending_limit_order = None
+        self._last_entry_price = None  # Saved for PnL calculation in notify_trade
+        self._last_entry_size = None
         
         # Track previous weekly bar index and datetime to detect updates
         self._prev_week_idx = -1
@@ -993,10 +995,20 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
     def _check_intraday_entry(self):
         """Stage 3: trigger entries on 15m bars when volume accepts above the pivot."""
         if not self._ready:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log("Intraday entry check: Strategy not ready (warmup incomplete)")
             return
-        if not self.armed or self.position or self.order is not None:
+        if not self.armed:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log("Intraday entry check: Ticker not armed (Conditions A+B not met or weekly filter failed)")
             return
+        if self.position:
+            return  # Already in position, no need to log
+        if self.order is not None:
+            return  # Pending order, no need to log
         if self.pivot_level is None:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log("Intraday entry check: Pivot level unavailable (need more daily data)")
             return
         
         # Entry window handling (calendar days)
@@ -1204,7 +1216,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                         self.track_trade_exit(exit_price, exit_size)
                     
                     if self.position.size == 0:
-                        # Position fully closed - reset state to allow new signals
+                        # Position fully closed - save entry_price for notify_trade before resetting
+                        # (notify_trade is called after notify_order, so we need to preserve it)
+                        self._last_entry_price = self.entry_price
+                        self._last_entry_size = exit_size
+                        # Reset state to allow new signals
                         self.current_stop = None
                         self.profit_target = None
                         self.entry_price = None
@@ -1241,10 +1257,34 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         """Handle trade notifications."""
         if trade.isclosed:
             pnl = trade.pnl
-            # Calculate PnL percentage, avoiding division by zero
-            denominator = trade.price * abs(trade.size) if trade.size else 1.0
-            pnl_pct = (pnl / denominator) * 100 if denominator > 0 else 0.0
-            self.log(f'[{self.symbol}] TRADE CLOSED, pnl={pnl:.2f} ({pnl_pct:.2f}%)')
+            # Calculate PnL percentage based on entry cost
+            # Use saved entry_price from notify_order (most reliable)
+            if self._last_entry_price and self._last_entry_price > 0:
+                entry_price = self._last_entry_price
+                trade_size = self._last_entry_size if self._last_entry_size else (abs(trade.size) if trade.size else 0)
+            elif self.entry_price and self.entry_price > 0:
+                # Fallback: entry_price might still be set if notify_trade is called before reset
+                entry_price = self.entry_price
+                trade_size = abs(trade.size) if trade.size else 0
+            elif hasattr(trade, 'price') and trade.price > 0:
+                # Last resort: use trade.price (might be average entry price)
+                entry_price = trade.price
+                trade_size = abs(trade.size) if trade.size else 0
+            else:
+                # Cannot calculate percentage without entry price
+                entry_price = 0
+                trade_size = abs(trade.size) if trade.size else 0
+                self.debug_log(f"[{self.symbol}] WARNING: Cannot calculate PnL % - entry price unknown")
+            
+            # Calculate entry cost and PnL percentage
+            entry_cost = entry_price * trade_size if entry_price > 0 and trade_size > 0 else 1.0
+            pnl_pct = (pnl / entry_cost) * 100 if entry_cost > 0 else 0.0
+            
+            # Clear saved values after use
+            self._last_entry_price = None
+            self._last_entry_size = None
+            
+            self.log(f'[{self.symbol}] TRADE CLOSED, pnl=${pnl:.2f} ({pnl_pct:.2f}%) | Entry: ${entry_price:.2f}, Size: {trade_size}')
             # Safety check: clear any stale order references when trade closes
             if not self.position and self.order is not None:
                 self.debug_log(f"[{self.symbol}] Clearing order reference after trade close (safety check)")
@@ -1290,6 +1330,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
 
         # INTRADAY LOGIC: Check for entry on every 15m bar while armed
         if self.armed and not self.position and self.order is None:
+            # Log periodic status when armed (every 100th 15m bar to reduce noise)
+            current_intraday_idx = len(self.d_15) - 1 if len(self.d_15) > 0 else 0
+            if self.p.log_level.upper() == 'DEBUG' and current_intraday_idx % 100 == 0:
+                try:
+                    intraday_date = self.d_15.datetime.datetime(0) if len(self.d_15) > 0 else "N/A"
+                    pivot_str = f"${self.pivot_level:.2f}" if self.pivot_level else "N/A"
+                    window_str = f"until {self.entry_window_end_date}" if self.entry_window_end_date else "no limit"
+                    self.debug_log(f"[{self.symbol}] ARMED - Checking for intraday entry | Pivot: {pivot_str} | Window: {window_str} | 15m bar: {current_intraday_idx} ({intraday_date})")
+                except Exception:
+                    pass
             self._check_intraday_entry()
         
         # Check exits on every 15m bar (stop loss and profit target)
@@ -1481,9 +1531,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                         else:
                             if self.p.log_level.upper() == 'DEBUG':
                                 reason = "pivot unavailable" if self.pivot_level is None else "weekly filter failed"
-                                self.debug_log(f"TTM cross detected but {reason}: close={cl:.2f}, MA30={ma30_val:.2f}, extended={cl > ma30_val * (1.0 + self.p.max_extended_pct)}")
+                                max_extended_price = ma30_val * (1.0 + self.p.max_extended_pct)
+                                extended_pct = ((cl - ma30_val) / ma30_val * 100) if ma30_val > 0 else 0
+                                self.debug_log(f"TTM cross detected but {reason}: close={cl:.2f}, MA30={ma30_val:.2f}, max_extended={max_extended_price:.2f} ({self.p.max_extended_pct*100:.0f}%), actual_extended={extended_pct:.1f}%")
                                 if self.pivot_level is None:
                                     self.debug_log("Need more daily data to set pivot before arming.")
+                                else:
+                                    self.debug_log(f"TICKER NOT ARMED - No intraday entry checks will be performed until weekly filter passes or conditions change.")
                     else:
                         # If MA30 not ready, still arm (generous)
                         if self.pivot_level is not None:
