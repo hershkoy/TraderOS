@@ -83,11 +83,13 @@ class LinRegSlope(bt.Indicator):
 
 class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
     params = dict(
-        # Volume ignition (Condition A)
-        vol_lookback=52,              # Weeks for volume SMA (1 year)
-        vol_mult=3.0,                 # Volume multiplier threshold
+        # Volume ignition (Condition A) - using z-score for better anomaly detection
+        vol_lookback=52,              # Weeks for volume statistics (1 year)
+        vol_zscore_min=2.5,           # Minimum z-score for volume anomaly (2.5 = top ~1% if normal distribution)
+        vol_mult=3.0,                  # Fallback: multiplier threshold (deprecated, use z-score instead)
         body_pos_min=0.5,             # Minimum body position (close in top half)
         max_volume_lookback=52,       # Lookback for "highest volume in N weeks"
+        vol_highest_pct=0.75,          # Minimum volume as % of highest in lookback window (0.8 = 80%)
         
         # TTM Squeeze (Condition B) - using squeeze_scanner logic
         lengthKC=20,                   # Keltner Channel length (matches squeeze_scanner)
@@ -180,8 +182,9 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # ATR for stops
         self.atrw = bt.ind.ATR(w, period=self.p.atr_period)
         
-        # Volume stats
+        # Volume stats - using z-score for better anomaly detection
         self.vol_sma = bt.ind.SMA(w.volume, period=self.p.vol_lookback)
+        self.vol_stddev = bt.ind.StdDev(w.volume, period=self.p.vol_lookback)
         self.vol_highest = bt.ind.Highest(w.volume, period=self.p.max_volume_lookback)
         
         # Momentum (linear regression slope) for TTM Squeeze
@@ -325,17 +328,38 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         try:
             vol = float(w.volume[i])
             volsma = float(self.vol_sma[i])
-            vol_threshold = self.p.vol_mult * volsma
+            volstddev = float(self.vol_stddev[i])
             
             if volsma == 0:
                 if self.p.log_level.upper() == 'DEBUG':
                     self.debug_log(f"CONDITION A (Ignition): VolSMA is 0")
                 return False
             
-            if vol <= vol_threshold:
+            # Calculate z-score: (volume - mean) / stddev
+            # Higher z-score = more anomalous (statistically significant volume spike)
+            if volstddev > 0:
+                vol_zscore = (vol - volsma) / volstddev
+            else:
+                # Fallback to multiplier if stddev is 0 or too small
+                vol_zscore = (vol / volsma) - 1.0 if volsma > 0 else 0.0
                 if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} <= {vol_threshold:.0f} (need > {self.p.vol_mult}x SMA {volsma:.0f})")
+                    self.debug_log(f"CONDITION A (Ignition): VolStdDev is {volstddev:.0f}, using fallback multiplier method")
+            
+            if vol_zscore < self.p.vol_zscore_min:
+                # Fallback check using multiplier for backward compatibility
+                vol_threshold = self.p.vol_mult * volsma
+                if vol <= vol_threshold:
+                    if self.p.log_level.upper() == 'DEBUG':
+                        self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} < {self.p.vol_zscore_min} (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f}, threshold={vol_threshold:.0f})")
+                    return False
+                # If multiplier check passes but z-score doesn't, still fail (z-score is primary)
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} < {self.p.vol_zscore_min} but multiplier check passed (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f})")
                 return False
+            else:
+                # Z-score check passed - log it
+                if self.p.log_level.upper() == 'DEBUG':
+                    self.debug_log(f"CONDITION A (Ignition): Volume z-score {vol_zscore:.2f} >= {self.p.vol_zscore_min} PASSED (vol={vol:.0f}, mean={volsma:.0f}, stddev={volstddev:.0f})")
             
             hi = float(w.high[i])
             lo = float(w.low[i])
@@ -371,14 +395,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             
             # Optional: highest volume in last N weeks
             vol_highest = float(self.vol_highest[i])
-            vol_min_threshold = vol_highest * 0.9
+            vol_min_threshold = vol_highest * self.p.vol_highest_pct
             if vol < vol_min_threshold:
                 if self.p.log_level.upper() == 'DEBUG':
-                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} < {vol_min_threshold:.0f} (90% of highest {vol_highest:.0f})")
+                    pct_str = f"{self.p.vol_highest_pct * 100:.0f}%"
+                    self.debug_log(f"CONDITION A (Ignition): Volume {vol:.0f} < {vol_min_threshold:.0f} ({pct_str} of highest {vol_highest:.0f})")
                 return False
             
             if self.p.log_level.upper() == 'DEBUG':
-                self.debug_log(f"CONDITION A (Ignition): PASSED - vol={vol:.0f} ({vol/volsma:.2f}x SMA), bodypos={bodypos:.2f}, close={cl:.2f} > MA30={ma30_val:.2f}")
+                vol_ratio = vol / volsma if volsma > 0 else 0.0
+                self.debug_log(f"CONDITION A (Ignition): PASSED - vol={vol:.0f} (z-score={vol_zscore:.2f}, {vol_ratio:.2f}x SMA), bodypos={bodypos:.2f}, close={cl:.2f} > MA30={ma30_val:.2f}")
             return True
             
         except (IndexError, ValueError, TypeError) as e:
