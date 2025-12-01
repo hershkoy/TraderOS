@@ -179,6 +179,57 @@ class LinRegSlope(bt.Indicator):
             self.lines.slope[0] = slope
 
 
+class VolumeDelta(bt.Indicator):
+    """
+    Approximates buy/sell volume split for a bar using candle geometry.
+    Heuristic matches TradingView script fallback when lower timeframe data
+    is unavailable: allocate volume based on close position within the range.
+    """
+    lines = ('buy_volume', 'sell_volume', 'buy_pct', 'sell_pct', 'delta')
+    params = (('min_tick', 1e-4),)
+
+    def __init__(self):
+        self.addminperiod(1)
+
+    def next(self):
+        try:
+            volume = max(float(self.data.volume[0]), 0.0)
+            high = float(self.data.high[0])
+            low = float(self.data.low[0])
+            close = float(self.data.close[0])
+        except (IndexError, ValueError, TypeError):
+            self.lines.buy_volume[0] = 0.0
+            self.lines.sell_volume[0] = 0.0
+            self.lines.buy_pct[0] = 0.0
+            self.lines.sell_pct[0] = 0.0
+            self.lines.delta[0] = 0.0
+            return
+
+        rng = max(high - low, self.p.min_tick)
+        positional = max(close - low, 0.0)
+        buy_est = volume * (positional / rng)
+        sell_est = volume - buy_est
+
+        buy_volume = max(buy_est, 0.0)
+        sell_volume = -max(sell_est, 0.0)
+        total = buy_volume + abs(sell_volume)
+
+        if total > 0:
+            buy_pct = (buy_volume / total) * 100.0
+            sell_pct = 100.0 - buy_pct
+        else:
+            buy_pct = 0.0
+            sell_pct = 0.0
+
+        delta = buy_volume + sell_volume  # sell_volume already negative
+
+        self.lines.buy_volume[0] = buy_volume
+        self.lines.sell_volume[0] = sell_volume
+        self.lines.buy_pct[0] = buy_pct
+        self.lines.sell_pct[0] = sell_pct
+        self.lines.delta[0] = delta
+
+
 class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
     params = dict(
         # Volume ignition (Condition A) - using robust multi-threshold detection
@@ -193,6 +244,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         max_volume_lookback=52,       # Lookback for "highest volume in N weeks" (for reference only)
         vol_highest_pct=0.0,          # Disabled: was too restrictive (0.0 = disabled, was 0.75)
         vol_use_multi_threshold=True, # Use 2-of-3 rule: robust_z OR weighted_z OR ROC
+        
+        # Daily volume delta anomaly detection (info-only logging)
+        daily_vol_lookback=63,         # ~3 months of trading days
+        daily_vol_short_lookback=21,   # 1 trading month for robust stats
+        daily_vol_zscore_min=2.0,      # Min z-score to call daily volume anomalous
+        daily_vol_roc_min=0.4,         # Daily volume at least 40% above median
+        daily_buy_pressure_threshold=0.92,  # 92% or more buy-side volume required
         
         # TTM Squeeze (Condition B) - using squeeze_scanner logic
         lengthKC=20,                   # Keltner Channel length (matches squeeze_scanner)
@@ -317,6 +375,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         d = self.d_d
         self.atr20 = bt.ind.ATR(d, period=self.p.atr20_period)
         self.daily_pivot_high = bt.ind.Highest(d.close, period=self.p.pivot_lookback_days)
+        self.daily_vol_weighted_stats = WeightedVolStats(
+            d.volume,
+            period=self.p.daily_vol_lookback,
+            decay_factor=self.p.vol_weight_decay
+        )
+        self.daily_vol_robust_stats = RobustVolStats(
+            d.volume,
+            period=self.p.daily_vol_short_lookback
+        )
+        self.daily_vol_delta = VolumeDelta(d)
         
         # Intraday indicators (15m trend filter)
         intraday = self.d_15
@@ -350,6 +418,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # Track previous weekly bar index and datetime to detect updates
         self._prev_week_idx = -1
         self._prev_week_datetime = None
+        self._prev_daily_datetime = None
         
         # Warmup flag
         self._ready = False
@@ -734,6 +803,116 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         except (IndexError, ValueError, TypeError) as e:
             self.debug_log(f"CONDITION C (Trend): Error at {i}: {e}")
             return False
+
+    def _is_daily_volume_anomaly(self, i):
+        """Detect daily volume spikes using same multi-threshold logic as weekly."""
+        d = self.d_d
+        if len(d) == 0:
+            return False
+        if i < 0 and len(d) < abs(i):
+            return False
+        if i >= len(d):
+            return False
+
+        try:
+            vol = float(d.volume[i])
+        except (IndexError, ValueError, TypeError):
+            return False
+
+        passed_tests = []
+        details = {}
+
+        # Robust z-score (median/MAD)
+        if len(self.daily_vol_robust_stats.median) > 0:
+            try:
+                med = float(self.daily_vol_robust_stats.median[i])
+                mad = float(self.daily_vol_robust_stats.mad[i])
+            except (IndexError, ValueError, TypeError):
+                med = 0.0
+                mad = 0.0
+            if mad > 1e-9 and med > 0:
+                robust_z = 0.6745 * (vol - med) / mad
+                details['robust_z'] = robust_z
+                if robust_z >= self.p.daily_vol_zscore_min:
+                    passed_tests.append('robust_z')
+
+        # Weighted z-score (short lookback)
+        if len(self.daily_vol_weighted_stats.weighted_mean) > 0:
+            try:
+                mean_short = float(self.daily_vol_weighted_stats.weighted_mean[i])
+                std_short = float(self.daily_vol_weighted_stats.weighted_stddev[i])
+            except (IndexError, ValueError, TypeError):
+                mean_short = 0.0
+                std_short = 0.0
+            if std_short > 0 and mean_short > 0:
+                weighted_z = (vol - mean_short) / std_short
+                details['weighted_z'] = weighted_z
+                if weighted_z >= self.p.daily_vol_zscore_min:
+                    passed_tests.append('weighted_z')
+
+        # Rate-of-change vs median
+        if len(self.daily_vol_robust_stats.median) > 0:
+            try:
+                med = float(self.daily_vol_robust_stats.median[i])
+            except (IndexError, ValueError, TypeError):
+                med = 0.0
+            if med > 0:
+                roc = (vol / med) - 1.0
+                details['roc'] = roc
+                if roc >= self.p.daily_vol_roc_min:
+                    passed_tests.append('roc')
+
+        min_passed = 2 if self.p.vol_use_multi_threshold else 1
+        if len(passed_tests) >= min_passed:
+            if self.p.log_level.upper() == 'DEBUG':
+                detail_str = []
+                if 'robust_z' in passed_tests and 'robust_z' in details:
+                    detail_str.append(f"robust_z={details['robust_z']:.2f}")
+                if 'weighted_z' in passed_tests and 'weighted_z' in details:
+                    detail_str.append(f"weighted_z={details['weighted_z']:.2f}")
+                if 'roc' in passed_tests and 'roc' in details:
+                    detail_str.append(f"ROC={details['roc']*100:.1f}%")
+                msg = " | ".join(detail_str)
+                self.debug_log(f"DAILY VOLUME: anomaly detected (vol={vol:.0f}) [{msg}]")
+            return True
+
+        if self.p.log_level.upper() == 'DEBUG':
+            self.debug_log(f"DAILY VOLUME: tests failed (vol={vol:.0f}, passed {len(passed_tests)}/{min_passed})")
+        return False
+
+    def _handle_new_daily_bar(self):
+        """Check the latest completed daily bar for buy-volume anomalies."""
+        if not self._ready:
+            return
+        if len(self.d_d) == 0:
+            return
+
+        idx = -1
+        if not self._is_daily_volume_anomaly(idx):
+            return
+
+        try:
+            buy_pct = float(self.daily_vol_delta.buy_pct[idx])
+            buy_volume = float(self.daily_vol_delta.buy_volume[idx])
+            sell_volume = float(self.daily_vol_delta.sell_volume[idx])
+            total_volume = float(self.d_d.volume[idx])
+            close_price = float(self.d_d.close[idx])
+            bar_date = self.d_d.datetime.datetime(idx)
+        except (IndexError, ValueError, TypeError):
+            return
+
+        threshold_pct = self.p.daily_buy_pressure_threshold * 100.0
+        if buy_pct < threshold_pct:
+            if self.p.log_level.upper() == 'DEBUG':
+                self.debug_log(f"DAILY VOLUME: anomaly but buy% {buy_pct:.1f} < {threshold_pct:.1f}")
+            return
+
+        net_delta = buy_volume + sell_volume
+        date_str = bar_date.strftime('%Y-%m-%d') if hasattr(bar_date, 'strftime') else bar_date
+        self.log(
+            f"[{self.symbol}] DAILY BUY VOLUME SPIKE | Date={date_str} | Vol={total_volume:,.0f} "
+            f"| Buy={buy_volume:,.0f} ({buy_pct:.1f}%) | Delta={net_delta:,.0f} | Close=${close_price:.2f}"
+        )
 
     def _check_entry_retest(self, i):
         """
@@ -1327,6 +1506,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 if self.p.log_level.upper() == 'DEBUG' and daily_len % 10 == 0:  # Log every 10th daily bar during warmup
                     self.debug_log(f"Warmup: daily={daily_len}, weekly={weekly_len}, need={min_periods}")
                 return
+
+        # Detect new daily bars and run daily volume delta checks once per bar
+        if len(self.d_d) > 0:
+            try:
+                current_daily_datetime = self.d_d.datetime.datetime(-1)
+                if self._prev_daily_datetime is None or current_daily_datetime != self._prev_daily_datetime:
+                    self._prev_daily_datetime = current_daily_datetime
+                    self._handle_new_daily_bar()
+            except (IndexError, AttributeError):
+                pass
 
         # INTRADAY LOGIC: Check for entry on every 15m bar while armed
         if self.armed and not self.position and self.order is None:
