@@ -117,6 +117,8 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         
         # Risk management
         risk_per_trade=0.01,           # 1% of equity per trade
+        stop_loss_pct=0.07,            # Stop loss: 7% below entry price
+        take_profit_pct=0.14,           # Take profit: 14% above entry price (2:1 risk reward)
         atr_period=14,                 # Weekly ATR period (for reference)
         atr_mult=1.5,                  # ATR multiplier for stop
         buffer_pct=0.01,               # 1% buffer for structure-based stop
@@ -216,8 +218,11 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # Position management
         self.order = None
         self.current_stop = None
+        self.profit_target = None
         self.entry_price = None
         self.entry_week_idx = None
+        self._pending_stop_order = None
+        self._pending_limit_order = None
         
         # Track previous weekly bar index and datetime to detect updates
         self._prev_week_idx = -1
@@ -881,24 +886,15 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             
             # Entry price: current close (or next bar's open in live trading)
             entry_price = float(d.close[0])
-            signal_low = float(d.low[0])  # Low of signal bar
             
-            # Calculate stop price (tighter of two options)
-            # Option 1: Below signal bar low minus 1-2%
-            stop_price_signal = signal_low * (1.0 - self.p.buffer_pct)
+            # Stop loss: configurable % below entry price (checked on 15m timeframe)
+            stop_price = entry_price * (1.0 - self.p.stop_loss_pct)
             
-            # Option 2: Entry price - 1.5 * ATR20d
-            if len(self.atr20) > 0:
-                atr20_val = float(self.atr20[0])
-                stop_price_atr = entry_price - self.p.atr_mult * atr20_val
-            else:
-                stop_price_atr = stop_price_signal
+            # Profit target: configurable % above entry price (checked on 15m timeframe)
+            profit_target_price = entry_price * (1.0 + self.p.take_profit_pct)
             
-            # Use the tighter stop
-            stop_price = max(stop_price_signal, stop_price_atr)
-            
-            # Position sizing based on risk
-            risk_per_share = max(entry_price - stop_price, 0.01)
+            # Position sizing based on risk (using stop_loss_pct)
+            risk_per_share = entry_price * self.p.stop_loss_pct
             risk_capital = self.broker.getvalue() * self.p.risk_per_trade
             size = math.floor(risk_capital / risk_per_share)
             
@@ -909,24 +905,61 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             # Place buy order
             self.order = self.buy(data=self.d_15, size=size)
             self.current_stop = stop_price
+            self.profit_target = profit_target_price
             self.entry_price = entry_price
             self.entry_week_idx = len(self.d_w) - 1
             
-            self.log(f"[{self.symbol}] INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f}, Size: {size}")
+            stop_pct_str = f"-{self.p.stop_loss_pct*100:.0f}%"
+            profit_pct_str = f"+{self.p.take_profit_pct*100:.0f}%"
+            self.log(f"[{self.symbol}] INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, Stop: ${stop_price:.2f} ({stop_pct_str}), Target: ${profit_target_price:.2f} ({profit_pct_str}), Size: {size}")
             self.track_trade_entry(entry_price, size)
             
-            # Place stop order
-            self.sell(data=self.d_15, exectype=bt.Order.Stop, price=stop_price, size=size)
+            # Note: Stop and limit orders will be placed after buy order is executed (in notify_order)
             
         except Exception as e:
             self.debug_log(f"Intraday entry error: {e}")
 
     def _manage_exits(self):
-        """Manage position exits based on weekly trend filters."""
-        if not self.position or self.order is not None:
+        """Manage position exits: configurable stop loss and take profit on 15m, plus weekly trend filters."""
+        if not self.position:
+            return
+        
+        # Don't check exits if we have a pending buy order (entry not filled yet)
+        if self.order is not None and self.order.isbuy():
             return
         
         try:
+            # Check 15m bars for stop loss and profit target
+            if self.entry_price is not None:
+                current_price = float(self.d_15.close[0])
+                
+                # Check profit target first (higher priority - take profit before stop)
+                # This is a backup check in case the limit order didn't trigger
+                if self.profit_target is not None:
+                    if current_price >= self.profit_target:
+                        self.log(f"EXIT: Profit target hit (15m backup check) | Entry: ${self.entry_price:.2f}, Current: ${current_price:.2f}, Target: ${self.profit_target:.2f}")
+                        # Cancel any pending orders and close at market
+                        if self.order is not None:
+                            self.cancel(self.order)
+                        self.order = self.close(data=self.d_15)
+                        if self.entry_price:
+                            self.track_trade_exit(current_price, abs(self.position.size))
+                        return
+                
+                # Check stop loss: configurable % below entry (checked on 15m timeframe)
+                # This is a backup check in case the stop order didn't trigger
+                if self.current_stop is not None:
+                    if current_price <= self.current_stop:
+                        self.log(f"EXIT: Stop loss hit (15m backup check) | Entry: ${self.entry_price:.2f}, Current: ${current_price:.2f}, Stop: ${self.current_stop:.2f}")
+                        # Cancel any pending orders and close at market
+                        if self.order is not None:
+                            self.cancel(self.order)
+                        self.order = self.close(data=self.d_15)
+                        if self.entry_price:
+                            self.track_trade_exit(current_price, abs(self.position.size))
+                        return
+            
+            # Weekly trend filter exits (checked on weekly bars)
             w = self.d_w
             
             # Fast exit: close below 10-week MA
@@ -965,13 +998,37 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             if order.status in [order.Completed]:
                 if order.isbuy():
                     self.log(f'[{self.symbol}] BUY EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
+                    # Place stop and limit orders after buy order is executed
+                    if self.current_stop is not None and self.profit_target is not None and self.position.size > 0:
+                        size = abs(self.position.size)
+                        # Place stop order for stop loss
+                        self._pending_stop_order = self.sell(data=self.d_15, exectype=bt.Order.Stop, price=self.current_stop, size=size)
+                        # Place limit order for profit target
+                        self._pending_limit_order = self.sell(data=self.d_15, exectype=bt.Order.Limit, price=self.profit_target, size=size)
+                        self.debug_log(f"[{self.symbol}] Placed stop order at ${self.current_stop:.2f} and limit order at ${self.profit_target:.2f}")
                 elif order.issell():
-                    self.log(f'[{self.symbol}] SELL EXECUTED, price={order.executed.price:.2f}, size={order.executed.size}')
+                    exit_price = order.executed.price
+                    exit_size = abs(order.executed.size)
+                    # Determine exit reason
+                    if order.exectype == bt.Order.Stop:
+                        self.log(f'[{self.symbol}] SELL EXECUTED (STOP LOSS), price={exit_price:.2f}, size={exit_size}')
+                    elif order.exectype == bt.Order.Limit:
+                        self.log(f'[{self.symbol}] SELL EXECUTED (PROFIT TARGET), price={exit_price:.2f}, size={exit_size}')
+                    else:
+                        self.log(f'[{self.symbol}] SELL EXECUTED, price={exit_price:.2f}, size={exit_size}')
+                    
+                    # Track the exit for statistics
+                    if self.entry_price is not None:
+                        self.track_trade_exit(exit_price, exit_size)
+                    
                     if self.position.size == 0:
                         # Position fully closed - reset state to allow new signals
                         self.current_stop = None
+                        self.profit_target = None
                         self.entry_price = None
                         self.entry_week_idx = None
+                        self._pending_stop_order = None
+                        self._pending_limit_order = None
                         # CRITICAL: Clear order reference immediately when position closes
                         # This ensures we don't skip signal checks due to stale order references
                         self.order = None
@@ -1052,6 +1109,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # INTRADAY LOGIC: Check for entry on every 15m bar while armed
         if self.armed and not self.position and self.order is None:
             self._check_intraday_entry()
+        
+        # Check exits on every 15m bar (stop loss and profit target)
+        if self.position:
+            self._manage_exits()
+            # If position was closed by exit management, return early
+            if not self.position:
+                return
         
         # Only act on weekly bar closes
         # In Backtrader, weekly resampled data only updates when a new week completes
@@ -1163,11 +1227,6 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         except Exception as e:
             self.debug_log(f"Error logging weekly bar info: {e}")
         
-        # Manage exits first (if in position)
-        if self.position:
-            self._manage_exits()
-            return
-
         # If no position, check for entry signals
         # Safety check: if position is closed and order exists, verify it's not stale
         # Only clear if we can confirm the order is completed/canceled (stale reference)
@@ -1281,6 +1340,25 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
 
     def stop(self):
         """Called at the end of the backtest."""
+        # Close any open position at the end of simulation for P&L calculation
+        try:
+            if self.position and self.position.size != 0:
+                try:
+                    # Get current price from 15m data
+                    if len(self.d_15) > 0:
+                        exit_price = float(self.d_15.close[0])
+                        exit_size = abs(self.position.size)
+                        self.log(f"[{self.symbol}] CLOSING OPEN POSITION AT END OF SIMULATION | Price: ${exit_price:.2f}, Size: {exit_size}")
+                        # Close the position
+                        self.order = self.close(data=self.d_15)
+                        # Track the exit for statistics
+                        if self.entry_price:
+                            self.track_trade_exit(exit_price, exit_size)
+                except Exception as e:
+                    self.debug_log(f"Error closing position at end of simulation: {e}")
+        except Exception:
+            pass
+        
         try:
             stats = self.get_trade_statistics()
             total_weekly_bars = len(self.d_w)
