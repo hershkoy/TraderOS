@@ -658,7 +658,166 @@ class IntradayManager:
     def __init__(self, strategy):
         self.strategy = strategy
 
-    # methods as in refactored file...
+    def calculate_pivot(self):
+        strategy = self.strategy
+        if len(strategy.d_d) == 0:
+            return None
+        try:
+            pivot = float(strategy.daily_pivot_high[0])
+            return pivot if pivot > 0 else None
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def compute_poc(self):
+        strategy = self.strategy
+        total_bars = len(strategy.d_15)
+        if total_bars == 0:
+            return None
+        start_offset = min(strategy.p.poc_lookback_bars, total_bars)
+        if strategy.ttm_cross_intraday_start_idx is not None:
+            bars_since_cross = total_bars - strategy.ttm_cross_intraday_start_idx
+            if bars_since_cross <= 0:
+                return None
+            start_offset = min(start_offset, bars_since_cross)
+
+        prices: List[float] = []
+        volumes: List[float] = []
+        for i in range(1, start_offset + 1):
+            try:
+                prices.append(float(strategy.d_15.close[-i]))
+                volumes.append(float(strategy.d_15.volume[-i]))
+            except (IndexError, TypeError, ValueError):
+                break
+        if not prices or not volumes:
+            return None
+
+        ref_price = prices[0]
+        bin_size = max(ref_price * strategy.p.poc_bin_pct, strategy.p.poc_min_price_step)
+        if bin_size <= 0:
+            return None
+
+        buckets = {}
+        for price, volume in zip(prices, volumes):
+            bin_idx = int(price / bin_size)
+            buckets[bin_idx] = buckets.get(bin_idx, 0.0) + volume
+        if not buckets:
+            return None
+
+        best_bin, _ = max(buckets.items(), key=lambda kv: kv[1])
+        return (best_bin + 0.5) * bin_size
+
+    def intraday_entry_check(self):
+        strategy = self.strategy
+        if not strategy._ready:
+            strategy.debug_log("Intraday entry check: Strategy not ready (warmup incomplete)")
+            return
+        if not strategy.armed:
+            strategy.debug_log(
+                "Intraday entry check: Ticker not armed (Conditions A+B not met or weekly filter failed)"
+            )
+            return
+        if strategy.position or strategy.order is not None:
+            return
+        if strategy.pivot_level is None:
+            strategy.debug_log("Intraday entry check: Pivot level unavailable (need more daily data)")
+            return
+
+        if strategy.entry_window_end_date is not None:
+            try:
+                current_dt = strategy.d_15.datetime.datetime(0)
+                if current_dt > strategy.entry_window_end_date:
+                    strategy.debug_log(
+                        f"Entry window expired on {strategy.entry_window_end_date}, current {current_dt}"
+                    )
+                    self.reset_armed_state()
+                    strategy.last_ignition_idx = None
+                    strategy.last_ttm_cross_idx = None
+                    return
+            except Exception:
+                return
+
+        poc = self.compute_poc()
+        if poc is None:
+            strategy.debug_log("Intraday entry check: POC unavailable")
+            return
+
+        pivot = strategy.pivot_level
+        if poc <= pivot * (1.0 + strategy.p.poc_buffer_pct):
+            strategy.debug_log(
+                f"Intraday entry check: POC {poc:.2f} <= pivot threshold "
+                f"{pivot * (1.0 + strategy.p.poc_buffer_pct):.2f}"
+            )
+            return
+
+        try:
+            price = float(strategy.d_15.close[0])
+        except (IndexError, TypeError, ValueError):
+            return
+
+        if price <= pivot:
+            strategy.debug_log(f"Intraday entry check: Price {price:.2f} <= pivot {pivot:.2f}")
+            return
+
+        try:
+            ema_fast = float(strategy.ema_fast_15[0])
+            ema_slow = float(strategy.ema_slow_15[0])
+        except (IndexError, TypeError, ValueError):
+            return
+
+        if ema_fast <= ema_slow:
+            strategy.debug_log(
+                f"Intraday entry check: EMA fast {ema_fast:.2f} <= EMA slow {ema_slow:.2f}"
+            )
+            return
+
+        strategy.log(
+            f"[{strategy.symbol}] INTRADAY ENTRY TRIGGERED | Pivot={pivot:.2f} | "
+            f"POC={poc:.2f} | Price={price:.2f}"
+        )
+        self.enter_long()
+        self.reset_armed_state()
+
+    def reset_armed_state(self):
+        strategy = self.strategy
+        strategy.armed = False
+        strategy.entry_window_end_date = None
+        strategy.pivot_level = None
+        strategy.ttm_cross_intraday_start_idx = None
+        strategy.ttm_cross_intraday_start_dt = None
+
+    def enter_long(self):
+        strategy = self.strategy
+        if strategy.order is not None:
+            return
+        try:
+            d = strategy.d_15
+            entry_price = float(d.close[0])
+            stop_price = entry_price * (1.0 - strategy.p.stop_loss_pct)
+            profit_target_price = entry_price * (1.0 + strategy.p.take_profit_pct)
+
+            risk_per_share = entry_price * strategy.p.stop_loss_pct
+            risk_capital = strategy.broker.getvalue() * strategy.p.risk_per_trade
+            size = math.floor(risk_capital / risk_per_share)
+            if size <= 0:
+                strategy.debug_log("Position size is 0 or negative, skipping entry")
+                return
+
+            strategy.order = strategy.buy(data=strategy.d_15, size=size)
+            strategy.current_stop = stop_price
+            strategy.profit_target = profit_target_price
+            strategy.entry_price = entry_price
+            strategy.entry_week_idx = len(strategy.d_w) - 1
+
+            stop_pct_str = f"-{strategy.p.stop_loss_pct * 100:.0f}%"
+            profit_pct_str = f"+{strategy.p.take_profit_pct * 100:.0f}%"
+            strategy.log(
+                f"[{strategy.symbol}] INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, "
+                f"Stop: ${stop_price:.2f} ({stop_pct_str}), "
+                f"Target: ${profit_target_price:.2f} ({profit_pct_str}), Size: {size}"
+            )
+            strategy.track_trade_entry(entry_price, size)
+        except Exception as exc:
+            strategy.debug_log(f"Intraday entry error: {exc}")
 
 
 class RiskManager:
@@ -667,7 +826,67 @@ class RiskManager:
     def __init__(self, strategy):
         self.strategy = strategy
 
-    # manage() as in refactored file...
+    def manage(self):
+        strategy = self.strategy
+        if not strategy.position:
+            return
+        if strategy.order is not None and strategy.order.isbuy():
+            return
+
+        try:
+            if strategy.entry_price is not None:
+                current_price = float(strategy.d_15.close[0])
+
+                if strategy.profit_target is not None and current_price >= strategy.profit_target:
+                    strategy.log(
+                        f"EXIT: Profit target hit (15m backup check) | Entry: ${strategy.entry_price:.2f}, "
+                        f"Current: ${current_price:.2f}, Target: ${strategy.profit_target:.2f}"
+                    )
+                    if strategy.order is not None:
+                        strategy.cancel(strategy.order)
+                    strategy.order = strategy.close(data=strategy.d_15)
+                    if strategy.entry_price:
+                        strategy.track_trade_exit(current_price, abs(strategy.position.size))
+                    return
+
+                if strategy.current_stop is not None and current_price <= strategy.current_stop:
+                    strategy.log(
+                        f"EXIT: Stop loss hit (15m backup check) | Entry: ${strategy.entry_price:.2f}, "
+                        f"Current: ${current_price:.2f}, Stop: ${strategy.current_stop:.2f}"
+                    )
+                    if strategy.order is not None:
+                        strategy.cancel(strategy.order)
+                    strategy.order = strategy.close(data=strategy.d_15)
+                    if strategy.entry_price:
+                        strategy.track_trade_exit(current_price, abs(strategy.position.size))
+                    return
+
+            w = strategy.d_w
+            if len(strategy.ma10) > 0:
+                cl = float(w.close[-1])
+                ma10_val = float(strategy.ma10[-1])
+                if cl < ma10_val:
+                    strategy.log("EXIT: Close below 10-week MA")
+                    strategy.order = strategy.close(data=strategy.d_15)
+                    if strategy.entry_price:
+                        strategy.track_trade_exit(
+                            float(strategy.d_15.close[0]), abs(strategy.position.size)
+                        )
+                    return
+
+            if len(strategy.ma30) > 0:
+                cl = float(w.close[-1])
+                ma30_val = float(strategy.ma30[-1])
+                if cl < ma30_val:
+                    strategy.log("EXIT: Close below 30-week MA")
+                    strategy.order = strategy.close(data=strategy.d_15)
+                    if strategy.entry_price:
+                        strategy.track_trade_exit(
+                            float(strategy.d_15.close[0]), abs(strategy.position.size)
+                        )
+                    return
+        except Exception as exc:
+            strategy.debug_log(f"Exit management error: {exc}")
 
 
 __all__ = [
