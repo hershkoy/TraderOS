@@ -1,8 +1,3 @@
-# Fetch data script
-
-# Fetch SPX 1-minute data since 2020-01-01
-python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01
-
 # Universe Data Updater
 
 A comprehensive script to fetch maximum available bars for all tickers in the ticker universe using the existing `fetch_data.py` functionality. This tool integrates the ticker universe management system with your data fetching pipeline.
@@ -18,6 +13,12 @@ A comprehensive script to fetch maximum available bars for all tickers in the ti
 - **Comprehensive Logging**: Detailed logs with progress tracking
 - **Dry Run Mode**: Preview what would be processed without fetching data
 - **Progress Tracking**: Monitor success/failure rates and processing statistics
+- **Symbol Mapping (IB)**: Automatic symbol conversion and caching for IBKR compatibility
+- **Retry Logic**: Exponential backoff retry mechanism for timeout errors
+- **Non-Blocking Database Saves**: Background worker thread for efficient data persistence
+- **Custom Universe Files**: Load tickers from custom files instead of default universe
+- **Date-Based Fetching**: Fetch data from a specific start date
+- **Debugging Tools**: Test individual symbols and view symbol mappings
 
 ## Quick Start
 
@@ -70,6 +71,55 @@ python utils/update_universe_data.py --provider alpaca --timeframe 1d --dry-run
 ```bash
 # Resume from index 150
 python utils/update_universe_data.py --provider alpaca --timeframe 1d --resume-from 150
+
+# Process specific range (index 100 to 199)
+python utils/update_universe_data.py --provider alpaca --timeframe 1d --start-index 100 --max-tickers 100
+```
+
+### 5. Custom Universe Files
+
+```bash
+# Load tickers from a custom file
+python utils/update_universe_data.py --provider ib --timeframe 1m --max-bars --universe-file spx.txt
+```
+
+### 6. Date-Based Fetching
+
+```bash
+# Fetch data since a specific date
+python utils/update_universe_data.py --provider ib --timeframe 1h --since 2020-01-01
+
+# Fetch data since a specific date and time
+python utils/update_universe_data.py --provider ib --timeframe 1m --since 2020-01-01T09:30:00
+```
+
+### 7. Retry Configuration (IB Provider)
+
+```bash
+# Use custom retry settings for IB API timeouts
+python utils/update_universe_data.py --provider ib --timeframe 1d --max-retries 5 --retry-base-delay 3.0
+
+# Aggressive retry settings for unstable connections
+python utils/update_universe_data.py --provider ib --timeframe 1h --max-retries 10 --retry-base-delay 1.0
+```
+
+### 8. Testing and Debugging
+
+```bash
+# Test a single symbol to debug issues
+python utils/update_universe_data.py --provider ib --timeframe 1d --test-symbol STE
+
+# Enable enhanced IB debugging to see permission errors
+python utils/update_universe_data.py --provider ib --timeframe 1h --debug-ib --test-symbol STE
+
+# View symbol mappings (IB provider)
+python utils/update_universe_data.py --provider ib --view-mappings
+
+# Show symbol mapping statistics
+python utils/update_universe_data.py --provider ib --mapping-stats
+
+# Clear invalid symbol mappings
+python utils/update_universe_data.py --provider ib --clear-invalid-mappings
 ```
 
 ## Command Line Options
@@ -82,9 +132,21 @@ python utils/update_universe_data.py --provider alpaca --timeframe 1d --resume-f
 | `--delay-batches` | Seconds between batches | `5.0` |
 | `--delay-tickers` | Seconds between tickers | `1.0` |
 | `--max-tickers` | Maximum tickers to process | All |
-| `--resume-from` | Resume from this index | `0` |
+| `--start-index` | Index to start processing from (0-based) | `0` |
+| `--resume-from` | Resume processing from this index (0-based) | None |
 | `--force-refresh` | Force refresh ticker universe | False |
-| `--dry-run` | Show what would be processed | False |
+| `--max-bars` | Fetch maximum available bars instead of fixed amounts | False |
+| `--skip-existing` | Skip tickers that already have data for the timeframe | False |
+| `--dry-run` | Show what would be processed without fetching data | False |
+| `--universe-file` | Load tickers from custom universe file | None |
+| `--max-retries` | Maximum retries for timeout errors | `3` |
+| `--retry-base-delay` | Base delay (seconds) for exponential backoff retries | `2.0` |
+| `--since` | Start date for fetching data (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) | None |
+| `--test-symbol` | Test a single symbol for debugging | None |
+| `--debug-ib` | Enable enhanced IB logging for debugging | False |
+| `--view-mappings` | View symbol mappings and exit (IB provider) | False |
+| `--mapping-stats` | Show symbol mapping statistics and exit (IB provider) | False |
+| `--clear-invalid-mappings` | Clear all invalid symbol mappings and exit (IB provider) | False |
 
 ## Python API Usage
 
@@ -122,7 +184,31 @@ tickers = updater.get_universe_tickers(force_refresh=True)
 print(f"Universe contains {len(tickers)} tickers")
 
 # Process specific ticker
-success = updater.fetch_ticker_data("AAPL")
+success = updater.fetch_ticker_data("AAPL", use_max_bars=True)
+
+# Update with custom universe file
+results = updater.update_universe_data(
+    universe_file="custom_tickers.txt",
+    use_max_bars=True,
+    skip_existing=True
+)
+
+# Update with start date
+results = updater.update_universe_data(
+    start_date="2020-01-01",
+    use_max_bars=True
+)
+
+# View symbol mappings (IB provider only)
+if updater.provider == "ib":
+    mappings = updater.view_symbol_mappings(limit=100)
+    for mapping in mappings:
+        print(f"{mapping['original_symbol']} -> {mapping['ib_symbol']}")
+    
+    # Get mapping statistics
+    stats = updater.get_symbol_mapping_stats()
+    print(f"Total mappings: {stats['total_mappings']}")
+    print(f"Success rate: {stats['success_rate']:.1f}%")
 ```
 
 ## Configuration
@@ -145,26 +231,40 @@ Adjust delays based on your API provider's rate limits:
 - **Between tickers**: 0.5-2.0 seconds (prevents overwhelming individual requests)
 - **Between batches**: 5-15 seconds (allows API to recover)
 
+### Retry Configuration (IB Provider)
+
+The script includes automatic retry logic with exponential backoff for IB API timeout errors:
+
+- **Default retries**: 3 attempts with 2.0s base delay
+- **Exponential backoff**: Delay = base_delay * (2^attempt) + (attempt * 0.5)
+- **Customizable**: Use `--max-retries` and `--retry-base-delay` to adjust
+
+For unstable connections or frequent timeouts, increase retries:
+```bash
+python utils/update_universe_data.py --provider ib --timeframe 1h --max-retries 5 --retry-base-delay 3.0
+```
+
 ## Output and Logging
 
 ### Log Files
 
 - **Console output**: Real-time progress and statistics
-- **Log file**: `universe_update.log` with detailed information
-- **Summary file**: `universe_update_summary_YYYYMMDD_HHMMSS.txt`
+- **Log file**: `logs/universe_update.log` with detailed information
+- **Complete log**: `logs/universe_update_complete.log` with all logs
+- **Summary file**: `logs/universe_update_summary_YYYYMMDD_HHMMSS.txt`
 
 ### Progress Tracking
 
 The script provides real-time updates:
 
 ```
-Processing AAPL (1/500, overall index: 0)
-✅ Successfully fetched 252 bars for AAPL
-Processing MSFT (2/500, overall index: 1)
-✅ Successfully fetched 252 bars for MSFT
-Completed batch 1. Taking 5.0s break...
-Progress: 10/500 tickers processed
-Success: 10, Failed: 0
+[PROCESSING] AAPL (1/500, overall index: 0)
+[SUCCESS] SUCCESSFULLY fetched 252 bars for AAPL
+[PROCESSING] MSFT (2/500, overall index: 1)
+[SUCCESS] SUCCESSFULLY fetched 252 bars for MSFT
+[BATCH] Completed batch 1. Taking 5.0s break...
+[PROGRESS] Progress: 10/500 tickers processed
+[STATS] Success: 10, Failed: 0
 ```
 
 ### Results Summary
@@ -175,7 +275,10 @@ After completion, a summary file is created with:
 - Success/failure counts and rates
 - Processing duration
 - Failed symbols list
+- Skipped symbols list
 - Resume information
+- Database operation statistics
+- Time breakdown (data fetching vs database operations)
 
 ## Error Handling
 
@@ -184,18 +287,29 @@ After completion, a summary file is created with:
 - Individual ticker failures are logged and tracked
 - Processing continues with remaining tickers
 - Failed symbols are listed in the summary
+- Automatic retry with exponential backoff for timeout errors (IB provider)
 
 ### Rate Limiting
 
 - Built-in delays prevent most rate limit issues
-- Automatic retry logic from `fetch_data.py`
+- Automatic retry logic with exponential backoff
 - Graceful handling of provider-specific errors
+- Additional delays after timeout errors to help with rate limiting
 
 ### Interruptions
 
 - Use `Ctrl+C` to safely interrupt processing
-- Resume from the last processed index
+- Resume from the last processed index using `--resume-from` or `--start-index`
 - Progress is saved and can be resumed
+- Database operations complete before script exits
+
+### IB-Specific Issues
+
+- **Symbol not found**: Automatically tries symbol variations (e.g., BF.B, BF B, BF-B)
+- **No market data permissions**: Check US Value Bundle subscription in IB Client Portal
+- **Contract ambiguity**: Automatically resolves using primary exchange
+- **Timeout errors**: Automatic retry with exponential backoff
+- Use `--debug-ib` flag to see detailed IB error messages
 
 ## Best Practices
 
@@ -242,18 +356,30 @@ python utils/update_universe_data.py \
 - Automatically uses the ticker universe management system
 - Supports force refresh of ticker lists
 - Handles both S&P 500 and NASDAQ-100 indices
+- Supports custom universe files via `--universe-file`
 
 ### Fetch Data
 
 - Integrates with existing `fetch_data.py` functionality
 - Uses the same data providers and timeframes
 - Maintains consistent data format and storage
+- Supports date-based fetching with `--since` parameter
 
 ### Database
 
 - Data is automatically saved to TimescaleDB
 - Uses existing database schema and connections
 - Maintains data consistency and integrity
+- Non-blocking database saves via background worker thread
+- Automatic connection management and reconnection on failures
+
+### Symbol Mapping (IB Provider)
+
+- Automatic symbol conversion for IBKR compatibility
+- Caches symbol mappings in database (`symbol_mappings` table)
+- Tries multiple symbol variations (e.g., BF.B, BF B, BF-B)
+- Stores contract IDs and primary exchanges for faster future lookups
+- View and manage mappings via `--view-mappings`, `--mapping-stats`, `--clear-invalid-mappings`
 
 ## Troubleshooting
 
@@ -268,8 +394,19 @@ python utils/update_universe_data.py \
 
 ```bash
 # Enable verbose logging
-export PYTHONPATH=.
 python -u utils/update_universe_data.py --provider alpaca --timeframe 1d --max-tickers 5
+
+# Test a single symbol to debug issues (IB provider)
+python utils/update_universe_data.py --provider ib --timeframe 1d --test-symbol STE
+
+# Enable enhanced IB debugging to see permission and contract errors
+python utils/update_universe_data.py --provider ib --timeframe 1h --debug-ib --test-symbol STE
+
+# View symbol mappings to see how symbols are converted
+python utils/update_universe_data.py --provider ib --view-mappings
+
+# Check symbol mapping statistics
+python utils/update_universe_data.py --provider ib --mapping-stats
 ```
 
 ### Support
@@ -283,7 +420,44 @@ python -u utils/update_universe_data.py --provider alpaca --timeframe 1d --max-t
 
 See `examples/update_universe_example.py` for complete usage examples and demonstrations of all features.
 
+### Complete Example Workflows
 
+```bash
+# 1. Fetch SPX 1-minute data since 2020-01-01 (using fetch_data.py directly)
+python utils/fetch_data.py --symbol SPX --provider ib --timeframe 1m --bars max --since 2020-01-01
 
-python utils/update_universe_data.py --provider ib --timeframe 1m --max-bars --symbol SPX
+# 2. Update all tickers with IB hourly data, skip existing, fetch max bars
+python utils/update_universe_data.py --provider ib --timeframe 1h --max-bars --skip-existing
+
+# 3. Process specific range with custom retry settings
+python utils/update_universe_data.py \
+  --provider ib \
+  --timeframe 1h \
+  --start-index 200 \
+  --max-tickers 50 \
+  --max-bars \
+  --skip-existing \
+  --max-retries 5 \
+  --retry-base-delay 3.0
+
+# 4. Fetch data from custom universe file since a specific date
+python utils/update_universe_data.py \
+  --provider ib \
+  --timeframe 1m \
+  --max-bars \
+  --universe-file spx.txt \
+  --since 2020-01-01
+
+# 5. Test and debug a problematic symbol
+python utils/update_universe_data.py \
+  --provider ib \
+  --timeframe 1d \
+  --debug-ib \
+  --test-symbol STE
+
+# 6. View and manage symbol mappings
+python utils/update_universe_data.py --provider ib --view-mappings
+python utils/update_universe_data.py --provider ib --mapping-stats
+python utils/update_universe_data.py --provider ib --clear-invalid-mappings
+```
 
