@@ -32,7 +32,7 @@ This script automates the process of retrieving and analyzing multi-leg option s
 
 ### Prerequisites
 
-1. **Interactive Brokers Account**: Active IB account with Flex Query Web Service access
+1. **Interactive Brokers Account**: Active IB account with Flex Query Web Service access (only if using API, not required for `--flex-report`)
 2. **Python Dependencies**: 
    - `requests` - For HTTP requests to IB Flex Query Web Service
    - `pandas` - For data processing
@@ -44,6 +44,8 @@ pip install requests pandas python-dotenv
 ```
 
 ### Configuration
+
+**Option 1: Using API (requires environment variables)**
 
 The script requires two environment variables to authenticate with IB Flex Query Web Service:
 
@@ -94,6 +96,19 @@ $env:IB_FLEX_QUERY_ID="123456"
 **Using .env file:**
 Add to your `.env` file (see above)
 
+**Option 2: Using Manually Downloaded File (no environment variables needed)**
+
+If you're having trouble with the API or want to test with a file you've already downloaded:
+
+1. Download your Flex Query report from IB Client Portal:
+   - Go to **Reports** → **Flex Queries**
+   - Run your query and download the result (CSV or XML format)
+2. Save the file locally
+3. Use the `--flex-report` option to point to the file:
+   ```bash
+   python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report path/to/your/flex_report.csv --type html
+   ```
+
 ### Flex Query Configuration
 
 Your Flex Query should include the following sections and fields:
@@ -135,6 +150,27 @@ python scripts/api/ib/ib_flex_multi_leg_report.py --type html
 python scripts/api/ib/ib_flex_multi_leg_report.py --type csv
 ```
 
+### Using Manually Downloaded Flex Query Report
+
+If you're having trouble with the API connection, you can download the Flex Query report manually from IB Client Portal and use it directly:
+
+**Generate report from manually downloaded CSV file:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.csv --type html
+```
+
+**Generate report from manually downloaded XML file:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.xml --type html
+```
+
+**With date filtering:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.csv --since 2025-01-01 --type html
+```
+
+**Note:** When using `--flex-report`, you don't need to set `IB_FLEX_QUERY_TOKEN` or `IB_FLEX_QUERY_ID` environment variables.
+
 ### Date Filtering
 
 **Generate report for trades since a specific date:**
@@ -154,12 +190,39 @@ python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
 **Default output location:** If `--output` is not specified, reports are saved to:
 - `reports/ib_multi_leg_strategies_YYYYMMDD_HHMMSS.html` (or `.csv`)
 
+### Wait Time Configuration
+
+**For large queries, increase wait time:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --max-wait 180
+```
+
+The script waits for IB to prepare the Flex Query statement. Large queries may take longer than the default 120 seconds. Use `--max-wait` to increase the timeout.
+
+### Debug Logging
+
+**Enable detailed debug logging:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --log-level DEBUG
+```
+
+Debug logging provides detailed information about:
+- HTTP request/response details
+- XML/CSV parsing steps
+- Column detection and mapping
+- Data filtering operations
+- Strategy grouping process
+- Individual leg processing
+
 ### Command-Line Options
 
 ```
 --since DATE          Filter trades on or after this date (YYYY-MM-DD format)
 --type {html,csv}     Output format: html or csv (default: html)
 --output PATH         Output file path (default: auto-generated in reports/)
+--max-wait SECONDS    Maximum seconds to wait for statement (default: 120)
+--log-level LEVEL     Set logging level: DEBUG, INFO, WARNING, or ERROR (default: INFO)
+--flex-report PATH    Path to manually downloaded Flex Query file (CSV or XML). Skips API download.
 ```
 
 ### Examples
@@ -177,6 +240,21 @@ python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-15 --type csv 
 **Generate HTML report with custom filename:**
 ```bash
 python scripts/api/ib/ib_flex_multi_leg_report.py --type html --output reports/q1_2025_strategies.html
+```
+
+**Generate report with extended wait time for large queries:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --max-wait 300
+```
+
+**Generate report with debug logging for troubleshooting:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --log-level DEBUG
+```
+
+**Generate report from manually downloaded file:**
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.csv --type html
 ```
 
 ## Output Formats
@@ -271,11 +349,12 @@ SELL 1 x SPY 2025-02-21 455C @ 2.10
   - Check that Flex Query is active and accessible
   - Ensure query includes TradeConfirms section
 
-**Error: "Statement not ready after 30 seconds"**
+**Error: "Statement not ready after X seconds"**
 - **Solution**: 
-  - This is usually temporary - try running again
-  - IB may need more time to process large queries
-  - Check IB system status
+  - Increase wait time using `--max-wait` option (e.g., `--max-wait 180` or `--max-wait 300`)
+  - Large queries with many trades may take longer to process
+  - This is usually temporary - try running again with increased wait time
+  - Check IB system status if problem persists
 
 **Warning: "No trade data found in Flex Query"**
 - **Solution**: 
@@ -297,17 +376,24 @@ SELL 1 x SPY 2025-02-21 455C @ 2.10
 
 ### Debugging
 
-Enable debug logging by modifying the script or setting logging level:
+Enable debug logging using the `--log-level DEBUG` command-line option:
 
-```python
-logging.basicConfig(level=logging.DEBUG)
+```bash
+python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --log-level DEBUG
 ```
 
-This will show:
-- XML structure details
-- Column names found
-- Parsing steps
-- Retry attempts
+Debug logging provides detailed information about:
+- HTTP request URLs and response status codes
+- Response content previews
+- XML structure and parsing details
+- CSV format detection and parsing
+- Column names and data types
+- Column mapping and normalization
+- Data filtering operations
+- Strategy grouping by OrderID
+- Individual leg processing details
+- Retry attempts and wait times
+- DataFrame shapes and statistics
 
 ### Verification Steps
 
@@ -363,7 +449,7 @@ from scripts.api.ib.ib_flex_multi_leg_report import (
 - Flex Query must be pre-configured in Client Portal
 - Only processes multi-leg strategies (2+ legs)
 - Date filtering depends on date column format in Flex Query
-- Statement download may take time for large queries (up to 30 seconds wait)
+- Statement download may take time for large queries (default 120 seconds wait, configurable with `--max-wait`)
 
 ## Future Enhancements
 

@@ -34,7 +34,7 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
-# Set up logging
+# Set up logging (will be reconfigured in main() based on command-line argument)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -78,13 +78,19 @@ def request_flex_query(token: str, query_id: str) -> Optional[str]:
     url = f"{FLEX_SEND_REQUEST_URL}?t={token}&q={query_id}&v=3"
     
     logger.info(f"Requesting Flex Query run (Query ID: {query_id})...")
+    logger.debug(f"Request URL: {FLEX_SEND_REQUEST_URL}?t=***&q={query_id}&v=3")
     
     try:
         response = requests.get(url, timeout=30)
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
         response.raise_for_status()
         
         # Parse XML response
+        logger.debug(f"Response content length: {len(response.text)} bytes")
+        logger.debug(f"Response content preview (first 500 chars): {response.text[:500]}")
         root = ET.fromstring(response.text)
+        logger.debug(f"XML root tag: {root.tag}")
         
         status = root.find("Status")
         if status is not None and status.text == "Success":
@@ -115,7 +121,7 @@ def request_flex_query(token: str, query_id: str) -> Optional[str]:
         return None
 
 
-def download_flex_statement(token: str, reference_code: str, max_wait: int = 30) -> Optional[str]:
+def download_flex_statement(token: str, reference_code: str, max_wait: int = 120) -> Optional[str]:
     """
     Step 2: Download the Flex Query result.
     
@@ -130,14 +136,20 @@ def download_flex_statement(token: str, reference_code: str, max_wait: int = 30)
     url = f"{FLEX_GET_STATEMENT_URL}?t={token}&v=3&r={reference_code}"
     
     logger.info(f"Downloading Flex Query statement (Reference Code: {reference_code})...")
+    logger.debug(f"Download URL: {FLEX_GET_STATEMENT_URL}?t=***&v=3&r={reference_code}")
+    logger.debug(f"Max wait time: {max_wait} seconds")
     
     # Wait a bit for statement to be ready, with retries
     wait_time = 2
     max_attempts = max_wait // wait_time
+    logger.debug(f"Will retry up to {max_attempts} times with {wait_time} second intervals")
     
     for attempt in range(max_attempts):
         try:
+            logger.debug(f"Download attempt {attempt + 1}/{max_attempts}")
             response = requests.get(url, timeout=60)
+            logger.debug(f"Response status code: {response.status_code}")
+            logger.debug(f"Response content length: {len(response.text)} bytes")
             response.raise_for_status()
             
             # Check if statement is ready (not an error response)
@@ -154,6 +166,8 @@ def download_flex_statement(token: str, reference_code: str, max_wait: int = 30)
                         return None
             
             logger.info("Flex Query statement downloaded successfully")
+            logger.debug(f"Statement content length: {len(response.text)} bytes")
+            logger.debug(f"Statement content preview (first 1000 chars): {response.text[:1000]}")
             return response.text
             
         except requests.exceptions.RequestException as e:
@@ -168,6 +182,45 @@ def download_flex_statement(token: str, reference_code: str, max_wait: int = 30)
     return None
 
 
+def read_flex_report_file(file_path: str) -> pd.DataFrame:
+    """
+    Read Flex Query report from a local file (CSV or XML).
+    
+    Args:
+        file_path: Path to the Flex Query report file
+        
+    Returns:
+        DataFrame with trade data
+    """
+    logger.info(f"Reading Flex Query report from file: {file_path}")
+    
+    file_path_obj = Path(file_path)
+    if not file_path_obj.exists():
+        logger.error(f"File not found: {file_path}")
+        return pd.DataFrame()
+    
+    logger.debug(f"File size: {file_path_obj.stat().st_size} bytes")
+    
+    # Read file content
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        logger.debug(f"File read successfully, content length: {len(content)} bytes")
+        logger.debug(f"Content preview (first 500 chars): {content[:500]}")
+        
+        # Use existing parse function
+        return parse_flex_xml(content)
+    except UnicodeDecodeError:
+        # Try with different encoding
+        logger.debug("UTF-8 failed, trying latin-1 encoding...")
+        with open(file_path, 'r', encoding='latin-1') as f:
+            content = f.read()
+        return parse_flex_xml(content)
+    except Exception as e:
+        logger.error(f"Error reading file: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
 def parse_flex_xml(xml_content: str) -> pd.DataFrame:
     """
     Parse Flex Query XML and extract trade data.
@@ -180,6 +233,8 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
         DataFrame with trade data
     """
     logger.info("Parsing Flex Query data...")
+    logger.debug(f"Content length: {len(xml_content)} bytes")
+    logger.debug(f"Content type detection: starts with XML={xml_content.strip().startswith('<?xml')}, starts with <={xml_content.strip().startswith('<')}")
     
     # Check if content is CSV (starts with header row or is comma-separated)
     content_stripped = xml_content.strip()
@@ -187,10 +242,13 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
         # Might be CSV format
         try:
             logger.info("Detected CSV format, parsing as CSV...")
+            logger.debug(f"CSV content preview (first 500 chars): {xml_content[:500]}")
             # Try to read as CSV
             from io import StringIO
             df = pd.read_csv(StringIO(xml_content))
             logger.info(f"Parsed {len(df)} trade records from CSV with {len(df.columns)} columns")
+            logger.debug(f"CSV columns: {list(df.columns)}")
+            logger.debug(f"CSV first few rows:\n{df.head()}")
             return df
         except Exception as e:
             logger.warning(f"Failed to parse as CSV: {e}, trying XML...")
@@ -226,9 +284,12 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
             return pd.DataFrame()
         
         logger.info(f"Found {len(trade_confirms)} trade records")
+        logger.debug(f"Trade confirm structure - first trade tags: {[child.tag for child in trade_confirms[0]] if trade_confirms else 'N/A'}")
         
         # Parse each trade
-        for trade in trade_confirms:
+        for idx, trade in enumerate(trade_confirms):
+            if idx == 0:
+                logger.debug(f"First trade element tag: {trade.tag}, children: {[c.tag for c in trade]}")
             trade_data = {}
             
             # Extract all child elements as key-value pairs
@@ -256,6 +317,10 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
         df = pd.DataFrame(trades)
         logger.info(f"Parsed {len(df)} trade records with {len(df.columns)} columns")
         logger.debug(f"Columns: {list(df.columns)}")
+        logger.debug(f"DataFrame shape: {df.shape}")
+        logger.debug(f"First few rows:\n{df.head()}")
+        logger.debug(f"Data types:\n{df.dtypes}")
+        logger.debug(f"Null counts:\n{df.isnull().sum()}")
         
         return df
         
@@ -284,14 +349,18 @@ def filter_by_date(df: pd.DataFrame, since_date: Optional[datetime]) -> pd.DataF
     
     # Try to find date column (common names: Date, Date/Time, TradeDate, etc.)
     date_columns = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
+    logger.debug(f"Found date columns: {date_columns}")
     
     if not date_columns:
         logger.warning("No date column found, cannot filter by date")
+        logger.debug(f"Available columns: {list(df.columns)}")
         return df
     
     # Use first date column found
     date_col = date_columns[0]
     logger.info(f"Filtering by date using column: {date_col}")
+    logger.debug(f"Filter date: {since_date}")
+    logger.debug(f"Date column sample values: {df[date_col].head().tolist()}")
     
     # Convert date column to datetime
     # Handle different date formats that IB might use
@@ -315,6 +384,7 @@ def filter_by_date(df: pd.DataFrame, since_date: Optional[datetime]) -> pd.DataF
         
         filtered = df[df[date_col] >= since_date].copy()
         logger.info(f"Filtered to {len(filtered)} trades on or after {since_date.strftime('%Y-%m-%d')} (from {len(df)} total)")
+        logger.debug(f"Date range in filtered data: {filtered[date_col].min()} to {filtered[date_col].max()}")
         return filtered
     except Exception as e:
         logger.warning(f"Error filtering by date: {e}")
@@ -332,10 +402,13 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         List of strategy dictionaries
     """
     logger.info("Grouping trades into multi-leg strategies...")
+    logger.debug(f"Input DataFrame shape: {df.shape}")
+    logger.debug(f"Input columns: {list(df.columns)}")
     
     # Normalize column names (case-insensitive matching)
     df_normalized = df.copy()
     column_map = {}
+    logger.debug("Normalizing column names...")
     for col in df.columns:
         col_lower = col.lower()
         # Map common column name variations
@@ -349,43 +422,63 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
             column_map[col] = 'NetCash'
     
     # Rename columns
-    df_normalized = df_normalized.rename(columns=column_map)
+    if column_map:
+        logger.debug(f"Column mapping: {column_map}")
+        df_normalized = df_normalized.rename(columns=column_map)
+    else:
+        logger.debug("No column mapping needed")
     
     # Filter to only trades with valid OrderID
     # Also filter to option trades (typically have Put/Call column)
     option_trades = df_normalized.copy()
+    logger.debug(f"Total trades before filtering: {len(option_trades)}")
     
     # Check if we have Put/Call column (indicates options)
     put_call_cols = [col for col in option_trades.columns if 'put' in col.lower() and 'call' in col.lower()]
+    logger.debug(f"Put/Call columns found: {put_call_cols}")
     if put_call_cols:
         put_call_col = put_call_cols[0]
+        before_count = len(option_trades)
         option_trades = option_trades[option_trades[put_call_col].notna()].copy()
         logger.info(f"Filtered to {len(option_trades)} option trades (using column: {put_call_col})")
+        logger.debug(f"Removed {before_count - len(option_trades)} non-option trades")
+        logger.debug(f"Put/Call value distribution: {option_trades[put_call_col].value_counts().to_dict()}")
     
     # Filter to trades with OrderID
     orderid_cols = [col for col in option_trades.columns if 'orderid' in col.lower() or 'order_id' in col.lower()]
+    logger.debug(f"OrderID columns found: {orderid_cols}")
     if not orderid_cols:
         logger.warning("No OrderID column found, cannot group multi-leg strategies")
         logger.debug(f"Available columns: {list(option_trades.columns)}")
         return []
     
     orderid_col = orderid_cols[0]
+    before_count = len(option_trades)
     legs_with_order = option_trades[option_trades[orderid_col].notna()].copy()
+    logger.debug(f"Removed {before_count - len(legs_with_order)} trades without OrderID")
     
     if len(legs_with_order) == 0:
         logger.warning("No trades with OrderID found")
         return []
     
     logger.info(f"Found {len(legs_with_order)} option trades with OrderID")
+    logger.debug(f"Unique OrderIDs: {legs_with_order[orderid_col].nunique()}")
+    logger.debug(f"OrderID value counts (top 10):\n{legs_with_order[orderid_col].value_counts().head(10)}")
     
     # Group by OrderID
     strategies = []
     grouped = legs_with_order.groupby(orderid_col)
+    logger.debug(f"Grouped into {len(grouped)} unique OrderIDs")
     
+    single_leg_count = 0
     for order_id, group in grouped:
         # Only consider multi-leg strategies (2+ legs)
         if len(group) < 2:
+            single_leg_count += 1
+            logger.debug(f"Skipping OrderID {order_id} - only {len(group)} leg(s)")
             continue
+        
+        logger.debug(f"Processing OrderID {order_id} with {len(group)} legs")
         
         # Get column names (use normalized or original)
         symbol_col = 'Symbol' if 'Symbol' in group.columns else ([c for c in group.columns if 'symbol' in c.lower()] or ['Symbol'])[0]
@@ -405,7 +498,9 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         
         # Build leg descriptions
         legs_desc = []
-        for _, row in group_sorted.iterrows():
+        logger.debug(f"OrderID {order_id} - sorted group columns: {list(group_sorted.columns)}")
+        for idx, (_, row) in enumerate(group_sorted.iterrows()):
+            logger.debug(f"OrderID {order_id} - Leg {idx + 1} data: {dict(row)}")
             symbol = row.get(symbol_col, 'N/A')
             expiry = row.get(expiry_col, 'N/A')
             strike = row.get(strike_col, 'N/A')
@@ -453,8 +548,12 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         }
         
         strategies.append(strategy)
+        logger.debug(f"OrderID {order_id} - Strategy summary: {strategy['NumLegs']} legs, NetCash={strategy['NetCash']:.2f}, Commission={strategy['Commission']:.2f}")
     
     logger.info(f"Found {len(strategies)} multi-leg strategies")
+    logger.debug(f"Skipped {single_leg_count} single-leg trades")
+    if strategies:
+        logger.debug(f"Strategy OrderIDs: {[s['OrderID'] for s in strategies]}")
     return strategies
 
 
@@ -503,91 +602,91 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
 <head>
     <title>IB Multi-Leg Strategy Report</title>
     <style>
-        body {
+        body {{
             font-family: Arial, sans-serif;
             margin: 20px;
             background-color: #f5f5f5;
-        }
-        h1 {
+        }}
+        h1 {{
             color: #333;
             border-bottom: 2px solid #4CAF50;
             padding-bottom: 10px;
-        }
-        .strategy {
+        }}
+        .strategy {{
             background-color: white;
             border: 1px solid #ddd;
             border-radius: 5px;
             padding: 15px;
             margin: 15px 0;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .strategy-header {
+        }}
+        .strategy-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 10px;
             padding-bottom: 10px;
             border-bottom: 1px solid #eee;
-        }
-        .strategy-info {
+        }}
+        .strategy-info {{
             flex: 1;
-        }
-        .strategy-id {
+        }}
+        .strategy-id {{
             font-weight: bold;
             color: #4CAF50;
             font-size: 1.1em;
-        }
-        .strategy-meta {
+        }}
+        .strategy-meta {{
             color: #666;
             font-size: 0.9em;
             margin-top: 5px;
-        }
-        .strategy-financials {
+        }}
+        .strategy-financials {{
             text-align: right;
-        }
-        .net-cash {
+        }}
+        .net-cash {{
             font-size: 1.2em;
             font-weight: bold;
             color: #333;
-        }
-        .commission {
+        }}
+        .commission {{
             color: #666;
             font-size: 0.9em;
-        }
-        .legs {
+        }}
+        .legs {{
             margin-top: 10px;
-        }
-        .leg {
+        }}
+        .leg {{
             padding: 8px;
             margin: 5px 0;
             background-color: #f9f9f9;
             border-left: 3px solid #4CAF50;
             font-family: 'Courier New', monospace;
-        }
-        .summary {
+        }}
+        .summary {{
             background-color: white;
             border: 1px solid #ddd;
             border-radius: 5px;
             padding: 15px;
             margin: 20px 0;
-        }
-        .summary-stats {
+        }}
+        .summary-stats {{
             display: flex;
             justify-content: space-around;
             margin-top: 10px;
-        }
-        .stat {
+        }}
+        .stat {{
             text-align: center;
-        }
-        .stat-value {
+        }}
+        .stat-value {{
             font-size: 1.5em;
             font-weight: bold;
             color: #4CAF50;
-        }
-        .stat-label {
+        }}
+        .stat-label {{
             color: #666;
             font-size: 0.9em;
-        }
+        }}
     </style>
 </head>
 <body>
@@ -680,8 +779,18 @@ Examples:
   
   # Generate HTML report with custom output file
   python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --output reports/my_report.html
+  
+  # Generate report with longer wait time for large queries
+  python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --max-wait 180
+  
+  # Generate report with debug logging
+  python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --log-level DEBUG
+  
+  # Use manually downloaded Flex Query report file (no API credentials needed)
+  python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.csv --type html
+  python scripts/api/ib/ib_flex_multi_leg_report.py --flex-report flex_report.xml --since 2025-01-01 --type html
 
-Environment Variables Required:
+Environment Variables Required (only if not using --flex-report):
   IB_FLEX_QUERY_TOKEN: Flex Web Service token from Client Portal -> Reports -> Flex Web Service -> Token
   IB_FLEX_QUERY_ID: Flex Query ID from Client Portal -> Reports -> Flex Queries
         """
@@ -708,15 +817,34 @@ Environment Variables Required:
         help='Output file path (default: auto-generated in reports/ folder)'
     )
     
+    parser.add_argument(
+        '--max-wait',
+        type=int,
+        default=120,
+        help='Maximum seconds to wait for Flex Query statement to be ready (default: 120)'
+    )
+    
+    parser.add_argument(
+        '--log-level',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        default='INFO',
+        help='Set logging level: DEBUG, INFO, WARNING, or ERROR (default: INFO). Use DEBUG for detailed troubleshooting.'
+    )
+    
+    parser.add_argument(
+        '--flex-report',
+        type=str,
+        default=None,
+        help='Path to manually downloaded Flex Query report file (CSV or XML). If provided, skips API download.'
+    )
+    
     args = parser.parse_args()
     
-    # Get credentials
-    token = get_flex_query_token()
-    query_id = get_flex_query_id()
-    
-    if not token or not query_id:
-        logger.error("Missing required credentials. Please set IB_FLEX_QUERY_TOKEN and IB_FLEX_QUERY_ID environment variables.")
-        sys.exit(1)
+    # Configure logging level
+    log_level = getattr(logging, args.log_level.upper())
+    logging.getLogger().setLevel(log_level)
+    logger.setLevel(log_level)
+    logger.debug(f"Logging level set to {args.log_level}")
     
     # Parse since date
     since_date = None
@@ -728,25 +856,44 @@ Environment Variables Required:
             logger.error(f"Invalid date format: {args.since}. Use YYYY-MM-DD format (e.g., 2025-01-01)")
             sys.exit(1)
     
-    # Step 1: Request Flex Query
-    reference_code = request_flex_query(token, query_id)
-    if not reference_code:
-        logger.error("Failed to request Flex Query")
-        sys.exit(1)
+    # Check if using manual file or API
+    if args.flex_report:
+        # Use manually downloaded file
+        logger.info(f"Using manually downloaded Flex Query report: {args.flex_report}")
+        df = read_flex_report_file(args.flex_report)
+        if df.empty:
+            logger.error("No trade data found in Flex Query file")
+            sys.exit(1)
+    else:
+        # Use API to fetch Flex Query
+        # Get credentials
+        token = get_flex_query_token()
+        query_id = get_flex_query_id()
+        
+        if not token or not query_id:
+            logger.error("Missing required credentials. Please set IB_FLEX_QUERY_TOKEN and IB_FLEX_QUERY_ID environment variables.")
+            logger.error("Alternatively, use --flex-report to provide a manually downloaded file.")
+            sys.exit(1)
+        
+        # Step 1: Request Flex Query
+        reference_code = request_flex_query(token, query_id)
+        if not reference_code:
+            logger.error("Failed to request Flex Query")
+            sys.exit(1)
+        
+        # Step 2: Download statement
+        xml_content = download_flex_statement(token, reference_code, max_wait=args.max_wait)
+        if not xml_content:
+            logger.error("Failed to download Flex Query statement")
+            sys.exit(1)
+        
+        # Step 3: Parse XML
+        df = parse_flex_xml(xml_content)
+        if df.empty:
+            logger.error("No trade data found in Flex Query")
+            sys.exit(1)
     
-    # Step 2: Download statement
-    xml_content = download_flex_statement(token, reference_code)
-    if not xml_content:
-        logger.error("Failed to download Flex Query statement")
-        sys.exit(1)
-    
-    # Step 3: Parse XML
-    df = parse_flex_xml(xml_content)
-    if df.empty:
-        logger.error("No trade data found in Flex Query")
-        sys.exit(1)
-    
-    # Step 4: Filter by date
+    # Step 4 (or 1 if using file): Filter by date
     if since_date:
         df = filter_by_date(df, since_date)
         if df.empty:
