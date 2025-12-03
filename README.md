@@ -24,7 +24,7 @@ The framework now uses TimescaleDB for efficient time-series data storage instea
 
 ```bash
 # Run the setup script
-python setup_timescaledb.py
+python setup/setup_timescaledb.py
 ```
 
 This will:

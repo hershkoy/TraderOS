@@ -16,13 +16,13 @@ When running the universe update script, some symbols may fail due to various re
 
 ```bash
 # For IB provider with 1h timeframe (default)
-python identify_failed_symbols.py
+python scripts/identify_failed_symbols.py
 
 # For specific provider and timeframe
-python identify_failed_symbols.py --provider ib --timeframe 1h
+python scripts/identify_failed_symbols.py --provider ib --timeframe 1h
 
 # For custom output file
-python identify_failed_symbols.py --output my_failed_symbols.txt
+python scripts/identify_failed_symbols.py --output my_failed_symbols.txt
 ```
 
 ### What it does:
@@ -136,7 +136,7 @@ grep "ERROR" universe_update_complete.log
 
 ```bash
 # Step 1: Identify failed symbols
-python identify_failed_symbols.py --provider ib --timeframe 1h
+python scripts/identify_failed_symbols.py --provider ib --timeframe 1h
 
 # Step 2: Check how many failed
 wc -l failed.txt
@@ -149,7 +149,7 @@ python utils/update_universe_data.py \
   --universe-file failed.txt
 
 # Step 4: Verify all symbols now have data
-python identify_failed_symbols.py --provider ib --timeframe 1h
+python scripts/identify_failed_symbols.py --provider ib --timeframe 1h
 ```
 
 ## 6. Troubleshooting

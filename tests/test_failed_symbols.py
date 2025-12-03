@@ -10,7 +10,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from identify_failed_symbols import identify_failed_symbols, save_failed_symbols_to_file
+    from scripts.identify_failed_symbols import identify_failed_symbols, save_failed_symbols_to_file
 except ImportError:
     print("Failed to import identify_failed_symbols module")
     sys.exit(1)

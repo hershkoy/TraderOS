@@ -267,7 +267,7 @@ def main():
     
     if args.test:
         # Run test
-        from test_hl_after_ll_scanner import test_scanner
+        from tests.test_hl_after_ll_scanner import test_scanner
         test_scanner()
         return
     

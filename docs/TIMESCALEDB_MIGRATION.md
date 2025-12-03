@@ -58,7 +58,7 @@ The framework has been updated to use TimescaleDB (a PostgreSQL extension optimi
 
 ```bash
 # Run automated setup
-python setup_timescaledb.py
+python setup/setup_timescaledb.py
 
 # Or manually
 docker-compose up -d
