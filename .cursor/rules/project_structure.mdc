@@ -47,10 +47,15 @@ Follow the established project structure when creating, modifying, or organizing
   - Config: `config_processor.py`
 
 ### Scripts (`scripts/`)
-- Utility and data management scripts:
-  - Data operations: backfilling, ingestion, checking
-  - Trading scripts: options trading, order utilities
-  - Maintenance: data freshness, duplicates, failed symbols
+- Utility and data management scripts organized by category:
+  - **`scripts/api/`** - API integration scripts
+    - `api/ib/` - Interactive Brokers API scripts (flex queries, option chains)
+    - `api/polygon/` - Polygon.io API scripts (contract discovery, backfilling, EOD ingestion)
+  - **`scripts/db/`** - Database operations (checks, migrations, optimization, greeks backfill)
+  - **`scripts/data/`** - Data management and validation (freshness checks, tick validation, universe management, failed symbols)
+  - **`scripts/scanners/`** - Scanner scripts (daily scanner, HA reversal scanner)
+  - **`scripts/trading/`** - Trading scripts (options strategy trader)
+  - **`scripts/pipeline/`** - Pipeline and automation scripts (daily pipeline, scheduler setup)
 
 ### Tests (`tests/`)
 - All test files go in `tests/` directory
@@ -110,13 +115,15 @@ Follow the established project structure when creating, modifying, or organizing
 ### Options Trading
 - Options-related utilities in `utils/` or `scripts/`
 - Options strategies in `strategies/option_strategies.py`
+- API scripts in `scripts/api/ib/` and `scripts/api/polygon/`
+- Trading scripts in `scripts/trading/`
 
 ## When Creating New Files
 
 - **New strategy?** → `strategies/`
 - **New indicator?** → `indicators/`
 - **New utility function?** → `utils/` (or add to existing module)
-- **New script?** → `scripts/`
+- **New script?** → `scripts/` (choose appropriate subfolder: api/, db/, data/, scanners/, trading/, or pipeline/)
 - **New test?** → `tests/`
 - **New example?** → `examples/`
 - **New main entry point?** → Root directory (only if it's a primary application entry point)

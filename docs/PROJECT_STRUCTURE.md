@@ -61,18 +61,42 @@ backTraderTest/
 │   └── [other utility modules]
 │
 ├── scripts/                           # Utility and data scripts
-│   ├── daily_scanner.py                # Daily scanning script
-│   ├── polygon_backfill_contracts.py  # Options data backfilling
-│   ├── polygon_discover_contracts.py   # Contract discovery
-│   ├── polygon_ingest_eod_quotes.py   # EOD quotes ingestion
-│   ├── options_strategy_trader.py     # Options trading script
-│   ├── ib_option_chain_to_csv.py      # IB option chain export
-│   ├── check_data_freshness.py        # Data freshness checker
-│   ├── check_database_data.py         # Database data checker
-│   ├── check_duplicates.py            # Duplicate checker
-│   ├── identify_failed_symbols.py     # Failed symbols identifier
-│   ├── import_tickers_to_universe.py  # Ticker import script
-│   └── [other utility scripts]
+│   ├── api/                           # API integration scripts
+│   │   ├── ib/                        # Interactive Brokers API
+│   │   │   ├── ib_flex_multi_leg_report.py    # IB Flex query report generator
+│   │   │   └── ib_option_chain_to_csv.py      # IB option chain export
+│   │   └── polygon/                   # Polygon.io API
+│   │       ├── polygon_backfill_contracts.py # Options data backfilling
+│   │       ├── polygon_discover_contracts.py  # Contract discovery
+│   │       ├── polygon_ingest_eod_quotes.py   # EOD quotes ingestion
+│   │       └── run_polygon_pipeline_2y.py    # Polygon pipeline runner
+│   ├── db/                            # Database operations
+│   │   ├── check_database_data.py     # Database data checker
+│   │   ├── check_duplicates.py        # Duplicate checker
+│   │   ├── greeks_fill.py             # Greeks backfill
+│   │   ├── optimize_database.py      # Database optimization
+│   │   ├── quick_db_check.py         # Quick database check
+│   │   ├── run_eod_prices_migration.py # EOD prices migration
+│   │   └── run_snapshot_migration.py  # Snapshot migration
+│   ├── data/                          # Data management and validation
+│   │   ├── check_data_freshness.py    # Data freshness checker
+│   │   ├── check_realtime.py          # Realtime data checker
+│   │   ├── check_ticks.py             # Tick data checker
+│   │   ├── debug_universe_update.py   # Universe update debugger
+│   │   ├── filter_otc_stocks.py       # OTC stock filter
+│   │   ├── generate_mock_options_data.py # Mock data generator
+│   │   ├── identify_failed_symbols.py # Failed symbols identifier
+│   │   ├── import_tickers_to_universe.py # Ticker import script
+│   │   └── options_data_checks.py     # Options data validation
+│   ├── scanners/                      # Scanner scripts
+│   │   ├── daily_scanner.py           # Daily scanning script
+│   │   └── ha_reversal_scanner.py    # HA reversal scanner
+│   ├── trading/                       # Trading scripts
+│   │   └── options_strategy_trader.py # Options trading script
+│   └── pipeline/                      # Pipeline and automation
+│       ├── run_daily_pipeline.bat     # Daily pipeline (Windows)
+│       ├── run_daily_pipeline.sh      # Daily pipeline (Linux/macOS)
+│       └── scheduler_setup.py         # Scheduler setup script
 │
 ├── tests/                             # Test files
 │   ├── test_*.py                       # Various test files
@@ -152,10 +176,14 @@ backTraderTest/
 - **Backfilling**: Historical options contract data collection
 
 ### 5. Utilities
-- **Database Utilities**: Connection, loading, migration scripts
-- **Data Utilities**: Freshness checking, duplicate detection
-- **Ticker Management**: Universe management and updates
-- **Reporting**: HTML report generation with charts
+- **Database Utilities**: Connection, loading, migration scripts (in `scripts/db/`)
+- **Data Utilities**: Freshness checking, duplicate detection, validation (in `scripts/data/`)
+- **API Integration**: IB and Polygon API scripts (in `scripts/api/`)
+- **Ticker Management**: Universe management and updates (in `utils/` and `scripts/data/`)
+- **Reporting**: HTML report generation with charts (in `utils/`)
+- **Scanners**: Scanner scripts for pattern detection (in `scripts/scanners/`)
+- **Trading**: Options trading scripts (in `scripts/trading/`)
+- **Pipeline**: Automation and scheduling scripts (in `scripts/pipeline/`)
 
 ## Key Features
 
@@ -239,7 +267,13 @@ All configuration is done via YAML files:
 ## Notes
 
 - All main entry point scripts are in the root directory for easy access
-- Utility scripts are organized in `scripts/` directory
+- Utility scripts are organized in `scripts/` directory with subfolders:
+  - `scripts/api/` - API integration (IB and Polygon)
+  - `scripts/db/` - Database operations
+  - `scripts/data/` - Data management and validation
+  - `scripts/scanners/` - Scanner scripts
+  - `scripts/trading/` - Trading scripts
+  - `scripts/pipeline/` - Pipeline and automation
 - Tests are in `tests/` directory
 - Examples are in `examples/` directory
 - Configuration files are in the root directory
