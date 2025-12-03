@@ -43,7 +43,8 @@ import os
 import sys
 
 # Make project root importable
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Go up 2 levels from scripts/trading/ to project root
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 try:
     from ib_insync import Contract, Option, ComboLeg, Order, Trade, IB

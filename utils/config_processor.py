@@ -71,12 +71,15 @@ def auto_fetch_option_chain(
     
     # Import fetch_options_to_csv
     try:
-        from scripts.ib_option_chain_to_csv import fetch_options_to_csv
+        from scripts.api.ib.ib_option_chain_to_csv import fetch_options_to_csv
     except ImportError:
         import importlib.util
+        # File is at scripts/api/ib/ib_option_chain_to_csv.py
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        script_path = os.path.join(project_root, "scripts", "api", "ib", "ib_option_chain_to_csv.py")
         spec = importlib.util.spec_from_file_location(
             "ib_option_chain_to_csv",
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts", "ib_option_chain_to_csv.py")
+            script_path
         )
         ib_option_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ib_option_module)

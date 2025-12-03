@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 
 # Add project root to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Go up 4 levels from scripts/api/ib/ib_option_chain_to_csv.py to project root
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 try:
     from ib_insync import Contract, Option, Stock, Index, Order, Trade
