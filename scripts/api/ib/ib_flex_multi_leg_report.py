@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-IB Flex Query Multi-Leg Strategy Report Generator
+IB Multi-Leg Strategy Report Generator
 
-Fetches trade history from Interactive Brokers Flex Query Web Service
-and generates a report of multi-leg option strategies grouped by OrderID.
+Fetches trade history from Interactive Brokers and generates a report of 
+multi-leg option strategies. Uses TWS API (default) for accurate combo order 
+grouping, or Flex Query Web Service (fallback) for historical data.
 
 Usage:
+    # TWS API (default - matches IB's Trade History Summary exactly)
     python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
-    python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type csv
+    
+    # Flex Query (fallback for historical data)
+    python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --data-source flex
 """
 
 import sys
@@ -16,20 +20,46 @@ import argparse
 import logging
 import time
 import xml.etree.ElementTree as ET
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import pandas as pd
 from dotenv import load_dotenv
 
+try:
+    from ib_insync import IB, Execution, ExecutionFilter, Contract
+    IB_INSYNC_AVAILABLE = True
+except ImportError:
+    IB_INSYNC_AVAILABLE = False
+
 # Add project root to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 try:
     import requests
 except ImportError:
     print("Error: requests not found. Please install with: pip install requests")
     sys.exit(1)
+
+# Import IB connection utilities
+try:
+    from utils.fetch_data import get_ib_connection, cleanup_ib_connection
+    from utils.ib_port_detector import detect_ib_port
+except ImportError:
+    # Fallback if running from different directory
+    def get_ib_connection(port=None, client_id=None):
+        if not IB_INSYNC_AVAILABLE:
+            raise ImportError("ib_insync not available")
+        ib = IB()
+        ib.connect('127.0.0.1', port or 4001, clientId=client_id or 2)
+        return ib
+    
+    def cleanup_ib_connection():
+        pass
+    
+    def detect_ib_port():
+        return 4001
 
 # Load environment variables
 load_dotenv()
@@ -248,7 +278,9 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
             df = pd.read_csv(StringIO(xml_content))
             logger.info(f"Parsed {len(df)} trade records from CSV with {len(df.columns)} columns")
             logger.debug(f"CSV columns: {list(df.columns)}")
-            logger.debug(f"CSV first few rows:\n{df.head()}")
+            # Exclude account data from debug output
+            df_to_log = df.drop(columns=['Account'], errors='ignore')
+            logger.debug(f"CSV first few rows (account data excluded):\n{df_to_log.head()}")
             return df
         except Exception as e:
             logger.warning(f"Failed to parse as CSV: {e}, trying XML...")
@@ -318,7 +350,9 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
         logger.info(f"Parsed {len(df)} trade records with {len(df.columns)} columns")
         logger.debug(f"Columns: {list(df.columns)}")
         logger.debug(f"DataFrame shape: {df.shape}")
-        logger.debug(f"First few rows:\n{df.head()}")
+        # Exclude account data from debug output
+        df_to_log = df.drop(columns=['Account'], errors='ignore')
+        logger.debug(f"First few rows (account data excluded):\n{df_to_log.head()}")
         logger.debug(f"Data types:\n{df.dtypes}")
         logger.debug(f"Null counts:\n{df.isnull().sum()}")
         
@@ -331,6 +365,331 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error processing Flex Query data: {e}", exc_info=True)
         return pd.DataFrame()
+
+
+def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[int] = None) -> pd.DataFrame:
+    """
+    Fetch trade executions from TWS API using reqExecutions().
+    Groups by parentId (combo order ID) to match IB's Trade History Summary.
+    
+    Args:
+        since_date: Filter executions on or after this date
+        port: IB API port number (optional)
+        
+    Returns:
+        DataFrame with execution data in format compatible with Flex Query data
+    """
+    if not IB_INSYNC_AVAILABLE:
+        raise ImportError("ib_insync not available. Install with: pip install ib_insync")
+    
+    logger.info("Fetching executions from TWS API...")
+    
+    # Get IB connection
+    ib = get_ib_connection(port=port, client_id=3)  # Use different client ID for executions
+    
+    try:
+        # Create execution filter (optional - can filter by client ID, account, etc.)
+        exec_filter = ExecutionFilter()
+        # Leave empty to get all executions
+        
+        # Request executions
+        logger.info("Requesting executions from TWS API...")
+        executions = ib.reqExecutions(exec_filter)
+        logger.info(f"Received {len(executions)} executions from TWS API")
+        
+        if not executions:
+            logger.warning("No executions found")
+            return pd.DataFrame()
+        
+        # Convert executions to DataFrame format compatible with Flex Query
+        # Note: reqExecutions() returns Fill objects, which contain:
+        # - contract: Contract object
+        # - execution: Execution object (with side, price, shares, execId, orderRef, etc.)
+        # - commissionReport: CommissionReport object
+        # - time: datetime
+        execution_data = []
+        
+        for fill in executions:
+            contract = fill.contract
+            execution = fill.execution  # The actual Execution object
+            
+            # Skip non-option trades
+            if contract.secType != 'OPT':
+                continue
+            
+            # Parse execution time
+            exec_time = fill.time
+            if isinstance(exec_time, str):
+                try:
+                    exec_time = datetime.strptime(exec_time, '%Y%m%d  %H:%M:%S')
+                except:
+                    try:
+                        exec_time = datetime.strptime(exec_time, '%Y%m%d %H:%M:%S')
+                    except:
+                        exec_time = pd.to_datetime(exec_time, errors='coerce')
+            
+            # Filter by date if specified
+            if since_date and exec_time:
+                if isinstance(exec_time, datetime) and exec_time.date() < since_date.date():
+                    continue
+            
+            # Extract option details
+            symbol = contract.symbol
+            expiry = contract.lastTradeDateOrContractMonth  # Format: YYYYMMDD
+            strike = contract.strike
+            right = contract.right  # 'P' or 'C'
+            
+            # Determine buy/sell from execution side
+            # execution.side: 'B' = Buy, 'S' = Sell
+            buy_sell = 'BUY' if execution.side == 'B' else 'SELL'
+            
+            # Get parent ID (combo order ID) - this is the key for grouping
+            # For combo orders, orderRef contains the combo order identifier that links legs together
+            parent_id = None
+            if execution.orderRef:
+                # orderRef is the key that links combo legs together
+                parent_id = execution.orderRef
+            elif execution.execId:
+                # Fallback: try to extract from execId format
+                # Some formats: "parentId.legId" or similar
+                parts = execution.execId.split('.')
+                if len(parts) > 1:
+                    parent_id = parts[0]
+                else:
+                    parent_id = execution.execId
+            
+            # NetCash calculation
+            # For individual leg executions (which is what we get for combo orders):
+            # - execution.price is the price per share for this individual leg
+            # - execution.shares is the number of contracts
+            # - NetCash for this leg = price * quantity * 100 (contract multiplier)
+            # For credit spreads: SELL leg has positive price, BUY leg has negative price (or vice versa)
+            # We'll aggregate all legs in the grouping function to get the combo net price
+            price_per_share = execution.price
+            quantity = execution.shares
+            
+            # Calculate NetCash for this individual leg
+            # For BUY: negative (money out), for SELL: positive (money in)
+            # But we need to consider the actual cash flow direction
+            if buy_sell == 'BUY':
+                net_cash = -abs(price_per_share * quantity * 100)  # Money out
+            else:  # SELL
+                net_cash = abs(price_per_share * quantity * 100)  # Money in
+            
+            # Commission (from commissionReport if available)
+            commission = 0.0
+            if fill.commissionReport:
+                commission = fill.commissionReport.commission
+            
+            # Build execution record
+            exec_record = {
+                'OrderID': execution.orderRef if execution.orderRef else parent_id,
+                'TradeID': execution.execId,
+                'ParentID': parent_id,  # Combo order ID for grouping
+                'Symbol': symbol,
+                'Expiry': int(expiry) if expiry and expiry.isdigit() else expiry,
+                'Strike': strike,
+                'Put/Call': right,
+                'Buy/Sell': buy_sell,
+                'Quantity': quantity if buy_sell == 'BUY' else -quantity,  # Negative for SELL
+                'Price': price_per_share,
+                'NetCash': net_cash,
+                'Commission': commission,
+                'Date/Time': exec_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(exec_time, datetime) else str(exec_time),
+                'DateTime': exec_time,  # Keep as datetime for filtering
+                'Exchange': execution.exchange,
+                'Account': execution.acctNumber if hasattr(execution, 'acctNumber') else '',
+            }
+            
+            # Log each order as JSON in debug mode (without account data)
+            if logger.isEnabledFor(logging.DEBUG):
+                exec_record_log = exec_record.copy()
+                exec_record_log.pop('Account', None)  # Remove account data from log
+                # Convert datetime to string for JSON serialization
+                if 'DateTime' in exec_record_log and isinstance(exec_record_log['DateTime'], datetime):
+                    exec_record_log['DateTime'] = exec_record_log['DateTime'].isoformat()
+                logger.debug(f"Execution {len(execution_data) + 1}:\n{json.dumps(exec_record_log, indent=2, default=str)}")
+            
+            execution_data.append(exec_record)
+        
+        if not execution_data:
+            logger.warning("No option executions found after filtering")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(execution_data)
+        logger.info(f"Converted {len(df)} executions to DataFrame format")
+        logger.debug(f"Columns: {list(df.columns)}")
+        
+        # Log DataFrame without account data for security
+        if logger.isEnabledFor(logging.DEBUG) and not df.empty:
+            df_to_log = df.drop(columns=['Account'], errors='ignore')
+            logger.debug(f"DataFrame shape: {df_to_log.shape}")
+            logger.debug(f"First few rows (account data excluded):\n{df_to_log.head()}")
+            
+            # Save all trades to CSV in reports folder (without account data)
+            try:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                csv_path = f"reports/tws_executions_debug_{timestamp}.csv"
+                Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+                # Save without account data
+                df_to_save = df.drop(columns=['Account'], errors='ignore')
+                df_to_save.to_csv(csv_path, index=False)
+                logger.debug(f"Saved all executions to CSV (account data excluded): {csv_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save debug CSV: {e}")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching executions from TWS API: {e}", exc_info=True)
+        raise
+    finally:
+        # Don't disconnect - let cleanup_ib_connection handle it
+        pass
+
+
+def group_tws_executions_by_combo(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Group TWS API executions by parentId (combo order ID) to match IB's Trade History Summary.
+    
+    Args:
+        df: DataFrame with execution data from fetch_tws_executions()
+        
+    Returns:
+        List of strategy dictionaries (same format as group_multi_leg_strategies)
+    """
+    if df.empty:
+        return []
+    
+    logger.info("Grouping TWS executions by combo order (parentId)...")
+    
+    # Group by ParentID (combo order ID)
+    # If ParentID is not available, fall back to grouping by OrderID and date/time
+    if 'ParentID' in df.columns and df['ParentID'].notna().any():
+        # Group by ParentID - this matches IB's combo order grouping
+        combo_groups = df.groupby('ParentID')
+        logger.info(f"Found {len(combo_groups)} combo orders (by ParentID)")
+    else:
+        # Fallback: group by OrderID and date/time (similar to Flex Query grouping)
+        logger.warning("ParentID not available, falling back to OrderID + date/time grouping")
+        df['GroupKey'] = df['OrderID'].astype(str) + '_' + df['Date/Time'].astype(str)
+        combo_groups = df.groupby('GroupKey')
+        logger.info(f"Found {len(combo_groups)} groups (by OrderID + date/time)")
+    
+    strategies = []
+    
+    for combo_id, group in combo_groups:
+        if len(group) < 2:
+            # Single leg - skip (not a multi-leg strategy)
+            continue
+        
+        # Build leg descriptions
+        legs_desc = []
+        leg_list = []
+        order_ids = []
+        purchase_times = []
+        strategy_buys = []
+        strategy_sells = []
+        
+        for _, row in group.iterrows():
+            symbol = row.get('Symbol', 'N/A')
+            expiry = row.get('Expiry', 'N/A')
+            strike = row.get('Strike', 'N/A')
+            put_call = row.get('Put/Call', 'N/A')
+            buy_sell = row.get('Buy/Sell', 'N/A')
+            quantity = row.get('Quantity', 0)
+            price = row.get('Price', 0)
+            orderid = row.get('OrderID', '')
+            netcash = row.get('NetCash', 0)
+            
+            # Format expiry
+            if isinstance(expiry, (int, float)) and expiry > 0:
+                expiry_str = str(int(expiry))
+                if len(expiry_str) == 8:
+                    expiry_str = f"{expiry_str[:4]}-{expiry_str[4:6]}-{expiry_str[6:8]}"
+            else:
+                expiry_str = str(expiry)
+            
+            leg_list.append({
+                'symbol': symbol,
+                'strike': strike,
+                'expiry': expiry_str,
+                'put_call': put_call,
+                'buy_sell': buy_sell,
+                'quantity': quantity,
+                'price': price,
+                'orderid': orderid
+            })
+            
+            # Track purchase times (BUY transactions)
+            if buy_sell == 'BUY':
+                exec_time = row.get('DateTime')
+                if pd.notna(exec_time):
+                    purchase_times.append(exec_time)
+            
+            # Track buys and sells for price calculation
+            if buy_sell == 'BUY':
+                strategy_buys.append(netcash)
+            else:
+                strategy_sells.append(netcash)
+        
+        # Sort legs by Symbol, Strike, Put/Call
+        leg_list_sorted = sorted(leg_list, key=lambda x: (x['symbol'], x['strike'], x['put_call']))
+        
+        for leg in leg_list_sorted:
+            leg_desc = f"{leg['buy_sell']} {abs(int(leg['quantity']))} x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']}"
+            legs_desc.append(leg_desc)
+            if leg['orderid'] and pd.notna(leg['orderid']):
+                order_ids.append(str(int(leg['orderid'])) if isinstance(leg['orderid'], (int, float)) else str(leg['orderid']))
+        
+        # Calculate strategy prices
+        total_buy_price = sum(strategy_buys) if strategy_buys else 0
+        total_sell_price = sum(strategy_sells) if strategy_sells else 0
+        strategy_pnl = total_sell_price - total_buy_price
+        
+        # Get purchase date/time (earliest BUY transaction)
+        purchase_datetime_str = None
+        if purchase_times:
+            purchase_datetimes = [pt for pt in purchase_times if pd.notna(pt)]
+            if purchase_datetimes:
+                purchase_datetime = min(purchase_datetimes)
+                if isinstance(purchase_datetime, datetime):
+                    purchase_datetime_str = purchase_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    purchase_datetime_str = str(purchase_datetime)
+        
+        # Get other strategy info
+        first_row = group.iloc[0]
+        underlying = first_row.get('Symbol', 'N/A')
+        when = first_row.get('Date/Time', 'N/A')
+        net_cash = group['NetCash'].sum()
+        commission = group['Commission'].sum()
+        
+        # Create strategy ID (use ParentID if available, otherwise OrderIDs)
+        if 'ParentID' in df.columns and pd.notna(combo_id):
+            strategy_id = str(combo_id)
+        else:
+            strategy_id = ', '.join(order_ids) if order_ids else 'N/A'
+        
+        strategy = {
+            'OrderID': strategy_id,
+            'NumLegs': len(group),
+            'Underlying': underlying,
+            'When': when,
+            'PurchaseDateTime': purchase_datetime_str if purchase_datetime_str else when,
+            'Legs': legs_desc,
+            'BuyPrice': total_buy_price,
+            'SellPrice': total_sell_price,
+            'PnL': strategy_pnl,
+            'NetCash': net_cash,
+            'Commission': commission,
+            'TotalCost': net_cash + commission
+        }
+        
+        strategies.append(strategy)
+    
+    logger.info(f"Found {len(strategies)} multi-leg strategies from TWS API executions")
+    return strategies
 
 
 def filter_by_date(df: pd.DataFrame, since_date: Optional[datetime]) -> pd.DataFrame:
@@ -1238,7 +1597,22 @@ Environment Variables Required (only if not using --flex-report):
         type=str,
         default='true',
         choices=['true', 'false', '1', '0', 'yes', 'no'],
-        help='Group by strategy (date/time, underlying, expiry) instead of OrderID. Default: true. Set to false to group by OrderID instead.'
+        help='Group by strategy (date/time, underlying, expiry) instead of OrderID. Default: true. Set to false to group by OrderID instead. (Only applies to Flex Query mode)'
+    )
+    
+    parser.add_argument(
+        '--data-source',
+        type=str,
+        default='tws',
+        choices=['tws', 'flex'],
+        help='Data source: tws (TWS API - default, matches IB Trade History Summary exactly) or flex (Flex Query Web Service - fallback for historical data)'
+    )
+    
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=None,
+        help='IB API port number (for TWS API mode, default: auto-detect)'
     )
     
     args = parser.parse_args()
@@ -1248,6 +1622,16 @@ Environment Variables Required (only if not using --flex-report):
     logging.getLogger().setLevel(log_level)
     logger.setLevel(log_level)
     logger.debug(f"Logging level set to {args.log_level}")
+    
+    # Suppress ib_insync debug logs to avoid exposing account data
+    # ib_insync logs raw API messages that may contain sensitive information
+    if log_level == logging.DEBUG:
+        # Set ib_insync loggers to WARNING to prevent account data exposure
+        logging.getLogger('ib_insync').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+        logger.debug("Suppressed ib_insync debug logs to prevent account data exposure")
     
     # Parse since date
     since_date = None
@@ -1259,57 +1643,106 @@ Environment Variables Required (only if not using --flex-report):
             logger.error(f"Invalid date format: {args.since}. Use YYYY-MM-DD format (e.g., 2025-01-01)")
             sys.exit(1)
     
-    # Check if using manual file or API
-    if args.flex_report:
-        # Use manually downloaded file
-        logger.info(f"Using manually downloaded Flex Query report: {args.flex_report}")
-        df = read_flex_report_file(args.flex_report)
-        if df.empty:
-            logger.error("No trade data found in Flex Query file")
+    # Determine data source
+    use_tws_api = args.data_source == 'tws' and not args.flex_report
+    
+    if use_tws_api:
+        # Use TWS API (default) - matches IB's Trade History Summary exactly
+        logger.info("Using TWS API to fetch executions (matches IB Trade History Summary)")
+        
+        if not IB_INSYNC_AVAILABLE:
+            logger.error("ib_insync not available. Install with: pip install ib_insync")
+            logger.error("Alternatively, use --data-source flex for Flex Query mode")
             sys.exit(1)
+        
+        # Detect port if not provided
+        selected_port = args.port
+        if not selected_port:
+            try:
+                selected_port = detect_ib_port()
+                if selected_port:
+                    logger.info(f"Auto-detected IB port: {selected_port}")
+                else:
+                    logger.warning("Could not auto-detect IB port, using default 4001")
+                    selected_port = 4001
+            except Exception as e:
+                logger.warning(f"Port auto-detection failed: {e}, using default 4001")
+                selected_port = 4001
+        
+        # Fetch executions from TWS API
+        try:
+            df = fetch_tws_executions(since_date=since_date, port=selected_port)
+            if df.empty:
+                logger.warning("No executions found from TWS API")
+                sys.exit(0)
+            
+            # Group by combo order (parentId) - matches IB's grouping exactly
+            strategies = group_tws_executions_by_combo(df)
+            if not strategies:
+                logger.warning("No multi-leg strategies found in TWS executions")
+                sys.exit(0)
+                
+        except Exception as e:
+            logger.error(f"Error fetching from TWS API: {e}")
+            logger.error("Falling back to Flex Query mode. Use --data-source flex to use Flex Query directly.")
+            sys.exit(1)
+        finally:
+            cleanup_ib_connection()
+    
     else:
-        # Use API to fetch Flex Query
-        # Get credentials
-        token = get_flex_query_token()
-        query_id = get_flex_query_id()
+        # Use Flex Query (fallback or explicitly requested)
+        logger.info("Using Flex Query Web Service")
         
-        if not token or not query_id:
-            logger.error("Missing required credentials. Please set IB_FLEX_QUERY_TOKEN and IB_FLEX_QUERY_ID environment variables.")
-            logger.error("Alternatively, use --flex-report to provide a manually downloaded file.")
-            sys.exit(1)
+        if args.flex_report:
+            # Use manually downloaded file
+            logger.info(f"Using manually downloaded Flex Query report: {args.flex_report}")
+            df = read_flex_report_file(args.flex_report)
+            if df.empty:
+                logger.error("No trade data found in Flex Query file")
+                sys.exit(1)
+        else:
+            # Use API to fetch Flex Query
+            # Get credentials
+            token = get_flex_query_token()
+            query_id = get_flex_query_id()
+            
+            if not token or not query_id:
+                logger.error("Missing required credentials. Please set IB_FLEX_QUERY_TOKEN and IB_FLEX_QUERY_ID environment variables.")
+                logger.error("Alternatively, use --flex-report to provide a manually downloaded file.")
+                sys.exit(1)
+            
+            # Step 1: Request Flex Query
+            reference_code = request_flex_query(token, query_id)
+            if not reference_code:
+                logger.error("Failed to request Flex Query")
+                sys.exit(1)
+            
+            # Step 2: Download statement
+            xml_content = download_flex_statement(token, reference_code, max_wait=args.max_wait)
+            if not xml_content:
+                logger.error("Failed to download Flex Query statement")
+                sys.exit(1)
+            
+            # Step 3: Parse XML
+            df = parse_flex_xml(xml_content)
+            if df.empty:
+                logger.error("No trade data found in Flex Query")
+                sys.exit(1)
         
-        # Step 1: Request Flex Query
-        reference_code = request_flex_query(token, query_id)
-        if not reference_code:
-            logger.error("Failed to request Flex Query")
-            sys.exit(1)
+        # Filter by date
+        if since_date:
+            df = filter_by_date(df, since_date)
+            if df.empty:
+                logger.warning(f"No trades found on or after {since_date.strftime('%Y-%m-%d')}")
+                sys.exit(0)
         
-        # Step 2: Download statement
-        xml_content = download_flex_statement(token, reference_code, max_wait=args.max_wait)
-        if not xml_content:
-            logger.error("Failed to download Flex Query statement")
-            sys.exit(1)
-        
-        # Step 3: Parse XML
-        df = parse_flex_xml(xml_content)
-        if df.empty:
-            logger.error("No trade data found in Flex Query")
-            sys.exit(1)
-    
-    # Step 4 (or 1 if using file): Filter by date
-    if since_date:
-        df = filter_by_date(df, since_date)
-        if df.empty:
-            logger.warning(f"No trades found on or after {since_date.strftime('%Y-%m-%d')}")
+        # Group into multi-leg strategies
+        # Convert string argument to boolean
+        group_by_strategy = args.group_by_strategy.lower() in ['true', '1', 'yes']
+        strategies = group_multi_leg_strategies(df, group_by_strategy=group_by_strategy)
+        if not strategies:
+            logger.warning("No multi-leg strategies found")
             sys.exit(0)
-    
-    # Step 5: Group into multi-leg strategies
-    # Convert string argument to boolean
-    group_by_strategy = args.group_by_strategy.lower() in ['true', '1', 'yes']
-    strategies = group_multi_leg_strategies(df, group_by_strategy=group_by_strategy)
-    if not strategies:
-        logger.warning("No multi-leg strategies found")
-        sys.exit(0)
     
     # Step 6: Generate output
     if args.output:
