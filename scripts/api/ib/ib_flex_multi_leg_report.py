@@ -465,49 +465,134 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
     logger.debug(f"Unique OrderIDs: {legs_with_order[orderid_col].nunique()}")
     logger.debug(f"OrderID value counts (top 10):\n{legs_with_order[orderid_col].value_counts().head(10)}")
     
-    # Group by OrderID
-    strategies = []
-    grouped = legs_with_order.groupby(orderid_col)
-    logger.debug(f"Grouped into {len(grouped)} unique OrderIDs")
+    # Get column names (use normalized or original)
+    symbol_col = 'Symbol' if 'Symbol' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'symbol' in c.lower()] or ['Symbol'])[0]
+    strike_col = 'Strike' if 'Strike' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'strike' in c.lower()] or ['Strike'])[0]
+    expiry_col = 'Expiry' if 'Expiry' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'expiry' in c.lower()] or ['Expiry'])[0]
+    put_call_col = put_call_cols[0] if put_call_cols else 'Put/Call'
+    buy_sell_col = 'Buy/Sell' if 'Buy/Sell' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'buy' in c.lower() and 'sell' in c.lower()] or ['Buy/Sell'])[0]
+    quantity_col = 'Quantity' if 'Quantity' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'quantity' in c.lower()] or ['Quantity'])[0]
+    price_col = 'Price' if 'Price' in legs_with_order.columns else ([c for c in legs_with_order.columns if 'price' in c.lower()] or ['Price'])[0]
     
-    single_leg_count = 0
-    for order_id, group in grouped:
-        # Only consider multi-leg strategies (2+ legs)
-        if len(group) < 2:
-            single_leg_count += 1
-            logger.debug(f"Skipping OrderID {order_id} - only {len(group)} leg(s)")
+    # Check for TradeID column to filter out summary rows
+    tradeid_cols = [col for col in legs_with_order.columns if 'tradeid' in col.lower() or 'trade_id' in col.lower()]
+    if tradeid_cols:
+        tradeid_col = tradeid_cols[0]
+        logger.debug(f"Found TradeID column: {tradeid_col}")
+        logger.debug(f"Rows with TradeID: {legs_with_order[tradeid_col].notna().sum()}, without: {legs_with_order[tradeid_col].isna().sum()}")
+        # Filter to only rows with TradeID (actual executions, not summary rows)
+        # Summary rows (no TradeID) are duplicates of actual executions
+        before_count = len(legs_with_order)
+        legs_with_order = legs_with_order[legs_with_order[tradeid_col].notna()].copy()
+        logger.debug(f"After TradeID filtering: {len(legs_with_order)} rows (removed {before_count - len(legs_with_order)} summary rows)")
+    else:
+        logger.debug("No TradeID column found, using all rows")
+    
+    # IB assigns separate OrderIDs to each leg of a multi-leg strategy
+    # We need to group by OrderID first, then look for related OrderIDs that form strategies
+    # Strategy grouping: OrderIDs with same date/time, underlying, and expiry that form a spread
+    
+    # First, aggregate each OrderID into a single leg (in case of multiple fills)
+    orderid_legs = []
+    grouped_by_order = legs_with_order.groupby(orderid_col)
+    logger.debug(f"Grouped into {len(grouped_by_order)} unique OrderIDs")
+    
+    for order_id, group in grouped_by_order:
+        # Aggregate this OrderID into a single leg
+        leg_group_cols = [symbol_col, strike_col, expiry_col, put_call_col, buy_sell_col]
+        leg_group_cols = [c for c in leg_group_cols if c in group.columns]
+        
+        if not leg_group_cols:
             continue
         
-        logger.debug(f"Processing OrderID {order_id} with {len(group)} legs")
+        # Group by leg characteristics (should be 1 unique leg per OrderID)
+        leg_groups = group.groupby(leg_group_cols, dropna=False)
         
-        # Get column names (use normalized or original)
-        symbol_col = 'Symbol' if 'Symbol' in group.columns else ([c for c in group.columns if 'symbol' in c.lower()] or ['Symbol'])[0]
-        strike_col = 'Strike' if 'Strike' in group.columns else ([c for c in group.columns if 'strike' in c.lower()] or ['Strike'])[0]
-        expiry_col = 'Expiry' if 'Expiry' in group.columns else ([c for c in group.columns if 'expiry' in c.lower()] or ['Expiry'])[0]
-        put_call_col = put_call_cols[0] if put_call_cols else 'Put/Call'
-        buy_sell_col = 'Buy/Sell' if 'Buy/Sell' in group.columns else ([c for c in group.columns if 'buy' in c.lower() and 'sell' in c.lower()] or ['Buy/Sell'])[0]
-        quantity_col = 'Quantity' if 'Quantity' in group.columns else ([c for c in group.columns if 'quantity' in c.lower()] or ['Quantity'])[0]
-        price_col = 'Price' if 'Price' in group.columns else ([c for c in group.columns if 'price' in c.lower()] or ['Price'])[0]
+        for leg_key, leg_group in leg_groups:
+            # Aggregate quantities and calculate weighted average price
+            total_quantity = leg_group[quantity_col].sum()
+            if total_quantity != 0:
+                weighted_price = (leg_group[quantity_col] * leg_group[price_col]).sum() / abs(total_quantity)
+            else:
+                weighted_price = leg_group[price_col].mean()
+            
+            first_row = leg_group.iloc[0]
+            
+            # Get date/time
+            date_cols = [col for col in group.columns if 'date' in col.lower() or 'time' in col.lower()]
+            when = first_row[date_cols[0]] if date_cols else ''
+            
+            # Get underlying
+            underlying_cols = [col for col in group.columns if 'underlying' in col.lower() and 'symbol' in col.lower()]
+            underlying = first_row[underlying_cols[0]].strip() if underlying_cols and pd.notna(first_row[underlying_cols[0]]) else ''
+            if not underlying:
+                # Extract from symbol
+                symbol_val = first_row.get(symbol_col, '')
+                if isinstance(symbol_val, str):
+                    underlying = symbol_val.split()[0] if symbol_val.split() else ''
+            
+            # Get NetCash and Commission columns
+            netcash_col = 'NetCash' if 'NetCash' in group.columns else ([c for c in group.columns if 'netcash' in c.lower() or 'net_cash' in c.lower()] or [None])[0]
+            commission_col = 'Commission' if 'Commission' in group.columns else ([c for c in group.columns if 'commission' in c.lower()] or [None])[0]
+            
+            orderid_legs.append({
+                'OrderID': order_id,
+                'Symbol': first_row.get(symbol_col, 'N/A'),
+                'Strike': first_row.get(strike_col, 'N/A'),
+                'Expiry': first_row.get(expiry_col, 'N/A'),
+                'Put/Call': first_row.get(put_call_col, 'N/A'),
+                'Buy/Sell': first_row.get(buy_sell_col, 'N/A'),
+                'Quantity': total_quantity,
+                'Price': weighted_price,
+                'When': when,
+                'Underlying': underlying,
+                'NetCash': group[netcash_col].sum() if netcash_col and netcash_col in group.columns else 0,
+                'Commission': group[commission_col].sum() if commission_col and commission_col in group.columns else 0
+            })
+    
+    logger.debug(f"Aggregated to {len(orderid_legs)} OrderID legs")
+    
+    # Now group related OrderIDs into strategies
+    # Group by: same date/time (or very close), same underlying, same expiry
+    df_legs = pd.DataFrame(orderid_legs)
+    
+    # Group by date/time, underlying, and expiry to find related OrderIDs
+    date_cols_legs = [col for col in df_legs.columns if 'when' in col.lower() or 'date' in col.lower() or 'time' in col.lower()]
+    if not date_cols_legs:
+        logger.warning("No date/time column found for strategy grouping")
+        return []
+    
+    date_col_legs = date_cols_legs[0]
+    
+    # Group by date/time, underlying, and expiry
+    strategy_groups = df_legs.groupby([date_col_legs, 'Underlying', 'Expiry'], dropna=False)
+    logger.debug(f"Found {len(strategy_groups)} potential strategy groups (by date/time, underlying, expiry)")
+    
+    strategies = []
+    single_leg_count = 0
+    
+    for strategy_key, strategy_group in strategy_groups:
+        when_key, underlying_key, expiry_key = strategy_key
+        logger.debug(f"Processing strategy group: {when_key}, {underlying_key}, {expiry_key} with {len(strategy_group)} legs")
         
-        # Sort by Symbol, Strike, Put/Call for consistent display
-        sort_cols = [c for c in [symbol_col, strike_col, put_call_col] if c in group.columns]
-        if sort_cols:
-            group_sorted = group.sort_values(by=sort_cols)
-        else:
-            group_sorted = group
+        # Only consider multi-leg strategies (2+ unique legs)
+        if len(strategy_group) < 2:
+            single_leg_count += 1
+            logger.debug(f"Skipping strategy group - only {len(strategy_group)} leg(s)")
+            continue
         
         # Build leg descriptions
         legs_desc = []
-        logger.debug(f"OrderID {order_id} - sorted group columns: {list(group_sorted.columns)}")
-        for idx, (_, row) in enumerate(group_sorted.iterrows()):
-            logger.debug(f"OrderID {order_id} - Leg {idx + 1} data: {dict(row)}")
-            symbol = row.get(symbol_col, 'N/A')
-            expiry = row.get(expiry_col, 'N/A')
-            strike = row.get(strike_col, 'N/A')
-            put_call = row.get(put_call_col, 'N/A')
-            buy_sell = row.get(buy_sell_col, 'N/A')
-            quantity = row.get(quantity_col, 0)
-            price = row.get(price_col, 0)
+        leg_list = []
+        
+        for _, leg_row in strategy_group.iterrows():
+            symbol = leg_row.get('Symbol', 'N/A')
+            expiry = leg_row.get('Expiry', 'N/A')
+            strike = leg_row.get('Strike', 'N/A')
+            put_call = leg_row.get('Put/Call', 'N/A')
+            buy_sell = leg_row.get('Buy/Sell', 'N/A')
+            quantity = leg_row.get('Quantity', 0)
+            price = leg_row.get('Price', 0)
             
             # Format expiry if it's a number (YYYYMMDD)
             if isinstance(expiry, (int, float)) and expiry > 0:
@@ -517,29 +602,44 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
             else:
                 expiry_str = str(expiry)
             
-            leg_desc = f"{buy_sell} {int(quantity)} x {symbol} {expiry_str} {strike}{put_call} @ {price:.2f}"
+            leg_list.append({
+                'symbol': symbol,
+                'strike': strike,
+                'expiry': expiry_str,
+                'put_call': put_call,
+                'buy_sell': buy_sell,
+                'quantity': quantity,
+                'price': price,
+                'orderid': leg_row.get('OrderID', '')
+            })
+        
+        # Sort legs by Symbol, Strike, Put/Call for consistent display
+        leg_list_sorted = sorted(leg_list, key=lambda x: (x['symbol'], x['strike'], x['put_call']))
+        legs_desc = []
+        order_ids = []
+        for leg in leg_list_sorted:
+            leg_desc = f"{leg['buy_sell']} {abs(int(leg['quantity']))} x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']} @ {leg['price']:.2f}"
             legs_desc.append(leg_desc)
+            if leg['orderid']:
+                order_ids.append(str(int(leg['orderid'])) if pd.notna(leg['orderid']) else '')
         
-        # Get strategy metadata
-        underlying = group_sorted[symbol_col].iloc[0] if symbol_col in group_sorted.columns else 'N/A'
-        
-        # Try to get date/time
-        date_cols = [col for col in group_sorted.columns if 'date' in col.lower() or 'time' in col.lower()]
-        when = group_sorted[date_cols[0]].iloc[0] if date_cols else 'N/A'
-        if isinstance(when, pd.Timestamp):
-            when = when.strftime('%Y-%m-%d %H:%M:%S')
+        # Format date/time
+        if isinstance(when_key, pd.Timestamp):
+            when = when_key.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            when = str(when_key) if when_key else 'N/A'
         
         # Calculate totals
-        netcash_col = 'NetCash' if 'NetCash' in group_sorted.columns else ([c for c in group_sorted.columns if 'netcash' in c.lower() or 'net_cash' in c.lower()] or [None])[0]
-        commission_col = 'Commission' if 'Commission' in group_sorted.columns else ([c for c in group_sorted.columns if 'commission' in c.lower()] or [None])[0]
+        net_cash = strategy_group['NetCash'].sum()
+        commission = strategy_group['Commission'].sum()
         
-        net_cash = group_sorted[netcash_col].sum() if netcash_col and netcash_col in group_sorted.columns else 0
-        commission = group_sorted[commission_col].sum() if commission_col and commission_col in group_sorted.columns else 0
+        # Create strategy ID from OrderIDs (comma-separated)
+        strategy_id = ', '.join(order_ids) if order_ids else 'N/A'
         
         strategy = {
-            'OrderID': int(order_id) if pd.notna(order_id) else order_id,
-            'NumLegs': len(group),
-            'Underlying': underlying,
+            'OrderID': strategy_id,  # Multiple OrderIDs for multi-leg strategies
+            'NumLegs': len(strategy_group),
+            'Underlying': underlying_key if underlying_key else 'N/A',
             'When': when,
             'Legs': legs_desc,
             'NetCash': net_cash,
@@ -548,7 +648,7 @@ def group_multi_leg_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         }
         
         strategies.append(strategy)
-        logger.debug(f"OrderID {order_id} - Strategy summary: {strategy['NumLegs']} legs, NetCash={strategy['NetCash']:.2f}, Commission={strategy['Commission']:.2f}")
+        logger.debug(f"Strategy group - {len(strategy_group)} legs, NetCash={net_cash:.2f}, Commission={commission:.2f}")
     
     logger.info(f"Found {len(strategies)} multi-leg strategies")
     logger.debug(f"Skipped {single_leg_count} single-leg trades")
