@@ -1,0 +1,135 @@
+---
+alwaysApply: true
+---
+
+# Project Structure Guidelines
+
+Follow the established project structure when creating, modifying, or organizing files in this codebase.
+
+## Directory Organization
+
+### Main Entry Points (Root Directory)
+- Place main application entry point scripts in the root directory:
+  - `backtrader_runner_yaml.py` - Main backtest runner
+  - `scanner_runner.py` - Unified scanner runner
+  - `hl_after_ll_scanner_runner.py` - HL scanner runner
+  - `charting_server.py` - Charting web server
+  - `update_and_scan.py` - Update data and scan
+
+### Configuration Files (Root Directory)
+- Place YAML configuration files in the root directory:
+  - `defaults.yaml` - Default backtest config
+  - `scanner_config.yaml` - Scanner configuration
+  - `hl_after_ll_scanner_config.yaml` - HL scanner config
+  - `collar_screener_config.yaml` - Collar screener config
+
+### Strategies (`strategies/`)
+- All trading strategy implementations go in `strategies/` directory
+- Each strategy should be a separate Python module
+- Examples: mean reversion, PnF, VCP, liquidity sweep, options strategies
+
+### Indicators (`indicators/`)
+- All technical indicators go in `indicators/` directory
+- Organize by category:
+  - `moving_averages.py` - SMA, EMA, WMA
+  - `momentum.py` - RSI, MACD, Stochastic
+  - `volume.py` - Volume, OBV, VWAP
+  - `trend.py` - Bollinger Bands, ATR
+  - `supertrend.py` - SuperTrend indicator
+
+### Utilities (`utils/`)
+- Utility modules for common functionality:
+  - Database: `timescaledb_client.py`, `timescaledb_loader.py`
+  - Data fetching: `fetch_data.py` (Alpaca/IB)
+  - Ticker management: `ticker_universe.py`, `update_universe_data.py`
+  - Scanners: `hl_after_ll_scanner.py`, `squeeze_scanner.py`
+  - Reporting: `tradingview_report_generator.py`
+  - Config: `config_processor.py`
+
+### Scripts (`scripts/`)
+- Utility and data management scripts:
+  - Data operations: backfilling, ingestion, checking
+  - Trading scripts: options trading, order utilities
+  - Maintenance: data freshness, duplicates, failed symbols
+
+### Tests (`tests/`)
+- All test files go in `tests/` directory
+- Follow naming convention: `test_*.py`
+
+### Examples (`examples/`)
+- Example scripts demonstrating usage of various components
+- Include README.md explaining examples
+
+### Scheduled Tasks (`crons/`)
+- Batch files and configs for scheduled tasks
+- Windows `.bat` files for automation
+
+### Documentation (`docs/`)
+- Organized by category:
+  - `docs/strategies/` - Strategy-specific documentation
+  - `docs/features/` - Feature documentation (scanners, screeners)
+  - `docs/setup/` - Setup and migration documentation
+  - `docs/archive/` - Archived documentation
+
+### Database (`init-scripts/`)
+- Database initialization SQL scripts
+- Numbered sequentially: `01-init-database.sql`, `02-ticker-universe-tables.sql`, etc.
+
+### Setup (`setup/`)
+- Setup and initialization scripts
+- Example: `setup_timescaledb.py`
+
+## File Placement Rules
+
+1. **Main entry points**: Root directory for easy access
+2. **Strategies**: `strategies/` directory
+3. **Indicators**: `indicators/` directory
+4. **Utilities**: `utils/` directory
+5. **Scripts**: `scripts/` directory (not root)
+6. **Tests**: `tests/` directory
+7. **Examples**: `examples/` directory
+8. **Configuration**: Root directory (YAML files)
+9. **Documentation**: `docs/` with appropriate subdirectories
+
+## Core Component Guidelines
+
+### Backtesting Engine
+- Use `backtrader_runner_yaml.py` as the main runner
+- Strategies must be in `strategies/` for dynamic discovery
+- Indicators must be in `indicators/` directory
+
+### Data Management
+- Use TimescaleDB for time-series data storage
+- Data fetching via `utils/fetch_data.py`
+- Support Alpaca and IBKR providers
+
+### Scanning System
+- Use `scanner_runner.py` for unified scanning
+- Scanner logic in `utils/` (e.g., `hl_after_ll_scanner.py`)
+
+### Options Trading
+- Options-related utilities in `utils/` or `scripts/`
+- Options strategies in `strategies/option_strategies.py`
+
+## When Creating New Files
+
+- **New strategy?** → `strategies/`
+- **New indicator?** → `indicators/`
+- **New utility function?** → `utils/` (or add to existing module)
+- **New script?** → `scripts/`
+- **New test?** → `tests/`
+- **New example?** → `examples/`
+- **New main entry point?** → Root directory (only if it's a primary application entry point)
+- **New config?** → Root directory (YAML files)
+
+## Configuration
+
+- All configuration via YAML files in root directory
+- Use `utils/config_processor.py` for processing configs
+
+## Documentation
+
+- Update relevant docs in `docs/` when adding features
+- Strategy docs in `docs/strategies/`
+- Feature docs in `docs/features/`
+- Setup docs in `docs/setup/`
