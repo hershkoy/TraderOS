@@ -46,6 +46,7 @@ except ImportError:
 try:
     from utils.fetch_data import get_ib_connection, cleanup_ib_connection
     from utils.ib_port_detector import detect_ib_port
+    from utils.strategy_detector import StrategyDetector
 except ImportError:
     # Fallback if running from different directory
     def get_ib_connection(port=None, client_id=None):
@@ -367,6 +368,23 @@ def parse_flex_xml(xml_content: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# Create a global StrategyDetector instance for backward compatibility
+_strategy_detector = None
+
+def _get_strategy_detector():
+    """Get or create the global StrategyDetector instance."""
+    global _strategy_detector
+    if _strategy_detector is None:
+        try:
+            from utils.strategy_detector import StrategyDetector
+            _strategy_detector = StrategyDetector()
+        except ImportError:
+            # Fallback if StrategyDetector is not available
+            logger.warning("StrategyDetector not available, using legacy functions")
+            return None
+    return _strategy_detector
+
+
 def infer_leg_direction_for_combo(execution_data: List[Dict[str, Any]], parent_id: str) -> Dict[str, str]:
     """
     Infer the actual leg direction (BUY/SELL) for combo order legs based on strike prices and spread structure.
@@ -386,137 +404,11 @@ def infer_leg_direction_for_combo(execution_data: List[Dict[str, Any]], parent_i
     Returns:
         Dictionary mapping TradeID to inferred Buy/Sell direction
     """
-    # Get all executions for this combo
-    combo_executions = [e for e in execution_data if e.get('ParentID') == parent_id]
-    
-    if len(combo_executions) < 2:
-        # Not a multi-leg combo, return empty dict (use original side)
-        return {}
-    
-    # Group by fill ID extracted from TradeID to ensure we only compare legs from the same fill
-    # TradeID format: ParentID.FillID.LegID.ExecutionID (e.g., 0000fb0a.6929afbd.02.01)
-    # Multiple fills can have the same ParentID and timestamp, so we need to group by FillID
-    def extract_fill_id(trade_id: str) -> str:
-        """Extract fill ID from TradeID format: ParentID.FillID.LegID.ExecutionID"""
-        if not trade_id:
-            return ''
-        parts = trade_id.split('.')
-        if len(parts) >= 2:
-            return parts[1]  # FillID is the second part
-        return trade_id  # Fallback to full TradeID if format is unexpected
-    
-    by_fill_id = {}
-    for exec_record in combo_executions:
-        trade_id = exec_record.get('TradeID', '')
-        fill_id = extract_fill_id(trade_id)
-        # Use combination of fill_id and timestamp as key (in case fill_id extraction fails)
-        timestamp = exec_record.get('Date/Time', '')
-        fill_key = (fill_id, timestamp) if fill_id else timestamp
-        if fill_key not in by_fill_id:
-            by_fill_id[fill_key] = []
-        by_fill_id[fill_key].append(exec_record)
-    
-    leg_directions = {}
-    
-    # Process each fill group separately
-    for fill_key, group_executions in by_fill_id.items():
-        if len(group_executions) < 2:
-            continue
-        
-        # Further group by expiry and symbol to ensure we're comparing the same spread
-        by_expiry_symbol = {}
-        for exec_record in group_executions:
-            key = (exec_record.get('Expiry'), exec_record.get('Symbol'))
-            if key not in by_expiry_symbol:
-                by_expiry_symbol[key] = []
-            by_expiry_symbol[key].append(exec_record)
-        
-        # Process each expiry/symbol group within this timestamp
-        for (expiry, symbol), spread_executions in by_expiry_symbol.items():
-            if len(spread_executions) < 2:
-                continue
-            
-            # Group by Put/Call type
-            puts = [e for e in spread_executions if e.get('Put/Call') == 'P']
-            calls = [e for e in spread_executions if e.get('Put/Call') == 'C']
-            
-            # Process PUT spreads (typically credit spreads - bull put)
-            if len(puts) >= 2:
-                # Sort by strike
-                puts_sorted = sorted(puts, key=lambda x: x.get('Strike', 0))
-                low_strike_put = puts_sorted[0]
-                high_strike_put = puts_sorted[-1]
-                
-                low_strike = low_strike_put.get('Strike', 0)
-                high_strike = high_strike_put.get('Strike', 0)
-                
-                if low_strike >= high_strike:
-                    # Invalid spread, skip
-                    continue
-                
-                # Get prices (absolute values)
-                high_strike_price = abs(high_strike_put.get('Price', 0))
-                low_strike_price = abs(low_strike_put.get('Price', 0))
-                
-                # For credit spreads (most common for puts):
-                # - High strike put premium > low strike put premium (you receive more for selling high strike)
-                # Pattern: SELL high strike (receive premium), BUY low strike (pay premium)
-                # This is the typical bull put credit spread
-                
-                # For debit spreads (less common for puts):
-                # - Low strike put premium > high strike put premium
-                # Pattern: BUY high strike, SELL low strike
-                
-                # Determine spread type based on price comparison
-                # Credit spreads are more common for puts, so default to that if prices are equal
-                if high_strike_price >= low_strike_price:
-                    # Credit spread: SELL high, BUY low
-                    leg_directions[high_strike_put.get('TradeID')] = 'SELL'
-                    leg_directions[low_strike_put.get('TradeID')] = 'BUY'
-                else:
-                    # Debit spread: BUY high, SELL low (less common)
-                    leg_directions[high_strike_put.get('TradeID')] = 'BUY'
-                    leg_directions[low_strike_put.get('TradeID')] = 'SELL'
-            
-            # Process CALL spreads (typically debit spreads - bull call)
-            if len(calls) >= 2:
-                # Sort by strike
-                calls_sorted = sorted(calls, key=lambda x: x.get('Strike', 0))
-                low_strike_call = calls_sorted[0]
-                high_strike_call = calls_sorted[-1]
-                
-                low_strike = low_strike_call.get('Strike', 0)
-                high_strike = high_strike_call.get('Strike', 0)
-                
-                if low_strike >= high_strike:
-                    # Invalid spread, skip
-                    continue
-                
-                # Get prices (absolute values)
-                low_strike_price = abs(low_strike_call.get('Price', 0))
-                high_strike_price = abs(high_strike_call.get('Price', 0))
-                
-                # For debit spreads (most common for calls):
-                # - Low strike call premium > high strike call premium (you pay more for buying low strike)
-                # Pattern: BUY low strike (pay premium), SELL high strike (receive premium)
-                # This is the typical bull call debit spread
-                
-                # For credit spreads (less common for calls):
-                # - High strike call premium > low strike call premium
-                # Pattern: SELL low strike, BUY high strike
-                
-                # Determine spread type based on price comparison
-                # Debit spreads are more common for calls, so default to that if prices are equal
-                if low_strike_price >= high_strike_price:
-                    # Debit spread: BUY low, SELL high
-                    leg_directions[low_strike_call.get('TradeID')] = 'BUY'
-                    leg_directions[high_strike_call.get('TradeID')] = 'SELL'
-                else:
-                    # Credit spread: SELL low, BUY high (less common)
-                    leg_directions[low_strike_call.get('TradeID')] = 'SELL'
-                    leg_directions[high_strike_call.get('TradeID')] = 'BUY'
-    
-    return leg_directions
+    detector = _get_strategy_detector()
+    if detector:
+        return detector.infer_leg_direction_for_combo(execution_data, parent_id)
+    # Fallback to empty dict if detector not available
+    return {}
 
 
 def generate_strategy_id(legs: List[Dict[str, Any]], underlying: str = None) -> str:
@@ -532,79 +424,11 @@ def generate_strategy_id(legs: List[Dict[str, Any]], underlying: str = None) -> 
     Returns:
         Strategy ID string
     """
-    if not legs or len(legs) < 2:
-        return "N/A"
-    
-    # Get unique values from legs
-    symbols = set(leg.get('Symbol', '') for leg in legs if leg.get('Symbol'))
-    expiries = set(leg.get('Expiry', '') for leg in legs if leg.get('Expiry'))
-    strikes = sorted(set(leg.get('Strike', 0) for leg in legs if leg.get('Strike')), reverse=True)
-    put_calls = set(leg.get('Put/Call', '') for leg in legs if leg.get('Put/Call'))
-    
-    if not symbols or not expiries or len(strikes) < 2:
-        return "N/A"
-    
-    # Get symbol
-    symbol = underlying or list(symbols)[0]
-    
-    # Format expiry (convert YYYYMMDD to "Dec05" format)
-    expiry = list(expiries)[0]
-    expiry_str = ""
-    if isinstance(expiry, (int, float)) and expiry > 0:
-        expiry_num = str(int(expiry))
-        if len(expiry_num) == 8:
-            try:
-                expiry_date = datetime.strptime(expiry_num, '%Y%m%d')
-                expiry_str = expiry_date.strftime('%b%d')  # Dec05 format
-            except:
-                expiry_str = expiry_num
-        else:
-            expiry_str = str(expiry)
-    elif isinstance(expiry, str):
-        # Try to parse if it's in YYYY-MM-DD or YYYYMMDD format
-        try:
-            # Try YYYY-MM-DD format first
-            if '-' in expiry:
-                expiry_date = pd.to_datetime(expiry)
-            # Try YYYYMMDD format
-            elif len(expiry) == 8 and expiry.isdigit():
-                expiry_date = datetime.strptime(expiry, '%Y%m%d')
-            else:
-                expiry_date = pd.to_datetime(expiry)
-            expiry_str = expiry_date.strftime('%b%d')  # Dec05 format
-        except:
-            expiry_str = expiry
-    else:
-        expiry_str = str(expiry)
-    
-    # Get strikes (high/low)
-    high_strike = strikes[0]
-    low_strike = strikes[-1]
-    
-    # Determine option type (Put or Call)
-    option_type = list(put_calls)[0] if put_calls else "P"
-    
-    # Determine spread type
-    # For puts: High/Low = Bull Put Spread, Low/High = Bear Put Spread
-    # For calls: Low/High = Bull Call Spread, High/Low = Bear Call Spread
-    if option_type == 'P':
-        # Put spreads
-        if high_strike > low_strike:
-            spread_type = "Bull Put Spread"
-            strike_str = f"{int(high_strike)}/{int(low_strike)}"
-        else:
-            spread_type = "Bear Put Spread"
-            strike_str = f"{int(low_strike)}/{int(high_strike)}"
-    else:
-        # Call spreads
-        if low_strike < high_strike:
-            spread_type = "Bull Call Spread"
-            strike_str = f"{int(low_strike)}/{int(high_strike)}"
-        else:
-            spread_type = "Bear Call Spread"
-            strike_str = f"{int(high_strike)}/{int(low_strike)}"
-    
-    return f"{symbol} {expiry_str} {strike_str} {spread_type}"
+    detector = _get_strategy_detector()
+    if detector:
+        return detector.generate_strategy_id(legs, underlying)
+    # Fallback to "N/A" if detector not available
+    return "N/A"
 
 
 def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[int] = None) -> pd.DataFrame:
@@ -632,13 +456,49 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
         exec_filter = ExecutionFilter()
         # Leave empty to get all executions
         
-        # Request executions
+        # Check TWS connection status
+        if not ib.isConnected():
+            logger.error("TWS connection is not active")
+            return pd.DataFrame()
+        
+        # Request executions with retry (IB API can be unreliable)
         logger.info("Requesting executions from TWS API...")
-        executions = ib.reqExecutions(exec_filter)
-        logger.info(f"Received {len(executions)} executions from TWS API")
+        logger.debug(f"Execution filter: {exec_filter}")
+        logger.debug(f"TWS connection status: Connected={ib.isConnected()}")
+        
+        # Try requesting executions with retries (IB API can be flaky)
+        executions = []
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                executions = ib.reqExecutions(exec_filter)
+                logger.info(f"Received {len(executions)} executions from TWS API (attempt {attempt + 1}/{max_retries})")
+                
+                if executions:
+                    break  # Success, exit retry loop
+                elif attempt < max_retries - 1:
+                    logger.warning(f"No executions returned, retrying in {retry_delay} seconds...")
+                    import time
+                    time.sleep(retry_delay)
+            except Exception as e:
+                logger.warning(f"Error requesting executions (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to get executions after {max_retries} attempts")
         
         if not executions:
-            logger.warning("No executions found")
+            logger.warning("No executions found from TWS API after retries")
+            logger.info("Possible reasons:")
+            logger.info("  1. No executions in your account")
+            logger.info("  2. TWS needs to sync with server (check TWS for sync status)")
+            logger.info("  3. Account permissions may not allow execution history access")
+            logger.info("  4. Try restarting TWS and ensuring it's fully connected")
+            logger.info("  5. Check if you have any trades in TWS Account Management > Trade History")
+            logger.info("  6. The IB API reqExecutions() can be unreliable - try running again in a few moments")
             return pd.DataFrame()
         
         # Log raw execution data from IB API (DEBUG level)
@@ -904,71 +764,11 @@ def summarize_vertical_put_spreads(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with spread-level summaries
     """
-    results = []
-    
-    for parent_id, combo in df.groupby("ParentID"):
-        # Only option combos with puts
-        if combo["Put/Call"].nunique() != 1 or combo["Put/Call"].iloc[0] != "P":
-            continue
-        
-        symbol = combo["Symbol"].iloc[0]
-        expiry = combo["Expiry"].iloc[0]
-        
-        # Group by timestamp (open / close events)
-        for dt, group in combo.groupby("Date/Time"):
-            strikes = sorted(group["Strike"].unique())
-            if len(strikes) != 2:
-                # Not a simple 2-leg vertical spread
-                continue
-            
-            low_strike, high_strike = strikes
-            
-            # Average price per strike at this timestamp
-            low_group = group.loc[group["Strike"] == low_strike]
-            high_group = group.loc[group["Strike"] == high_strike]
-            
-            avg_low = low_group["Price"].mean()
-            avg_high = high_group["Price"].mean()
-            
-            # Total contracts per strike (use absolute value since Quantity can be negative)
-            contracts_low = low_group["Quantity"].abs().sum()
-            contracts_high = high_group["Quantity"].abs().sum()
-            
-            qty_spreads = int(min(contracts_low, contracts_high))
-            
-            # Bull put credit: net price is high - low, shown as negative for credit
-            # For credit spreads: we receive premium for high strike, pay premium for low strike
-            # Spread price = -(high_strike_price - low_strike_price) = low_strike_price - high_strike_price
-            spread_price = -(avg_high - avg_low)
-            
-            # Determine if this is opening or closing based on Buy/Sell
-            # For credit spreads, opening is typically SELL (we receive credit)
-            # But we'll use time ordering instead - earliest = open, later = close
-            buy_sell = group["Buy/Sell"].iloc[0]  # All should be the same in a combo
-            
-            results.append({
-                "ParentID": parent_id,
-                "Symbol": symbol,
-                "Expiry": expiry,
-                "LowStrike": low_strike,
-                "HighStrike": high_strike,
-                "DateTime": pd.to_datetime(dt) if isinstance(dt, str) else dt,
-                "Date/Time": dt,
-                "Quantity": qty_spreads,
-                "PricePerSpread": spread_price,
-                "Buy/Sell": buy_sell,
-                "LowStrikePrice": avg_low,
-                "HighStrikePrice": avg_high,
-                "ContractsLow": contracts_low,
-                "ContractsHigh": contracts_high,
-            })
-    
-    if not results:
-        return pd.DataFrame()
-    
-    result_df = pd.DataFrame(results)
-    logger.debug(f"Summarized {len(result_df)} spread events from {df['ParentID'].nunique()} combos")
-    return result_df
+    detector = _get_strategy_detector()
+    if detector:
+        return detector.summarize_vertical_put_spreads(df)
+    # Fallback to empty DataFrame if detector not available
+    return pd.DataFrame()
 
 
 def group_tws_executions_by_combo(df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -982,17 +782,11 @@ def group_tws_executions_by_combo(df: pd.DataFrame) -> List[Dict[str, Any]]:
     Returns:
         List of strategy dictionaries (same format as group_multi_leg_strategies)
     """
-    if df.empty:
-        return []
-    
-    logger.info("Grouping TWS executions by combo order (parentId)...")
-    
-    # First, summarize vertical put spreads
-    spread_summary = summarize_vertical_put_spreads(df)
-    
-    if spread_summary.empty:
-        logger.warning("No vertical put spreads detected, falling back to raw leg grouping")
-        return _group_tws_executions_raw(df)
+    detector = _get_strategy_detector()
+    if detector:
+        return detector.group_executions_by_combo(df)
+    # Fallback to empty list if detector not available
+    return []
     
     # Group spreads by ParentID to identify opening and closing
     strategies = []
