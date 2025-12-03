@@ -12,9 +12,9 @@ venv
 __pycache__
 
 /data/
-reports
-logs
-exports
+/reports/
+/logs/
+/exports/
 
 *.log
 
