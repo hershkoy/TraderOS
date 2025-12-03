@@ -3,6 +3,8 @@
 
 A comprehensive backtesting framework with TradingView-style reporting and TimescaleDB integration.
 
+> 📖 **Documentation**: See [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) for complete project structure and [docs/README.md](docs/README.md) for all documentation.
+
 ## Setup
 
 ### 1. Install Dependencies
