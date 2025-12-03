@@ -1,0 +1,49 @@
+---
+alwaysApply: true
+---
+
+# Auto-Run Unit Tests on File Change
+
+When a Python source file is modified in `strategies/`, `indicators/`, `utils/`, or `scripts/`, automatically determine and run the corresponding unit test.
+
+## Test File Mapping Logic
+
+1. **Extract module name** from the changed file:
+   - `utils/strategy_detector.py` → `strategy_detector`
+   - `strategies/mean_reversion.py` → `mean_reversion`
+   - `scripts/api/ib/ib_flex_multi_leg_report.py` → `ib_flex_multi_leg_report`
+
+2. **Construct test file path** (check in order):
+   - Primary: `tests/unit/test_{module_name}.py`
+   - Fallback: `tests/integration/test_{module_name}.py`
+   - Fallback: `tests/functional/test_{module_name}.py`
+
+3. **If test file exists**:
+   - Run: `venv\Scripts\activate && pytest {test_file_path} -v`
+   - Use Windows CMD syntax (we are on Windows)
+
+4. **If test file does NOT exist**:
+   - Prompt the user: "No test file found for {module_name}. Would you like me to create tests/unit/test_{module_name}.py?"
+   - If user confirms, create a basic test stub with unittest or pytest structure
+
+## Examples
+
+- File changed: `utils/strategy_detector.py`
+  - Look for: `tests/unit/test_strategy_detector.py`
+  - If found: Run `venv\Scripts\activate && pytest tests/unit/test_strategy_detector.py -v`
+
+- File changed: `strategies/mean_reversion.py`
+  - Look for: `tests/unit/test_mean_reversion.py`
+  - Run the corresponding test
+
+- File changed: `scripts/api/ib/ib_flex_multi_leg_report.py`
+  - Look for: `tests/unit/test_ib_flex_multi_leg_report.py`
+  - Run the corresponding test
+
+## Important Notes
+
+- Always activate venv before running tests: `venv\Scripts\activate`
+- Use Windows CMD syntax (not bash/PowerShell)
+- Use `-v` flag for verbose pytest output
+- Only run tests for source files in: `strategies/`, `indicators/`, `utils/`, `scripts/`
+- Do NOT run tests for files in `tests/`, `examples/`, or root-level scripts

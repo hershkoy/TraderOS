@@ -1420,8 +1420,10 @@ def group_multi_leg_strategies(df: pd.DataFrame, group_by_strategy: bool = True)
         # Sort legs by Symbol, Strike, Put/Call for consistent display
         leg_list_sorted = sorted(leg_list, key=lambda x: (x['symbol'], x['strike'], x['put_call']))
         
+        # For leg descriptions, show 1:1 ratio (one spread structure)
+        # The actual quantity is shown in the transactions table
         for leg in leg_list_sorted:
-            leg_desc = f"{leg['buy_sell']} {abs(int(leg['quantity']))} x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']}"
+            leg_desc = f"{leg['buy_sell']} 1 x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']}"
             legs_desc.append(leg_desc)
             if leg['orderid'] and pd.notna(leg['orderid']):
                 order_ids.append(str(int(leg['orderid'])))
@@ -1745,6 +1747,37 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
             color: #f44336;
             font-weight: bold;
         }}
+        .transactions-table {{
+            margin-top: 15px;
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }}
+        .transactions-table th {{
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px;
+            text-align: left;
+            font-weight: bold;
+        }}
+        .transactions-table td {{
+            padding: 8px;
+            border-bottom: 1px solid #e0e0e0;
+        }}
+        .transactions-table tr:nth-child(even) {{
+            background-color: #f9f9f9;
+        }}
+        .transactions-table tr:hover {{
+            background-color: #f0f0f0;
+        }}
+        .transaction-bought {{
+            color: #4CAF50;
+            font-weight: bold;
+        }}
+        .transaction-sold {{
+            color: #f44336;
+            font-weight: bold;
+        }}
         .summary {{
             background-color: white;
             border: 1px solid #ddd;
@@ -1797,7 +1830,13 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
 """
     
     # Calculate summary stats
-    num_strategies = len(strategies)
+    # Count unique strategies (by StrategyID) for display
+    unique_strategy_ids = set()
+    for s in strategies:
+        strategy_id = s.get('StrategyID') or s.get('BAG_ID') or s.get('OrderID', 'N/A')
+        unique_strategy_ids.add(strategy_id)
+    num_strategies = len(unique_strategy_ids)
+    
     total_legs = sum(s['NumLegs'] for s in strategies)
     total_net_cash = sum(s['NetCash'] for s in strategies)
     total_commission = sum(s['Commission'] for s in strategies)
@@ -1840,110 +1879,187 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
         except:
             return pd.Timestamp.max
     
-    # Sort strategies by datetime (oldest first, matching CSV order)
-    strategies_sorted = sorted(strategies, key=get_strategy_datetime, reverse=False)
+    # Group strategies by StrategyID
+    strategies_by_id = {}
+    for strategy in strategies:
+        strategy_id = strategy.get('StrategyID') or strategy.get('BAG_ID') or strategy.get('OrderID', 'N/A')
+        if strategy_id not in strategies_by_id:
+            strategies_by_id[strategy_id] = []
+        strategies_by_id[strategy_id].append(strategy)
     
-    # Add each strategy
-    for strategy in strategies_sorted:
+    # Sort each group by date and determine earliest date for main sort
+    grouped_strategies = []
+    for strategy_id, strategy_list in strategies_by_id.items():
+        # Sort transactions within this strategy by date
+        strategy_list_sorted = sorted(strategy_list, key=get_strategy_datetime, reverse=False)
+        
+        # Get earliest date for main sorting
+        earliest_date = get_strategy_datetime(strategy_list_sorted[0])
+        
+        grouped_strategies.append({
+            'strategy_id': strategy_id,
+            'strategies': strategy_list_sorted,
+            'earliest_date': earliest_date
+        })
+    
+    # Sort grouped strategies by earliest date
+    grouped_strategies_sorted = sorted(grouped_strategies, key=lambda x: x['earliest_date'], reverse=False)
+    
+    # Add each grouped strategy
+    for grouped in grouped_strategies_sorted:
+        strategy_list = grouped['strategies']
+        strategy_id = grouped['strategy_id']
+        
+        # Use first strategy for main details (they should all have same StrategyID, legs, etc.)
+        main_strategy = strategy_list[0]
+        
         # Show spread type if available (for vertical spreads)
-        spread_type = strategy.get('SpreadType', '')
-        quantity = strategy.get('Quantity', strategy['NumLegs'])
+        spread_type = main_strategy.get('SpreadType', '')
         
         # Use BAG_ID if available, otherwise fall back to OrderID
-        display_id = strategy.get('BAG_ID') or strategy.get('OrderID', 'N/A')
+        display_id = main_strategy.get('BAG_ID') or main_strategy.get('OrderID', 'N/A')
+        
+        # Calculate totals across all transactions
+        total_net_cash = sum(s.get('NetCash', 0) for s in strategy_list)
+        total_commission = sum(s.get('Commission', 0) for s in strategy_list)
         
         html += f"""
     <div class="strategy">
         <div class="strategy-header">
             <div class="strategy-info">
-                <div class="strategy-id">BAG ID: {display_id}</div>
+                <div class="strategy-id">Strategy: {strategy_id if strategy_id != 'N/A' else display_id}</div>
                 <div class="strategy-meta">
-                    {quantity} spread(s) | {strategy['Underlying']} | {strategy['When']}
-                    {f' | {spread_type}' if spread_type else f' | {strategy["NumLegs"]} legs'}
+                    {main_strategy['Underlying']} | {f'{spread_type}' if spread_type else f'{main_strategy["NumLegs"]} legs'}
                 </div>
             </div>
             <div class="strategy-financials">
-                <div class="net-cash">${strategy['NetCash']:,.2f}</div>
-                <div class="commission">Commission: ${strategy['Commission']:,.2f}</div>
+                <div class="net-cash">${total_net_cash:,.2f}</div>
+                <div class="commission">Commission: ${total_commission:,.2f}</div>
             </div>
         </div>
         <div class="legs">
 """
         
-        # Show leg summaries
-        for leg in strategy['Legs']:
+        # Show leg summaries (from first strategy, should be same for all)
+        for leg in main_strategy['Legs']:
             html += f'            <div class="leg">{leg}</div>\n'
         
         html += """        </div>
         <div class="strategy-details">
-            <h3>Strategy Details</h3>
+            <h3>Transactions</h3>
+            <table class="transactions-table">
+                <thead>
+                    <tr>
+                        <th>Bought/Sold</th>
+                        <th>Quantity</th>
+                        <th>Price</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
 """
         
-        # Show purchase date/time
-        purchase_datetime = strategy.get('PurchaseDateTime', strategy.get('When', 'N/A'))
-        if purchase_datetime and purchase_datetime != 'N/A':
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">Purchased:</span>
-                <span class="strategy-detail-value">{purchase_datetime}</span>
-            </div>
+        # Add each transaction as a row in the sub-table
+        # When multiple entries share the same StrategyID, determine opening vs closing based on:
+        # 1. If entry has ClosePrice, it's a closing (or has both)
+        # 2. If entry only has OpenPrice, check if it's the earliest - if not, treat as closing
+        # 3. A strategy entry can have both opening and closing (same ParentID)
+        
+        for idx, strategy in enumerate(strategy_list):
+            purchase_datetime = strategy.get('PurchaseDateTime', strategy.get('When', 'N/A'))
+            quantity = strategy.get('Quantity', 1)
+            open_price_per_spread = strategy.get('OpenPrice')
+            close_price_per_spread = strategy.get('ClosePrice')
+            buy_price = strategy.get('BuyPrice', 0)
+            sell_price = strategy.get('SellPrice', 0)
+            
+            # Determine if this entry is an opening or closing
+            # Rule: When multiple entries share the same StrategyID:
+            # - Earliest entry (idx=0) with OpenPrice = Opening (Bought)
+            # - Later entries with OpenPrice = Closing (Sold) - they're closing the earlier position
+            # - Entry with ClosePrice = Closing (Sold)
+            # - Entry with both OpenPrice and ClosePrice = Both (show both rows)
+            
+            has_closing = close_price_per_spread is not None
+            is_earliest = (idx == 0)
+            has_opening = open_price_per_spread is not None
+            
+            # Opening transaction (BOT) - only for earliest entry or if it has explicit ClosePrice
+            if has_opening:
+                if is_earliest or has_closing:
+                    # Earliest entry is opening, or entry with both OpenPrice and ClosePrice
+                    transaction_class = "transaction-bought"
+                    transaction_label = "Bought"
+                    transaction_price = open_price_per_spread
+                    html += f"""
+                    <tr>
+                        <td class="{transaction_class}">{transaction_label}</td>
+                        <td>{quantity}</td>
+                        <td>${transaction_price:,.2f}</td>
+                        <td>{purchase_datetime}</td>
+                    </tr>
+"""
+            
+            # Closing transaction (SLD)
+            if has_closing:
+                # Explicit closing transaction
+                transaction_class = "transaction-sold"
+                transaction_label = "Sold"
+                transaction_price = close_price_per_spread
+                closing_datetime = strategy.get('When', purchase_datetime)
+                html += f"""
+                    <tr>
+                        <td class="{transaction_class}">{transaction_label}</td>
+                        <td>{quantity}</td>
+                        <td>${transaction_price:,.2f}</td>
+                        <td>{closing_datetime}</td>
+                    </tr>
+"""
+            elif has_opening and not is_earliest:
+                # Later entry with only OpenPrice - this is a closing (different ParentID)
+                # The price is negative because it's the cost to close
+                transaction_class = "transaction-sold"
+                transaction_label = "Sold"
+                transaction_price = open_price_per_spread
+                html += f"""
+                    <tr>
+                        <td class="{transaction_class}">{transaction_label}</td>
+                        <td>{quantity}</td>
+                        <td>${transaction_price:,.2f}</td>
+                        <td>{purchase_datetime}</td>
+                    </tr>
+"""
+            
+            # Fallback: if no OpenPrice/ClosePrice, use BuyPrice/SellPrice
+            if open_price_per_spread is None and close_price_per_spread is None:
+                if buy_price != 0:
+                    transaction_class = "transaction-bought" if is_earliest else "transaction-sold"
+                    transaction_label = "Bought" if is_earliest else "Sold"
+                    transaction_price = buy_price / (quantity * 100) if quantity > 0 else 0
+                    html += f"""
+                    <tr>
+                        <td class="{transaction_class}">{transaction_label}</td>
+                        <td>{quantity}</td>
+                        <td>${transaction_price:,.2f}</td>
+                        <td>{purchase_datetime}</td>
+                    </tr>
+"""
+                elif sell_price != 0:
+                    transaction_class = "transaction-sold"
+                    transaction_label = "Sold"
+                    transaction_price = sell_price / (quantity * 100) if quantity > 0 else 0
+                    html += f"""
+                    <tr>
+                        <td class="{transaction_class}">{transaction_label}</td>
+                        <td>{quantity}</td>
+                        <td>${transaction_price:,.2f}</td>
+                        <td>{purchase_datetime}</td>
+                    </tr>
 """
         
-        # Show strategy-level buy/sell prices and P&L
-        # For credit spreads: prices are negative (credit received/paid)
-        # Opening: BOT (buy spread, receive credit) - negative price
-        # Closing: SLD (sell spread, pay to close) - negative price
-        quantity = strategy.get('Quantity', 1)
-        open_price_per_spread = strategy.get('OpenPrice')
-        close_price_per_spread = strategy.get('ClosePrice')
-        buy_price = strategy.get('BuyPrice', 0)
-        sell_price = strategy.get('SellPrice', 0)
-        strategy_pnl = strategy.get('PnL', 0)
-        
-        # Show opening (BOT)
-        if open_price_per_spread is not None:
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">BOT {quantity} @:</span>
-                <span class="strategy-detail-value">${open_price_per_spread:,.2f}</span>
-            </div>
-"""
-        elif buy_price != 0:
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">Bought for:</span>
-                <span class="strategy-detail-value">${buy_price:,.2f}</span>
-            </div>
-"""
-        
-        # Show closing (SLD)
-        if close_price_per_spread is not None:
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">SLD {quantity} @:</span>
-                <span class="strategy-detail-value">${close_price_per_spread:,.2f}</span>
-            </div>
-"""
-        elif sell_price != 0:
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">Sold for:</span>
-                <span class="strategy-detail-value">${sell_price:,.2f}</span>
-            </div>
-"""
-        
-        # Show P&L
-        if strategy_pnl != 0:
-            pnl_class = 'pnl-positive' if strategy_pnl > 0 else 'pnl-negative'
-            pnl_sign = '+' if strategy_pnl > 0 else ''
-            html += f"""
-            <div class="strategy-detail-item">
-                <span class="strategy-detail-label">P&L:</span>
-                <span class="strategy-detail-value {pnl_class}">{pnl_sign}${strategy_pnl:,.2f}</span>
-            </div>
-"""
-        
-        html += """        </div>
+        html += """                </tbody>
+            </table>
+        </div>
     </div>
 """
     

@@ -389,9 +389,10 @@ class StrategyDetector:
                 expiry_str = str(expiry)
             
             # Build leg description (IB-style: BUY low strike, SELL high strike for bull put)
+            # Show 1:1 ratio (one spread structure), not total quantity
             legs_desc = [
-                f"BUY {quantity} x {symbol} {expiry_str} {low_strike}P",
-                f"SELL {quantity} x {symbol} {expiry_str} {high_strike}P"
+                f"BUY 1 x {symbol} {expiry_str} {low_strike}P",
+                f"SELL 1 x {symbol} {expiry_str} {high_strike}P"
             ]
             
             # Identify opening and closing
@@ -543,8 +544,10 @@ class StrategyDetector:
             
             leg_list_sorted = sorted(leg_list, key=lambda x: (x['symbol'], x['strike'], x['put_call']))
             
+            # For leg descriptions, show 1:1 ratio (one spread structure)
+            # The actual quantity is shown in the transactions table
             for leg in leg_list_sorted:
-                leg_desc = f"{leg['buy_sell']} {abs(int(leg['quantity']))} x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']}"
+                leg_desc = f"{leg['buy_sell']} 1 x {leg['symbol']} {leg['expiry']} {leg['strike']}{leg['put_call']}"
                 legs_desc.append(leg_desc)
                 if leg['orderid'] and pd.notna(leg['orderid']):
                     order_ids.append(str(int(leg['orderid'])) if isinstance(leg['orderid'], (int, float)) else str(leg['orderid']))
