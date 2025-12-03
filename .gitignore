@@ -11,7 +11,7 @@ venv
 .ruff_cache
 __pycache__
 
-data
+/data/
 reports
 logs
 exports
