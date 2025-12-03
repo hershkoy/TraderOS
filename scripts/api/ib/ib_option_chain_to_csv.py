@@ -6,7 +6,7 @@ Fetches option chain data from Interactive Brokers and writes to CSV.
 Uses the project's shared IB API connection manager.
 
 Usage:
-    python scripts/ib_option_chain_to_csv.py --symbol QQQ --right P --max-strikes 20 --max-expirations 3
+    python scripts/api/ib/ib_option_chain_to_csv.py --symbol QQQ --right P --max-strikes 20 --max-expirations 3
 """
 
 import sys

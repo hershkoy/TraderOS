@@ -14,7 +14,7 @@ tasks:
   discover-contracts:
     desc: Discover new option contracts from Polygon
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
       POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
@@ -23,7 +23,7 @@ tasks:
   ingest-quotes:
     desc: Ingest EOD quotes for a specific date
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --date {{.DATE | default .TODAY}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --date {{.DATE | default .TODAY}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
       POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
@@ -34,7 +34,7 @@ tasks:
   backfill-greeks:
     desc: Backfill missing Greeks for option quotes
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE | default .TODAY}} --end-date {{.END_DATE | default .TODAY}} --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/db/greeks_fill.py --start-date {{.START_DATE | default .TODAY}} --end-date {{.END_DATE | default .TODAY}} --underlying {{.UNDERLYING}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
     vars:
@@ -51,7 +51,7 @@ tasks:
   backfill-range:
     desc: Backfill data for a date range
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
       - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --start-date {{.START_DATE}} --end-date {{.END_DATE}}'
       - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE}} --end-date {{.END_DATE}} --underlying {{.UNDERLYING}}'
     env:

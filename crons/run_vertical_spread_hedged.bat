@@ -38,7 +38,7 @@ echo Running: %symbol% DTE=%dte% QTY=%quantity% CREATE_ORDERS=%create_orders%
 echo Logging to: %logfile%
 echo.
 
-python scripts/options_strategy_trader.py --symbol %symbol% --strategy vertical_spread_with_hedging --dte %dte% --quantity %quantity% %create_orders%
+python scripts/trading/options_strategy_trader.py --symbol %symbol% --strategy vertical_spread_with_hedging --dte %dte% --quantity %quantity% %create_orders%
 if errorlevel 1 (
     echo ERROR: Vertical spread trader failed with exit code %ERRORLEVEL%
 ) else (

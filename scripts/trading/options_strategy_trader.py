@@ -14,16 +14,16 @@ Supported strategies:
 
 Usage examples:
     # Just analyze a CSV with default strategy
-    python scripts/options_strategy_trader.py \
+    python scripts/trading/options_strategy_trader.py \
         --input-csv reports/SPY_P_options_20251113_221134.csv \
         --symbol SPY --expiry 20251120 --strategy otm_credit_spreads
 
     # Auto-fetch chain and analyze
-    python scripts/options_strategy_trader.py \
+    python scripts/trading/options_strategy_trader.py \
         --symbol SPY --expiry 20251120 --dte 7 --strategy otm_credit_spreads
 
     # Auto-select balanced spread and place order with monitoring
-    python scripts/options_strategy_trader.py \
+    python scripts/trading/options_strategy_trader.py \
         --symbol QQQ --dte 7 \
         --strategy otm_credit_spreads \
         --risk-profile balanced \

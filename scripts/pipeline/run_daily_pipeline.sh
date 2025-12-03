@@ -22,14 +22,14 @@ echo "[$DATESTAMP] Starting Options Data Pipeline" >> "$LOG_DIR/daily_pipeline_$
 
 # Step 1: Discover new contracts (run after market close ~4:00 PM ET)
 echo "[$DATESTAMP] Step 1: Discovering contracts..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/polygon_discover_contracts.py" --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/api/polygon/polygon_discover_contracts.py" --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 # Step 2: Ingest EOD quotes (run after market settle ~5:00 PM ET)
 echo "[$DATESTAMP] Step 2: Ingesting EOD quotes..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/polygon_ingest_eod_quotes.py" --underlying QQQ --date $DATE >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/api/polygon/polygon_ingest_eod_quotes.py" --underlying QQQ --date $DATE >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 # Step 3: Optional: Backfill missing Greeks
 echo "[$DATESTAMP] Step 3: Backfilling missing Greeks..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/greeks_fill.py" --start-date $DATE --end-date $DATE --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/db/greeks_fill.py" --start-date $DATE --end-date $DATE --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 echo "[$DATESTAMP] Options Data Pipeline completed" >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"

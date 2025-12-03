@@ -97,7 +97,7 @@ if __name__ == "__main__":
     if success:
         print("\nNext steps:")
         print("1. Test the historical snapshots: python test_historical_snapshots.py")
-        print("2. Run the backfill with snapshots: python scripts/polygon_backfill_contracts.py")
+        print("2. Run the backfill with snapshots: python scripts/api/polygon/polygon_backfill_contracts.py")
     else:
         print("\nMigration failed. Please check the error messages above.")
         sys.exit(1)

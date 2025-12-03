@@ -63,15 +63,15 @@ echo [%datestamp%] Starting Options Data Pipeline >> "%LOG_DIR%\\daily_pipeline_
 
 REM Step 1: Discover new contracts (run after market close ~4:00 PM ET)
 echo [%datestamp%] Step 1: Discovering contracts... >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log"
-call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\polygon_discover_contracts.py" --underlying QQQ >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
+call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\api\\polygon\\polygon_discover_contracts.py" --underlying QQQ >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
 
 REM Step 2: Ingest EOD quotes (run after market settle ~5:00 PM ET)
 echo [%datestamp%] Step 2: Ingesting EOD quotes... >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log"
-call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\polygon_ingest_eod_quotes.py" --underlying QQQ --date %YYYY%-%MM%-%DD% >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
+call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\api\\polygon\\polygon_ingest_eod_quotes.py" --underlying QQQ --date %YYYY%-%MM%-%DD% >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
 
 REM Step 3: Optional: Backfill missing Greeks
 echo [%datestamp%] Step 3: Backfilling missing Greeks... >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log"
-call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\greeks_fill.py" --start-date %YYYY%-%MM%-%DD% --end-date %YYYY%-%MM%-%DD% --underlying QQQ >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
+call "%VENV_DIR%\\activate.bat" && python "%PROJECT_DIR%scripts\\db\\greeks_fill.py" --start-date %YYYY%-%MM%-%DD% --end-date %YYYY%-%MM%-%DD% --underlying QQQ >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log" 2>&1
 
 echo [%datestamp%] Options Data Pipeline completed >> "%LOG_DIR%\\daily_pipeline_%YYYY%%MM%%DD%.log"
 """
@@ -111,15 +111,15 @@ echo "[$DATESTAMP] Starting Options Data Pipeline" >> "$LOG_DIR/daily_pipeline_$
 
 # Step 1: Discover new contracts (run after market close ~4:00 PM ET)
 echo "[$DATESTAMP] Step 1: Discovering contracts..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/polygon_discover_contracts.py" --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/api/polygon/polygon_discover_contracts.py" --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 # Step 2: Ingest EOD quotes (run after market settle ~5:00 PM ET)
 echo "[$DATESTAMP] Step 2: Ingesting EOD quotes..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/polygon_ingest_eod_quotes.py" --underlying QQQ --date $DATE >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/api/polygon/polygon_ingest_eod_quotes.py" --underlying QQQ --date $DATE >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 # Step 3: Optional: Backfill missing Greeks
 echo "[$DATESTAMP] Step 3: Backfilling missing Greeks..." >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
-source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/greeks_fill.py" --start-date $DATE --end-date $DATE --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
+source "$VENV_DIR/activate" && python "$PROJECT_DIR/scripts/db/greeks_fill.py" --start-date $DATE --end-date $DATE --underlying QQQ >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log" 2>&1
 
 echo "[$DATESTAMP] Options Data Pipeline completed" >> "$LOG_DIR/daily_pipeline_$(date '+%Y%m%d').log"
 """
@@ -154,7 +154,7 @@ tasks:
   discover-contracts:
     desc: Discover new option contracts from Polygon
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
       POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
@@ -163,7 +163,7 @@ tasks:
   ingest-quotes:
     desc: Ingest EOD quotes for a specific date
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --date {{.DATE | default .TODAY}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --date {{.DATE | default .TODAY}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
       POLYGON_API_KEY: '{{.POLYGON_API_KEY}}'
@@ -174,7 +174,7 @@ tasks:
   backfill-greeks:
     desc: Backfill missing Greeks for option quotes
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE | default .TODAY}} --end-date {{.END_DATE | default .TODAY}} --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/db/greeks_fill.py --start-date {{.START_DATE | default .TODAY}} --end-date {{.END_DATE | default .TODAY}} --underlying {{.UNDERLYING}}'
     env:
       PYTHONPATH: '{{.PROJECT_DIR}}'
     vars:
@@ -191,7 +191,7 @@ tasks:
   backfill-range:
     desc: Backfill data for a date range
     cmds:
-      - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
+      - '{{.VENV_DIR}}/Scripts/python.exe scripts/api/polygon/polygon_discover_contracts.py --underlying {{.UNDERLYING}}'
       - '{{.VENV_DIR}}/Scripts/python.exe scripts/polygon_ingest_eod_quotes.py --underlying {{.UNDERLYING}} --start-date {{.START_DATE}} --end-date {{.END_DATE}}'
       - '{{.VENV_DIR}}/Scripts/python.exe scripts/greeks_fill.py --start-date {{.START_DATE}} --end-date {{.END_DATE}} --underlying {{.UNDERLYING}}'
     env:

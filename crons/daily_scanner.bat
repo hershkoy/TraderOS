@@ -12,7 +12,7 @@ echo Logging to: %logfile%
 echo Current directory: %CD%
 echo.
 
-python scripts\daily_scanner.py --output-report >> %logfile% 2>&1
+python scripts\scanners\daily_scanner.py --output-report >> %logfile% 2>&1
 if errorlevel 1 (
     echo ERROR: Daily scanner failed with exit code %ERRORLEVEL%
 ) else (

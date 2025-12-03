@@ -6,8 +6,8 @@ Fetches trade history from Interactive Brokers Flex Query Web Service
 and generates a report of multi-leg option strategies grouped by OrderID.
 
 Usage:
-    python scripts/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
-    python scripts/ib_flex_multi_leg_report.py --since 2025-01-01 --type csv
+    python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
+    python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type csv
 """
 
 import sys
@@ -673,13 +673,13 @@ def main():
         epilog="""
 Examples:
   # Generate HTML report for trades since 2025-01-01
-  python scripts/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
+  python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html
   
   # Generate CSV report for all trades
-  python scripts/ib_flex_multi_leg_report.py --type csv
+  python scripts/api/ib/ib_flex_multi_leg_report.py --type csv
   
   # Generate HTML report with custom output file
-  python scripts/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --output reports/my_report.html
+  python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type html --output reports/my_report.html
 
 Environment Variables Required:
   IB_FLEX_QUERY_TOKEN: Flex Web Service token from Client Portal -> Reports -> Flex Web Service -> Token
