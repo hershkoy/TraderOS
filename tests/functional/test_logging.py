@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append('.')
 
-from utils.screening.screener_zero_cost_collar_enhanced import CollarScreenerConfig, parse_arguments
+from utils.screening.zero_cost_collar import CollarScreenerConfig, parse_arguments
 
 def test_config_loading():
     """Test configuration loading with log file options"""

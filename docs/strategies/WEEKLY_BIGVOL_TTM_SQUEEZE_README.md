@@ -232,18 +232,18 @@ Recommended parameter ranges for robustness checks:
 
 If performance is only good at a single magic combination, that's a red flag.
 
-## Integration with squeeze_scanner.py
+## Integration with squeeze.py
 
-The strategy uses the TTM Squeeze logic from `utils/squeeze_scanner.py`:
+The strategy uses the TTM Squeeze logic from `utils/scanning/squeeze.py`:
 
 - **Momentum calculation**: Uses linear regression slope (same as `squeeze_val` in squeeze_scanner)
 - **Zero-cross detection**: Matches `_find_latest_zero_cross_up` logic
 - **Squeeze-on detection**: Simplified version (full implementation would calculate BB/KC)
 
-For standalone scanning (outside Backtrader), use `squeeze_scanner.py` directly:
+For standalone scanning (outside Backtrader), use `utils.scanning.squeeze` directly:
 
 ```python
-from utils.squeeze_scanner import scan_universe, load_from_timescaledb
+from utils.scanning.squeeze import scan_universe, load_from_timescaledb
 
 symbols = ['AAPL', 'MSFT', 'GOOGL']
 ohlcv_data = load_from_timescaledb(symbols, timeframe='1d')
@@ -279,7 +279,7 @@ Reports are saved to `reports/weekly_bigvol_ttm_squeeze_backtest_YYYYMMDD_HHMMSS
 ## References
 
 - Strategy concept based on "Rare but Powerful Weekly Setups" webinar
-- TTM Squeeze implementation: `utils/squeeze_scanner.py`
+- TTM Squeeze implementation: `utils/scanning/squeeze.py`
 - Backtrader framework: https://www.backtrader.com/
 - TimescaleDB integration: `utils/timescaledb_client.py`
 

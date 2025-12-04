@@ -112,7 +112,7 @@ output:
 ## Files Structure
 
 ```
-├── hl_after_ll_scanner.py          # Core scanner logic
+├── utils/scanning/hl_after_ll.py   # Core scanning logic (library)
 ├── hl_after_ll_scanner_runner.py   # Main runner with config
 ├── test_hl_after_ll_scanner.py     # Test script
 ├── hl_after_ll_scanner_config.yaml # Configuration file
@@ -165,7 +165,7 @@ Edit config file to set logging level to DEBUG for detailed output.
 ## Advanced Usage
 
 ### Custom Patterns
-You can extend the scanner to detect other patterns by modifying the `find_ll_hh_hl` function in `hl_after_ll_scanner.py`.
+You can extend the scanner to detect other patterns by modifying the `find_ll_hh_hl` function in `utils/scanning/hl_after_ll.py`.
 
 ### Performance Optimization
 - Use symbol filtering to reduce scan time

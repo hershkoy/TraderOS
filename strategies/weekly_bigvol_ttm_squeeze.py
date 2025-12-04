@@ -66,7 +66,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         daily_vol_roc_min=0.4,         # Daily volume at least 40% above median
         daily_buy_pressure_threshold=0.92,  # 92% or more buy-side volume required
         
-        # TTM Squeeze (Condition B) - using squeeze_scanner logic
+        # TTM Squeeze (Condition B) - using squeeze logic
         lengthKC=20,                   # Keltner Channel length (matches squeeze_scanner)
         mom_period=12,                 # Momentum period (weeks)
         mom_slope_min=0.0,             # Minimum momentum slope threshold

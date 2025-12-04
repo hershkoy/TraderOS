@@ -19,7 +19,7 @@ This creates a "zero-loss" scenario where maximum loss at expiry is ≤ $0.
 - Basic implementation with hardcoded parameters
 - Good for quick testing and understanding the logic
 
-### 2. **screener_zero_cost_collar_enhanced.py** ⭐ **RECOMMENDED**
+### 2. **zero_cost_collar.py** ⭐ **RECOMMENDED**
 - Enhanced version with YAML configuration
 - Better error handling and logging
 - More flexible and production-ready
@@ -78,7 +78,7 @@ This creates a "zero-loss" scenario where maximum loss at expiry is ≤ $0.
 
 2. **Run the screener** (make sure TWS/IBG is running):
    ```bash
-   python utils/screener_zero_cost_collar_enhanced.py
+   python utils/screening/zero_cost_collar.py
    ```
 
 3. **Or use the batch file**:

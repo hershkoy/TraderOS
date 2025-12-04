@@ -29,7 +29,7 @@ This creates a "zero-loss" scenario where the maximum loss at expiry is ≤ $0.
 ## Files
 
 - `screener_zero_cost_collar.py` - Basic screener implementation
-- `utils/screener_zero_cost_collar_enhanced.py` - Enhanced version with YAML config support
+- `utils/screening/zero_cost_collar.py` - Enhanced version with YAML config support
 - `collar_screener_config.yaml` - Configuration file
 - `tests/test_collar_screener.py` - Test suite for validation
 - `COLLAR_SCREENER_README.md` - This documentation
@@ -100,7 +100,7 @@ Make sure TWS/IB Gateway is running, then execute:
 
 ```bash
 # Using the enhanced version (recommended)
-python utils/screener_zero_cost_collar_enhanced.py
+python utils/screening/zero_cost_collar.py
 
 # Or using the basic version
 python screener_zero_cost_collar.py

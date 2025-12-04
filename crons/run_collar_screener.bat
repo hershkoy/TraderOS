@@ -37,7 +37,7 @@ echo Running collar screener...
 echo.
 
 REM Run the enhanced screener
-python utils/screener_zero_cost_collar_enhanced.py
+python utils\screening\zero_cost_collar.py
 
 echo.
 echo Screener completed. Check logs/collar_screener.log for details.

@@ -200,7 +200,7 @@ def main():
         print("✓ All tests passed! The screener is ready to use.")
         print("\nTo run the screener:")
         print("1. Make sure TWS/IBG is running")
-        print("2. Run: python utils/screener_zero_cost_collar_enhanced.py")
+        print("2. Run: python utils/screening/zero_cost_collar.py")
     else:
         print("✗ Some tests failed. Please fix the issues before running the screener.")
     

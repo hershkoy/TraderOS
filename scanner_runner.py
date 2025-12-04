@@ -18,8 +18,8 @@ from typing import List, Dict, Any, Optional
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import scanner modules
-from utils.scanning.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
-from utils.scanning.squeeze_scanner import (
+from utils.scanning.hl_after_ll import scan_symbol_for_setup, scan_universe, load_from_timescaledb
+from utils.scanning.squeeze import (
     scan_symbol_for_squeeze as squeeze_scan_symbol,
     load_from_timescaledb as squeeze_load,
 )
@@ -389,7 +389,7 @@ class ScannerRunner:
         """Log the last 5 pivot signals (LL, HL, HH, LH) for debugging"""
         try:
             # Import the scanner functions
-            from utils.scanning.hl_after_ll_scanner import to_weekly, classify_pivots_weekly
+            from utils.scanning.hl_after_ll import to_weekly, classify_pivots_weekly
             
             # Log data info
             try:

@@ -16,7 +16,7 @@ from typing import List, Dict, Any
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.scanning.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
+from utils.scanning.hl_after_ll import scan_symbol_for_setup, scan_universe, load_from_timescaledb
 from utils.data.ticker_universe import get_ticker_universe
 
 class HLAfterLLScanner:

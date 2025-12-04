@@ -51,9 +51,11 @@ backTraderTest/
 │   ├── fetch_data.py                  # Data fetching (Alpaca/IB)
 │   ├── ticker_universe.py             # Ticker universe management
 │   ├── update_universe_data.py        # Universe data updater
-│   ├── hl_after_ll_scanner.py         # HL after LL scanner logic
-│   ├── squeeze_scanner.py             # Squeeze scanner logic
-│   ├── screener_zero_cost_collar_enhanced.py # Collar screener
+│   ├── scanning/                       # Scanning library utilities
+│   │   ├── hl_after_ll.py             # HL after LL pattern detection
+│   │   └── squeeze.py                 # Squeeze pattern detection
+│   ├── screening/                      # Screening library utilities
+│   │   └── zero_cost_collar.py        # Zero-cost collar screening logic
 │   ├── tradingview_report_generator.py # Report generation
 │   ├── ib_order_utils.py               # IB order utilities
 │   ├── option_csv_utils.py             # Option CSV parsing
