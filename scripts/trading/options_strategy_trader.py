@@ -123,11 +123,22 @@ def print_report(candidates, strategy_name="otm_credit_spreads"):
     ]
     
     print(f"\n=== {strategy_name} Candidates ===\n")
+    logger.info("=== %s Candidates ===", strategy_name)
+    logger.info("Found %d candidate(s)", len(candidates_sorted))
+    
     for idx, c in enumerate(candidates_sorted):
         label = label_map[idx] if idx < len(label_map) else f"Candidate {idx+1}"
         print(f"[{idx+1}]")
-        print(strategy.describe_candidate(label, c))
+        candidate_description = strategy.describe_candidate(label, c)
+        print(candidate_description)
         print("-" * 50)
+        
+        # Log candidate details
+        logger.info("Candidate [%d]: %s", idx + 1, label)
+        # Log each line of the description
+        for line in candidate_description.split('\n'):
+            if line.strip():
+                logger.info("  %s", line)
 
 
 def main():
@@ -292,28 +303,63 @@ def main():
     # Selection: auto vs interactive
     if args.risk_profile != "interactive":
         selected = choose_candidate_by_profile(candidates_sorted, args.risk_profile)
+        selected_idx = candidates_sorted.index(selected) if selected in candidates_sorted else None
         print("\nAuto-selected spread:\n")
-        print(describe_candidate("Chosen spread", selected, strategy_name=args.strategy))
+        selected_description = describe_candidate("Chosen spread", selected, strategy_name=args.strategy)
+        print(selected_description)
+        
+        # Log the selected candidate
+        logger.info("=== SELECTED CANDIDATE (Auto-selected via %s profile) ===", args.risk_profile)
+        if selected_idx is not None:
+            logger.info("Selected candidate index: [%d]", selected_idx + 1)
+        for line in selected_description.split('\n'):
+            if line.strip():
+                logger.info("  %s", line)
+        
+        # Log compact summary
+        if hasattr(selected, 'short') and hasattr(selected, 'long'):
+            logger.info("SELECTED SUMMARY: %s %s/%s %s spread, Credit: $%.2f, Delta: %.3f",
+                       args.symbol, selected.short.strike, selected.long.strike,
+                       selected.short.right, selected.credit,
+                       abs(selected.short.delta) if selected.short.delta is not None else 0.0)
     else:
         choice = input("\nEnter the number of the spread you want to trade (or press Enter to exit): ").strip()
         
         if not choice:
             print("No spread selected, exiting.")
+            logger.info("No spread selected by user, exiting")
             return
         
         try:
             idx = int(choice) - 1
         except ValueError:
             print("Invalid choice, exiting.")
+            logger.warning("Invalid choice entered: %s", choice)
             return
         
         if idx < 0 or idx >= len(candidates_sorted):
             print("Choice out of range, exiting.")
+            logger.warning("Choice out of range: %d (valid range: 1-%d)", idx + 1, len(candidates_sorted))
             return
         
         selected = candidates_sorted[idx]
         print("\nYou selected:\n")
-        print(describe_candidate("Chosen spread", selected, strategy_name=args.strategy))
+        selected_description = describe_candidate("Chosen spread", selected, strategy_name=args.strategy)
+        print(selected_description)
+        
+        # Log the selected candidate
+        logger.info("=== SELECTED CANDIDATE (Manually selected by user) ===")
+        logger.info("Selected candidate index: [%d]", idx + 1)
+        for line in selected_description.split('\n'):
+            if line.strip():
+                logger.info("  %s", line)
+        
+        # Log compact summary
+        if hasattr(selected, 'short') and hasattr(selected, 'long'):
+            logger.info("SELECTED SUMMARY: %s %s/%s %s spread, Credit: $%.2f, Delta: %.3f",
+                       args.symbol, selected.short.strike, selected.long.strike,
+                       selected.short.right, selected.credit,
+                       abs(selected.short.delta) if selected.short.delta is not None else 0.0)
     
     # Support --place-order as alias
     if args.place_order and not args.create_orders_en:
