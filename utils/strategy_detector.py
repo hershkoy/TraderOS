@@ -550,6 +550,7 @@ class StrategyDetector:
                     'When': when,
                     'PurchaseDateTime': purchase_datetime_str,
                     'Legs': legs_desc,
+                    'Price': total_buy_price,  # Total price of the entire combo (opening)
                     'BuyPrice': total_buy_price,
                     'SellPrice': total_sell_price,
                     'PnL': strategy_pnl,
@@ -704,6 +705,7 @@ class StrategyDetector:
                 'When': when,
                 'PurchaseDateTime': purchase_datetime_str if purchase_datetime_str else when,
                 'Legs': legs_desc,
+                'Price': total_buy_price,  # Total price of the entire combo (opening)
                 'BuyPrice': total_buy_price,
                 'SellPrice': total_sell_price,
                 'PnL': strategy_pnl,

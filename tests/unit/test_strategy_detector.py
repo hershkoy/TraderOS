@@ -254,6 +254,11 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertEqual(strategy['NumLegs'], 2)
         self.assertEqual(strategy['Underlying'], 'QQQ')
         self.assertEqual(strategy['Quantity'], 2)
+        # Price should be the total price of the entire combo (opening)
+        # For credit spread: open_price = -0.25, quantity = 2
+        # Price = -0.25 * 2 * 100 = -50.0 (credit received)
+        self.assertAlmostEqual(strategy['Price'], -50.0, places=2)
+        self.assertEqual(strategy['Price'], strategy['BuyPrice'])
     
     def test_group_executions_by_combo_empty_dataframe(self):
         """Test grouping with empty DataFrame."""
@@ -346,6 +351,11 @@ class TestStrategyDetector(unittest.TestCase):
         # open_price = -0.25, close_price = -0.25 (same spread price)
         # P&L = (-0.25 - (-0.25)) * 2 * 100 = 0
         self.assertAlmostEqual(strategy['PnL'], 0, places=2)
+        # Price should be the total price of the entire combo (opening)
+        # open_price = -0.25, quantity = 2
+        # Price = -0.25 * 2 * 100 = -50.0 (credit received)
+        self.assertAlmostEqual(strategy['Price'], -50.0, places=2)
+        self.assertEqual(strategy['Price'], strategy['BuyPrice'])
     
     def test_summarize_vertical_call_spreads(self):
         """Test vertical call spread summarization."""
@@ -454,6 +464,11 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertEqual(strategy['NumLegs'], 2)
         self.assertEqual(strategy['Underlying'], 'SPY')
         self.assertEqual(strategy['Quantity'], 2)
+        # Price should be the total price of the entire combo (opening)
+        # For debit spread: open_price = 1.50, quantity = 2
+        # Price = 1.50 * 2 * 100 = 300.0 (debit paid)
+        self.assertAlmostEqual(strategy['Price'], 300.0, places=2)
+        self.assertEqual(strategy['Price'], strategy['BuyPrice'])
     
     def test_group_executions_by_combo_complex_multi_leg(self):
         """Test grouping complex multi-leg strategy (like RUT order with 4 legs)."""
@@ -543,6 +558,10 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertIsNotNone(strategy['StrategyID'])
         # Should have leg descriptions
         self.assertEqual(len(strategy['Legs']), 4)
+        # Price should be the total price of the entire combo (opening)
+        # Total buy price = sum of all BUY NetCash = -2894.0
+        self.assertAlmostEqual(strategy['Price'], -2894.0, places=2)
+        self.assertEqual(strategy['Price'], strategy['BuyPrice'])
 
 
 if __name__ == '__main__':
