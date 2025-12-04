@@ -14,11 +14,12 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Configure logging
+os.makedirs('logs/data/options', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/options_data_checks.log'),
+        logging.FileHandler('logs/data/options/options_data_checks.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )

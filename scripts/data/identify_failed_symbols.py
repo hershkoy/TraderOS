@@ -23,18 +23,16 @@ except ImportError:
     from timescaledb_client import get_timescaledb_client
 
 # Configure logging
+os.makedirs('logs/data/failed_symbols', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/identify_failed_symbols.log'),
+        logging.FileHandler('logs/data/failed_symbols/identify_failed_symbols.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Create logs directory if it doesn't exist
-os.makedirs('logs', exist_ok=True)
 
 def get_complete_universe():
     """Get the complete universe of 517 symbols"""

@@ -43,7 +43,8 @@ def setup_logging(log_level: str = 'INFO', log_file: str = None):
     handlers.append(console_handler)
     
     # Add default file handler
-    default_file_handler = logging.FileHandler('logs/options_backfill.log')
+    os.makedirs('logs/api/polygon/backfill', exist_ok=True)
+    default_file_handler = logging.FileHandler('logs/api/polygon/backfill/options_backfill.log')
     default_file_handler.setLevel(numeric_level)
     default_file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     default_file_handler.setFormatter(default_file_formatter)

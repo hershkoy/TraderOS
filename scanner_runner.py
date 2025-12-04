@@ -97,14 +97,32 @@ class ScannerRunner:
         if files_config.get('save_log', True):
             # Generate timestamped log filename
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            log_filename = f"logs/scanner_runner_{timestamp}.log"
+            scanner_type = self.scanner_type or 'unknown'
             
-            # Use custom filename if specified in config
+            # Determine log directory based on scanner type
+            if scanner_type == 'hl_after_ll':
+                log_dir = 'logs/scanners/hl_after_ll'
+            elif scanner_type == 'squeeze':
+                log_dir = 'logs/scanners/squeeze'
+            elif scanner_type == 'multi' or scanner_type == 'multi_scanner':
+                log_dir = 'logs/scanners/multi'
+            else:
+                log_dir = f'logs/scanners/{scanner_type}'
+            
+            os.makedirs(log_dir, exist_ok=True)
+            log_filename = f"{log_dir}/{scanner_type}_scanner_{timestamp}.log"
+            
+            # Use custom filename if specified in config (but still organize by type)
             if 'log_filename' in files_config:
-                log_filename = files_config['log_filename'].format(
+                custom_filename = files_config['log_filename'].format(
                     timestamp=timestamp,
-                    scanner_type=self.scanner_type or 'unknown'
+                    scanner_type=scanner_type
                 )
+                # If custom filename doesn't include directory, use organized structure
+                if not '/' in custom_filename or custom_filename.startswith('logs/'):
+                    log_filename = custom_filename
+                else:
+                    log_filename = f"{log_dir}/{os.path.basename(custom_filename)}"
             
             # Add file handler
             file_handler = logging.FileHandler(log_filename)

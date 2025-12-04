@@ -66,7 +66,7 @@ output:
   csv_filename: "reports/screeners/collar/collar_opportunities.csv"
   log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
   log_to_file: true  # Save log output to file
-  log_filename: "logs/zero_cost_collar_screener.log"  # Log file path
+  log_filename: "logs/screeners/collar/zero_cost_collar_screener.log"  # Log file path
   progress_update_frequency: 5  # Print progress summary every N symbols
   real_time_updates: true  # Update CSV file after each symbol
 

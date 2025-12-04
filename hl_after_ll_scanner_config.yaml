@@ -36,7 +36,7 @@ output:
     save_csv: true
     csv_filename: "hl_after_ll_scan_{timestamp}.csv"
     save_log: true
-    log_filename: "logs/hl_after_ll_scanner.log"
+    log_filename: "logs/scanners/hl_after_ll/hl_after_ll_scanner_{timestamp}.log"
   
   # Report settings
   reports:

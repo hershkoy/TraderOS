@@ -69,13 +69,15 @@ class HLAfterLLScanner:
         format_str = log_config.get('format', '%(asctime)s - %(levelname)s - %(message)s')
         
         # Create logs directory
-        os.makedirs('logs', exist_ok=True)
+        log_dir = 'logs/scanners/hl_after_ll'
+        os.makedirs(log_dir, exist_ok=True)
         
         # Setup handlers
         handlers = [logging.StreamHandler()]
         
         if self.config.get('output', {}).get('files', {}).get('save_log', True):
-            handlers.append(logging.FileHandler('logs/hl_after_ll_scanner.log'))
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            handlers.append(logging.FileHandler(f'{log_dir}/hl_after_ll_scanner_{timestamp}.log'))
         
         logging.basicConfig(
             level=level,

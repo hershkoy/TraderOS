@@ -20,11 +20,12 @@ from utils.option_utils import build_option_id
 from utils.pg_copy import copy_rows_with_upsert
 
 # Configure logging
+os.makedirs('logs/data/mock', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/mock_options_generation.log'),
+        logging.FileHandler('logs/data/mock/mock_options_generation.log'),
         logging.StreamHandler()
     ]
 )

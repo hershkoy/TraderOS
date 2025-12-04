@@ -31,11 +31,14 @@ except ImportError:
     from fetch_data import fetch_from_alpaca, fetch_from_ib
 
 # Configure logging
+log_dir = 'logs/data/universe'
+os.makedirs(log_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/universe_update.log'),
+        logging.FileHandler(f'{log_dir}/universe_update.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -45,11 +48,8 @@ logger = logging.getLogger(__name__)
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
-# Create logs directory if it doesn't exist
-os.makedirs('logs', exist_ok=True)
-
 # Create file handler for root logger to capture all logs
-file_handler = logging.FileHandler('logs/universe_update_complete.log')
+file_handler = logging.FileHandler(f'{log_dir}/universe_update_complete.log')
 file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
@@ -1810,7 +1810,7 @@ Examples:
             return 1
         
         # Save results summary
-        summary_file = f"logs/universe_update_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        summary_file = f"logs/data/universe/universe_update_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(summary_file, 'w') as f:
             f.write("UNIVERSE UPDATE SUMMARY\n")
             f.write("=" * 50 + "\n")

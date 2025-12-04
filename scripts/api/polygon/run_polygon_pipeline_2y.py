@@ -26,11 +26,12 @@ from data.options_repo import OptionsRepository
 from utils.env_loader import get_env_var
 
 # Configure logging
+os.makedirs('logs/api/polygon/pipeline', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f'logs/polygon_pipeline_2y_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.FileHandler(f'logs/api/polygon/pipeline/polygon_pipeline_2y_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
         logging.StreamHandler()
     ]
 )

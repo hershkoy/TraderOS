@@ -5,11 +5,14 @@ call .\venv\Scripts\activate.bat
 
 REM Create log file with timestamp (YYYYMMDD_HHMMSS format)
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set datetime=%%I
-set logfile=logs\credit_spreads_%datetime:~0,8%_%datetime:~8,6%.log
+set logfile=logs\trading\credit_spreads\credit_spreads_%datetime:~0,8%_%datetime:~8,6%.log
 
 echo Starting Credit Spreads Trader...
 echo Logging to: %logfile%
 echo Current directory: %CD%
+
+REM Create log directory if it doesn't exist
+if not exist "logs\trading\credit_spreads" mkdir "logs\trading\credit_spreads"
 echo.
 
 REM Run script with config file (processes all orders in parallel)

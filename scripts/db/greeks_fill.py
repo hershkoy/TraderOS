@@ -22,11 +22,12 @@ from utils.greeks import batch_update_greeks
 from utils.database import get_database_connection
 
 # Configure logging
+os.makedirs('logs/db/greeks', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/greeks_fill.log'),
+        logging.FileHandler('logs/db/greeks/greeks_fill.log'),
         logging.StreamHandler()
     ]
 )

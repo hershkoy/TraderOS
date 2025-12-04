@@ -19,11 +19,12 @@ from utils.polygon_client import get_polygon_client
 from utils.option_utils import build_option_id
 
 # Configure logging
+os.makedirs('logs/api/polygon/discovery', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/options_discovery.log'),
+        logging.FileHandler('logs/api/polygon/discovery/options_discovery.log'),
         logging.StreamHandler()
     ]
 )

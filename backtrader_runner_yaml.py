@@ -844,7 +844,7 @@ def main():
         sys.stderr = original_stderr
 
     if args.log_to_file:
-        log_dir = Path("logs")
+        log_dir = Path("logs/backtests")
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"{args.strategy}_{timestamp}.log"

@@ -18,11 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.polygon_client import get_polygon_client
 
 # Configure logging
+os.makedirs('logs/api/polygon/ingest', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/options_quotes_ingest.log'),
+        logging.FileHandler('logs/api/polygon/ingest/options_quotes_ingest.log'),
         logging.StreamHandler()
     ]
 )
