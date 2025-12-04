@@ -1139,10 +1139,10 @@ class ScannerRunner:
         
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"reports/hl_after_ll_scan_{timestamp}.csv"
+        filename = f"reports/scanners/hl_after_ll/hl_after_ll_scan_{timestamp}.csv"
         
         # Ensure reports directory exists
-        Path("reports").mkdir(exist_ok=True)
+        Path("reports/scanners/hl_after_ll").mkdir(parents=True, exist_ok=True)
         
         # Prepare data for CSV
         data = []
@@ -1177,9 +1177,9 @@ class ScannerRunner:
             return
         from pathlib import Path
         import pandas as pd
-        Path("reports").mkdir(exist_ok=True)
+        Path("reports/scanners/squeeze").mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fn = f"reports/squeeze_zero_cross_{ts}.csv"
+        fn = f"reports/scanners/squeeze/squeeze_zero_cross_{ts}.csv"
         rows = [{
             "symbol": m.symbol,
             "cross_week": m.cross_date.strftime("%Y-%m-%d"),
@@ -1201,7 +1201,7 @@ class ScannerRunner:
         import pandas as pd
         
         # Ensure reports directory exists
-        Path("reports").mkdir(exist_ok=True)
+        Path("reports/scanners").mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         saved_files = []
@@ -1210,12 +1210,12 @@ class ScannerRunner:
                 continue
                 
             if scanner_type == 'hl_after_ll':
-                filename = f"reports/hl_after_ll_scan_{timestamp}.csv"
+                filename = f"reports/scanners/hl_after_ll/hl_after_ll_scan_{timestamp}.csv"
                 self.save_hl_after_ll_results(matches)
                 saved_files.append(filename)
                 
             elif scanner_type == 'squeeze':
-                filename = f"reports/squeeze_zero_cross_{timestamp}.csv"
+                filename = f"reports/scanners/squeeze/squeeze_zero_cross_{timestamp}.csv"
                 self.save_squeeze_results(matches)
                 saved_files.append(filename)
                 

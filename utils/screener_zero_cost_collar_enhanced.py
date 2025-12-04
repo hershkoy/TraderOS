@@ -268,7 +268,7 @@ class CollarScreenerConfig:
         
         self.MAX_RESULTS = 25
         self.SAVE_TO_CSV = True
-        self.CSV_FILENAME = 'reports/collar_opportunities.csv'
+        self.CSV_FILENAME = 'reports/screeners/collar/collar_opportunities.csv'
         self.LOG_TO_FILE = True
         self.LOG_FILENAME = 'logs/zero_cost_collar_screener.log'
         self.PROGRESS_UPDATE_FREQUENCY = 5

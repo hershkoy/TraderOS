@@ -88,7 +88,7 @@ def auto_fetch_option_chain(
     logger.info(f"Auto-fetching option chain for {symbol}...")
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_path = f"reports/{symbol}_{right}_spread_analysis_{timestamp}.csv"
+    csv_path = f"reports/options/spreads/{symbol}_{right}_spread_analysis_{timestamp}.csv"
     
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     

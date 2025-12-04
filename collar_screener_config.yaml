@@ -63,7 +63,7 @@ universe:
 output:
   max_results: 25  # Maximum number of results to display
   save_to_csv: true
-  csv_filename: "reports/collar_opportunities.csv"
+  csv_filename: "reports/screeners/collar/collar_opportunities.csv"
   log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
   log_to_file: true  # Save log output to file
   log_filename: "logs/zero_cost_collar_screener.log"  # Log file path

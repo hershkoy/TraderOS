@@ -840,10 +840,10 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             logger.debug(f"DataFrame shape: {df_to_log.shape}")
             logger.debug(f"First few rows (account data excluded):\n{df_to_log.head()}")
             
-            # Save all trades to CSV in reports folder (without account data)
+            # Save all trades to CSV in reports/ib/executions folder (without account data)
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv_path = f"reports/tws_executions_debug_{timestamp}.csv"
+                csv_path = f"reports/ib/executions/tws_executions_debug_{timestamp}.csv"
                 Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
                 # Save without account data
                 df_to_save = df.drop(columns=['Account'], errors='ignore')
@@ -2472,7 +2472,7 @@ Environment Variables Required (only if not using --flex-report):
         # Auto-generate output path
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         ext = args.type
-        output_path = f"reports/ib_multi_leg_strategies_{timestamp}.{ext}"
+        output_path = f"reports/ib/multi_leg_strategies/ib_multi_leg_strategies_{timestamp}.{ext}"
     
     # Ensure output directory exists
     output_file = Path(output_path)

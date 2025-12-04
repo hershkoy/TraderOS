@@ -577,13 +577,13 @@ def fetch_options_to_csv(
             rights_to_fetch = [right.upper()]
             right_suffix = right.upper()
         
-        # Default output to reports folder
+        # Default output to reports/options/chains folder
         if output_csv is None:
             dt = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_csv = f'reports/{underlying_symbol}_{right_suffix}_options_{dt}.csv'
+            output_csv = f'reports/options/chains/{underlying_symbol}_{right_suffix}_options_{dt}.csv'
         elif not os.path.isabs(output_csv) and not output_csv.startswith('reports/'):
             # If relative path doesn't start with reports/, prepend it
-            output_csv = f'reports/{output_csv}'
+            output_csv = f'reports/options/chains/{output_csv}'
         
         # Ensure output directory exists
         output_path = Path(output_csv)

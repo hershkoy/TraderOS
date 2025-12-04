@@ -239,8 +239,8 @@ def run_scan(symbols: Iterable[str], bars: int, min_volume: int) -> List[Scanner
 
 
 def write_report(results: List[ScannerResult], prefix: str) -> Path:
-    reports_dir = Path("reports")
-    reports_dir.mkdir(exist_ok=True)
+    reports_dir = Path("reports/scanners/daily")
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(tz=EASTERN_TZ).strftime("%Y%m%d_%H%M%S")
     output_path = reports_dir / f"{prefix}_{timestamp}.csv"
