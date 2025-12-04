@@ -48,6 +48,54 @@ class TestStrategyDetector(unittest.TestCase):
         strategy_id = self.detector.generate_strategy_id([])
         self.assertEqual(strategy_id, "N/A")
     
+    def test_generate_short_strategy_string_bull_put_spread(self):
+        """Test short strategy string generation for bull put spread."""
+        legs = [
+            {'Symbol': 'QQQ', 'Expiry': 20241205, 'Strike': 591, 'Put/Call': 'P', 'Buy/Sell': 'BUY'},
+            {'Symbol': 'QQQ', 'Expiry': 20241205, 'Strike': 595, 'Put/Call': 'P', 'Buy/Sell': 'SELL'}
+        ]
+        short_str = self.detector.generate_short_strategy_string(legs, 'QQQ')
+        self.assertEqual(short_str, "QQQ + Dec05 591P - Dec05 595P")
+    
+    def test_generate_short_strategy_string_bull_call_spread(self):
+        """Test short strategy string generation for bull call spread."""
+        legs = [
+            {'Symbol': 'SPY', 'Expiry': '2024-12-20', 'Strike': 450, 'Put/Call': 'C', 'Buy/Sell': 'BUY'},
+            {'Symbol': 'SPY', 'Expiry': '2024-12-20', 'Strike': 455, 'Put/Call': 'C', 'Buy/Sell': 'SELL'}
+        ]
+        short_str = self.detector.generate_short_strategy_string(legs, 'SPY')
+        self.assertEqual(short_str, "SPY + Dec20 450C - Dec20 455C")
+    
+    def test_generate_short_strategy_string_complex_multi_leg(self):
+        """Test short strategy string generation for complex multi-leg strategy."""
+        legs = [
+            {'Symbol': 'RUT', 'Expiry': 20251218, 'Strike': 2545.0, 'Put/Call': 'C', 'Buy/Sell': 'SELL'},
+            {'Symbol': 'RUT', 'Expiry': 20251212, 'Strike': 2605.0, 'Put/Call': 'C', 'Buy/Sell': 'SELL'},
+            {'Symbol': 'RUT', 'Expiry': 20251212, 'Strike': 2585.0, 'Put/Call': 'C', 'Buy/Sell': 'SELL'},
+            {'Symbol': 'RUT', 'Expiry': 20251212, 'Strike': 2545.0, 'Put/Call': 'C', 'Buy/Sell': 'BUY'}
+        ]
+        short_str = self.detector.generate_short_strategy_string(legs, 'RUT')
+        # Should be sorted by expiry and strike
+        self.assertIn('RUT', short_str)
+        self.assertIn('Dec12', short_str)
+        self.assertIn('Dec18', short_str)
+        self.assertIn('2545C', short_str)
+        self.assertIn('2585C', short_str)
+        self.assertIn('2605C', short_str)
+    
+    def test_generate_short_strategy_string_insufficient_legs(self):
+        """Test short strategy string generation with insufficient legs."""
+        legs = [
+            {'Symbol': 'QQQ', 'Expiry': 20241205, 'Strike': 591, 'Put/Call': 'P', 'Buy/Sell': 'BUY'}
+        ]
+        short_str = self.detector.generate_short_strategy_string(legs)
+        self.assertEqual(short_str, "N/A")
+    
+    def test_generate_short_strategy_string_empty_legs(self):
+        """Test short strategy string generation with empty legs."""
+        short_str = self.detector.generate_short_strategy_string([])
+        self.assertEqual(short_str, "N/A")
+    
     def test_infer_leg_direction_bull_put_credit_spread(self):
         """Test leg direction inference for bull put credit spread."""
         execution_data = [
@@ -251,6 +299,9 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertEqual(strategy['BAG_ID'], '0000fb0a')
         self.assertIsNotNone(strategy['StrategyID'])
         self.assertIn('Bull Put Spread', strategy['StrategyID'])
+        # Should have short strategy string
+        self.assertIsNotNone(strategy.get('ShortStrategyString'))
+        self.assertIn('QQQ', strategy['ShortStrategyString'])
         self.assertEqual(strategy['NumLegs'], 2)
         self.assertEqual(strategy['Underlying'], 'QQQ')
         self.assertEqual(strategy['Quantity'], 2)
@@ -461,6 +512,9 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertEqual(strategy['BAG_ID'], '0000fb0d')
         self.assertIsNotNone(strategy['StrategyID'])
         self.assertIn('Bull Call Spread', strategy['StrategyID'])
+        # Should have short strategy string
+        self.assertIsNotNone(strategy.get('ShortStrategyString'))
+        self.assertIn('SPY', strategy['ShortStrategyString'])
         self.assertEqual(strategy['NumLegs'], 2)
         self.assertEqual(strategy['Underlying'], 'SPY')
         self.assertEqual(strategy['Quantity'], 2)
@@ -556,12 +610,70 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertEqual(strategy['NumLegs'], 4)
         # Should have a strategy ID generated
         self.assertIsNotNone(strategy['StrategyID'])
+        # Should have short strategy string
+        self.assertIsNotNone(strategy.get('ShortStrategyString'))
+        self.assertIn('RUT', strategy['ShortStrategyString'])
         # Should have leg descriptions
         self.assertEqual(len(strategy['Legs']), 4)
         # Price should be the total price of the entire combo (opening)
         # Total buy price = sum of all BUY NetCash = -2894.0
         self.assertAlmostEqual(strategy['Price'], -2894.0, places=2)
         self.assertEqual(strategy['Price'], strategy['BuyPrice'])
+    
+    def test_group_executions_by_combo_with_bag_price(self):
+        """Test grouping executions with BAG price from metadata."""
+        df = pd.DataFrame([
+            {
+                'ParentID': '725',
+                'OrderID': 725,
+                'TradeID': '0000fb0a.6929afbd.02.01',
+                'BAG_ID': '0000fb0a',
+                'Symbol': 'QQQ',
+                'Expiry': 20241205,
+                'Strike': 591,
+                'Put/Call': 'P',
+                'Quantity': 1,
+                'Price': 0.10,
+                'Date/Time': '2024-12-03 10:00:00',
+                'DateTime': pd.to_datetime('2024-12-03 10:00:00'),
+                'Buy/Sell': 'BUY',
+                'NetCash': -10.0,
+                'Commission': 1.0
+            },
+            {
+                'ParentID': '725',
+                'OrderID': 725,
+                'TradeID': '0000fb0a.6929afbd.03.01',
+                'BAG_ID': '0000fb0a',
+                'Symbol': 'QQQ',
+                'Expiry': 20241205,
+                'Strike': 595,
+                'Put/Call': 'P',
+                'Quantity': 1,
+                'Price': 0.35,
+                'Date/Time': '2024-12-03 10:00:00',
+                'DateTime': pd.to_datetime('2024-12-03 10:00:00'),
+                'Buy/Sell': 'SELL',
+                'NetCash': 35.0,
+                'Commission': 1.0
+            }
+        ])
+        
+        # Add BAG price to DataFrame metadata
+        # BAG price = 7.75 * 100 = 775 (for 1 contract)
+        if hasattr(df, 'attrs'):
+            df.attrs['bag_prices'] = {'725': 775.0}
+        
+        strategies = self.detector.group_executions_by_combo(df)
+        
+        self.assertEqual(len(strategies), 1)
+        strategy = strategies[0]
+        # Price should use BAG price if available
+        self.assertAlmostEqual(strategy['Price'], 775.0, places=2)
+        # BuyPrice should still be calculated from legs
+        self.assertAlmostEqual(strategy['BuyPrice'], -25.0, places=2)  # -0.25 * 1 * 100
+        # Price and BuyPrice should be different when BAG price is used
+        self.assertNotEqual(strategy['Price'], strategy['BuyPrice'])
 
 
 if __name__ == '__main__':

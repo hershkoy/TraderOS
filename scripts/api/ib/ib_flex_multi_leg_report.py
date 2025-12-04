@@ -431,6 +431,26 @@ def generate_strategy_id(legs: List[Dict[str, Any]], underlying: str = None) -> 
     return "N/A"
 
 
+def generate_short_strategy_string(legs: List[Dict[str, Any]], underlying: str = None) -> str:
+    """
+    Generate a short strategy string from legs.
+    Format: "SYMBOL + Expiry Strike1C - Expiry Strike2C + Expiry Strike3C - Expiry Strike4C"
+    Example: "RUT + Dec12 2605C - Dec12 2545C + Dec12 2545C - Dec12 2585C"
+    
+    Args:
+        legs: List of leg dictionaries with Symbol, Expiry, Strike, Put/Call, Buy/Sell
+        underlying: Optional underlying symbol (if not provided, extracted from legs)
+        
+    Returns:
+        Short strategy string
+    """
+    detector = _get_strategy_detector()
+    if detector:
+        return detector.generate_short_strategy_string(legs, underlying)
+    # Fallback to "N/A" if detector not available
+    return "N/A"
+
+
 def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[int] = None) -> pd.DataFrame:
     """
     Fetch trade executions from TWS API using reqExecutions().
@@ -561,10 +581,33 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
         # - commissionReport: CommissionReport object
         # - time: datetime
         execution_data = []
+        bag_prices = {}  # Store BAG execution prices by parent_id: {parent_id: price * 100}
         
         for fill in executions:
             contract = fill.contract
             execution = fill.execution  # The actual Execution object
+            
+            # Capture BAG execution prices (total combo price)
+            if contract.secType == 'BAG':
+                # Extract parent ID from BAG execution
+                parent_id = None
+                if execution.orderId and execution.orderId != 0:
+                    parent_id = str(execution.orderId)
+                elif execution.orderRef:
+                    parent_id = execution.orderRef
+                elif execution.execId:
+                    parts = execution.execId.split('.')
+                    if len(parts) > 1:
+                        parent_id = parts[0]
+                    else:
+                        parent_id = execution.execId
+                
+                if parent_id:
+                    # BAG price is the total combo price (already per contract, multiply by 100)
+                    bag_price = execution.price * execution.shares * 100
+                    bag_prices[parent_id] = bag_price
+                    logger.debug(f"Captured BAG price for ParentID {parent_id}: {execution.price} * {execution.shares} * 100 = {bag_price}")
+                continue  # Skip BAG executions from leg processing
             
             # Skip non-option trades
             if contract.secType != 'OPT':
@@ -724,6 +767,15 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
         df = pd.DataFrame(execution_data)
         logger.info(f"Converted {len(df)} executions to DataFrame format")
         logger.debug(f"Columns: {list(df.columns)}")
+        
+        # Store BAG prices as DataFrame metadata (accessible via df.attrs)
+        if hasattr(df, 'attrs'):
+            df.attrs['bag_prices'] = bag_prices
+        else:
+            # Fallback: store in a global variable (less ideal but works)
+            if not hasattr(fetch_tws_executions, '_bag_prices'):
+                fetch_tws_executions._bag_prices = {}
+            fetch_tws_executions._bag_prices.update(bag_prices)
         
         # Log DataFrame without account data for security
         if logger.isEnabledFor(logging.DEBUG) and not df.empty:
@@ -1004,6 +1056,7 @@ def _group_tws_executions_raw(df: pd.DataFrame) -> List[Dict[str, Any]]:
         
         # Generate Strategy ID from legs (only for BAG orders)
         strategy_id_str = None
+        short_strategy_str = None
         if bag_id:
             legs_for_id = []
             for leg in leg_list_sorted:
@@ -1011,14 +1064,29 @@ def _group_tws_executions_raw(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     'Symbol': leg['symbol'],
                     'Expiry': leg['expiry'],
                     'Strike': leg['strike'],
-                    'Put/Call': leg['put_call']
+                    'Put/Call': leg['put_call'],
+                    'Buy/Sell': leg['buy_sell']
                 })
             strategy_id_str = generate_strategy_id(legs_for_id, underlying)
+            short_strategy_str = generate_short_strategy_string(legs_for_id, underlying)
+        
+        # Get BAG price if available (from DataFrame metadata)
+        bag_price = None
+        if hasattr(df, 'attrs') and 'bag_prices' in df.attrs:
+            bag_prices = df.attrs['bag_prices']
+            bag_price = bag_prices.get(str(combo_id)) or bag_prices.get(combo_id)
+        elif hasattr(fetch_tws_executions, '_bag_prices'):
+            bag_prices = fetch_tws_executions._bag_prices
+            bag_price = bag_prices.get(str(combo_id)) or bag_prices.get(combo_id)
+        
+        # Use BAG price if available, otherwise use calculated total_buy_price
+        strategy_price = bag_price if bag_price is not None else total_buy_price
         
         strategy = {
             'OrderID': strategy_id,
             'BAG_ID': bag_id,  # BAG ID from TradeID
             'StrategyID': strategy_id_str,  # Human-readable strategy identifier
+            'ShortStrategyString': short_strategy_str,  # Short strategy string
             'NumLegs': len(group),
             'Underlying': underlying,
             'When': when,
@@ -1026,6 +1094,7 @@ def _group_tws_executions_raw(df: pd.DataFrame) -> List[Dict[str, Any]]:
             'Legs': legs_desc,
             'BuyPrice': total_buy_price,
             'SellPrice': total_sell_price,
+            'Price': strategy_price,  # Total strategy price (from BAG if available)
             'PnL': strategy_pnl,
             'NetCash': net_cash,
             'Commission': commission,
@@ -1923,13 +1992,22 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
         total_net_cash = sum(s.get('NetCash', 0) for s in strategy_list)
         total_commission = sum(s.get('Commission', 0) for s in strategy_list)
         
+        # Get Price from strategy detector (total price of entire combo)
+        strategy_price = main_strategy.get('Price')
+        if strategy_price is None:
+            # Fallback to BuyPrice if Price not available
+            strategy_price = main_strategy.get('BuyPrice', 0)
+        
+        # Get short strategy string if available
+        short_strategy = main_strategy.get('ShortStrategyString') or main_strategy.get('StrategyID', strategy_id if strategy_id != 'N/A' else display_id)
+        
         html += f"""
     <div class="strategy">
         <div class="strategy-header">
             <div class="strategy-info">
-                <div class="strategy-id">Strategy: {strategy_id if strategy_id != 'N/A' else display_id}</div>
+                <div class="strategy-id">Strategy: {short_strategy}</div>
                 <div class="strategy-meta">
-                    {main_strategy['Underlying']} | {f'{spread_type}' if spread_type else f'{main_strategy["NumLegs"]} legs'}
+                    {main_strategy['Underlying']} | {f'{spread_type}' if spread_type else f'{main_strategy["NumLegs"]} legs'} | Price: ${strategy_price:,.2f}
                 </div>
             </div>
             <div class="strategy-financials">
@@ -1937,14 +2015,6 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
                 <div class="commission">Commission: ${total_commission:,.2f}</div>
             </div>
         </div>
-        <div class="legs">
-"""
-        
-        # Show leg summaries (from first strategy, should be same for all)
-        for leg in main_strategy['Legs']:
-            html += f'            <div class="leg">{leg}</div>\n'
-        
-        html += """        </div>
         <div class="strategy-details">
             <h3>Transactions</h3>
             <table class="transactions-table">
@@ -1972,6 +2042,10 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
             close_price_per_spread = strategy.get('ClosePrice')
             buy_price = strategy.get('BuyPrice', 0)
             sell_price = strategy.get('SellPrice', 0)
+            # Use Price field from strategy detector if available
+            strategy_price = strategy.get('Price')
+            if strategy_price is None:
+                strategy_price = buy_price  # Fallback to BuyPrice
             
             # Determine if this entry is an opening or closing
             # Rule: When multiple entries share the same StrategyID:
@@ -1988,9 +2062,11 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
             if has_opening:
                 if is_earliest or has_closing:
                     # Earliest entry is opening, or entry with both OpenPrice and ClosePrice
+                    # Use OpenPrice (per-spread) for vertical spreads, or Price (total) for complex strategies
                     transaction_class = "transaction-bought"
                     transaction_label = "Bought"
-                    transaction_price = open_price_per_spread
+                    # Prefer OpenPrice (per-spread) if available, otherwise use Price (total) from strategy detector
+                    transaction_price = open_price_per_spread if open_price_per_spread is not None else (strategy_price if strategy_price is not None else 0)
                     html += f"""
                     <tr>
                         <td class="{transaction_class}">{transaction_label}</td>
@@ -2030,12 +2106,14 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
                     </tr>
 """
             
-            # Fallback: if no OpenPrice/ClosePrice, use BuyPrice/SellPrice
+            # Fallback: if no OpenPrice/ClosePrice, use Price field from strategy detector
             if open_price_per_spread is None and close_price_per_spread is None:
-                if buy_price != 0:
+                if strategy_price != 0:
                     transaction_class = "transaction-bought" if is_earliest else "transaction-sold"
                     transaction_label = "Bought" if is_earliest else "Sold"
-                    transaction_price = buy_price / (quantity * 100) if quantity > 0 else 0
+                    # Use Price field (total price of entire combo)
+                    # For display, show total price (Price is already in dollars, not per-contract)
+                    transaction_price = strategy_price
                     html += f"""
                     <tr>
                         <td class="{transaction_class}">{transaction_label}</td>
@@ -2047,7 +2125,7 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
                 elif sell_price != 0:
                     transaction_class = "transaction-sold"
                     transaction_label = "Sold"
-                    transaction_price = sell_price / (quantity * 100) if quantity > 0 else 0
+                    transaction_price = sell_price
                     html += f"""
                     <tr>
                         <td class="{transaction_class}">{transaction_label}</td>

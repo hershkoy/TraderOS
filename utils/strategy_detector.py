@@ -418,6 +418,72 @@ class StrategyDetector:
         
         return f"{symbol} {expiry_str} {strike_str} {spread_type}"
     
+    def generate_short_strategy_string(self, legs: List[Dict[str, Any]], underlying: str = None) -> str:
+        """
+        Generate a short strategy string from legs.
+        Format: "SYMBOL + Expiry Strike1C - Expiry Strike2C + Expiry Strike3C - Expiry Strike4C"
+        Example: "RUT + Dec12 2605C - Dec12 2545C + Dec12 2545C - Dec12 2585C"
+        
+        Args:
+            legs: List of leg dictionaries with Symbol, Expiry, Strike, Put/Call, Buy/Sell
+            underlying: Optional underlying symbol (if not provided, extracted from legs)
+            
+        Returns:
+            Short strategy string
+        """
+        if not legs or len(legs) < 2:
+            return "N/A"
+        
+        # Get symbol
+        symbols = set(leg.get('Symbol', '') for leg in legs if leg.get('Symbol'))
+        if not symbols:
+            return "N/A"
+        symbol = underlying or list(symbols)[0]
+        
+        # Format legs as "+ Expiry StrikeC" or "- Expiry StrikeC" based on Buy/Sell
+        leg_strings = []
+        for leg in sorted(legs, key=lambda x: (x.get('Expiry', ''), x.get('Strike', 0))):
+            expiry = leg.get('Expiry', '')
+            strike = leg.get('Strike', '')
+            put_call = leg.get('Put/Call', '')
+            buy_sell = leg.get('Buy/Sell', '')
+            
+            # Format expiry (convert YYYYMMDD to "Dec12" format)
+            expiry_str = ""
+            if isinstance(expiry, (int, float)) and expiry > 0:
+                expiry_num = str(int(expiry))
+                if len(expiry_num) == 8:
+                    try:
+                        expiry_date = datetime.strptime(expiry_num, '%Y%m%d')
+                        expiry_str = expiry_date.strftime('%b%d')  # Dec12 format
+                    except:
+                        expiry_str = expiry_num
+                else:
+                    expiry_str = str(expiry)
+            elif isinstance(expiry, str):
+                try:
+                    if '-' in expiry:
+                        expiry_date = pd.to_datetime(expiry)
+                    elif len(expiry) == 8 and expiry.isdigit():
+                        expiry_date = datetime.strptime(expiry, '%Y%m%d')
+                    else:
+                        expiry_date = pd.to_datetime(expiry)
+                    expiry_str = expiry_date.strftime('%b%d')  # Dec12 format
+                except:
+                    expiry_str = expiry
+            else:
+                expiry_str = str(expiry)
+            
+            # Determine sign based on Buy/Sell
+            sign = "+" if buy_sell == "BUY" else "-"
+            
+            # Format: "+ Dec12 2605C" or "- Dec12 2545C"
+            leg_str = f"{sign} {expiry_str} {int(strike) if isinstance(strike, (int, float)) else strike}{put_call}"
+            leg_strings.append(leg_str)
+        
+        # Combine: "SYMBOL + Expiry Strike1C - Expiry Strike2C ..."
+        return f"{symbol} {' '.join(leg_strings)}"
+    
     def group_executions_by_combo(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         Group TWS API executions by parentId (combo order ID) to match IB's Trade History Summary.
@@ -534,23 +600,38 @@ class StrategyDetector:
                 
                 # Generate Strategy ID from legs (only for BAG orders)
                 strategy_id = None
+                short_strategy_str = None
                 if bag_id:
                     legs_for_id = [
-                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': option_type},
-                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': option_type}
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': option_type, 'Buy/Sell': 'BUY'},
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': option_type, 'Buy/Sell': 'SELL'}
                     ]
                     strategy_id = self.generate_strategy_id(legs_for_id, symbol)
+                    short_strategy_str = self.generate_short_strategy_string(legs_for_id, symbol)
+                
+                # Get BAG price if available (from DataFrame metadata)
+                bag_price = None
+                if hasattr(df, 'attrs') and 'bag_prices' in df.attrs:
+                    bag_prices = df.attrs['bag_prices']
+                    bag_price = bag_prices.get(str(parent_id)) or bag_prices.get(parent_id)
+                elif hasattr(self, '_bag_prices'):
+                    bag_prices = self._bag_prices
+                    bag_price = bag_prices.get(str(parent_id)) or bag_prices.get(parent_id)
+                
+                # Use BAG price if available, otherwise use calculated total_buy_price
+                strategy_price = bag_price if bag_price is not None else total_buy_price
                 
                 strategy = {
                     'OrderID': str(parent_id),
                     'BAG_ID': bag_id,  # BAG ID from TradeID
                     'StrategyID': strategy_id,  # Human-readable strategy identifier
+                    'ShortStrategyString': short_strategy_str,  # Short strategy string
                     'NumLegs': 2,  # Vertical spread has 2 legs
                     'Underlying': symbol,
                     'When': when,
                     'PurchaseDateTime': purchase_datetime_str,
                     'Legs': legs_desc,
-                    'Price': total_buy_price,  # Total price of the entire combo (opening)
+                    'Price': strategy_price,  # Total price of the entire combo (from BAG if available)
                     'BuyPrice': total_buy_price,
                     'SellPrice': total_sell_price,
                     'PnL': strategy_pnl,
@@ -685,6 +766,7 @@ class StrategyDetector:
             
             # Generate Strategy ID from legs (only for BAG orders)
             strategy_id_str = None
+            short_strategy_str = None
             if bag_id:
                 legs_for_id = []
                 for leg in leg_list_sorted:
@@ -692,20 +774,35 @@ class StrategyDetector:
                         'Symbol': leg['symbol'],
                         'Expiry': leg['expiry'],
                         'Strike': leg['strike'],
-                        'Put/Call': leg['put_call']
+                        'Put/Call': leg['put_call'],
+                        'Buy/Sell': leg['buy_sell']
                     })
                 strategy_id_str = self.generate_strategy_id(legs_for_id, underlying)
+                short_strategy_str = self.generate_short_strategy_string(legs_for_id, underlying)
+            
+            # Get BAG price if available (from DataFrame metadata)
+            bag_price = None
+            if hasattr(df, 'attrs') and 'bag_prices' in df.attrs:
+                bag_prices = df.attrs['bag_prices']
+                bag_price = bag_prices.get(str(combo_id)) or bag_prices.get(combo_id)
+            elif hasattr(self, '_bag_prices'):
+                bag_prices = self._bag_prices
+                bag_price = bag_prices.get(str(combo_id)) or bag_prices.get(combo_id)
+            
+            # Use BAG price if available, otherwise use calculated total_buy_price
+            strategy_price = bag_price if bag_price is not None else total_buy_price
             
             strategy = {
                 'OrderID': strategy_id,
                 'BAG_ID': bag_id,  # BAG ID from TradeID
                 'StrategyID': strategy_id_str,  # Human-readable strategy identifier
+                'ShortStrategyString': short_strategy_str,  # Short strategy string
                 'NumLegs': len(group),
                 'Underlying': underlying,
                 'When': when,
                 'PurchaseDateTime': purchase_datetime_str if purchase_datetime_str else when,
                 'Legs': legs_desc,
-                'Price': total_buy_price,  # Total price of the entire combo (opening)
+                'Price': strategy_price,  # Total strategy price (from BAG if available)
                 'BuyPrice': total_buy_price,
                 'SellPrice': total_sell_price,
                 'PnL': strategy_pnl,
