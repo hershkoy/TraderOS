@@ -84,21 +84,23 @@ class StrategyDetector:
             if len(group_executions) < 2:
                 continue
             
-            # For complex multi-leg strategies (more than 2 legs), use NetCash to infer direction
-            # Positive NetCash = SELL (money in), Negative NetCash = BUY (money out)
-            total_legs_in_fill = len(group_executions)
-            if total_legs_in_fill > 2:
-                # For complex strategies, use NetCash for all legs in the fill group
-                for exec_record in group_executions:
-                    net_cash = exec_record.get('NetCash', 0)
-                    # If NetCash is positive, it's a SELL (money in)
-                    # If NetCash is negative, it's a BUY (money out)
-                    if net_cash > 0:
-                        leg_directions[exec_record.get('TradeID')] = 'SELL'
-                    elif net_cash < 0:
-                        leg_directions[exec_record.get('TradeID')] = 'BUY'
-                    # If NetCash is 0, we can't determine, skip it
-                continue  # Skip the 2-leg spread logic for complex strategies
+                # For complex multi-leg strategies (more than 2 legs), use NetCash to infer direction
+                # IMPORTANT: NetCash is calculated from execution side: BOT (Buy) = negative, SLD (Sell) = positive
+                # So: Positive NetCash = SELL (money in), Negative NetCash = BUY (money out)
+                total_legs_in_fill = len(group_executions)
+                if total_legs_in_fill > 2:
+                    # For complex strategies, use NetCash for all legs in the fill group
+                    # NetCash is already correctly calculated from execution.side in fetch_tws_executions
+                    for exec_record in group_executions:
+                        net_cash = exec_record.get('NetCash', 0)
+                        # If NetCash is positive, it's a SELL (money in) - execution side was SLD
+                        # If NetCash is negative, it's a BUY (money out) - execution side was BOT
+                        if net_cash > 0:
+                            leg_directions[exec_record.get('TradeID')] = 'SELL'
+                        elif net_cash < 0:
+                            leg_directions[exec_record.get('TradeID')] = 'BUY'
+                        # If NetCash is 0, we can't determine, skip it
+                    continue  # Skip the 2-leg spread logic for complex strategies
             
             # Further group by expiry and symbol to ensure we're comparing the same spread
             by_expiry_symbol = {}
@@ -805,8 +807,9 @@ class StrategyDetector:
                 bag_prices = self._bag_prices
                 bag_price = bag_prices.get(str(combo_id)) or bag_prices.get(combo_id)
             
-            # Use BAG price if available, otherwise use calculated total_buy_price
-            strategy_price = bag_price if bag_price is not None else total_buy_price
+            # Use BAG price if available, otherwise use net_cash (sum of all NetCash = net strategy price)
+            # net_cash is the sum of all legs' NetCash, which gives the net price of the strategy
+            strategy_price = bag_price if bag_price is not None else net_cash
             
             strategy = {
                 'OrderID': strategy_id,

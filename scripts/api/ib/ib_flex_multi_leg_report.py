@@ -456,8 +456,12 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
     Fetch trade executions from TWS API using reqExecutions().
     Groups by parentId (combo order ID) to match IB's Trade History Summary.
     
+    Note: reqExecutions() returns all available historical executions from IB's backend database,
+    typically 6-12 months for retail accounts and multiple years for larger accounts. The actual
+    date range depends on IB's backend retention policy for your account.
+    
     Args:
-        since_date: Filter executions on or after this date
+        since_date: Filter executions on or after this date (applied after fetching from API)
         port: IB API port number (optional)
         
     Returns:
@@ -546,7 +550,9 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
                 logger.debug(f"  execId: {execution.execId}")
                 logger.debug(f"  orderId: {execution.orderId}")
                 logger.debug(f"  orderRef: {execution.orderRef}")
-                logger.debug(f"  side: {execution.side} ({'BUY' if execution.side == 'B' else 'SELL'})")
+                # execution.side: 'B' = BOT (Buy), 'S' = SLD (Sell)
+                side_str = 'BOT (BUY)' if execution.side == 'B' else 'SLD (SELL)'
+                logger.debug(f"  side: {execution.side} ({side_str})")
                 logger.debug(f"  shares: {execution.shares}")
                 logger.debug(f"  price: {execution.price}")
                 logger.debug(f"  time: {execution.time}")
@@ -583,6 +589,38 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
         execution_data = []
         bag_prices = {}  # Store BAG execution prices by parent_id: {parent_id: price * 100}
         
+        # Log summary of all executions received
+        logger.info(f"Processing {len(executions)} total executions from IB API")
+        sec_type_counts = {}
+        symbol_counts = {}
+        date_range = []
+        for fill in executions:
+            sec_type = fill.contract.secType
+            symbol = fill.contract.symbol
+            sec_type_counts[sec_type] = sec_type_counts.get(sec_type, 0) + 1
+            if sec_type == 'OPT':
+                symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+            # Track date range
+            if fill.time:
+                try:
+                    if isinstance(fill.time, datetime):
+                        date_range.append(fill.time.date())
+                    elif isinstance(fill.time, str):
+                        dt = pd.to_datetime(fill.time, errors='coerce')
+                        if pd.notna(dt):
+                            date_range.append(dt.date())
+                except:
+                    pass
+        logger.info(f"Execution breakdown by secType: {sec_type_counts}")
+        if symbol_counts:
+            logger.info(f"Option executions by symbol: {symbol_counts}")
+        if date_range:
+            min_date = min(date_range)
+            max_date = max(date_range)
+            logger.info(f"Execution date range: {min_date} to {max_date} ({len(set(date_range))} unique dates)")
+        if since_date:
+            logger.info(f"Will filter to executions on or after: {since_date.date()}")
+        
         for fill in executions:
             contract = fill.contract
             execution = fill.execution  # The actual Execution object
@@ -611,7 +649,14 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             
             # Skip non-option trades
             if contract.secType != 'OPT':
+                logger.debug(f"Skipping non-option execution: secType={contract.secType}, symbol={contract.symbol}")
                 continue
+            
+            # Extract option details first (needed for logging)
+            symbol = contract.symbol
+            expiry = contract.lastTradeDateOrContractMonth  # Format: YYYYMMDD
+            strike = contract.strike
+            right = contract.right  # 'P' or 'C'
             
             # Parse execution time
             exec_time = fill.time
@@ -626,14 +671,22 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             
             # Filter by date if specified
             if since_date and exec_time:
-                if isinstance(exec_time, datetime) and exec_time.date() < since_date.date():
+                exec_date = None
+                if isinstance(exec_time, datetime):
+                    exec_date = exec_time.date()
+                elif isinstance(exec_time, str):
+                    try:
+                        dt = pd.to_datetime(exec_time, errors='coerce')
+                        if pd.notna(dt):
+                            exec_date = dt.date()
+                    except:
+                        pass
+                
+                if exec_date and exec_date < since_date.date():
+                    logger.debug(f"Skipping execution before filter date: {exec_date} < {since_date.date()}, symbol={symbol}, strike={strike}, expiry={expiry}")
                     continue
-            
-            # Extract option details
-            symbol = contract.symbol
-            expiry = contract.lastTradeDateOrContractMonth  # Format: YYYYMMDD
-            strike = contract.strike
-            right = contract.right  # 'P' or 'C'
+                elif exec_date:
+                    logger.debug(f"Execution date {exec_date} passes filter (>= {since_date.date()}), symbol={symbol}, strike={strike}")
             
             # Get parent ID (combo order ID) - this is the key for grouping
             # For combo orders, all legs share the same orderId, which is the combo order ID
@@ -734,6 +787,8 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             leg_direction_map.update(inferred_directions)
         
         # Update Buy/Sell and Quantity based on inferred directions
+        # IMPORTANT: For complex multi-leg strategies, preserve original NetCash calculated from execution side
+        # Only update Buy/Sell and Quantity, don't recalculate NetCash (it's already correct from execution side)
         for exec_record in execution_data:
             trade_id = exec_record.get('TradeID')
             if trade_id in leg_direction_map:
@@ -743,12 +798,8 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
                 # Update quantity sign based on inferred direction
                 original_quantity = abs(exec_record.get('Quantity', 0))
                 exec_record['Quantity'] = original_quantity if inferred_buy_sell == 'BUY' else -original_quantity
-                # Recalculate NetCash based on inferred direction
-                price_per_share = abs(exec_record.get('Price', 0))
-                if inferred_buy_sell == 'BUY':
-                    exec_record['NetCash'] = -(price_per_share * original_quantity * 100)  # Money out
-                else:  # SELL
-                    exec_record['NetCash'] = price_per_share * original_quantity * 100  # Money in
+                # DO NOT recalculate NetCash - it's already correct from execution side (BOT=Buy=negative, SLD=Sell=positive)
+                # The original NetCash was calculated correctly based on execution.side
         
         # Log each order as JSON in debug mode (without account data)
         if logger.isEnabledFor(logging.DEBUG):
@@ -765,7 +816,30 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             return pd.DataFrame()
         
         df = pd.DataFrame(execution_data)
-        logger.info(f"Converted {len(df)} executions to DataFrame format")
+        total_skipped = len(executions) - len(execution_data)
+        logger.info(f"Converted {len(execution_data)} option executions to DataFrame format")
+        if total_skipped > 0:
+            bag_count = sec_type_counts.get('BAG', 0)
+            non_option_count = total_skipped - bag_count
+            logger.info(f"Skipped {total_skipped} executions: {bag_count} BAG (combo prices captured), "
+                       f"{non_option_count} non-option trades")
+        if since_date and execution_data:
+            # Check date range of final data
+            final_dates = []
+            for e in execution_data:
+                dt = e.get('DateTime') or e.get('Date/Time')
+                if dt:
+                    try:
+                        if isinstance(dt, datetime):
+                            final_dates.append(dt.date())
+                        else:
+                            parsed = pd.to_datetime(dt, errors='coerce')
+                            if pd.notna(parsed):
+                                final_dates.append(parsed.date())
+                    except:
+                        pass
+            if final_dates:
+                logger.info(f"Final execution date range after filtering: {min(final_dates)} to {max(final_dates)}")
         logger.debug(f"Columns: {list(df.columns)}")
         
         # Store BAG prices as DataFrame metadata (accessible via df.attrs)

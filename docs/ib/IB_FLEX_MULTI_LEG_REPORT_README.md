@@ -413,6 +413,77 @@ Debug logging provides detailed information about:
    python scripts/api/ib/ib_flex_multi_leg_report.py --since 2025-01-01 --type csv
    ```
 
+## Testing
+
+The IB Flex Multi-Leg Report functionality includes comprehensive unit tests to verify strategy detection, leg direction inference, and report generation logic.
+
+### Running Tests
+
+**Run all strategy detector tests:**
+```bash
+# Activate virtual environment first
+venv\Scripts\activate
+
+# Run the strategy detector tests
+python -m pytest tests/unit/test_strategy_detector.py -v
+```
+
+**Run with verbose output:**
+```bash
+python -m pytest tests/unit/test_strategy_detector.py -v
+```
+
+**Run a specific test:**
+```bash
+# Test strategy ID generation
+python -m pytest tests/unit/test_strategy_detector.py::TestStrategyDetector::test_generate_strategy_id_bull_put_spread -v
+
+# Test complex multi-leg strategy grouping
+python -m pytest tests/unit/test_strategy_detector.py::TestStrategyDetector::test_group_executions_by_combo_complex_multi_leg -v
+
+# Test short strategy string generation
+python -m pytest tests/unit/test_strategy_detector.py::TestStrategyDetector::test_generate_short_strategy_string_complex_multi_leg -v
+```
+
+**Run all unit tests:**
+```bash
+python -m pytest tests/unit/ -v
+```
+
+### Test Coverage
+
+The test suite (`tests/unit/test_strategy_detector.py`) covers:
+
+- **Strategy ID Generation**: Tests for generating human-readable strategy IDs for various spread types (bull put, bull call, etc.)
+- **Short Strategy String Generation**: Tests for generating compact strategy strings (e.g., "RUT + Dec12 2605C - Dec12 2545C")
+- **Leg Direction Inference**: Tests for correctly inferring BUY/SELL direction for combo orders based on strike prices and NetCash
+- **Vertical Spread Detection**: Tests for detecting and summarizing vertical put and call spreads
+- **Complex Multi-Leg Strategies**: Tests for grouping complex strategies with 3+ legs (e.g., RUT 4-leg strategies)
+- **BAG Price Handling**: Tests for using BAG execution prices when available
+- **NetCash Calculation**: Tests for correct NetCash calculation from execution sides (BOT = Buy = negative, SLD = Sell = positive)
+
+### Test Data
+
+The tests use mock execution data that simulates IB API execution responses, including:
+- BAG executions (combo order prices)
+- Individual leg executions with various strike prices and expiries
+- Different execution sides (BOT/SLD)
+- Complex multi-leg strategies with mixed expiries
+
+### Verifying Test Results
+
+After running tests, you should see output like:
+```
+tests/unit/test_strategy_detector.py::TestStrategyDetector::test_generate_strategy_id_bull_put_spread PASSED
+tests/unit/test_strategy_detector.py::TestStrategyDetector::test_group_executions_by_combo_complex_multi_leg PASSED
+...
+```
+
+All tests should pass. If any test fails, check:
+1. That the virtual environment is activated
+2. That all dependencies are installed (`pytest`, `pandas`, etc.)
+3. The test output for specific error messages
+
 ## Integration
 
 ### Scheduled Execution
