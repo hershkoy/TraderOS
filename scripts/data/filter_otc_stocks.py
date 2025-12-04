@@ -9,7 +9,7 @@ import os
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.ticker_universe import TickerUniverseManager
 
 def filter_otc_stocks():
     """Filter out OTC stocks from the universe"""

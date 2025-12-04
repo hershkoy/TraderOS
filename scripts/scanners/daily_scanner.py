@@ -13,9 +13,9 @@ import pandas as pd
 # Make project root importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.fetch_data import fetch_from_ib
-from utils.ib_port_detector import detect_ib_port
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.fetch_data import fetch_from_ib
+from utils.api.ib_port_detector import detect_ib_port
+from utils.data.ticker_universe import TickerUniverseManager
 
 
 LOGGER = logging.getLogger("daily_scanner")

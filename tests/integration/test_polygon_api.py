@@ -9,7 +9,7 @@ import json
 # Add project root to path
 sys.path.append('.')
 
-from utils.polygon_client import PolygonClient
+from utils.api.polygon_client import PolygonClient
 
 def test_polygon_api():
     """Test Polygon API functionality"""

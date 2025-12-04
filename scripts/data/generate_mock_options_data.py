@@ -16,8 +16,8 @@ from psycopg2.extras import RealDictCursor
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.option_utils import build_option_id
-from utils.pg_copy import copy_rows_with_upsert
+from utils.options.option_utils import build_option_id
+from utils.db.pg_copy import copy_rows_with_upsert
 
 # Configure logging
 os.makedirs('logs/data/mock', exist_ok=True)

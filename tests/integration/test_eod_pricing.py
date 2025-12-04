@@ -10,7 +10,7 @@ from datetime import datetime, date
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.polygon_client import get_polygon_client
+from utils.api.polygon_client import get_polygon_client
 
 def test_eod_pricing():
     """Test fetching EOD pricing data for QQQ options"""

@@ -4,7 +4,7 @@ Tests for the Assignment Risk Helper module.
 
 import unittest
 from datetime import date, timedelta
-from utils.assignment import (
+from utils.backtesting.assignment import (
     AssignmentRiskHelper, 
     DividendInfo, 
     AssignmentRisk,

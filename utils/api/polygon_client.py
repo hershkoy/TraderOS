@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import json
 
 # Import environment loader
-from .env_loader import get_env_var
+from ..config.env_loader import get_env_var
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

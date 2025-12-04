@@ -15,8 +15,8 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from utils.ticker_universe import TickerUniverseManager
-    from utils.timescaledb_client import get_timescaledb_client
+    from utils.data.ticker_universe import TickerUniverseManager
+    from utils.db.timescaledb_client import get_timescaledb_client
 except ImportError:
     # Fallback for when running from utils directory
     from ticker_universe import TickerUniverseManager

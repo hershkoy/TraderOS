@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append('.')
 
-from utils.screener_zero_cost_collar_enhanced import CollarScreenerConfig, parse_arguments
+from utils.screeners.screener_zero_cost_collar_enhanced import CollarScreenerConfig, parse_arguments
 
 def test_processing_range_config():
     """Test processing range configuration loading"""

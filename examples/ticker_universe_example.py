@@ -14,7 +14,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.ticker_universe import TickerUniverseManager
 import logging
 
 # Configure logging to see what's happening

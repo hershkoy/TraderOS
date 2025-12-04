@@ -14,7 +14,7 @@ def test_timescaledb_connection():
     print("🔍 Testing TimescaleDB connection...")
     
     try:
-        from utils.timescaledb_client import test_connection
+        from utils.db.timescaledb_client import test_connection
         if test_connection():
             print("✅ TimescaleDB connection successful")
             return True
@@ -30,7 +30,7 @@ def test_data_operations():
     print("\n📊 Testing data operations...")
     
     try:
-        from utils.timescaledb_client import get_timescaledb_client
+        from utils.db.timescaledb_client import get_timescaledb_client
         
         # Create test data
         test_data = []
@@ -148,7 +148,7 @@ def cleanup_test_data():
     print("\n🧹 Cleaning up test data...")
     
     try:
-        from utils.timescaledb_client import get_timescaledb_client
+        from utils.db.timescaledb_client import get_timescaledb_client
         client = get_timescaledb_client()
         
         deleted = client.delete_data(symbol='TEST')

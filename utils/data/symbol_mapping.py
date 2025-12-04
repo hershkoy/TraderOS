@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from utils.fetch_data import get_ib_connection
+    from .fetch_data import get_ib_connection
     from ib_insync import Stock, Contract
 except ImportError:
     print("Failed to import required modules. Make sure ib_insync is installed.")

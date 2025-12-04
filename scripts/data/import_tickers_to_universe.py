@@ -12,7 +12,7 @@ from typing import List
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.ticker_universe import TickerUniverseManager
 
 def load_tickers_from_file(file_path: str) -> List[str]:
     """Load tickers from a text file (one ticker per line)"""

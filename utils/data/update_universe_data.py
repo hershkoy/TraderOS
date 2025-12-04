@@ -23,12 +23,12 @@ import queue
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from utils.ticker_universe import TickerUniverseManager
-    from utils.fetch_data import fetch_from_alpaca, fetch_from_ib
+    from .ticker_universe import TickerUniverseManager
+    from .fetch_data import fetch_from_alpaca, fetch_from_ib
 except ImportError:
     # Fallback for when running from utils directory
-    from ticker_universe import TickerUniverseManager
-    from fetch_data import fetch_from_alpaca, fetch_from_ib
+    from utils.data.ticker_universe import TickerUniverseManager
+    from utils.data.fetch_data import fetch_from_alpaca, fetch_from_ib
 
 # Configure logging
 log_dir = 'logs/data/universe'
@@ -80,7 +80,7 @@ class DatabaseWorker:
         """Initialize a single database connection and cursor for reuse"""
         try:
             logger.info("[INIT] Initializing database connection...")
-            from utils.timescaledb_client import get_timescaledb_client
+            from ..db.timescaledb_client import get_timescaledb_client
             
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
@@ -406,7 +406,7 @@ class UniverseDataUpdater:
         """Initialize a single database connection and cursor for reuse"""
         try:
             logger.info("[INIT] Initializing database connection...")
-            from utils.timescaledb_client import get_timescaledb_client
+            from ..db.timescaledb_client import get_timescaledb_client
             
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
@@ -454,7 +454,7 @@ class UniverseDataUpdater:
             return True
             
         try:
-            from utils.fetch_data import get_ib_connection
+            from .fetch_data import get_ib_connection
             logger.info("[IB] Getting IB connection...")
             ib = get_ib_connection()
             
@@ -479,7 +479,7 @@ class UniverseDataUpdater:
     def _check_market_data_permissions(self, symbol: str):
         """Check if we have market data permissions for a symbol"""
         try:
-            from utils.fetch_data import get_ib_connection
+            from .fetch_data import get_ib_connection
             ib = get_ib_connection()
             
             if not ib.isConnected():
@@ -922,7 +922,7 @@ class UniverseDataUpdater:
         # Cleanup IBKR connection if using IB provider
         if self.provider == "ib":
             try:
-                from utils.fetch_data import cleanup_ib_connection
+                from .fetch_data import cleanup_ib_connection
                 cleanup_ib_connection()
                 logger.info("[CLEANUP] Cleaned up IBKR connection")
             except Exception as e:
@@ -1296,7 +1296,7 @@ class UniverseDataUpdater:
         
         for attempt in range(test_max_retries):
             try:
-                from utils.fetch_data import get_ib_connection
+                from .fetch_data import get_ib_connection
                 from ib_insync import Stock
                 
                 # Get IB connection
@@ -1857,7 +1857,7 @@ Examples:
         # Ensure IBKR connection is cleaned up even if script fails
         if args.provider == "ib":
             try:
-                from utils.fetch_data import cleanup_ib_connection
+                from .fetch_data import cleanup_ib_connection
                 cleanup_ib_connection()
                 logger.info("[CLEANUP] Cleaned up IBKR connection in finally block")
             except Exception as cleanup_error:
@@ -1865,7 +1865,7 @@ Examples:
         
         # Ensure TimescaleDB client is cleaned up
         try:
-            from utils.timescaledb_client import close_timescaledb_client
+            from ..db.timescaledb_client import close_timescaledb_client
             close_timescaledb_client()
             logger.info("[CLEANUP] Cleaned up TimescaleDB client in finally block")
         except Exception as cleanup_error:

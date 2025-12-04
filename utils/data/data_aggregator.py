@@ -42,7 +42,7 @@ class DataAggregator:
         
         # Get symbols from TimescaleDB
         try:
-            from utils.timescaledb_client import get_timescaledb_client
+            from ..db.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
             if client.ensure_connection():
                 db_symbols = client.get_available_symbols()
@@ -66,7 +66,7 @@ class DataAggregator:
         
         # Get timeframes from TimescaleDB
         try:
-            from utils.timescaledb_client import get_timescaledb_client
+            from ..db.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
             if client.ensure_connection():
                 # Get timeframes for this symbol from database
@@ -116,7 +116,7 @@ class DataAggregator:
         
         # Try to load from TimescaleDB
         try:
-            from utils.timescaledb_client import get_timescaledb_client
+            from ..db.timescaledb_client import get_timescaledb_client
             client = get_timescaledb_client()
             if client.ensure_connection():
                 db_df = client.get_market_data(symbol, timeframe)

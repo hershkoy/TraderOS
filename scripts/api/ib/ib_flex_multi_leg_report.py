@@ -44,9 +44,10 @@ except ImportError:
 
 # Import IB connection utilities
 try:
-    from utils.fetch_data import get_ib_connection, cleanup_ib_connection
-    from utils.ib_port_detector import detect_ib_port
-    from utils.strategy_detector import StrategyDetector
+    from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
+    from utils.api.ib_port_detector import detect_ib_port
+    from utils.backtesting.strategy_detector import StrategyDetector
+    from utils.ib_execution_converter import ExecutionConverter
 except ImportError:
     # Fallback if running from different directory
     def get_ib_connection(port=None, client_id=None):
@@ -376,7 +377,7 @@ def _get_strategy_detector():
     global _strategy_detector
     if _strategy_detector is None:
         try:
-            from utils.strategy_detector import StrategyDetector
+            from utils.backtesting.strategy_detector import StrategyDetector
             _strategy_detector = StrategyDetector()
         except ImportError:
             # Fallback if StrategyDetector is not available
@@ -580,277 +581,32 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
                 logger.debug(f"Extracted ParentID: {parent_id_raw}")
                 logger.debug("-" * 80)
         
-        # Convert executions to DataFrame format compatible with Flex Query
-        # Note: reqExecutions() returns Fill objects, which contain:
-        # - contract: Contract object
-        # - execution: Execution object (with side, price, shares, execId, orderRef, etc.)
-        # - commissionReport: CommissionReport object
-        # - time: datetime
-        execution_data = []
-        bag_prices = {}  # Store BAG execution prices by parent_id: {parent_id: price * 100}
+        # Convert executions to DataFrame format using ExecutionConverter
+        converter = ExecutionConverter()
+        df = converter.convert_fills_to_dataframe(executions, since_date=since_date)
         
-        # Log summary of all executions received
-        logger.info(f"Processing {len(executions)} total executions from IB API")
-        sec_type_counts = {}
-        symbol_counts = {}
-        date_range = []
-        for fill in executions:
-            sec_type = fill.contract.secType
-            symbol = fill.contract.symbol
-            sec_type_counts[sec_type] = sec_type_counts.get(sec_type, 0) + 1
-            if sec_type == 'OPT':
-                symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
-            # Track date range
-            if fill.time:
-                try:
-                    if isinstance(fill.time, datetime):
-                        date_range.append(fill.time.date())
-                    elif isinstance(fill.time, str):
-                        dt = pd.to_datetime(fill.time, errors='coerce')
-                        if pd.notna(dt):
-                            date_range.append(dt.date())
-                except:
-                    pass
-        logger.info(f"Execution breakdown by secType: {sec_type_counts}")
-        if symbol_counts:
-            logger.info(f"Option executions by symbol: {symbol_counts}")
-        if date_range:
-            min_date = min(date_range)
-            max_date = max(date_range)
-            logger.info(f"Execution date range: {min_date} to {max_date} ({len(set(date_range))} unique dates)")
-        if since_date:
-            logger.info(f"Will filter to executions on or after: {since_date.date()}")
-        
-        for fill in executions:
-            contract = fill.contract
-            execution = fill.execution  # The actual Execution object
+        # Log summary statistics
+        if not df.empty:
+            logger.info(f"Execution breakdown by secType: {len(executions)} total fills")
+            logger.debug(f"Columns: {list(df.columns)}")
             
-            # Capture BAG execution prices (total combo price)
-            if contract.secType == 'BAG':
-                # Extract parent ID from BAG execution
-                parent_id = None
-                if execution.orderId and execution.orderId != 0:
-                    parent_id = str(execution.orderId)
-                elif execution.orderRef:
-                    parent_id = execution.orderRef
-                elif execution.execId:
-                    parts = execution.execId.split('.')
-                    if len(parts) > 1:
-                        parent_id = parts[0]
-                    else:
-                        parent_id = execution.execId
+            # Log DataFrame without account data for security
+            if logger.isEnabledFor(logging.DEBUG):
+                df_to_log = df.drop(columns=['Account'], errors='ignore')
+                logger.debug(f"DataFrame shape: {df_to_log.shape}")
+                logger.debug(f"First few rows (account data excluded):\n{df_to_log.head()}")
                 
-                if parent_id:
-                    # BAG price is the total combo price (already per contract, multiply by 100)
-                    bag_price = execution.price * execution.shares * 100
-                    bag_prices[parent_id] = bag_price
-                    logger.debug(f"Captured BAG price for ParentID {parent_id}: {execution.price} * {execution.shares} * 100 = {bag_price}")
-                continue  # Skip BAG executions from leg processing
-            
-            # Skip non-option trades
-            if contract.secType != 'OPT':
-                logger.debug(f"Skipping non-option execution: secType={contract.secType}, symbol={contract.symbol}")
-                continue
-            
-            # Extract option details first (needed for logging)
-            symbol = contract.symbol
-            expiry = contract.lastTradeDateOrContractMonth  # Format: YYYYMMDD
-            strike = contract.strike
-            right = contract.right  # 'P' or 'C'
-            
-            # Parse execution time
-            exec_time = fill.time
-            if isinstance(exec_time, str):
+                # Save all trades to CSV in reports/ib/executions folder (without account data)
                 try:
-                    exec_time = datetime.strptime(exec_time, '%Y%m%d  %H:%M:%S')
-                except:
-                    try:
-                        exec_time = datetime.strptime(exec_time, '%Y%m%d %H:%M:%S')
-                    except:
-                        exec_time = pd.to_datetime(exec_time, errors='coerce')
-            
-            # Filter by date if specified
-            if since_date and exec_time:
-                exec_date = None
-                if isinstance(exec_time, datetime):
-                    exec_date = exec_time.date()
-                elif isinstance(exec_time, str):
-                    try:
-                        dt = pd.to_datetime(exec_time, errors='coerce')
-                        if pd.notna(dt):
-                            exec_date = dt.date()
-                    except:
-                        pass
-                
-                if exec_date and exec_date < since_date.date():
-                    logger.debug(f"Skipping execution before filter date: {exec_date} < {since_date.date()}, symbol={symbol}, strike={strike}, expiry={expiry}")
-                    continue
-                elif exec_date:
-                    logger.debug(f"Execution date {exec_date} passes filter (>= {since_date.date()}), symbol={symbol}, strike={strike}")
-            
-            # Get parent ID (combo order ID) - this is the key for grouping
-            # For combo orders, all legs share the same orderId, which is the combo order ID
-            # This is the primary identifier that links all legs of a combo order together
-            parent_id = None
-            if execution.orderId and execution.orderId != 0:
-                # For combo orders, orderId is the combo order ID that links all legs together
-                # Use orderId as ParentID since all legs in a combo share the same orderId
-                parent_id = str(execution.orderId)
-            elif execution.orderRef:
-                # orderRef is an alternative combo order identifier
-                parent_id = execution.orderRef
-            elif execution.execId:
-                # Fallback: try to extract from execId format
-                # Some formats: "parentId.legId" or similar
-                # Note: This is less reliable than orderId, but used as last resort
-                parts = execution.execId.split('.')
-                if len(parts) > 1:
-                    parent_id = parts[0]
-                else:
-                    parent_id = execution.execId
-            
-            # Initial buy/sell from execution side (will be updated later for combos)
-            # execution.side: 'B' = Buy, 'S' = Sell
-            # NOTE: For credit spreads, IB often shows all leg executions as 'S' (SELL)
-            # We'll infer the actual leg direction based on strike prices and spread structure
-            buy_sell_initial = 'BUY' if execution.side == 'B' else 'SELL'
-            
-            # NetCash calculation
-            # For individual leg executions (which is what we get for combo orders):
-            # - execution.price is the price per share for this individual leg
-            # - execution.shares is the number of contracts
-            # - NetCash for this leg = price * quantity * 100 (contract multiplier)
-            # For credit spreads: SELL leg has positive price, BUY leg has negative price (or vice versa)
-            # We'll aggregate all legs in the grouping function to get the combo net price
-            price_per_share = execution.price
-            quantity = execution.shares
-            
-            # Calculate NetCash for this individual leg
-            # For BUY: negative (money out), for SELL: positive (money in)
-            # Note: This is initial calculation, will be recalculated after direction inference
-            # Use absolute price since IB API typically provides absolute prices
-            net_cash_initial = abs(price_per_share * quantity * 100)
-            if buy_sell_initial == 'BUY':
-                net_cash = -net_cash_initial  # Money out
-            else:  # SELL
-                net_cash = net_cash_initial  # Money in
-            
-            # Commission (from commissionReport if available)
-            commission = 0.0
-            if fill.commissionReport:
-                commission = fill.commissionReport.commission
-            
-            # Build execution record (Buy/Sell will be updated after inference)
-            # For combo orders: all legs share the same orderId (combo order ID)
-            # OrderID = orderId (the combo order ID, same for all legs in a combo)
-            # ParentID = orderId (same, used for grouping legs of the same combo)
-            # TradeID = execId (unique execution ID per leg)
-            # BAG ID = first part of execId (format: bag_id.leg_id.leg_number.execution_id)
-            order_id_value = execution.orderId if execution.orderId and execution.orderId != 0 else (execution.orderRef if execution.orderRef else parent_id)
-            
-            # Extract BAG ID from TradeID (execId format: bag_id.leg_id.leg_number.execution_id)
-            bag_id = None
-            if execution.execId:
-                parts = execution.execId.split('.')
-                if len(parts) > 0:
-                    bag_id = parts[0]  # First part is the BAG ID
-            
-            exec_record = {
-                'OrderID': order_id_value,
-                'TradeID': execution.execId,
-                'BAG_ID': bag_id,  # BAG ID extracted from TradeID
-                'ParentID': parent_id,  # Combo order ID for grouping (should be orderId for combo orders)
-                'Symbol': symbol,
-                'Expiry': int(expiry) if expiry and expiry.isdigit() else expiry,
-                'Strike': strike,
-                'Put/Call': right,
-                'Buy/Sell': buy_sell_initial,  # Will be updated after inference
-                'Quantity': quantity if buy_sell_initial == 'BUY' else -quantity,  # Will be updated after inference
-                'Price': price_per_share,
-                'NetCash': net_cash,
-                'Commission': commission,
-                'Date/Time': exec_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(exec_time, datetime) else str(exec_time),
-                'DateTime': exec_time,  # Keep as datetime for filtering
-                'Exchange': execution.exchange,
-                'Account': execution.acctNumber if hasattr(execution, 'acctNumber') else '',
-            }
-            
-            execution_data.append(exec_record)
-        
-        # For TWS API executions, use the raw execution side directly (BOT = Buy, SLD = Sell)
-        # Do NOT infer leg directions - the execution side from IB API is already correct
-        # The NetCash has already been calculated correctly based on execution.side:
-        # - BOT (Buy) = negative NetCash (money out)
-        # - SLD (Sell) = positive NetCash (money in)
-        # No further processing needed - Buy/Sell and NetCash are already correct
-        
-        # Log each order as JSON in debug mode (without account data)
-        if logger.isEnabledFor(logging.DEBUG):
-            for idx, exec_record in enumerate(execution_data):
-                exec_record_log = exec_record.copy()
-                exec_record_log.pop('Account', None)  # Remove account data from log
-                # Convert datetime to string for JSON serialization
-                if 'DateTime' in exec_record_log and isinstance(exec_record_log['DateTime'], datetime):
-                    exec_record_log['DateTime'] = exec_record_log['DateTime'].isoformat()
-                logger.debug(f"Execution {idx + 1}:\n{json.dumps(exec_record_log, indent=2, default=str)}")
-        
-        if not execution_data:
-            logger.warning("No option executions found after filtering")
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(execution_data)
-        total_skipped = len(executions) - len(execution_data)
-        logger.info(f"Converted {len(execution_data)} option executions to DataFrame format")
-        if total_skipped > 0:
-            bag_count = sec_type_counts.get('BAG', 0)
-            non_option_count = total_skipped - bag_count
-            logger.info(f"Skipped {total_skipped} executions: {bag_count} BAG (combo prices captured), "
-                       f"{non_option_count} non-option trades")
-        if since_date and execution_data:
-            # Check date range of final data
-            final_dates = []
-            for e in execution_data:
-                dt = e.get('DateTime') or e.get('Date/Time')
-                if dt:
-                    try:
-                        if isinstance(dt, datetime):
-                            final_dates.append(dt.date())
-                        else:
-                            parsed = pd.to_datetime(dt, errors='coerce')
-                            if pd.notna(parsed):
-                                final_dates.append(parsed.date())
-                    except:
-                        pass
-            if final_dates:
-                logger.info(f"Final execution date range after filtering: {min(final_dates)} to {max(final_dates)}")
-        logger.debug(f"Columns: {list(df.columns)}")
-        
-        # Store BAG prices as DataFrame metadata (accessible via df.attrs)
-        if hasattr(df, 'attrs'):
-            df.attrs['bag_prices'] = bag_prices
-        else:
-            # Fallback: store in a global variable (less ideal but works)
-            if not hasattr(fetch_tws_executions, '_bag_prices'):
-                fetch_tws_executions._bag_prices = {}
-            fetch_tws_executions._bag_prices.update(bag_prices)
-        
-        # Log DataFrame without account data for security
-        if logger.isEnabledFor(logging.DEBUG) and not df.empty:
-            df_to_log = df.drop(columns=['Account'], errors='ignore')
-            logger.debug(f"DataFrame shape: {df_to_log.shape}")
-            logger.debug(f"First few rows (account data excluded):\n{df_to_log.head()}")
-            
-            # Save all trades to CSV in reports/ib/executions folder (without account data)
-            try:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv_path = f"reports/ib/executions/tws_executions_debug_{timestamp}.csv"
-                Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
-                # Save without account data
-                df_to_save = df.drop(columns=['Account'], errors='ignore')
-                df_to_save.to_csv(csv_path, index=False)
-                logger.debug(f"Saved all executions to CSV (account data excluded): {csv_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save debug CSV: {e}")
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    csv_path = f"reports/ib/executions/tws_executions_debug_{timestamp}.csv"
+                    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+                    # Save without account data
+                    df_to_save = df.drop(columns=['Account'], errors='ignore')
+                    df_to_save.to_csv(csv_path, index=False)
+                    logger.debug(f"Saved all executions to CSV (account data excluded): {csv_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save debug CSV: {e}")
         
         return df
         

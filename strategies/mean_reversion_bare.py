@@ -1,6 +1,6 @@
 # Bare Mean Reversion Strategy - Minimal Backtrader Interface
 import backtrader as bt
-from utils.custom_tracking import CustomTrackingMixin
+from utils.backtesting.custom_tracking import CustomTrackingMixin
 
 class MeanReversionBareStrategy(CustomTrackingMixin):
     """Bare strategy that implements minimal Backtrader interface"""

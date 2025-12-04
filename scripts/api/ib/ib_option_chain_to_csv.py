@@ -30,9 +30,9 @@ except ImportError:
     print("Error: ib_insync not found. Please install with: pip install ib_insync")
     sys.exit(1)
 
-from utils.fetch_data import get_ib_connection, cleanup_ib_connection
+from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
 try:
-    from utils.ib_port_detector import detect_ib_port
+    from utils.api.ib_port_detector import detect_ib_port
 except ImportError:  # pragma: no cover
     from ib_port_detector import detect_ib_port  # type: ignore[import]
 

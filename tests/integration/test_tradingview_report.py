@@ -12,7 +12,7 @@ import backtrader as bt
 # Add the current directory to Python path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.tradingview_report_generator import generate_tradingview_report
+from utils.reporting.tradingview_report_generator import generate_tradingview_report
 
 def create_mock_data():
     """Create mock data for testing"""

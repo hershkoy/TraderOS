@@ -95,7 +95,7 @@ def test_connection():
     print("\n🔍 Testing TimescaleDB connection...")
     
     try:
-        from utils.timescaledb_client import test_connection
+        from utils.db.timescaledb_client import test_connection
         if test_connection():
             print("✓ TimescaleDB connection test successful")
             return True
@@ -133,7 +133,7 @@ def show_usage():
     print("   python backtrader_runner_yaml.py --symbol NFLX --provider ALPACA --timeframe 1h --strategy mean_reversion")
     
     print("\n3. List available data:")
-    print("   python -c \"from utils.timescaledb_loader import get_available_data; print(get_available_data())\"")
+    print("   python -c \"from utils.db.timescaledb_loader import get_available_data; print(get_available_data())\"")
     
     print("\n4. Access pgAdmin (optional):")
     print("   Open http://localhost:8080 in your browser")

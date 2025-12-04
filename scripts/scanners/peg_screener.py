@@ -24,10 +24,10 @@ import pandas as pd
 # Make project root importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.fetch_data import fetch_from_ib, get_ib_connection, create_ib_contract_with_primary_exchange
-from utils.finnhub_client import get_finnhub_client
-from utils.ib_port_detector import detect_ib_port
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.fetch_data import fetch_from_ib, get_ib_connection, create_ib_contract_with_primary_exchange
+from utils.api.finnhub_client import get_finnhub_client
+from utils.api.ib_port_detector import detect_ib_port
+from utils.data.ticker_universe import TickerUniverseManager
 
 LOGGER = logging.getLogger("peg_screener")
 EASTERN_TZ = ZoneInfo("US/Eastern")

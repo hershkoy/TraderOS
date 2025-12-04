@@ -12,12 +12,12 @@ import threading
 from ib_insync import IB, util
 
 try:
-    from utils.timescaledb_client import get_timescaledb_client
-    from utils.ib_port_detector import DEFAULT_PORTS, detect_ib_port
+    from ..db.timescaledb_client import get_timescaledb_client
+    from ..api.ib_port_detector import DEFAULT_PORTS, detect_ib_port
 except ImportError:
     # Fallback for when running from utils directory
-    from timescaledb_client import get_timescaledb_client
-    from ib_port_detector import DEFAULT_PORTS, detect_ib_port
+    from utils.db.timescaledb_client import get_timescaledb_client
+    from utils.api.ib_port_detector import DEFAULT_PORTS, detect_ib_port
 
 # ─────────────────────────────
 # CONFIG

@@ -7,7 +7,7 @@ Tests strategy detection logic from raw IB API execution data.
 import unittest
 from datetime import datetime
 import pandas as pd
-from utils.strategy_detector import StrategyDetector
+from utils.backtesting.strategy_detector import StrategyDetector
 
 
 class TestStrategyDetector(unittest.TestCase):

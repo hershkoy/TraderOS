@@ -19,11 +19,11 @@ import pandas as pd
 # Add project root to path
 sys.path.append('.')
 
-from utils.polygon_client import PolygonClient
-from utils.pg_copy import copy_rows_with_upsert
-from utils.option_utils import build_option_id
+from utils.api.polygon_client import PolygonClient
+from utils.db.pg_copy import copy_rows_with_upsert
+from utils.options.option_utils import build_option_id
 from data.options_repo import OptionsRepository
-from utils.env_loader import get_env_var
+from utils.config.env_loader import get_env_var
 
 # Configure logging
 os.makedirs('logs/api/polygon/pipeline', exist_ok=True)

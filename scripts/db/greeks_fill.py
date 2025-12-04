@@ -18,8 +18,8 @@ import pandas as pd
 # Add the project root to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.greeks import batch_update_greeks
-from utils.database import get_database_connection
+from utils.options.greeks import batch_update_greeks
+from utils.db.database import get_database_connection
 
 # Configure logging
 os.makedirs('logs/db/greeks', exist_ok=True)

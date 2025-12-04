@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import logging
-from utils.timescaledb_client import get_timescaledb_client
+from .timescaledb_client import get_timescaledb_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

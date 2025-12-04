@@ -26,6 +26,10 @@ This script automates the process of retrieving and analyzing multi-leg option s
 ## Files
 
 - `scripts/api/ib/ib_flex_multi_leg_report.py` - Main script
+- `utils/ib_execution_converter.py` - ExecutionConverter class for converting IB API Fill objects to DataFrame format
+- `utils/strategy_detector.py` - StrategyDetector class for detecting and grouping multi-leg strategies
+- `tests/unit/test_ib_execution_converter.py` - Unit tests for ExecutionConverter
+- `tests/unit/test_strategy_detector.py` - Unit tests for StrategyDetector
 - `docs/ib/IB_FLEX_MULTI_LEG_REPORT_README.md` - This documentation
 
 ## Setup
@@ -302,6 +306,14 @@ OrderID,NumLegs,Underlying,When,Legs,NetCash,Commission,TotalCost
 
 ### Process Flow
 
+**For TWS API mode (default):**
+1. **Connect to TWS**: Establishes connection to Interactive Brokers TWS/IB Gateway
+2. **Fetch Executions**: Requests execution history using `reqExecutions()` API
+3. **Convert to DataFrame**: Uses `ExecutionConverter` to convert Fill objects to DataFrame format with correct Buy/Sell mapping and NetCash calculations
+4. **Group Strategies**: Uses `StrategyDetector` to group executions by combo order (ParentID) to identify multi-leg strategies
+5. **Generate Report**: Creates HTML or CSV report with formatted output
+
+**For Flex Query mode (fallback):**
 1. **Request Flex Query**: Sends request to IB Flex Query Web Service with token and query ID
 2. **Get Reference Code**: Receives reference code for the query execution
 3. **Download Statement**: Polls for statement readiness and downloads XML/CSV data
@@ -415,26 +427,39 @@ Debug logging provides detailed information about:
 
 ## Testing
 
-The IB Flex Multi-Leg Report functionality includes comprehensive unit tests to verify strategy detection, leg direction inference, and report generation logic.
+The IB Flex Multi-Leg Report functionality includes comprehensive unit tests to verify execution data conversion, strategy detection, leg direction inference, and report generation logic.
 
 ### Running Tests
 
-**Run all strategy detector tests:**
+**Run all execution converter tests:**
 ```bash
 # Activate virtual environment first
 venv\Scripts\activate
 
+# Run the execution converter tests
+python -m pytest tests/unit/test_ib_execution_converter.py -v
+```
+
+**Run all strategy detector tests:**
+```bash
 # Run the strategy detector tests
 python -m pytest tests/unit/test_strategy_detector.py -v
 ```
 
-**Run with verbose output:**
+**Run both test suites:**
 ```bash
-python -m pytest tests/unit/test_strategy_detector.py -v
+# Run both execution converter and strategy detector tests
+python -m pytest tests/unit/test_ib_execution_converter.py tests/unit/test_strategy_detector.py -v
 ```
 
 **Run a specific test:**
 ```bash
+# Test execution converter - Buy execution conversion
+python -m pytest tests/unit/test_ib_execution_converter.py::TestExecutionConverter::test_convert_buy_execution -v
+
+# Test execution converter - Combo order conversion
+python -m pytest tests/unit/test_ib_execution_converter.py::TestExecutionConverter::test_convert_combo_order -v
+
 # Test strategy ID generation
 python -m pytest tests/unit/test_strategy_detector.py::TestStrategyDetector::test_generate_strategy_id_bull_put_spread -v
 
@@ -452,7 +477,31 @@ python -m pytest tests/unit/ -v
 
 ### Test Coverage
 
-The test suite (`tests/unit/test_strategy_detector.py`) covers:
+#### Execution Converter Tests (`tests/unit/test_ib_execution_converter.py`)
+
+The execution converter test suite covers:
+
+- **BAG Execution Handling**: Tests that BAG executions are captured for combo order prices but excluded from DataFrame output
+- **Buy Execution Conversion**: Tests conversion of Buy (BOT) executions with correct:
+  - Buy/Sell mapping ('Buy')
+  - Positive quantity
+  - Negative NetCash (money out)
+- **Sell Execution Conversion**: Tests conversion of Sell (SLD) executions with correct:
+  - Buy/Sell mapping ('SELL')
+  - Negative quantity
+  - Positive NetCash (money in)
+- **Combo Order Conversion**: Tests complete combo orders with multiple legs, including:
+  - BAG price capture
+  - All legs correctly converted
+  - ParentID and BAG_ID extraction
+  - Correct Buy/Sell and NetCash for each leg
+- **CSV Format Validation**: Tests that DataFrame matches expected CSV format with all required columns
+- **Date Filtering**: Tests date-based filtering of executions
+- **Non-Option Execution Skipping**: Tests that non-option executions (stocks, etc.) are properly skipped
+
+#### Strategy Detector Tests (`tests/unit/test_strategy_detector.py`)
+
+The strategy detector test suite covers:
 
 - **Strategy ID Generation**: Tests for generating human-readable strategy IDs for various spread types (bull put, bull call, etc.)
 - **Short Strategy String Generation**: Tests for generating compact strategy strings (e.g., "RUT + Dec12 2605C - Dec12 2545C")
@@ -469,11 +518,15 @@ The tests use mock execution data that simulates IB API execution responses, inc
 - Individual leg executions with various strike prices and expiries
 - Different execution sides (BOT/SLD)
 - Complex multi-leg strategies with mixed expiries
+- Real-world execution examples matching actual IB API responses
 
 ### Verifying Test Results
 
 After running tests, you should see output like:
 ```
+tests/unit/test_ib_execution_converter.py::TestExecutionConverter::test_convert_bag_execution PASSED
+tests/unit/test_ib_execution_converter.py::TestExecutionConverter::test_convert_buy_execution PASSED
+tests/unit/test_ib_execution_converter.py::TestExecutionConverter::test_convert_combo_order PASSED
 tests/unit/test_strategy_detector.py::TestStrategyDetector::test_generate_strategy_id_bull_put_spread PASSED
 tests/unit/test_strategy_detector.py::TestStrategyDetector::test_group_executions_by_combo_complex_multi_leg PASSED
 ...
@@ -481,8 +534,9 @@ tests/unit/test_strategy_detector.py::TestStrategyDetector::test_group_execution
 
 All tests should pass. If any test fails, check:
 1. That the virtual environment is activated
-2. That all dependencies are installed (`pytest`, `pandas`, etc.)
+2. That all dependencies are installed (`pytest`, `pandas`, `ib_insync`, etc.)
 3. The test output for specific error messages
+4. That mock objects are properly configured
 
 ## Integration
 

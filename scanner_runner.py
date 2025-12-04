@@ -18,13 +18,13 @@ from typing import List, Dict, Any, Optional
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import scanner modules
-from utils.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
-from utils.squeeze_scanner import (
+from utils.scanners.hl_after_ll_scanner import scan_symbol_for_setup, scan_universe, load_from_timescaledb
+from utils.scanners.squeeze_scanner import (
     scan_symbol_for_squeeze as squeeze_scan_symbol,
     load_from_timescaledb as squeeze_load,
 )
-from utils.ticker_universe import get_combined_universe
-from utils.timescaledb_client import get_timescaledb_client
+from utils.data.ticker_universe import get_combined_universe
+from utils.db.timescaledb_client import get_timescaledb_client
 
 class ScannerRunner:
     """Unified scanner runner supporting multiple scanner types"""
@@ -389,7 +389,7 @@ class ScannerRunner:
         """Log the last 5 pivot signals (LL, HL, HH, LH) for debugging"""
         try:
             # Import the scanner functions
-            from utils.hl_after_ll_scanner import to_weekly, classify_pivots_weekly
+            from utils.scanners.hl_after_ll_scanner import to_weekly, classify_pivots_weekly
             
             # Log data info
             try:

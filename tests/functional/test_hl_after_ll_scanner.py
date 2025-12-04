@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.hl_after_ll_scanner import scan_symbol_for_setup
+from utils.scanners.hl_after_ll_scanner import scan_symbol_for_setup
 
 def create_sample_data():
     """Create sample weekly data for testing"""

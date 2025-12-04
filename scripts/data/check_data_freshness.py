@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.timescaledb_client import get_timescaledb_client
+from utils.db.timescaledb_client import get_timescaledb_client
 
 def check_data_freshness(symbols=None, provider="ALPACA", timeframe="1d"):
     """

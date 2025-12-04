@@ -13,9 +13,9 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Import the modules to test
-from utils.option_utils import build_option_id
-from utils.pg_copy import copy_rows
-from utils.greeks import calculate_option_greeks_with_iv
+from utils.options.option_utils import build_option_id
+from utils.db.pg_copy import copy_rows
+from utils.options.greeks import calculate_option_greeks_with_iv
 from data.options_repo import OptionsRepository
 
 class TestOptionUtils(unittest.TestCase):
@@ -361,7 +361,7 @@ class TestUpsertOperations(unittest.TestCase):
     
     def test_contract_upsert_idempotent(self):
         """Test that contract upsert operations are idempotent."""
-        from utils.pg_copy import copy_rows_with_upsert
+        from utils.db.pg_copy import copy_rows_with_upsert
         
         # Test data
         contracts_data = [
@@ -410,7 +410,7 @@ class TestUpsertOperations(unittest.TestCase):
     
     def test_quotes_upsert(self):
         """Test quotes upsert with PK conflict handling and updates."""
-        from utils.pg_copy import copy_rows_with_upsert
+        from utils.db.pg_copy import copy_rows_with_upsert
         
         # Test data
         quotes_data = [

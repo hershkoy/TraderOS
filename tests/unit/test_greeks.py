@@ -4,7 +4,7 @@ Tests for the Greeks utility functions.
 
 import unittest
 import math
-from utils.greeks import (
+from utils.options.greeks import (
     black_scholes_call,
     black_scholes_put,
     calculate_greeks,

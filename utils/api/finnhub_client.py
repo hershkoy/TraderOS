@@ -12,13 +12,16 @@ from datetime import datetime
 
 # Import environment loader
 try:
-    from .env_loader import get_env_var
+    from ..config.env_loader import get_env_var
 except ImportError:
     # Fallback for direct execution
-    from dotenv import load_dotenv
-    load_dotenv()
-    def get_env_var(key: str, default: Optional[str] = None) -> Optional[str]:
-        return os.getenv(key, default)
+    try:
+        from utils.config.env_loader import get_env_var
+    except ImportError:
+        from dotenv import load_dotenv
+        load_dotenv()
+        def get_env_var(key: str, default: Optional[str] = None) -> Optional[str]:
+            return os.getenv(key, default)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

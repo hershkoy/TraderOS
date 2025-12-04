@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 
 from data.options_repo import OptionsRepository
-from utils.assignment import AssignmentRiskHelper
+from utils.backtesting.assignment import AssignmentRiskHelper
 
 logger = logging.getLogger(__name__)
 

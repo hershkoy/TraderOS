@@ -222,15 +222,12 @@ class CollarScreenerConfig:
         try:
             # Try different import paths
             try:
-                from utils.ticker_universe import TickerUniverseManager
+                from ..data.ticker_universe import TickerUniverseManager
             except ImportError:
                 try:
-                    from ticker_universe import TickerUniverseManager
+                    from utils.data.ticker_universe import TickerUniverseManager
                 except ImportError:
-                    # Add parent directory to path
-                    import sys
-                    import os
-                    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    # Fallback for when running from utils directory
                     from utils.ticker_universe import TickerUniverseManager
             
             manager = TickerUniverseManager()

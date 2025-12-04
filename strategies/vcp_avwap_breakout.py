@@ -8,7 +8,7 @@ import backtrader as bt
 from datetime import datetime, timedelta
 
 # Import the custom tracking mixin from the utils package
-from utils.custom_tracking import CustomTrackingMixin
+from utils.backtesting.custom_tracking import CustomTrackingMixin
 
 
 class VcpAvwapBreakoutStrategy(CustomTrackingMixin, bt.Strategy):

@@ -18,11 +18,11 @@ try:
 except ImportError:
     raise ImportError("ib_insync not found. Install with: pip install ib_insync")
 
-from utils.fetch_data import get_ib_connection
-from utils.ib_port_detector import detect_ib_port
-from utils.ib_account_detector import detect_ib_account
-from utils.option_csv_utils import validate_csv, load_option_rows
-from utils.ib_order_utils import (
+from ..data.fetch_data import get_ib_connection
+from ..api.ib_port_detector import detect_ib_port
+from ..api.ib_account_detector import detect_ib_account
+from ..options.option_csv_utils import validate_csv, load_option_rows
+from ..api.ib_order_utils import (
     create_ib_bracket_order,
     verify_bracket_order_structure,
     calculate_bracket_prices,

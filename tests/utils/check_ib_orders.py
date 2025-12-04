@@ -11,8 +11,8 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.fetch_data import get_ib_connection, cleanup_ib_connection
-from utils.ib_port_detector import detect_ib_port
+from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
+from utils.api.ib_port_detector import detect_ib_port
 
 
 def main():

@@ -14,7 +14,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.ticker_universe import get_ticker_universe
+from utils.data.ticker_universe import get_ticker_universe
 from scanner_runner import ScannerRunner
 
 def fetch_latest_data(symbols, provider="ALPACA", timeframe="1d", days_back=30):

@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import logging
-from .timescaledb_client import TimescaleDBClient
+from ..db.timescaledb_client import TimescaleDBClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

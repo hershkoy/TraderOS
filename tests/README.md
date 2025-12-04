@@ -26,6 +26,7 @@ Isolated tests for individual functions, classes, and modules. These tests use `
 - `test_symbol_mapping_system.py` - Symbol mapping system
 - `test_symbol_mapping_quick.py` - Quick symbol mapping tests
 - `test_copy_fix.py` - Copy fix operations
+- `test_ib_execution_converter.py` - IB execution data converter (unittest with mocks) - Converts IB API Fill objects to DataFrame format with correct Buy/Sell mapping and NetCash calculations
 
 ### 🔗 Integration Tests (`integration/`)
 Tests that verify integration with external systems (databases, APIs, services).

@@ -1,5 +1,5 @@
 import backtrader as bt
-from utils.custom_tracking import CustomTrackingMixin
+from utils.backtesting.custom_tracking import CustomTrackingMixin
 from indicators.supertrend import SuperTrend
 
 class MeanReversionRSI_BT(CustomTrackingMixin, bt.Strategy):

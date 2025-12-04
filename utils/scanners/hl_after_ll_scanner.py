@@ -320,7 +320,7 @@ def load_from_timescaledb(symbols: Iterable[str], timeframe: str = "1d") -> Dict
     Example loader using your TimescaleDB client. Returns {symbol: df} with datetime index + ohlcv.
     """
     try:
-        from utils.timescaledb_client import get_timescaledb_client
+        from ..db.timescaledb_client import get_timescaledb_client
     except Exception:
         # fall back if pathing differs; edit as needed
         from timescaledb_client import get_timescaledb_client  # type: ignore

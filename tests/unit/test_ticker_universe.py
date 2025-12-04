@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.ticker_universe import TickerUniverseManager
+from utils.data.ticker_universe import TickerUniverseManager
 
 
 class TestTickerUniverseManager(unittest.TestCase):
@@ -240,7 +240,7 @@ class TestConvenienceFunctions(unittest.TestCase):
     @patch('utils.ticker_universe.TickerUniverseManager')
     def test_convenience_functions(self, mock_manager_class):
         """Test convenience functions create manager and call methods"""
-        from utils.ticker_universe import get_sp500_tickers, get_nasdaq100_tickers, get_combined_universe
+        from utils.data.ticker_universe import get_sp500_tickers, get_nasdaq100_tickers, get_combined_universe
         
         # Mock manager instance
         mock_manager = Mock()

@@ -211,7 +211,7 @@ def scan_universe(
 # (Optional) TimescaleDB loader in the same style as your HL scanner
 def load_from_timescaledb(symbols: Iterable[str], timeframe: str = "1d") -> Dict[str, pd.DataFrame]:
     try:
-        from utils.timescaledb_client import get_timescaledb_client
+        from ..db.timescaledb_client import get_timescaledb_client
     except Exception:
         from timescaledb_client import get_timescaledb_client  # type: ignore
 

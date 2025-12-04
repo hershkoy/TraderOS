@@ -52,20 +52,20 @@ except ImportError:
     print("Error: ib_insync not found. Install with: pip install ib_insync")
     sys.exit(1)
 
-from utils.fetch_data import get_ib_connection, cleanup_ib_connection
-from utils.ib_port_detector import detect_ib_port
-from utils.ib_account_detector import detect_ib_account
+from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
+from utils.api.ib_port_detector import detect_ib_port
+from utils.api.ib_account_detector import detect_ib_account
 
 # Import from refactored modules
-from utils.option_csv_utils import validate_csv, load_option_rows
-from utils.ib_order_utils import (
+from utils.options.option_csv_utils import validate_csv, load_option_rows
+from utils.api.ib_order_utils import (
     create_ib_bracket_order,
     verify_bracket_order_structure,
     calculate_bracket_prices,
     calculate_buy_limit_price_sequence,
     monitor_and_adjust_spread_order,
 )
-from utils.config_processor import (
+from utils.config.config_processor import (
     auto_fetch_option_chain,
     choose_candidate_by_profile,
     process_config_file,

@@ -21,7 +21,7 @@ import logging
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.timescaledb_client import get_timescaledb_client
+from ..db.timescaledb_client import get_timescaledb_client
 import pandas as pd
 
 # Configure logging

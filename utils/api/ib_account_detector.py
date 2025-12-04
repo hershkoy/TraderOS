@@ -5,7 +5,7 @@ Utilities for auto-detecting the default IB account from managed accounts.
 import logging
 from typing import Optional
 
-from utils.fetch_data import get_ib_connection
+from ..data.fetch_data import get_ib_connection
 
 LOGGER = logging.getLogger(__name__)
 

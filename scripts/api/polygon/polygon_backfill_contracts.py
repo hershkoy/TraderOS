@@ -19,9 +19,9 @@ from dateutil.relativedelta import relativedelta
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.polygon_client import get_polygon_client
-from utils.option_utils import build_option_id
-from utils.date_rules import get_next_friday_after
+from utils.api.polygon_client import get_polygon_client
+from utils.options.option_utils import build_option_id
+from utils.backtesting.date_rules import get_next_friday_after
 
 def setup_logging(log_level: str = 'INFO', log_file: str = None):
     """Setup logging with specified level and optional file output"""

@@ -9,7 +9,7 @@ import os
 # Add project root to path
 sys.path.append('.')
 
-from utils.env_loader import get_env_var, load_env_file
+from utils.config.env_loader import get_env_var, load_env_file
 
 def test_env_loading():
     """Test environment variable loading"""

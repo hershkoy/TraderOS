@@ -6,7 +6,7 @@ Check TimescaleDB structure and performance
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from utils.timescaledb_client import get_timescaledb_client
+from .timescaledb_client import get_timescaledb_client
 import time
 
 def check_database_structure():

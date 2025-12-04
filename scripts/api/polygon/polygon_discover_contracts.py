@@ -15,8 +15,8 @@ from psycopg2.extras import RealDictCursor
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.polygon_client import get_polygon_client
-from utils.option_utils import build_option_id
+from utils.api.polygon_client import get_polygon_client
+from utils.options.option_utils import build_option_id
 
 # Configure logging
 os.makedirs('logs/api/polygon/discovery', exist_ok=True)
