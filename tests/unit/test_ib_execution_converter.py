@@ -13,7 +13,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.ib_execution_converter import ExecutionConverter
+from utils.api.ib.ib_execution_converter import ExecutionConverter
 
 
 class TestExecutionConverter(unittest.TestCase):

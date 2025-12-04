@@ -14,7 +14,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.data.fetch_data import fetch_from_ib
-from utils.api.ib_port_detector import detect_ib_port
+from utils.api.ib.ib_port_detector import detect_ib_port
 from utils.data.ticker_universe import TickerUniverseManager
 
 

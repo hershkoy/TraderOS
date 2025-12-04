@@ -45,9 +45,9 @@ except ImportError:
 # Import IB connection utilities
 try:
     from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
-    from utils.api.ib_port_detector import detect_ib_port
+    from utils.api.ib.ib_port_detector import detect_ib_port
     from utils.backtesting.strategy_detector import StrategyDetector
-    from utils.ib_execution_converter import ExecutionConverter
+    from utils.api.ib.ib_execution_converter import ExecutionConverter
 except ImportError:
     # Fallback if running from different directory
     def get_ib_connection(port=None, client_id=None):

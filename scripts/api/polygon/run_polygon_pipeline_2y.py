@@ -19,7 +19,7 @@ import pandas as pd
 # Add project root to path
 sys.path.append('.')
 
-from utils.api.polygon_client import PolygonClient
+from utils.api.polygon.polygon_client import PolygonClient
 from utils.db.pg_copy import copy_rows_with_upsert
 from utils.options.option_utils import build_option_id
 from data.options_repo import OptionsRepository

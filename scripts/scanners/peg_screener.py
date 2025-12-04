@@ -25,8 +25,8 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils.data.fetch_data import fetch_from_ib, get_ib_connection, create_ib_contract_with_primary_exchange
-from utils.api.finnhub_client import get_finnhub_client
-from utils.api.ib_port_detector import detect_ib_port
+from utils.api.finnhub.finnhub_client import get_finnhub_client
+from utils.api.ib.ib_port_detector import detect_ib_port
 from utils.data.ticker_universe import TickerUniverseManager
 
 LOGGER = logging.getLogger("peg_screener")

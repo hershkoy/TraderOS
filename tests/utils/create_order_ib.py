@@ -29,11 +29,11 @@ from ib_insync import Contract, Option, ComboLeg, Order, Trade
 
 from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
 try:
-    from utils.api.ib_port_detector import detect_ib_port
+    from utils.api.ib.ib_port_detector import detect_ib_port
 except ImportError:
     from ib_port_detector import detect_ib_port
 try:
-    from utils.api.ib_account_detector import detect_ib_account
+    from utils.api.ib.ib_account_detector import detect_ib_account
 except ImportError:
     from ib_account_detector import detect_ib_account
 

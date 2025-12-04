@@ -10,7 +10,7 @@ from datetime import datetime, date
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.api.polygon_client import get_polygon_client
+from utils.api.polygon.polygon_client import get_polygon_client
 
 def test_historical_snapshot():
     """Test fetching a historical snapshot for a QQQ option"""

@@ -32,7 +32,7 @@ except ImportError:
 
 from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
 try:
-    from utils.api.ib_port_detector import detect_ib_port
+    from utils.api.ib.ib_port_detector import detect_ib_port
 except ImportError:  # pragma: no cover
     from ib_port_detector import detect_ib_port  # type: ignore[import]
 

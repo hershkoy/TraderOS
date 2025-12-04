@@ -53,12 +53,12 @@ except ImportError:
     sys.exit(1)
 
 from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
-from utils.api.ib_port_detector import detect_ib_port
-from utils.api.ib_account_detector import detect_ib_account
+from utils.api.ib.ib_port_detector import detect_ib_port
+from utils.api.ib.ib_account_detector import detect_ib_account
 
 # Import from refactored modules
 from utils.options.option_csv_utils import validate_csv, load_option_rows
-from utils.api.ib_order_utils import (
+from utils.api.ib.ib_order_utils import (
     create_ib_bracket_order,
     verify_bracket_order_structure,
     calculate_bracket_prices,
