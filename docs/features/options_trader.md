@@ -138,7 +138,7 @@ python scripts/options_strategy_trader.py --conf-file crons/daily_spreads.yaml
 Run strategy tests:
 
 ```bash
-python -m pytest tests/test_option_strategies.py -v
+python -m pytest tests/unit/test_option_strategies.py -v
 ```
 
 Tests cover:

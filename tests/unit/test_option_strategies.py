@@ -201,6 +201,8 @@ class TestVerticalSpreadWithHedgingStrategy:
     def sample_option_rows_for_ratio(self):
         """Create sample option rows for ratio spread testing."""
         # Simulate TSLA put option chain around 400
+        # For a 1x2 put ratio spread (buy 1 higher strike, sell 2 lower strikes)
+        # We need: 2 * short_premium > 1 * long_premium for credit
         rows = []
         strikes = [350, 360, 370, 375, 380, 382.5, 385, 390, 395, 400, 405, 410]
         for strike in strikes:
@@ -210,8 +212,21 @@ class TestVerticalSpreadWithHedgingStrategy:
             else:
                 delta = -0.50 + (400 - strike) * 0.01
             
-            # Price based on moneyness
-            bid = max(0.20, (410 - strike) * 0.30)
+            # Price based on moneyness - higher strikes get higher premiums
+            # For a 1x2 ratio spread to generate credit: 2 * short_premium > 1 * long_premium
+            # Example: long at 400 (~$5.075 mid), shorts need combined >= 5.175 for $0.10 credit
+            # So each short needs >= ~$2.6, but we'll make them ~$2.8-3.0 to ensure credit
+            if strike >= 400:
+                # Higher strikes (closer to ATM) - higher premiums
+                bid = max(0.20, 5.0 + (strike - 400) * 0.10)
+            else:
+                # Lower strikes (further OTM) - keep premiums high enough for credit spreads
+                # For strikes around 370-390, use ~55-60% of ATM premium to ensure credit
+                if strike >= 370:
+                    bid = max(0.20, 2.9 - (400 - strike) * 0.01)
+                else:
+                    # Very low strikes - lower premiums but still reasonable for credit
+                    bid = max(0.20, 2.6 - (370 - strike) * 0.008)
             ask = bid + 0.15
             
             rows.append(OptionRow(
