@@ -553,12 +553,12 @@ class TestStrategyDetector(unittest.TestCase):
                 'Expiry': 20251212,
                 'Strike': 2605.0,
                 'Put/Call': 'C',
-                'Quantity': -1.0,
+                'Quantity': 1.0,
                 'Price': 8.47,
                 'Date/Time': '2025-12-04 17:58:51',
                 'DateTime': pd.to_datetime('2025-12-04 17:58:51'),
-                'Buy/Sell': 'SELL',
-                'NetCash': 847.0,
+                'Buy/Sell': 'BUY',  # Should be BUY, not SELL
+                'NetCash': -847.0,  # Negative NetCash for BUY
                 'Commission': 0.0
             },
             {
@@ -612,12 +612,22 @@ class TestStrategyDetector(unittest.TestCase):
         self.assertIsNotNone(strategy['StrategyID'])
         # Should have short strategy string
         self.assertIsNotNone(strategy.get('ShortStrategyString'))
-        self.assertIn('RUT', strategy['ShortStrategyString'])
+        short_str = strategy.get('ShortStrategyString', '')
+        self.assertIn('RUT', short_str)
+        # Verify the correct strategy string format: RUT + Dec12 2545C - Dec12 2585C + Dec12 2605C - Dec18 2545C
+        self.assertIn('+ Dec12 2545C', short_str)  # BUY Dec12 2545C
+        self.assertIn('- Dec12 2585C', short_str)  # SELL Dec12 2585C
+        self.assertIn('+ Dec12 2605C', short_str)  # BUY Dec12 2605C
+        self.assertIn('- Dec18 2545C', short_str)  # SELL Dec18 2545C
         # Should have leg descriptions
         self.assertEqual(len(strategy['Legs']), 4)
+        # Verify leg directions are correct
+        legs_str = ' '.join(strategy['Legs'])
+        self.assertIn('BUY', legs_str)
+        self.assertIn('SELL', legs_str)
         # Price should be the total price of the entire combo (opening)
-        # Total buy price = sum of all BUY NetCash = -2894.0
-        self.assertAlmostEqual(strategy['Price'], -2894.0, places=2)
+        # Total buy price = sum of all BUY NetCash = -2894.0 + (-847.0) = -3741.0
+        self.assertAlmostEqual(strategy['Price'], -3741.0, places=2)
         self.assertEqual(strategy['Price'], strategy['BuyPrice'])
     
     def test_group_executions_by_combo_with_bag_price(self):

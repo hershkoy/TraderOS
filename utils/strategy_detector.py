@@ -84,6 +84,22 @@ class StrategyDetector:
             if len(group_executions) < 2:
                 continue
             
+            # For complex multi-leg strategies (more than 2 legs), use NetCash to infer direction
+            # Positive NetCash = SELL (money in), Negative NetCash = BUY (money out)
+            total_legs_in_fill = len(group_executions)
+            if total_legs_in_fill > 2:
+                # For complex strategies, use NetCash for all legs in the fill group
+                for exec_record in group_executions:
+                    net_cash = exec_record.get('NetCash', 0)
+                    # If NetCash is positive, it's a SELL (money in)
+                    # If NetCash is negative, it's a BUY (money out)
+                    if net_cash > 0:
+                        leg_directions[exec_record.get('TradeID')] = 'SELL'
+                    elif net_cash < 0:
+                        leg_directions[exec_record.get('TradeID')] = 'BUY'
+                    # If NetCash is 0, we can't determine, skip it
+                continue  # Skip the 2-leg spread logic for complex strategies
+            
             # Further group by expiry and symbol to ensure we're comparing the same spread
             by_expiry_symbol = {}
             for exec_record in group_executions:
