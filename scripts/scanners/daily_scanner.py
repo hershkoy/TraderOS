@@ -254,6 +254,12 @@ def write_report(results: List[ScannerResult], prefix: str) -> Path:
 def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
+    
+    # Log command line parameters
+    LOGGER.info("=== Command Line Parameters ===")
+    for key, value in vars(args).items():
+        LOGGER.info("  %s: %s", key, value)
+    LOGGER.info("=== End Command Line Parameters ===")
 
     selected_port: Optional[int] = args.ib_port
     if selected_port:

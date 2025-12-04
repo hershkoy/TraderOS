@@ -664,6 +664,12 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
     
+    # Log command line parameters
+    print("=== Command Line Parameters ===")
+    for key, value in vars(args).items():
+        print(f"  {key}: {value}")
+    print("=== End Command Line Parameters ===")
+    
     DEBUG_MODE = args.debug
     
     print(f"Caveman HA Reversal Scanner • 1m Real-Time • {SYMBOL} • IB API")

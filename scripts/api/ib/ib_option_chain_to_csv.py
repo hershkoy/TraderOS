@@ -1346,6 +1346,12 @@ Examples:
     
     args = parser.parse_args()
     
+    # Log command line parameters
+    logger.info("=== Command Line Parameters ===")
+    for key, value in vars(args).items():
+        logger.info("  %s: %s", key, value)
+    logger.info("=== End Command Line Parameters ===")
+    
     selected_port = args.port
     if selected_port:
         logger.info("Using IB port override: %s", selected_port)

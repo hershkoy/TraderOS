@@ -2311,6 +2311,12 @@ Environment Variables Required (only if not using --flex-report):
     
     args = parser.parse_args()
     
+    # Log command line parameters
+    logger.info("=== Command Line Parameters ===")
+    for key, value in vars(args).items():
+        logger.info("  %s: %s", key, value)
+    logger.info("=== End Command Line Parameters ===")
+    
     # Configure logging level
     log_level = getattr(logging, args.log_level.upper())
     logging.getLogger().setLevel(log_level)
