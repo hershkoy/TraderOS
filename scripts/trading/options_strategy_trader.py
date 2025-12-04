@@ -190,6 +190,8 @@ def main():
         help="Monitor order and adjust price according to strategy")
     parser.add_argument("--no-monitor-order", action="store_true",
         help="Disable order monitoring")
+    parser.add_argument("--transmit-only", action="store_true",
+        help="Transmit order and exit immediately (no monitoring or auto-adjustment)")
     parser.add_argument("--std-dev", type=float, default=None,
         help="Filter strikes by standard deviation when auto-fetching")
     parser.add_argument("--max-strikes", type=int, default=100,
@@ -365,10 +367,16 @@ def main():
     if args.place_order and not args.create_orders_en:
         args.create_orders_en = True
     
-    # Enable monitoring by default when placing orders
-    if args.create_orders_en and not args.no_monitor_order:
+    # Handle transmit-only flag (overrides other monitoring flags)
+    if args.transmit_only:
+        args.monitor_order = False
+        args.no_monitor_order = True
+        logger.info("--transmit-only flag set: order will be transmitted without monitoring or auto-adjustment")
+    
+    # Enable monitoring by default when placing orders (unless transmit-only or no-monitor-order is set)
+    if args.create_orders_en and not args.no_monitor_order and not args.transmit_only:
         args.monitor_order = True
-    elif args.no_monitor_order:
+    elif args.no_monitor_order or args.transmit_only:
         args.monitor_order = False
     
     if not args.create_orders_en:

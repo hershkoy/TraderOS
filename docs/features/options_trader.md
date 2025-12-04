@@ -98,6 +98,7 @@ python scripts/options_strategy_trader.py [OPTIONS]
 | `--account` | auto | IB account ID |
 | `--live-en` | false | Enable trading in live accounts (accounts starting with 'U') |
 | `--monitor-order` | false | Monitor order until filled |
+| `--transmit-only` | false | Transmit order and exit immediately (no monitoring or auto-adjustment) |
 
 ### Risk Management
 
@@ -133,6 +134,23 @@ Run with config file:
 python scripts/options_strategy_trader.py --conf-file crons/daily_spreads.yaml
 ```
 
+### Transmit-Only Mode
+
+Use `--transmit-only` to send orders without monitoring or auto-adjustment. This is useful when you want to place orders and let them execute at the specified price without automatic price adjustments.
+
+```bash
+# Place order and exit immediately (no monitoring)
+python scripts/options_strategy_trader.py \
+    --symbol QQQ --dte 7 \
+    --strategy otm_credit_spreads \
+    --risk-profile balanced \
+    --quantity 1 \
+    --create-orders-en \
+    --transmit-only
+```
+
+**Note**: By default, when `--create-orders-en` is set, the script will automatically monitor and adjust order prices. Use `--transmit-only` to disable this behavior and exit immediately after transmitting the order.
+
 ## Tests
 
 Run strategy tests:
@@ -141,12 +159,20 @@ Run strategy tests:
 python -m pytest tests/unit/test_option_strategies.py -v
 ```
 
+Run trader script tests:
+
+```bash
+python -m pytest tests/unit/test_options_strategy_trader.py -v
+```
+
 Tests cover:
 - OptionRow mid price calculation
 - OTMCreditSpreadsStrategy candidate finding
 - VerticalSpreadWithHedgingStrategy candidate finding
 - Strategy registry functions
 - Data class creation
+- CLI argument parsing and flag logic
+- `--transmit-only` flag behavior
 
 ## Adding New Strategies
 
