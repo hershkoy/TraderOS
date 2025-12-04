@@ -777,29 +777,12 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
             
             execution_data.append(exec_record)
         
-        # Second pass: Infer leg directions for combo orders
-        # Group by ParentID to identify combos
-        parent_ids = set(e.get('ParentID') for e in execution_data if e.get('ParentID'))
-        leg_direction_map = {}  # Maps TradeID to inferred Buy/Sell
-        
-        for parent_id in parent_ids:
-            inferred_directions = infer_leg_direction_for_combo(execution_data, parent_id)
-            leg_direction_map.update(inferred_directions)
-        
-        # Update Buy/Sell and Quantity based on inferred directions
-        # IMPORTANT: For complex multi-leg strategies, preserve original NetCash calculated from execution side
-        # Only update Buy/Sell and Quantity, don't recalculate NetCash (it's already correct from execution side)
-        for exec_record in execution_data:
-            trade_id = exec_record.get('TradeID')
-            if trade_id in leg_direction_map:
-                # Update with inferred direction
-                inferred_buy_sell = leg_direction_map[trade_id]
-                exec_record['Buy/Sell'] = inferred_buy_sell
-                # Update quantity sign based on inferred direction
-                original_quantity = abs(exec_record.get('Quantity', 0))
-                exec_record['Quantity'] = original_quantity if inferred_buy_sell == 'BUY' else -original_quantity
-                # DO NOT recalculate NetCash - it's already correct from execution side (BOT=Buy=negative, SLD=Sell=positive)
-                # The original NetCash was calculated correctly based on execution.side
+        # For TWS API executions, use the raw execution side directly (BOT = Buy, SLD = Sell)
+        # Do NOT infer leg directions - the execution side from IB API is already correct
+        # The NetCash has already been calculated correctly based on execution.side:
+        # - BOT (Buy) = negative NetCash (money out)
+        # - SLD (Sell) = positive NetCash (money in)
+        # No further processing needed - Buy/Sell and NetCash are already correct
         
         # Log each order as JSON in debug mode (without account data)
         if logger.isEnabledFor(logging.DEBUG):
