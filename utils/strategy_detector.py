@@ -253,7 +253,82 @@ class StrategyDetector:
             return pd.DataFrame()
         
         result_df = pd.DataFrame(results)
-        logger.debug(f"Summarized {len(result_df)} spread events from {df['ParentID'].nunique()} combos")
+        logger.debug(f"Summarized {len(result_df)} put spread events from {df['ParentID'].nunique()} combos")
+        return result_df
+    
+    def summarize_vertical_call_spreads(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        From a TWS executions DataFrame, detect vertical call spreads per combo (ParentID) 
+        and timestamp, and return IB-style summaries: quantity, price per spread, etc.
+        
+        Args:
+            df: DataFrame with execution data from fetch_tws_executions()
+            
+        Returns:
+            DataFrame with spread-level summaries
+        """
+        results = []
+        
+        for parent_id, combo in df.groupby("ParentID"):
+            # Only option combos with calls
+            if combo["Put/Call"].nunique() != 1 or combo["Put/Call"].iloc[0] != "C":
+                continue
+            
+            symbol = combo["Symbol"].iloc[0]
+            expiry = combo["Expiry"].iloc[0]
+            
+            # Group by timestamp (open / close events)
+            for dt, group in combo.groupby("Date/Time"):
+                strikes = sorted(group["Strike"].unique())
+                if len(strikes) != 2:
+                    # Not a simple 2-leg vertical spread
+                    continue
+                
+                low_strike, high_strike = strikes
+                
+                # Average price per strike at this timestamp
+                low_group = group.loc[group["Strike"] == low_strike]
+                high_group = group.loc[group["Strike"] == high_strike]
+                
+                avg_low = low_group["Price"].mean()
+                avg_high = high_group["Price"].mean()
+                
+                # Total contracts per strike (use absolute value since Quantity can be negative)
+                contracts_low = low_group["Quantity"].abs().sum()
+                contracts_high = high_group["Quantity"].abs().sum()
+                
+                qty_spreads = int(min(contracts_low, contracts_high))
+                
+                # Bull call debit: net price is low - high, shown as positive for debit
+                # For debit spreads: we pay premium for low strike, receive premium for high strike
+                # Spread price = low_strike_price - high_strike_price (positive for debit)
+                spread_price = avg_low - avg_high
+                
+                # Determine if this is opening or closing based on Buy/Sell
+                buy_sell = group["Buy/Sell"].iloc[0]  # All should be the same in a combo
+                
+                results.append({
+                    "ParentID": parent_id,
+                    "Symbol": symbol,
+                    "Expiry": expiry,
+                    "LowStrike": low_strike,
+                    "HighStrike": high_strike,
+                    "DateTime": pd.to_datetime(dt) if isinstance(dt, str) else dt,
+                    "Date/Time": dt,
+                    "Quantity": qty_spreads,
+                    "PricePerSpread": spread_price,
+                    "Buy/Sell": buy_sell,
+                    "LowStrikePrice": avg_low,
+                    "HighStrikePrice": avg_high,
+                    "ContractsLow": contracts_low,
+                    "ContractsHigh": contracts_high,
+                })
+        
+        if not results:
+            return pd.DataFrame()
+        
+        result_df = pd.DataFrame(results)
+        logger.debug(f"Summarized {len(result_df)} call spread events from {df['ParentID'].nunique()} combos")
         return result_df
     
     def generate_strategy_id(self, legs: List[Dict[str, Any]], underlying: str = None) -> str:
@@ -346,7 +421,8 @@ class StrategyDetector:
     def group_executions_by_combo(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         Group TWS API executions by parentId (combo order ID) to match IB's Trade History Summary.
-        Detects vertical put credit spreads and groups them correctly with quantity and price.
+        Detects vertical put and call spreads and groups them correctly with quantity and price.
+        Falls back to raw leg grouping for complex multi-leg strategies.
         
         Args:
             df: DataFrame with execution data from fetch_tws_executions()
@@ -359,117 +435,141 @@ class StrategyDetector:
         
         logger.info("Grouping TWS executions by combo order (parentId)...")
         
-        # First, summarize vertical put spreads
-        spread_summary = self.summarize_vertical_put_spreads(df)
+        # Summarize both put and call spreads
+        put_spread_summary = self.summarize_vertical_put_spreads(df)
+        call_spread_summary = self.summarize_vertical_call_spreads(df)
         
-        if spread_summary.empty:
-            logger.warning("No vertical put spreads detected, falling back to raw leg grouping")
-            return self._group_executions_raw(df)
+        # Combine both summaries
+        if not put_spread_summary.empty and not call_spread_summary.empty:
+            spread_summary = pd.concat([put_spread_summary, call_spread_summary], ignore_index=True)
+        elif not put_spread_summary.empty:
+            spread_summary = put_spread_summary
+        elif not call_spread_summary.empty:
+            spread_summary = call_spread_summary
+        else:
+            spread_summary = pd.DataFrame()
         
-        # Group spreads by ParentID to identify opening and closing
+        # Get all ParentIDs that were processed as spreads
+        processed_parent_ids = set(spread_summary['ParentID'].unique()) if not spread_summary.empty else set()
+        
+        # Get all ParentIDs in the dataframe
+        all_parent_ids = set(df['ParentID'].unique()) if 'ParentID' in df.columns else set()
+        
+        # Find ParentIDs that weren't processed as spreads (complex multi-leg strategies)
+        unprocessed_parent_ids = all_parent_ids - processed_parent_ids
+        
         strategies = []
         
-        for parent_id, combo_spreads in spread_summary.groupby('ParentID'):
-            # Sort by DateTime to identify opening (earliest) and closing (latest)
-            combo_spreads = combo_spreads.sort_values('DateTime')
-            
-            # Get spread details
-            symbol = combo_spreads['Symbol'].iloc[0]
-            expiry = combo_spreads['Expiry'].iloc[0]
-            low_strike = combo_spreads['LowStrike'].iloc[0]
-            high_strike = combo_spreads['HighStrike'].iloc[0]
-            quantity = combo_spreads['Quantity'].iloc[0]  # Should be same for all events
-            
-            # Format expiry
-            if isinstance(expiry, (int, float)) and expiry > 0:
-                expiry_str = str(int(expiry))
-                if len(expiry_str) == 8:
-                    expiry_str = f"{expiry_str[:4]}-{expiry_str[4:6]}-{expiry_str[6:8]}"
-            else:
-                expiry_str = str(expiry)
-            
-            # Build leg description (IB-style: BUY low strike, SELL high strike for bull put)
-            # Show 1:1 ratio (one spread structure), not total quantity
-            legs_desc = [
-                f"BUY 1 x {symbol} {expiry_str} {low_strike}P",
-                f"SELL 1 x {symbol} {expiry_str} {high_strike}P"
-            ]
-            
-            # Identify opening and closing
-            opening = combo_spreads.iloc[0]
-            closing = combo_spreads.iloc[-1] if len(combo_spreads) > 1 else None
-            
-            open_price = opening['PricePerSpread']
-            close_price = closing['PricePerSpread'] if closing is not None else None
-            
-            # For credit spreads:
-            # Opening: BOT (buy the spread, receive credit) - price is negative (e.g., -0.25)
-            # Closing: SLD (sell the spread, pay to close) - price is negative (e.g., -0.53 for loss, -0.02 for profit)
-            # The spread action is determined by time: earliest = opening (BOT), later = closing (SLD)
-            
-            # Calculate P&L correctly for credit spreads
-            # P&L = (close_price - open_price) * quantity * 100
-            # For loss: open_price = -0.25, close_price = -0.53
-            # P&L = (-0.53 - (-0.25)) * 2 * 100 = (-0.28) * 2 * 100 = -56 (loss of $56)
-            # For profit: open_price = -0.25, close_price = -0.02
-            # P&L = (-0.02 - (-0.25)) * 2 * 100 = (0.23) * 2 * 100 = 46 (profit of $46)
-            if close_price is not None:
-                strategy_pnl = (close_price - open_price) * quantity * 100  # *100 for contract multiplier
-            else:
-                strategy_pnl = 0  # Still open
-            
-            # Calculate NetCash from prices
-            # Opening: receive credit (negative price * quantity * 100)
-            total_buy_price = open_price * quantity * 100  # Opening credit received (negative)
-            # Closing: pay to close (negative price * quantity * 100)
-            total_sell_price = close_price * quantity * 100 if close_price is not None else 0  # Closing credit paid (negative)
-            
-            # Get dates
-            purchase_datetime = opening['DateTime']
-            purchase_datetime_str = purchase_datetime.strftime('%Y-%m-%d %H:%M:%S') if isinstance(purchase_datetime, datetime) else str(purchase_datetime)
-            when = opening['Date/Time']
-            
-            # Get commission from original executions
-            parent_executions = df[df['ParentID'] == parent_id]
-            commission = parent_executions['Commission'].sum()
-            net_cash = parent_executions['NetCash'].sum()
-            
-            # Extract BAG_ID from any execution (all legs share the same BAG_ID)
-            bag_id = None
-            if 'BAG_ID' in parent_executions.columns and not parent_executions.empty:
-                bag_id = parent_executions['BAG_ID'].iloc[0] if parent_executions['BAG_ID'].notna().any() else None
-            
-            # Generate Strategy ID from legs (only for BAG orders)
-            strategy_id = None
-            if bag_id:
-                legs_for_id = [
-                    {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': 'P'},
-                    {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': 'P'}
-                ]
-                strategy_id = self.generate_strategy_id(legs_for_id, symbol)
-            
-            strategy = {
-                'OrderID': str(parent_id),
-                'BAG_ID': bag_id,  # BAG ID from TradeID
-                'StrategyID': strategy_id,  # Human-readable strategy identifier
-                'NumLegs': 2,  # Vertical spread has 2 legs
-                'Underlying': symbol,
-                'When': when,
-                'PurchaseDateTime': purchase_datetime_str,
-                'Legs': legs_desc,
-                'BuyPrice': total_buy_price,  # Opening credit (negative, e.g., -$50 for 2 spreads @ -0.25)
-                'SellPrice': total_sell_price,  # Closing credit (negative, e.g., -$106 for 2 spreads @ -0.53)
-                'PnL': strategy_pnl,
-                'NetCash': net_cash,
-                'Commission': commission,
-                'TotalCost': net_cash + commission,
-                'Quantity': quantity,  # Number of spreads
-                'SpreadType': f'{symbol} {expiry_str} {high_strike}/{low_strike} Bull Put',
-                'OpenPrice': open_price,  # Price per spread at opening
-                'ClosePrice': close_price if close_price is not None else None  # Price per spread at closing
-            }
-            
-            strategies.append(strategy)
+        # Process vertical spreads
+        if not spread_summary.empty:
+            for parent_id, combo_spreads in spread_summary.groupby('ParentID'):
+                # Sort by DateTime to identify opening (earliest) and closing (latest)
+                combo_spreads = combo_spreads.sort_values('DateTime')
+                
+                # Get spread details
+                symbol = combo_spreads['Symbol'].iloc[0]
+                expiry = combo_spreads['Expiry'].iloc[0]
+                low_strike = combo_spreads['LowStrike'].iloc[0]
+                high_strike = combo_spreads['HighStrike'].iloc[0]
+                quantity = combo_spreads['Quantity'].iloc[0]  # Should be same for all events
+                
+                # Determine if this is a PUT or CALL spread
+                parent_executions = df[df['ParentID'] == parent_id]
+                option_type = parent_executions['Put/Call'].iloc[0] if not parent_executions.empty else 'P'
+                
+                # Format expiry
+                if isinstance(expiry, (int, float)) and expiry > 0:
+                    expiry_str = str(int(expiry))
+                    if len(expiry_str) == 8:
+                        expiry_str = f"{expiry_str[:4]}-{expiry_str[4:6]}-{expiry_str[6:8]}"
+                else:
+                    expiry_str = str(expiry)
+                
+                # Build leg description based on option type
+                if option_type == 'P':
+                    # Bull put credit: BUY low strike, SELL high strike
+                    legs_desc = [
+                        f"BUY 1 x {symbol} {expiry_str} {low_strike}P",
+                        f"SELL 1 x {symbol} {expiry_str} {high_strike}P"
+                    ]
+                    spread_type_str = f'{symbol} {expiry_str} {high_strike}/{low_strike} Bull Put'
+                else:
+                    # Bull call debit: BUY low strike, SELL high strike
+                    legs_desc = [
+                        f"BUY 1 x {symbol} {expiry_str} {low_strike}C",
+                        f"SELL 1 x {symbol} {expiry_str} {high_strike}C"
+                    ]
+                    spread_type_str = f'{symbol} {expiry_str} {low_strike}/{high_strike} Bull Call'
+                
+                # Identify opening and closing
+                opening = combo_spreads.iloc[0]
+                closing = combo_spreads.iloc[-1] if len(combo_spreads) > 1 else None
+                
+                open_price = opening['PricePerSpread']
+                close_price = closing['PricePerSpread'] if closing is not None else None
+                
+                # Calculate P&L: (close_price - open_price) * quantity * 100
+                if close_price is not None:
+                    strategy_pnl = (close_price - open_price) * quantity * 100  # *100 for contract multiplier
+                else:
+                    strategy_pnl = 0  # Still open
+                
+                # Calculate NetCash from prices
+                total_buy_price = open_price * quantity * 100
+                total_sell_price = close_price * quantity * 100 if close_price is not None else 0
+                
+                # Get dates
+                purchase_datetime = opening['DateTime']
+                purchase_datetime_str = purchase_datetime.strftime('%Y-%m-%d %H:%M:%S') if isinstance(purchase_datetime, datetime) else str(purchase_datetime)
+                when = opening['Date/Time']
+                
+                # Get commission from original executions
+                commission = parent_executions['Commission'].sum()
+                net_cash = parent_executions['NetCash'].sum()
+                
+                # Extract BAG_ID from any execution (all legs share the same BAG_ID)
+                bag_id = None
+                if 'BAG_ID' in parent_executions.columns and not parent_executions.empty:
+                    bag_id = parent_executions['BAG_ID'].iloc[0] if parent_executions['BAG_ID'].notna().any() else None
+                
+                # Generate Strategy ID from legs (only for BAG orders)
+                strategy_id = None
+                if bag_id:
+                    legs_for_id = [
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': option_type},
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': option_type}
+                    ]
+                    strategy_id = self.generate_strategy_id(legs_for_id, symbol)
+                
+                strategy = {
+                    'OrderID': str(parent_id),
+                    'BAG_ID': bag_id,  # BAG ID from TradeID
+                    'StrategyID': strategy_id,  # Human-readable strategy identifier
+                    'NumLegs': 2,  # Vertical spread has 2 legs
+                    'Underlying': symbol,
+                    'When': when,
+                    'PurchaseDateTime': purchase_datetime_str,
+                    'Legs': legs_desc,
+                    'BuyPrice': total_buy_price,
+                    'SellPrice': total_sell_price,
+                    'PnL': strategy_pnl,
+                    'NetCash': net_cash,
+                    'Commission': commission,
+                    'TotalCost': net_cash + commission,
+                    'Quantity': quantity,  # Number of spreads
+                    'SpreadType': spread_type_str,
+                    'OpenPrice': open_price,  # Price per spread at opening
+                    'ClosePrice': close_price if close_price is not None else None  # Price per spread at closing
+                }
+                
+                strategies.append(strategy)
+        
+        # Process complex multi-leg strategies that weren't detected as simple spreads
+        if unprocessed_parent_ids:
+            logger.debug(f"Processing {len(unprocessed_parent_ids)} complex multi-leg strategies using fallback method")
+            unprocessed_df = df[df['ParentID'].isin(unprocessed_parent_ids)]
+            fallback_strategies = self._group_executions_raw(unprocessed_df)
+            strategies.extend(fallback_strategies)
         
         logger.info(f"Found {len(strategies)} multi-leg strategies from TWS API executions")
         return strategies

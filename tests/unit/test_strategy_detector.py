@@ -346,6 +346,203 @@ class TestStrategyDetector(unittest.TestCase):
         # open_price = -0.25, close_price = -0.25 (same spread price)
         # P&L = (-0.25 - (-0.25)) * 2 * 100 = 0
         self.assertAlmostEqual(strategy['PnL'], 0, places=2)
+    
+    def test_summarize_vertical_call_spreads(self):
+        """Test vertical call spread summarization."""
+        df = pd.DataFrame([
+            {
+                'ParentID': '730',
+                'Symbol': 'SPY',
+                'Expiry': 20241220,
+                'Strike': 450,
+                'Put/Call': 'C',
+                'Quantity': 2,
+                'Price': 2.50,
+                'Date/Time': '2024-12-03 11:00:00',
+                'Buy/Sell': 'BUY'
+            },
+            {
+                'ParentID': '730',
+                'Symbol': 'SPY',
+                'Expiry': 20241220,
+                'Strike': 455,
+                'Put/Call': 'C',
+                'Quantity': 2,
+                'Price': 1.00,
+                'Date/Time': '2024-12-03 11:00:00',
+                'Buy/Sell': 'SELL'
+            }
+        ])
+        
+        summary = self.detector.summarize_vertical_call_spreads(df)
+        
+        self.assertFalse(summary.empty)
+        self.assertEqual(len(summary), 1)
+        self.assertEqual(summary.iloc[0]['ParentID'], '730')
+        self.assertEqual(summary.iloc[0]['LowStrike'], 450)
+        self.assertEqual(summary.iloc[0]['HighStrike'], 455)
+        self.assertEqual(summary.iloc[0]['Quantity'], 2)
+        # Spread price should be positive for debit spread: 2.50 - 1.00 = 1.50
+        self.assertAlmostEqual(summary.iloc[0]['PricePerSpread'], 1.50, places=2)
+    
+    def test_summarize_vertical_call_spreads_no_calls(self):
+        """Test summarization with no call spreads."""
+        df = pd.DataFrame([
+            {
+                'ParentID': '731',
+                'Symbol': 'QQQ',
+                'Expiry': 20241205,
+                'Strike': 591,
+                'Put/Call': 'P',
+                'Quantity': 2,
+                'Price': 0.10,
+                'Date/Time': '2024-12-03 10:00:00',
+                'Buy/Sell': 'BUY'
+            }
+        ])
+        
+        summary = self.detector.summarize_vertical_call_spreads(df)
+        self.assertTrue(summary.empty)
+    
+    def test_group_executions_by_combo_call_spread(self):
+        """Test grouping executions by combo order for call spread."""
+        df = pd.DataFrame([
+            {
+                'ParentID': '730',
+                'OrderID': 730,
+                'TradeID': '0000fb0d.6929afbf.02.01',
+                'BAG_ID': '0000fb0d',
+                'Symbol': 'SPY',
+                'Expiry': 20241220,
+                'Strike': 450,
+                'Put/Call': 'C',
+                'Quantity': 2,
+                'Price': 2.50,
+                'Date/Time': '2024-12-03 11:00:00',
+                'DateTime': pd.to_datetime('2024-12-03 11:00:00'),
+                'Buy/Sell': 'BUY',
+                'NetCash': -500.0,
+                'Commission': 1.0
+            },
+            {
+                'ParentID': '730',
+                'OrderID': 730,
+                'TradeID': '0000fb0d.6929afbf.03.01',
+                'BAG_ID': '0000fb0d',
+                'Symbol': 'SPY',
+                'Expiry': 20241220,
+                'Strike': 455,
+                'Put/Call': 'C',
+                'Quantity': 2,
+                'Price': 1.00,
+                'Date/Time': '2024-12-03 11:00:00',
+                'DateTime': pd.to_datetime('2024-12-03 11:00:00'),
+                'Buy/Sell': 'SELL',
+                'NetCash': 200.0,
+                'Commission': 1.0
+            }
+        ])
+        
+        strategies = self.detector.group_executions_by_combo(df)
+        
+        self.assertEqual(len(strategies), 1)
+        strategy = strategies[0]
+        self.assertEqual(strategy['OrderID'], '730')
+        self.assertEqual(strategy['BAG_ID'], '0000fb0d')
+        self.assertIsNotNone(strategy['StrategyID'])
+        self.assertIn('Bull Call Spread', strategy['StrategyID'])
+        self.assertEqual(strategy['NumLegs'], 2)
+        self.assertEqual(strategy['Underlying'], 'SPY')
+        self.assertEqual(strategy['Quantity'], 2)
+    
+    def test_group_executions_by_combo_complex_multi_leg(self):
+        """Test grouping complex multi-leg strategy (like RUT order with 4 legs)."""
+        df = pd.DataFrame([
+            {
+                'ParentID': '000243ef',
+                'OrderID': '000243ef',
+                'TradeID': '000243ef.6931997d.02.01',
+                'BAG_ID': '000243ef',
+                'Symbol': 'RUT',
+                'Expiry': 20251218,
+                'Strike': 2545.0,
+                'Put/Call': 'C',
+                'Quantity': -1.0,
+                'Price': 41.5,
+                'Date/Time': '2025-12-04 17:58:51',
+                'DateTime': pd.to_datetime('2025-12-04 17:58:51'),
+                'Buy/Sell': 'SELL',
+                'NetCash': 4150.0,
+                'Commission': 0.0
+            },
+            {
+                'ParentID': '000243ef',
+                'OrderID': '000243ef',
+                'TradeID': '000243ef.6931997d.03.01',
+                'BAG_ID': '000243ef',
+                'Symbol': 'RUT',
+                'Expiry': 20251212,
+                'Strike': 2605.0,
+                'Put/Call': 'C',
+                'Quantity': -1.0,
+                'Price': 8.47,
+                'Date/Time': '2025-12-04 17:58:51',
+                'DateTime': pd.to_datetime('2025-12-04 17:58:51'),
+                'Buy/Sell': 'SELL',
+                'NetCash': 847.0,
+                'Commission': 0.0
+            },
+            {
+                'ParentID': '000243ef',
+                'OrderID': '000243ef',
+                'TradeID': '000243ef.6931997d.04.01',
+                'BAG_ID': '000243ef',
+                'Symbol': 'RUT',
+                'Expiry': 20251212,
+                'Strike': 2585.0,
+                'Put/Call': 'C',
+                'Quantity': -1.0,
+                'Price': 13.28,
+                'Date/Time': '2025-12-04 17:58:51',
+                'DateTime': pd.to_datetime('2025-12-04 17:58:51'),
+                'Buy/Sell': 'SELL',
+                'NetCash': 1328.0,
+                'Commission': 0.0
+            },
+            {
+                'ParentID': '000243ef',
+                'OrderID': '000243ef',
+                'TradeID': '000243ef.6931997d.05.01',
+                'BAG_ID': '000243ef',
+                'Symbol': 'RUT',
+                'Expiry': 20251212,
+                'Strike': 2545.0,
+                'Put/Call': 'C',
+                'Quantity': 1.0,
+                'Price': 28.94,
+                'Date/Time': '2025-12-04 17:58:51',
+                'DateTime': pd.to_datetime('2025-12-04 17:58:51'),
+                'Buy/Sell': 'BUY',
+                'NetCash': -2894.0,
+                'Commission': 0.0
+            }
+        ])
+        
+        strategies = self.detector.group_executions_by_combo(df)
+        
+        # Should detect this as a complex multi-leg strategy (not a simple 2-leg spread)
+        # and use the fallback method
+        self.assertEqual(len(strategies), 1)
+        strategy = strategies[0]
+        self.assertEqual(strategy['OrderID'], '000243ef')
+        self.assertEqual(strategy['BAG_ID'], '000243ef')
+        self.assertEqual(strategy['Underlying'], 'RUT')
+        # Should have 4 legs
+        self.assertEqual(strategy['NumLegs'], 4)
+        # Should have a strategy ID generated
+        self.assertIsNotNone(strategy['StrategyID'])
+        # Should have leg descriptions
+        self.assertEqual(len(strategy['Legs']), 4)
 
 
 if __name__ == '__main__':
