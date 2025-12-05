@@ -42,13 +42,26 @@ except ImportError:
     print("Error: requests not found. Please install with: pip install requests")
     sys.exit(1)
 
+# Load environment variables
+load_dotenv()
+
+# Set up logging (will be reconfigured in main() based on command-line argument)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Import IB connection utilities
 try:
     from utils.data.fetch_data import get_ib_connection, cleanup_ib_connection
     from utils.api.ib.ib_port_detector import detect_ib_port
     from utils.backtesting.strategy_detector import StrategyDetector
     from utils.api.ib.ib_execution_converter import ExecutionConverter
-except ImportError:
+    PORT_DETECTOR_AVAILABLE = True
+except ImportError as e:
+    PORT_DETECTOR_AVAILABLE = False
+    logger.warning(f"Failed to import IB port detector utilities: {e}")
     # Fallback if running from different directory
     def get_ib_connection(port=None, client_id=None):
         if not IB_INSYNC_AVAILABLE:
@@ -61,17 +74,7 @@ except ImportError:
         pass
     
     def detect_ib_port():
-        return 4001
-
-# Load environment variables
-load_dotenv()
-
-# Set up logging (will be reconfigured in main() based on command-line argument)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+        return None  # Return None to indicate detection failed, not a default port
 
 # IB Flex Query Web Service endpoints
 FLEX_SEND_REQUEST_URL = "https://gdcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest"
@@ -2132,19 +2135,22 @@ Environment Variables Required (only if not using --flex-report):
             logger.error("Alternatively, use --data-source flex for Flex Query mode")
             sys.exit(1)
         
-        # Detect port if not provided
+        # Use port detection utility if available, otherwise let get_ib_connection handle it
         selected_port = args.port
-        if not selected_port:
+        if not selected_port and PORT_DETECTOR_AVAILABLE:
             try:
                 selected_port = detect_ib_port()
                 if selected_port:
                     logger.info(f"Auto-detected IB port: {selected_port}")
                 else:
-                    logger.warning("Could not auto-detect IB port, using default 4001")
-                    selected_port = 4001
+                    logger.info("Could not auto-detect IB port, get_ib_connection will try default ports")
+                    selected_port = None  # Let get_ib_connection handle port detection
             except Exception as e:
-                logger.warning(f"Port auto-detection failed: {e}, using default 4001")
-                selected_port = 4001
+                logger.warning(f"Port auto-detection failed: {e}, get_ib_connection will try default ports")
+                selected_port = None  # Let get_ib_connection handle port detection
+        elif not selected_port:
+            logger.info("Port detector not available, get_ib_connection will try default ports")
+            selected_port = None  # Let get_ib_connection handle port detection
         
         # Fetch executions from TWS API
         try:

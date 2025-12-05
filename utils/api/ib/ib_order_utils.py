@@ -16,7 +16,12 @@ try:
 except ImportError:
     raise ImportError("ib_insync not found. Install with: pip install ib_insync")
 
-from ..data.fetch_data import get_ib_connection
+try:
+    # Try absolute import first
+    from utils.data.fetch_data import get_ib_connection
+except ImportError:
+    # Fallback for relative import (three dots to go up to utils level)
+    from ...data.fetch_data import get_ib_connection
 
 logger = logging.getLogger(__name__)
 
