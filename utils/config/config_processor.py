@@ -161,7 +161,8 @@ def process_single_order_direct(
     ib: IB,
     ib_lock: threading.Lock,
     port: int,
-    account: Optional[str] = None
+    account: Optional[str] = None,
+    cli_overrides: Optional[Dict] = None
 ) -> Optional[Trade]:
     """
     Process a single order directly (without subprocess) using shared IB connection.
@@ -172,27 +173,36 @@ def process_single_order_direct(
         ib_lock: Thread lock for synchronizing IB access
         port: IB API port number
         account: IB account ID (optional)
+        cli_overrides: Command-line argument overrides (optional, takes precedence over order_config)
     
     Returns:
         Trade object if order was placed successfully, None otherwise
     """
-    symbol = order_config.get('symbol', 'UNKNOWN')
-    strategy_name = order_config.get('strategy', 'otm_credit_spreads')
-    dte = order_config.get('dte', 7)
-    expiry = order_config.get('expiry')
-    right = order_config.get('right', 'P')
-    quantity = order_config.get('quantity', 1)
-    risk_profile = order_config.get('risk_profile', 'balanced')
-    spread_width = order_config.get('spread_width', 4)
-    target_delta = order_config.get('target_delta', 0.10)
-    min_credit = order_config.get('min_credit', 0.15)
-    min_price = order_config.get('min_price', 0.23)
-    initial_wait_minutes = order_config.get('initial_wait_minutes', 2)
-    price_reduction_per_minute = order_config.get('price_reduction_per_minute', 0.01)
-    order_action = order_config.get('order_action', 'BUY')
-    create_orders_en = order_config.get('create_orders_en', False)
-    take_profit = order_config.get('take_profit')
-    stop_loss = order_config.get('stop_loss') or order_config.get('stop_loss_multiplier')
+    # Merge CLI overrides with order config (CLI takes precedence)
+    merged_config = order_config.copy()
+    if cli_overrides:
+        # Only override non-None values from CLI
+        for key, value in cli_overrides.items():
+            if value is not None:
+                merged_config[key] = value
+    
+    symbol = merged_config.get('symbol', 'UNKNOWN')
+    strategy_name = merged_config.get('strategy', 'otm_credit_spreads')
+    dte = merged_config.get('dte', 7)
+    expiry = merged_config.get('expiry')
+    right = merged_config.get('right', 'P')
+    quantity = merged_config.get('quantity', 1)
+    risk_profile = merged_config.get('risk_profile', 'balanced')
+    spread_width = merged_config.get('spread_width', 4)
+    target_delta = merged_config.get('target_delta', 0.10)
+    min_credit = merged_config.get('min_credit', 0.15)
+    min_price = merged_config.get('min_price', 0.23)
+    initial_wait_minutes = merged_config.get('initial_wait_minutes', 2)
+    price_reduction_per_minute = merged_config.get('price_reduction_per_minute', 0.01)
+    order_action = merged_config.get('order_action', 'BUY')
+    create_orders_en = merged_config.get('create_orders_en', False)
+    take_profit = merged_config.get('take_profit')
+    stop_loss = merged_config.get('stop_loss') or merged_config.get('stop_loss_multiplier')
     
     logger.info(f"Using strategy: {strategy_name}")
     
@@ -240,6 +250,17 @@ def process_single_order_direct(
         if not create_orders_en:
             logger.info(f"create_orders_en not set for {symbol}, skipping order placement")
             return None
+        
+        # Safeguard: Prevent orders in live accounts without live_en flag
+        live_en = merged_config.get('live_en', False)
+        final_account = account or merged_config.get('account')
+        if final_account and final_account.startswith("U") and not live_en:
+            error_msg = (
+                f"SAFETY CHECK FAILED: Attempting to place order in live account '{final_account}' "
+                f"without live_en flag. Add --live-en to your command if you intend to trade in a live account."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         
         if order_action == "SELL":
             initial_price_raw = round(selected.credit * 1.15, 2)
@@ -491,13 +512,14 @@ def process_single_order_from_config(order_config: Dict, script_path: str, port:
         return (symbol, -1, error_msg)
 
 
-def process_config_file(config_path: str, max_workers: Optional[int] = None):
+def process_config_file(config_path: str, max_workers: Optional[int] = None, cli_overrides: Optional[Dict] = None):
     """
     Process multiple orders from YAML config file sequentially, then monitor all orders together.
     
     Args:
         config_path: Path to YAML config file
         max_workers: Not used (kept for compatibility)
+        cli_overrides: Command-line argument overrides (optional, takes precedence over YAML config)
     """
     config = load_config_file(config_path)
     orders = config.get('orders', [])
@@ -508,8 +530,12 @@ def process_config_file(config_path: str, max_workers: Optional[int] = None):
     
     logger.info(f"Processing {len(orders)} orders from config file: {config_path}")
     
+    # Determine port: CLI override > config port > auto-detect
     detected_port = None
-    if 'port' in config:
+    if cli_overrides and 'port' in cli_overrides:
+        detected_port = cli_overrides['port']
+        logger.info(f"Using port from CLI override: {detected_port}")
+    elif 'port' in config:
         detected_port = config['port']
         logger.info(f"Using port from config: {detected_port}")
     else:
@@ -544,12 +570,17 @@ def process_config_file(config_path: str, max_workers: Optional[int] = None):
         print(f"{'='*60}", flush=True)
         
         try:
+            # Determine account: CLI override > config account > auto-detected
+            account_override = cli_overrides.get('account') if cli_overrides else None
+            final_account = account_override or order.get('account') or detected_account
+            
             trade = process_single_order_direct(
                 order_config=order,
                 ib=ib,
                 ib_lock=ib_lock,
                 port=detected_port,
-                account=detected_account or order.get('account')
+                account=final_account,
+                cli_overrides=cli_overrides
             )
             
             if trade:
@@ -565,9 +596,19 @@ def process_config_file(config_path: str, max_workers: Optional[int] = None):
         finally:
             print(f"{'='*60}\n", flush=True)
     
-    if active_orders:
+    # Check if monitoring should be disabled via CLI override
+    should_monitor = True
+    if cli_overrides:
+        if cli_overrides.get('transmit_only', False) or cli_overrides.get('no_monitor_order', False):
+            should_monitor = False
+        elif cli_overrides.get('monitor_order') is False:
+            should_monitor = False
+    
+    if active_orders and should_monitor:
         logger.info(f"Starting monitoring loop for {len(active_orders)} active orders...")
         monitor_all_orders(active_orders, ib, ib_lock, check_interval_seconds=10)
+    elif active_orders and not should_monitor:
+        logger.info(f"Monitoring disabled (transmit-only or no-monitor-order). {len(active_orders)} orders placed but not monitored.")
     
     print("\n" + "=" * 60)
     print("SUMMARY")

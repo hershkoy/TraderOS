@@ -219,7 +219,67 @@ def main():
     if args.conf_file:
         if not os.path.exists(args.conf_file):
             parser.error(f"Config file not found: {args.conf_file}")
-        process_config_file(args.conf_file, max_workers=args.max_workers)
+        
+        # Handle --place-order as alias for --create-orders-en
+        if args.place_order and not args.create_orders_en:
+            args.create_orders_en = True
+        
+        # Handle transmit-only flag (overrides other monitoring flags)
+        if args.transmit_only:
+            args.monitor_order = False
+            args.no_monitor_order = True
+            logger.info("--transmit-only flag set: orders will be transmitted without monitoring or auto-adjustment")
+        
+        # Enable monitoring by default when placing orders (unless transmit-only or no-monitor-order is set)
+        if args.create_orders_en and not args.no_monitor_order and not args.transmit_only:
+            args.monitor_order = True
+        elif args.no_monitor_order or args.transmit_only:
+            args.monitor_order = False
+        
+        # Build CLI overrides dictionary (only include non-None values that can override config)
+        cli_overrides = {}
+        
+        # Boolean flags
+        if args.create_orders_en:
+            cli_overrides['create_orders_en'] = True
+        if args.transmit_only:
+            cli_overrides['transmit_only'] = True
+            cli_overrides['no_monitor_order'] = True
+            cli_overrides['monitor_order'] = False
+        if args.no_monitor_order:
+            cli_overrides['no_monitor_order'] = True
+            cli_overrides['monitor_order'] = False
+        if args.monitor_order is not None:
+            cli_overrides['monitor_order'] = args.monitor_order
+        if args.live_en:
+            cli_overrides['live_en'] = True
+        
+        # Value parameters (only override if explicitly provided)
+        if args.port is not None:
+            cli_overrides['port'] = args.port
+        if args.quantity is not None:
+            cli_overrides['quantity'] = args.quantity
+        if args.risk_profile:
+            cli_overrides['risk_profile'] = args.risk_profile
+        if args.order_action:
+            cli_overrides['order_action'] = args.order_action
+        if args.account:
+            cli_overrides['account'] = args.account
+        if args.min_price is not None:
+            cli_overrides['min_price'] = args.min_price
+        if args.initial_wait_minutes is not None:
+            cli_overrides['initial_wait_minutes'] = args.initial_wait_minutes
+        if args.price_reduction_per_minute is not None:
+            cli_overrides['price_reduction_per_minute'] = args.price_reduction_per_minute
+        if args.take_profit is not None:
+            cli_overrides['take_profit'] = args.take_profit
+        if args.stop_loss is not None:
+            cli_overrides['stop_loss'] = args.stop_loss
+        
+        if cli_overrides:
+            logger.info("Command-line overrides applied: %s", cli_overrides)
+        
+        process_config_file(args.conf_file, max_workers=args.max_workers, cli_overrides=cli_overrides)
         return
     
     # Detect port
