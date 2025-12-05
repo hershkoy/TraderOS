@@ -442,8 +442,13 @@ class StrategyDetector:
         Format: "SYMBOL + Expiry Strike1C - Expiry Strike2C + Expiry Strike3C - Expiry Strike4C"
         Example: "RUT + Dec12 2605C - Dec12 2545C + Dec12 2545C - Dec12 2585C"
         
+        The sign (+ or -) is determined by the Quantity field:
+        - Positive quantity = + (Buy)
+        - Negative quantity = - (Sell)
+        Falls back to Buy/Sell if Quantity is not available or is 0.
+        
         Args:
-            legs: List of leg dictionaries with Symbol, Expiry, Strike, Put/Call, Buy/Sell
+            legs: List of leg dictionaries with Symbol, Expiry, Strike, Put/Call, Buy/Sell, Quantity
             underlying: Optional underlying symbol (if not provided, extracted from legs)
             
         Returns:
@@ -492,8 +497,15 @@ class StrategyDetector:
             else:
                 expiry_str = str(expiry)
             
-            # Determine sign based on Buy/Sell
-            sign = "+" if buy_sell == "BUY" else "-"
+            # Determine sign based on Quantity (positive = +, negative = -)
+            # If Quantity is not available, fall back to Buy/Sell
+            quantity = leg.get('Quantity', 0)
+            if quantity != 0:
+                sign = "+" if quantity > 0 else "-"
+            else:
+                # Fallback to Buy/Sell if Quantity is not available or is 0
+                buy_sell_upper = str(buy_sell).upper()
+                sign = "+" if buy_sell_upper in ("BUY", "B", "BOT") else "-"
             
             # Format: "+ Dec12 2605C" or "- Dec12 2545C"
             leg_str = f"{sign} {expiry_str} {int(strike) if isinstance(strike, (int, float)) else strike}{put_call}"
@@ -620,9 +632,16 @@ class StrategyDetector:
                 strategy_id = None
                 short_strategy_str = None
                 if bag_id:
+                    # Get actual quantities from executions for each leg
+                    low_strike_exec = parent_executions[parent_executions['Strike'] == low_strike]
+                    high_strike_exec = parent_executions[parent_executions['Strike'] == high_strike]
+                    
+                    low_strike_qty = low_strike_exec['Quantity'].iloc[0] if not low_strike_exec.empty else 0
+                    high_strike_qty = high_strike_exec['Quantity'].iloc[0] if not high_strike_exec.empty else 0
+                    
                     legs_for_id = [
-                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': option_type, 'Buy/Sell': 'BUY'},
-                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': option_type, 'Buy/Sell': 'SELL'}
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': low_strike, 'Put/Call': option_type, 'Buy/Sell': 'BUY', 'Quantity': low_strike_qty},
+                        {'Symbol': symbol, 'Expiry': expiry, 'Strike': high_strike, 'Put/Call': option_type, 'Buy/Sell': 'SELL', 'Quantity': high_strike_qty}
                     ]
                     strategy_id = self.generate_strategy_id(legs_for_id, symbol)
                     short_strategy_str = self.generate_short_strategy_string(legs_for_id, symbol)
@@ -793,7 +812,8 @@ class StrategyDetector:
                         'Expiry': leg['expiry'],
                         'Strike': leg['strike'],
                         'Put/Call': leg['put_call'],
-                        'Buy/Sell': leg['buy_sell']
+                        'Buy/Sell': leg['buy_sell'],
+                        'Quantity': leg.get('quantity', 0)  # Include quantity for sign determination
                     })
                 strategy_id_str = self.generate_strategy_id(legs_for_id, underlying)
                 short_strategy_str = self.generate_short_strategy_string(legs_for_id, underlying)
