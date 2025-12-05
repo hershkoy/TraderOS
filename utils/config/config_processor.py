@@ -124,7 +124,8 @@ def choose_candidate_by_profile(
     
     Args:
         candidates_sorted: List of candidates sorted by |delta| (highest first = riskiest)
-        profile: Risk profile ('risky', 'balanced', 'conservative')
+        profile: Risk profile ('risky', 'balanced', 'conservative', 'interactive')
+                 Note: 'interactive' is not supported with --conf-file and will default to 'balanced'
     
     Returns:
         Selected spread candidate
@@ -132,6 +133,15 @@ def choose_candidate_by_profile(
     n = len(candidates_sorted)
     if n == 0:
         raise ValueError("No candidates to choose from")
+    
+    # Convert 'interactive' to 'balanced' when using config file (interactive mode requires direct script execution)
+    if profile == "interactive":
+        logger.warning(
+            "Risk profile 'interactive' is not supported when using --conf-file. "
+            "Interactive mode requires running the script directly without --conf-file. "
+            "Defaulting to 'balanced' profile."
+        )
+        profile = "balanced"
     
     if profile == "risky":
         idx = 0
@@ -143,7 +153,7 @@ def choose_candidate_by_profile(
         idx = 0
         description = "balanced (primary candidate, highest |delta|)"
     else:
-        raise ValueError(f"Unsupported profile: {profile}")
+        raise ValueError(f"Unsupported profile: {profile}. Supported profiles: 'risky', 'balanced', 'conservative'")
     
     selected = candidates_sorted[idx]
     delta_abs = abs(selected.short.delta) if selected.short.delta is not None else 0.0
