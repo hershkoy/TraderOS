@@ -116,11 +116,26 @@ def classify_strategy_structure(group: pd.DataFrame) -> Dict[str, Any]:
         return {'structure': 'single_leg', 'valid': False}
     
     # Extract values and convert to Python native types
-    symbol = str(group['Symbol'].iloc[0])
+    # Use underlying symbol if available, otherwise extract from Symbol
+    if 'UnderlyingSymbol' in group.columns:
+        symbol = str(group['UnderlyingSymbol'].iloc[0]).strip()
+    elif 'GroupingSymbol' in group.columns:
+        symbol = str(group['GroupingSymbol'].iloc[0]).strip()
+    else:
+        symbol_val = str(group['Symbol'].iloc[0]) if 'Symbol' in group.columns else ''
+        # Extract underlying from option symbol (e.g., "IWM   251201P00228000" -> "IWM")
+        symbol = symbol_val.split()[0].strip() if symbol_val else ''
+    
     expiries = [int(e) if isinstance(e, (int, float)) else e for e in sorted(group['Expiry'].unique())]
     rights = set(str(r) for r in group['Put/Call'].unique())
     strikes = [float(s) if isinstance(s, (int, float)) else s for s in sorted(group['Strike'].unique())]
     n_legs = len(group)
+    
+    # Filter out single-leg "strategies" - if all legs have same strike, expiry, and put/call,
+    # these are just multiple fills of the same option contract, not a multi-leg strategy
+    if len(strikes) == 1 and len(rights) == 1 and len(expiries) == 1:
+        logger.debug(f"Filtered out single-leg strategy: {symbol} {expiries[0]} {strikes[0]}{list(rights)[0]} (all legs identical)")
+        return {'structure': 'single_leg', 'valid': False}
     
     # ---------- Vertical spreads (2 legs, both P or both C, same expiry) ----------
     if len(strikes) == 2 and len(rights) == 1 and len(expiries) == 1:
@@ -256,11 +271,21 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
     df = normalize_flex_columns(df)
     
     # Ensure Symbol column exists (use UnderlyingSymbol if Symbol doesn't exist)
-    if 'Symbol' not in df.columns and 'UnderlyingSymbol' in df.columns:
-        df['Symbol'] = df['UnderlyingSymbol']
-    elif 'Symbol' not in df.columns:
+    # For grouping, we need the underlying symbol, not the full option symbol
+    if 'UnderlyingSymbol' in df.columns:
+        df['UnderlyingSymbol'] = df['UnderlyingSymbol'].astype(str).str.strip()
+        # Use UnderlyingSymbol for grouping (it's the actual stock symbol)
+        df['GroupingSymbol'] = df['UnderlyingSymbol']
+    elif 'Symbol' in df.columns:
+        # Extract underlying from option symbol if needed
+        df['GroupingSymbol'] = df['Symbol'].astype(str).str.split().str[0].str.strip()
+    else:
         logger.warning("No Symbol or UnderlyingSymbol column found in Flex CSV")
         return []
+    
+    # Keep Symbol column for leg details (might be full option symbol)
+    if 'Symbol' not in df.columns and 'UnderlyingSymbol' in df.columns:
+        df['Symbol'] = df['UnderlyingSymbol']
     
     # Filter to only option trades
     if 'Put/Call' in df.columns:
@@ -277,8 +302,9 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         df['DateTime'] = pd.to_datetime(df['Date/Time'], errors='coerce')
     
     strategies = []
+    processed_groups = set()  # Track processed (Symbol, DateTime) groups to avoid duplicates
     
-    # Group by OrderID (Flex groups multi-leg orders by OrderID)
+    # First, try grouping by OrderID (Flex may group multi-leg orders by OrderID)
     for order_id, order_group in df.groupby('OrderID'):
         if pd.isna(order_id):
             continue
@@ -289,11 +315,27 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
             if pd.isna(dt):
                 continue
             
+            # Skip if already processed (will be handled by Symbol+DateTime grouping)
+            # Use GroupingSymbol (underlying symbol) for consistent grouping
+            symbol = str(dt_group['GroupingSymbol'].iloc[0]) if 'GroupingSymbol' in dt_group.columns else (
+                str(dt_group['UnderlyingSymbol'].iloc[0]) if 'UnderlyingSymbol' in dt_group.columns else (
+                    str(dt_group['Symbol'].iloc[0]) if 'Symbol' in dt_group.columns else ''
+                )
+            )
+            # Use rounded datetime for consistent grouping
+            dt_rounded = dt.floor('s') if hasattr(dt, 'floor') else dt
+            group_key = (symbol, dt_rounded)
+            if group_key in processed_groups:
+                continue
+            
             # Classify this group as a strategy
             strat_info = classify_strategy_structure(dt_group)
             
             if not strat_info.get('valid', False):
                 continue
+            
+            # Only mark as processed if valid
+            processed_groups.add(group_key)
             
             # Build strategy event
             event = {
@@ -344,11 +386,100 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
             
             # Convert to dict, handling duplicate column names
             # Select only the columns we need to avoid duplicate column issues
-            leg_columns = ['Symbol', 'Expiry', 'Strike', 'Put/Call', 'Buy/Sell', 'Quantity', 'Price', 'NetCash', 'Commission']
+            leg_columns = ['Symbol', 'UnderlyingSymbol', 'Expiry', 'Strike', 'Put/Call', 'Buy/Sell', 'Quantity', 'Price', 'NetCash', 'Commission']
             available_columns = [col for col in leg_columns if col in dt_group.columns]
             event['Legs'] = dt_group[available_columns].to_dict('records')
             
             strategies.append(event)
+    
+    # Also try grouping by Symbol + DateTime (within small time window) to catch
+    # multi-leg strategies where legs might have different OrderIDs
+    # Round DateTime to nearest second to group trades within same second
+    df['DateTimeRounded'] = df['DateTime'].dt.floor('s')
+    
+    # Group by underlying symbol (GroupingSymbol) and DateTime
+    for (symbol, dt_rounded), symbol_group in df.groupby(['GroupingSymbol', 'DateTimeRounded']):
+        if pd.isna(symbol) or pd.isna(dt_rounded):
+            continue
+        
+        # Skip if already processed
+        group_key = (str(symbol), dt_rounded)
+        if group_key in processed_groups:
+            continue
+        
+        # Only process if this group has multiple unique strikes/expiries/rights
+        # (indicating a potential multi-leg strategy)
+        unique_strikes = symbol_group['Strike'].nunique() if 'Strike' in symbol_group.columns else 0
+        unique_expiries = symbol_group['Expiry'].nunique() if 'Expiry' in symbol_group.columns else 0
+        unique_rights = symbol_group['Put/Call'].nunique() if 'Put/Call' in symbol_group.columns else 0
+        
+        # Skip if only one unique strike, expiry, and right (single-leg)
+        # This check is redundant since classify_strategy_structure will filter it, but it's faster to skip early
+        if unique_strikes <= 1 and unique_expiries <= 1 and unique_rights <= 1:
+            logger.debug(f"Skipping single-leg group: {symbol} at {dt_rounded} (unique strikes={unique_strikes}, expiries={unique_expiries}, rights={unique_rights})")
+            continue
+        
+        # Classify this group as a strategy
+        strat_info = classify_strategy_structure(symbol_group)
+        
+        if not strat_info.get('valid', False):
+            continue
+        
+        processed_groups.add(group_key)
+        
+        # Build strategy event
+        event = {
+            'OrderID': str(symbol_group['OrderID'].iloc[0]) if 'OrderID' in symbol_group.columns else 'N/A',
+            'DateTime': dt_rounded,
+            'Symbol': strat_info.get('symbol', ''),
+            'Structure': strat_info['structure'],
+            'NumLegs': len(symbol_group)
+        }
+        
+        # Add structure-specific fields (same as above)
+        if strat_info['structure'] == 'vertical':
+            event.update({
+                'Expiry': strat_info['expiry'],
+                'Strikes': strat_info['strikes'],
+                'Put/Call': strat_info['right'],
+                'Quantity': strat_info['quantity'],
+                'Price': strat_info['price'],
+                'LowStrike': strat_info['low_strike'],
+                'HighStrike': strat_info['high_strike'],
+                'LowPrice': strat_info['low_price'],
+                'HighPrice': strat_info['high_price']
+            })
+        elif strat_info['structure'] == 'iron_condor':
+            event.update({
+                'Expiry': strat_info['expiry'],
+                'PutStrikes': strat_info['put_strikes'],
+                'CallStrikes': strat_info['call_strikes'],
+                'Quantity': strat_info['quantity']
+            })
+        elif strat_info['structure'] == 'calendar':
+            event.update({
+                'Strike': strat_info['strike'],
+                'Put/Call': strat_info['right'],
+                'Expiries': strat_info['expiries'],
+                'Quantity': strat_info['quantity']
+            })
+        elif strat_info['structure'] == 'diagonal':
+            event.update({
+                'Put/Call': strat_info['right'],
+                'Strikes': strat_info['strikes'],
+                'Expiries': strat_info['expiries']
+            })
+        
+        # Add execution details from original group
+        event['NetCash'] = float(symbol_group['NetCash'].sum()) if 'NetCash' in symbol_group.columns else 0.0
+        event['Commission'] = float(symbol_group['Commission'].sum()) if 'Commission' in symbol_group.columns else 0.0
+        
+        # Convert to dict, handling duplicate column names
+        leg_columns = ['Symbol', 'UnderlyingSymbol', 'Expiry', 'Strike', 'Put/Call', 'Buy/Sell', 'Quantity', 'Price', 'NetCash', 'Commission']
+        available_columns = [col for col in leg_columns if col in symbol_group.columns]
+        event['Legs'] = symbol_group[available_columns].to_dict('records')
+        
+        strategies.append(event)
     
     logger.info(f"Reconstructed {len(strategies)} strategy events from Flex CSV")
     return strategies
@@ -365,6 +496,16 @@ def convert_flex_strategies_to_tws_format(flex_strategies: List[Dict[str, Any]])
     Returns:
         List of strategy dictionaries in TWS format
     """
+    # Try to import strategy detector for generating strategy IDs
+    try:
+        from utils.backtesting.strategy_detector import StrategyDetector
+        detector = StrategyDetector()
+        use_detector = True
+    except ImportError:
+        logger.warning("StrategyDetector not available, strategy IDs will not be generated")
+        detector = None
+        use_detector = False
+    
     tws_strategies = []
     
     for flex_strat in flex_strategies:
@@ -382,30 +523,45 @@ def convert_flex_strategies_to_tws_format(flex_strategies: List[Dict[str, Any]])
         else:
             dt_str = str(dt) if dt else ''
         
-        tws_strat = {
-            'OrderID': str(flex_strat.get('OrderID', 'N/A')),
-            'BAG_ID': None,  # Flex doesn't have BAG_ID
-            'StrategyID': None,  # Will be generated by strategy_detector if needed
-            'NumLegs': num_legs,
-            'Underlying': str(flex_strat.get('Symbol', 'N/A')),
-            'When': dt_str,
-            'PurchaseDateTime': dt_str,
-            'NetCash': net_cash,
-            'Commission': commission,
-            'TotalCost': net_cash + commission
-        }
-        
-        # Build leg descriptions from legs
+        # Build leg descriptions and prepare legs for strategy ID generation
         legs_desc = []
+        legs_for_id = []
+        
+        # Get underlying symbol - prefer UnderlyingSymbol from legs, fallback to Symbol
+        underlying = None
+        for leg in flex_strat.get('Legs', []):
+            # Check for UnderlyingSymbol in leg data (from Flex CSV)
+            if 'UnderlyingSymbol' in leg:
+                underlying = str(leg['UnderlyingSymbol']).strip()
+                break
+        
+        # If not found, try to extract from Symbol field or use first leg's symbol
+        if not underlying:
+            first_leg = flex_strat.get('Legs', [{}])[0] if flex_strat.get('Legs') else {}
+            symbol_val = first_leg.get('Symbol', flex_strat.get('Symbol', 'N/A'))
+            # Symbol might be full option symbol like "IWM   251201P00228000", extract underlying
+            if isinstance(symbol_val, str):
+                # Extract underlying from option symbol (first part before spaces/numbers)
+                parts = symbol_val.split()
+                if parts:
+                    underlying = parts[0].strip()
+                else:
+                    underlying = symbol_val.strip()
+            else:
+                underlying = str(symbol_val)
+        
+        underlying = underlying or 'N/A'
+        
         for leg in flex_strat.get('Legs', []):
             buy_sell = leg.get('Buy/Sell', 'N/A')
             qty = abs(leg.get('Quantity', 0))
-            symbol = leg.get('Symbol', 'N/A')
+            # Use underlying symbol, not the full option symbol from Symbol field
+            symbol = underlying
             expiry = leg.get('Expiry', 'N/A')
             strike = leg.get('Strike', 'N/A')
             put_call = leg.get('Put/Call', 'N/A')
             
-            # Format expiry
+            # Format expiry for leg description
             if isinstance(expiry, (int, float)) and expiry > 0:
                 expiry_str = str(int(expiry))
                 if len(expiry_str) == 8:
@@ -415,8 +571,101 @@ def convert_flex_strategies_to_tws_format(flex_strategies: List[Dict[str, Any]])
             
             leg_desc = f"{buy_sell} {qty} x {symbol} {expiry_str} {strike}{put_call}"
             legs_desc.append(leg_desc)
+            
+            # Prepare leg for strategy ID generation (use Quantity for sign determination)
+            # Normalize Buy/Sell to uppercase for strategy detector
+            buy_sell_upper = str(buy_sell).upper() if buy_sell else 'N/A'
+            if buy_sell_upper in ('BUY', 'B', 'BOT'):
+                buy_sell_normalized = 'BUY'
+            elif buy_sell_upper in ('SELL', 'S', 'SLD'):
+                buy_sell_normalized = 'SELL'
+            else:
+                buy_sell_normalized = buy_sell_upper
+            
+            legs_for_id.append({
+                'Symbol': symbol,  # Use underlying symbol
+                'Expiry': expiry,
+                'Strike': strike,
+                'Put/Call': put_call,
+                'Buy/Sell': buy_sell_normalized,
+                'Quantity': leg.get('Quantity', 0)  # Include quantity for sign determination
+            })
         
-        tws_strat['Legs'] = legs_desc
+        # Generate Strategy ID and Short Strategy String using strategy detector
+        strategy_id = None
+        short_strategy_str = None
+        if use_detector and legs_for_id and len(legs_for_id) >= 2:
+            try:
+                # Ensure Expiry is in correct format (YYYYMMDD as int) for strategy detector
+                legs_for_detector = []
+                for leg in legs_for_id:
+                    leg_copy = leg.copy()
+                    # Convert Expiry to int if it's a string in YYYYMMDD format
+                    expiry = leg_copy.get('Expiry')
+                    if isinstance(expiry, str) and len(expiry) == 8 and expiry.isdigit():
+                        leg_copy['Expiry'] = int(expiry)
+                    elif isinstance(expiry, str) and '-' in expiry:
+                        # Convert YYYY-MM-DD to YYYYMMDD
+                        try:
+                            from datetime import datetime
+                            dt = datetime.strptime(expiry, '%Y-%m-%d')
+                            leg_copy['Expiry'] = int(dt.strftime('%Y%m%d'))
+                        except:
+                            pass
+                    legs_for_detector.append(leg_copy)
+                
+                strategy_id = detector.generate_strategy_id(legs_for_detector, underlying)
+                short_strategy_str = detector.generate_short_strategy_string(legs_for_detector, underlying)
+                
+                # Log if generation failed
+                if strategy_id == 'N/A' or short_strategy_str == 'N/A':
+                    logger.debug(f"Strategy detector returned N/A for OrderID {flex_strat.get('OrderID')}, legs: {legs_for_detector}")
+            except Exception as e:
+                logger.debug(f"Error generating strategy ID for OrderID {flex_strat.get('OrderID')}: {e}", exc_info=True)
+        
+        # Fallback: Generate simple strategy description if detector failed
+        if (not short_strategy_str or short_strategy_str == 'N/A') and legs_for_id:
+            # Create a simple description from legs
+            leg_parts = []
+            for leg in sorted(legs_for_id, key=lambda x: (x.get('Expiry', ''), x.get('Strike', 0))):
+                expiry = leg.get('Expiry', '')
+                strike = leg.get('Strike', '')
+                put_call = leg.get('Put/Call', '')
+                qty = leg.get('Quantity', 0)
+                sign = '+' if qty > 0 else '-'
+                
+                # Format expiry
+                if isinstance(expiry, (int, float)) and expiry > 0:
+                    expiry_str = str(int(expiry))
+                    if len(expiry_str) == 8:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.strptime(expiry_str, '%Y%m%d')
+                            expiry_str = dt.strftime('%b%d')  # Dec12 format
+                        except:
+                            pass
+                else:
+                    expiry_str = str(expiry)
+                
+                leg_parts.append(f"{sign} {expiry_str} {int(strike) if isinstance(strike, (int, float)) else strike}{put_call}")
+            
+            if leg_parts:
+                short_strategy_str = f"{underlying} {' '.join(leg_parts)}"
+        
+        tws_strat = {
+            'OrderID': str(flex_strat.get('OrderID', 'N/A')),
+            'BAG_ID': None,  # Flex doesn't have BAG_ID
+            'StrategyID': strategy_id if strategy_id and strategy_id != 'N/A' else None,  # Generated from legs
+            'ShortStrategyString': short_strategy_str if short_strategy_str and short_strategy_str != 'N/A' else None,  # Generated from legs
+            'NumLegs': num_legs,
+            'Underlying': underlying,
+            'When': dt_str,
+            'PurchaseDateTime': dt_str,
+            'NetCash': net_cash,
+            'Commission': commission,
+            'TotalCost': net_cash + commission,
+            'Legs': legs_desc
+        }
         
         # Add structure-specific fields
         structure = flex_strat.get('Structure', 'unknown')

@@ -128,6 +128,24 @@ class TestFlexStrategyReconstructor(unittest.TestCase):
         self.assertEqual(strat['Quantity'], 1)
         self.assertAlmostEqual(strat['Price'], 0.25, places=2)
     
+    def test_classify_single_leg_filtered_out(self):
+        """Test that multiple fills of the same option are filtered out (not a strategy)."""
+        df = pd.DataFrame({
+            'Symbol': ['QQQ', 'QQQ', 'QQQ'],
+            'Expiry': [20251201, 20251201, 20251201],
+            'Strike': [577.0, 577.0, 577.0],
+            'Put/Call': ['P', 'P', 'P'],
+            'Buy/Sell': ['Buy', 'Buy', 'Buy'],
+            'Quantity': [2.0, 1.0, 1.0],
+            'Price': [0.25, 0.25, 0.25],
+            'NetCash': [-50.0, -25.0, -25.0]
+        })
+        
+        result = classify_strategy_structure(df)
+        
+        self.assertEqual(result['structure'], 'single_leg')
+        self.assertFalse(result['valid'])
+    
     def test_convert_flex_strategies_to_tws_format(self):
         """Test conversion to TWS format."""
         flex_strategies = [

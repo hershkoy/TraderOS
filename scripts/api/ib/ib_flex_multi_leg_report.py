@@ -1818,7 +1818,16 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
             strategy_price = main_strategy.get('BuyPrice', 0)
         
         # Get short strategy string if available
-        short_strategy = main_strategy.get('ShortStrategyString') or main_strategy.get('StrategyID', strategy_id if strategy_id != 'N/A' else display_id)
+        # Handle None and "N/A" values properly (use fallback)
+        short_strategy = main_strategy.get('ShortStrategyString')
+        if not short_strategy or short_strategy == 'N/A':
+            short_strategy = main_strategy.get('StrategyID')
+        if not short_strategy or short_strategy == 'N/A':
+            # Fallback to strategy_id or display_id
+            short_strategy = strategy_id if strategy_id != 'N/A' else display_id
+        # Final fallback if still None or N/A
+        if not short_strategy or short_strategy == 'N/A':
+            short_strategy = display_id
         
         html += f"""
     <div class="strategy">
