@@ -295,11 +295,49 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
         logger.warning("No option trades found in Flex CSV")
         return []
     
+    # Filter out summary rows (rows without TradeID are usually summary/duplicate rows)
+    # Keep rows with TradeID (actual executions) or rows with ExecID
+    if 'TradeID' in df.columns:
+        # Keep rows with TradeID or ExecID (actual executions)
+        has_tradeid = df['TradeID'].notna() & (df['TradeID'].astype(str).str.strip() != '')
+        has_exeid = df.get('ExecID', pd.Series()).notna() & (df.get('ExecID', pd.Series()).astype(str).str.strip() != '')
+        df = df[has_tradeid | has_exeid].copy()
+        logger.debug(f"Filtered to {len(df)} rows with TradeID or ExecID (actual executions)")
+    elif 'ExecID' in df.columns:
+        # Keep rows with ExecID
+        df = df[df['ExecID'].notna() & (df['ExecID'].astype(str).str.strip() != '')].copy()
+        logger.debug(f"Filtered to {len(df)} rows with ExecID (actual executions)")
+    
+    if df.empty:
+        logger.warning("No option trades with TradeID/ExecID found in Flex CSV")
+        return []
+    
     # Ensure DateTime is datetime type
+    # Flex CSV Date/Time format: "20251204;125851" (YYYYMMDD;HHMMSS)
     if 'DateTime' in df.columns:
         df['DateTime'] = pd.to_datetime(df['DateTime'], errors='coerce')
     elif 'Date/Time' in df.columns:
-        df['DateTime'] = pd.to_datetime(df['Date/Time'], errors='coerce')
+        # Parse Flex CSV format: "20251204;125851" -> "2025-12-04 12:58:51"
+        def parse_flex_datetime(val):
+            if pd.isna(val):
+                return pd.NaT
+            val_str = str(val).strip()
+            if not val_str:
+                return pd.NaT
+            # Try Flex CSV format: YYYYMMDD;HHMMSS
+            if ';' in val_str:
+                try:
+                    date_part, time_part = val_str.split(';', 1)
+                    if len(date_part) == 8 and date_part.isdigit() and len(time_part) == 6 and time_part.isdigit():
+                        # Format: YYYYMMDD;HHMMSS
+                        dt_str = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                        return pd.to_datetime(dt_str, errors='coerce')
+                except:
+                    pass
+            # Try standard pandas parsing
+            return pd.to_datetime(val_str, errors='coerce')
+        
+        df['DateTime'] = df['Date/Time'].apply(parse_flex_datetime)
     
     strategies = []
     processed_groups = set()  # Track processed (Symbol, DateTime) groups to avoid duplicates
@@ -397,8 +435,38 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
     # Round DateTime to nearest second to group trades within same second
     df['DateTimeRounded'] = df['DateTime'].dt.floor('s')
     
+    # Before grouping, aggregate partial fills for the same leg
+    # Group by (GroupingSymbol, DateTimeRounded, Strike, Expiry, Put/Call) to aggregate quantities
+    agg_cols = ['GroupingSymbol', 'DateTimeRounded', 'Strike', 'Expiry', 'Put/Call']
+    if all(col in df.columns for col in agg_cols):
+        # Aggregate quantities and calculate weighted average price for each leg
+        def weighted_avg_price(group):
+            qty = group['Quantity'].sum()
+            if abs(qty) > 0:
+                return (group['Quantity'] * group['Price']).sum() / abs(qty)
+            else:
+                return group['Price'].mean()
+        
+        leg_agg_list = []
+        for leg_key, leg_group in df.groupby(agg_cols):
+            leg_dict = dict(zip(agg_cols, leg_key))
+            leg_dict['Quantity'] = leg_group['Quantity'].sum()
+            leg_dict['Price'] = weighted_avg_price(leg_group)
+            leg_dict['NetCash'] = leg_group['NetCash'].sum() if 'NetCash' in leg_group.columns else 0
+            leg_dict['Commission'] = leg_group['Commission'].sum() if 'Commission' in leg_group.columns else 0
+            leg_dict['Buy/Sell'] = leg_group['Buy/Sell'].iloc[0] if 'Buy/Sell' in leg_group.columns else 'N/A'
+            leg_dict['Symbol'] = leg_group['Symbol'].iloc[0] if 'Symbol' in leg_group.columns else leg_dict['GroupingSymbol']
+            leg_dict['UnderlyingSymbol'] = leg_group['UnderlyingSymbol'].iloc[0] if 'UnderlyingSymbol' in leg_group.columns else leg_dict['GroupingSymbol']
+            leg_dict['OrderID'] = leg_group['OrderID'].iloc[0] if 'OrderID' in leg_group.columns else 'N/A'
+            leg_agg_list.append(leg_dict)
+        
+        df_aggregated = pd.DataFrame(leg_agg_list)
+        logger.debug(f"Aggregated {len(df)} rows to {len(df_aggregated)} unique legs")
+    else:
+        df_aggregated = df
+    
     # Group by underlying symbol (GroupingSymbol) and DateTime
-    for (symbol, dt_rounded), symbol_group in df.groupby(['GroupingSymbol', 'DateTimeRounded']):
+    for (symbol, dt_rounded), symbol_group in df_aggregated.groupby(['GroupingSymbol', 'DateTimeRounded']):
         if pd.isna(symbol) or pd.isna(dt_rounded):
             continue
         
