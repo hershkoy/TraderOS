@@ -1724,9 +1724,10 @@ def generate_html_report(strategies: List[Dict[str, Any]], output_path: str):
         unique_strategy_ids.add(strategy_id)
     num_strategies = len(unique_strategy_ids)
     
-    total_legs = sum(s['NumLegs'] for s in strategies)
-    total_net_cash = sum(s['NetCash'] for s in strategies)
-    total_commission = sum(s['Commission'] for s in strategies)
+    # Ensure values are Python native types (not pandas Series/numpy types)
+    total_legs = int(sum(float(s.get('NumLegs', 0)) for s in strategies))
+    total_net_cash = float(sum(float(s.get('NetCash', 0)) for s in strategies))
+    total_commission = float(sum(float(s.get('Commission', 0)) for s in strategies))
     
     html = html.format(
         num_strategies=num_strategies,

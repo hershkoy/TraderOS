@@ -34,41 +34,70 @@ def normalize_flex_columns(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with normalized column names
     """
     # Create a mapping of common variations
+    # Track which standard names we already have to avoid duplicates
+    existing_standard_names = set(df.columns)
     column_map = {}
+    
     for col in df.columns:
         col_normalized = col.strip().replace(" ", "").replace("/", "").replace("_", "")
         col_lower = col_normalized.lower()
         
-        # Map to standard names
+        # Map to standard names, but skip if standard name already exists
         if col_lower in ['orderid', 'order_id']:
-            column_map[col] = 'OrderID'
+            if 'OrderID' not in existing_standard_names:
+                column_map[col] = 'OrderID'
         elif col_lower in ['tradeid', 'trade_id']:
-            column_map[col] = 'TradeID'
-        elif col_lower in ['symbol', 'underlyingsymbol', 'underlying_symbol']:
-            column_map[col] = 'Symbol'
+            if 'TradeID' not in existing_standard_names:
+                column_map[col] = 'TradeID'
+        elif col_lower in ['underlyingsymbol', 'underlying_symbol']:
+            # Prefer 'Symbol' if it exists, otherwise map UnderlyingSymbol to Symbol
+            if 'Symbol' not in existing_standard_names:
+                column_map[col] = 'Symbol'
+        elif col_lower == 'symbol':
+            # Keep as-is, already standard
+            pass
         elif col_lower in ['expiry', 'expirationdate', 'expiration_date', 'lasttradedateorcontractmonth']:
-            column_map[col] = 'Expiry'
+            if 'Expiry' not in existing_standard_names:
+                column_map[col] = 'Expiry'
         elif col_lower in ['strike', 'strikeprice', 'strike_price']:
-            column_map[col] = 'Strike'
+            if 'Strike' not in existing_standard_names:
+                column_map[col] = 'Strike'
         elif col_lower in ['putcall', 'put/call', 'right', 'optiontype']:
-            column_map[col] = 'Put/Call'
+            if 'Put/Call' not in existing_standard_names:
+                column_map[col] = 'Put/Call'
         elif col_lower in ['buysell', 'buy/sell', 'side']:
-            column_map[col] = 'Buy/Sell'
+            if 'Buy/Sell' not in existing_standard_names:
+                column_map[col] = 'Buy/Sell'
         elif col_lower in ['quantity', 'qty', 'shares']:
-            column_map[col] = 'Quantity'
+            if 'Quantity' not in existing_standard_names:
+                column_map[col] = 'Quantity'
         elif col_lower in ['price', 'executionprice', 'execution_price']:
-            column_map[col] = 'Price'
-        elif col_lower in ['netcash', 'net_cash', 'proceeds']:
-            column_map[col] = 'NetCash'
+            if 'Price' not in existing_standard_names:
+                column_map[col] = 'Price'
+        elif col_lower in ['netcash', 'net_cash']:
+            if 'NetCash' not in existing_standard_names:
+                column_map[col] = 'NetCash'
+        elif col_lower == 'proceeds':
+            # Proceeds might map to NetCash, but only if NetCash doesn't exist
+            if 'NetCash' not in existing_standard_names:
+                column_map[col] = 'NetCash'
         elif col_lower in ['commission', 'comm']:
-            column_map[col] = 'Commission'
-        elif col_lower in ['datetime', 'date/time', 'date_time', 'executiontime']:
-            column_map[col] = 'DateTime'
+            if 'Commission' not in existing_standard_names:
+                column_map[col] = 'Commission'
+        elif col_lower in ['date/time', 'date_time', 'executiontime']:
+            if 'DateTime' not in existing_standard_names:
+                column_map[col] = 'DateTime'
+        elif col_lower == 'datetime':
+            # Keep as-is if already standard
+            pass
         elif col_lower in ['exchange', 'exch']:
-            column_map[col] = 'Exchange'
+            if 'Exchange' not in existing_standard_names:
+                column_map[col] = 'Exchange'
     
     if column_map:
         df = df.rename(columns=column_map)
+        # Drop duplicate columns if any were created
+        df = df.loc[:, ~df.columns.duplicated()]
     
     return df
 
@@ -86,10 +115,11 @@ def classify_strategy_structure(group: pd.DataFrame) -> Dict[str, Any]:
     if len(group) < 2:
         return {'structure': 'single_leg', 'valid': False}
     
-    symbol = group['Symbol'].iloc[0]
-    expiries = sorted(group['Expiry'].unique())
-    rights = set(group['Put/Call'].unique())
-    strikes = sorted(group['Strike'].unique())
+    # Extract values and convert to Python native types
+    symbol = str(group['Symbol'].iloc[0])
+    expiries = [int(e) if isinstance(e, (int, float)) else e for e in sorted(group['Expiry'].unique())]
+    rights = set(str(r) for r in group['Put/Call'].unique())
+    strikes = [float(s) if isinstance(s, (int, float)) else s for s in sorted(group['Strike'].unique())]
     n_legs = len(group)
     
     # ---------- Vertical spreads (2 legs, both P or both C, same expiry) ----------
@@ -102,18 +132,18 @@ def classify_strategy_structure(group: pd.DataFrame) -> Dict[str, Any]:
         g_high = group[group['Strike'] == high]
         
         # Quantity is minimum absolute quantity across legs
-        qty_low = abs(g_low['Quantity'].sum())
-        qty_high = abs(g_high['Quantity'].sum())
-        qty = min(qty_low, qty_high)
+        qty_low = float(abs(g_low['Quantity'].sum()))
+        qty_high = float(abs(g_high['Quantity'].sum()))
+        qty = float(min(qty_low, qty_high))
         
         if qty == 0:
             return {'structure': 'vertical', 'valid': False}
         
         # Compute weighted average price for each leg
-        total_low = (g_low['Price'] * abs(g_low['Quantity'])).sum()
-        total_high = (g_high['Price'] * abs(g_high['Quantity'])).sum()
-        price_low = total_low / qty_low if qty_low > 0 else 0
-        price_high = total_high / qty_high if qty_high > 0 else 0
+        total_low = float((g_low['Price'] * abs(g_low['Quantity'])).sum())
+        total_high = float((g_high['Price'] * abs(g_high['Quantity'])).sum())
+        price_low = float(total_low / qty_low if qty_low > 0 else 0)
+        price_high = float(total_high / qty_high if qty_high > 0 else 0)
         
         # For puts: Bull put = sell high, buy low
         # Spread Price = SellLeg - BuyLeg (net credit is negative in IB style)
@@ -131,14 +161,14 @@ def classify_strategy_structure(group: pd.DataFrame) -> Dict[str, Any]:
         return {
             'structure': 'vertical',
             'valid': True,
-            'symbol': symbol,
-            'expiry': expiry,
-            'right': right,
-            'strikes': strikes,
+            'symbol': str(symbol),
+            'expiry': int(expiry) if isinstance(expiry, (int, float)) else expiry,
+            'right': str(right),
+            'strikes': [float(s) for s in strikes],
             'quantity': qty,
-            'price': spread_price,
-            'low_strike': low,
-            'high_strike': high,
+            'price': float(spread_price),
+            'low_strike': float(low),
+            'high_strike': float(high),
             'low_price': price_low,
             'high_price': price_high
         }
@@ -225,6 +255,13 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
     # Normalize columns
     df = normalize_flex_columns(df)
     
+    # Ensure Symbol column exists (use UnderlyingSymbol if Symbol doesn't exist)
+    if 'Symbol' not in df.columns and 'UnderlyingSymbol' in df.columns:
+        df['Symbol'] = df['UnderlyingSymbol']
+    elif 'Symbol' not in df.columns:
+        logger.warning("No Symbol or UnderlyingSymbol column found in Flex CSV")
+        return []
+    
     # Filter to only option trades
     if 'Put/Call' in df.columns:
         df = df[df['Put/Call'].notna()].copy()
@@ -301,10 +338,15 @@ def flex_csv_to_strategies(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     'Expiries': strat_info['expiries']
                 })
             
-            # Add execution details from original group
-            event['NetCash'] = dt_group['NetCash'].sum() if 'NetCash' in dt_group.columns else 0
-            event['Commission'] = dt_group['Commission'].sum() if 'Commission' in dt_group.columns else 0
-            event['Legs'] = dt_group.to_dict('records')
+            # Add execution details from original group (ensure Python native types)
+            event['NetCash'] = float(dt_group['NetCash'].sum()) if 'NetCash' in dt_group.columns else 0.0
+            event['Commission'] = float(dt_group['Commission'].sum()) if 'Commission' in dt_group.columns else 0.0
+            
+            # Convert to dict, handling duplicate column names
+            # Select only the columns we need to avoid duplicate column issues
+            leg_columns = ['Symbol', 'Expiry', 'Strike', 'Put/Call', 'Buy/Sell', 'Quantity', 'Price', 'NetCash', 'Commission']
+            available_columns = [col for col in leg_columns if col in dt_group.columns]
+            event['Legs'] = dt_group[available_columns].to_dict('records')
             
             strategies.append(event)
     
@@ -326,17 +368,31 @@ def convert_flex_strategies_to_tws_format(flex_strategies: List[Dict[str, Any]])
     tws_strategies = []
     
     for flex_strat in flex_strategies:
+        # Ensure all numeric values are Python native types
+        num_legs = int(flex_strat.get('NumLegs', 0))
+        net_cash = float(flex_strat.get('NetCash', 0))
+        commission = float(flex_strat.get('Commission', 0))
+        
+        # Format DateTime properly
+        dt = flex_strat.get('DateTime', '')
+        if isinstance(dt, pd.Timestamp):
+            dt_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(dt, datetime):
+            dt_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            dt_str = str(dt) if dt else ''
+        
         tws_strat = {
-            'OrderID': flex_strat.get('OrderID', 'N/A'),
+            'OrderID': str(flex_strat.get('OrderID', 'N/A')),
             'BAG_ID': None,  # Flex doesn't have BAG_ID
             'StrategyID': None,  # Will be generated by strategy_detector if needed
-            'NumLegs': flex_strat.get('NumLegs', 0),
-            'Underlying': flex_strat.get('Symbol', 'N/A'),
-            'When': flex_strat.get('DateTime', ''),
-            'PurchaseDateTime': flex_strat.get('DateTime', ''),
-            'NetCash': flex_strat.get('NetCash', 0),
-            'Commission': flex_strat.get('Commission', 0),
-            'TotalCost': flex_strat.get('NetCash', 0) + flex_strat.get('Commission', 0)
+            'NumLegs': num_legs,
+            'Underlying': str(flex_strat.get('Symbol', 'N/A')),
+            'When': dt_str,
+            'PurchaseDateTime': dt_str,
+            'NetCash': net_cash,
+            'Commission': commission,
+            'TotalCost': net_cash + commission
         }
         
         # Build leg descriptions from legs
@@ -365,23 +421,27 @@ def convert_flex_strategies_to_tws_format(flex_strategies: List[Dict[str, Any]])
         # Add structure-specific fields
         structure = flex_strat.get('Structure', 'unknown')
         if structure == 'vertical':
+            quantity = float(flex_strat.get('Quantity', 0))
+            price = float(flex_strat.get('Price', 0))
+            total_price = price * quantity * 100
+            
             tws_strat.update({
                 'SpreadType': f"{flex_strat['Symbol']} {flex_strat['Expiry']} {flex_strat['HighStrike']}/{flex_strat['LowStrike']} Bull {'Put' if flex_strat['Put/Call'] == 'P' else 'Call'}",
-                'Quantity': flex_strat.get('Quantity', 0),
-                'OpenPrice': flex_strat.get('Price', 0),
+                'Quantity': int(quantity),
+                'OpenPrice': price,
                 'ClosePrice': None,
-                'BuyPrice': flex_strat.get('Price', 0) * flex_strat.get('Quantity', 0) * 100,
-                'SellPrice': 0,
-                'PnL': 0,
-                'Price': flex_strat.get('Price', 0) * flex_strat.get('Quantity', 0) * 100
+                'BuyPrice': total_price,
+                'SellPrice': 0.0,
+                'PnL': 0.0,
+                'Price': total_price
             })
         else:
             # For non-vertical spreads, use NetCash as price
             tws_strat.update({
-                'BuyPrice': flex_strat.get('NetCash', 0),
-                'SellPrice': 0,
-                'PnL': 0,
-                'Price': flex_strat.get('NetCash', 0)
+                'BuyPrice': net_cash,
+                'SellPrice': 0.0,
+                'PnL': 0.0,
+                'Price': net_cash
             })
         
         tws_strategies.append(tws_strat)
