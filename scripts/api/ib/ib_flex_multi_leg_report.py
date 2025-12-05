@@ -2221,13 +2221,48 @@ Environment Variables Required (only if not using --flex-report):
                 logger.warning(f"No trades found on or after {since_date.strftime('%Y-%m-%d')}")
                 sys.exit(0)
         
-        # Group into multi-leg strategies
-        # Convert string argument to boolean
-        group_by_strategy = args.group_by_strategy.lower() in ['true', '1', 'yes']
-        strategies = group_multi_leg_strategies(df, group_by_strategy=group_by_strategy)
-        if not strategies:
-            logger.warning("No multi-leg strategies found")
-            sys.exit(0)
+        # Use Flex strategy reconstructor for proper multi-leg grouping
+        # Flex CSV doesn't have BAG rows, so we need to reconstruct strategies
+        try:
+            from utils.api.ib.flex_strategy_reconstructor import flex_csv_to_strategies, convert_flex_strategies_to_tws_format
+            
+            logger.info("Reconstructing multi-leg strategies from Flex CSV data...")
+            flex_strategies = flex_csv_to_strategies(df)
+            
+            if not flex_strategies:
+                logger.warning("No multi-leg strategies found in Flex CSV")
+                sys.exit(0)
+            
+            # Convert to TWS format for compatibility with report generation
+            strategies = convert_flex_strategies_to_tws_format(flex_strategies)
+            
+            # Filter by date if needed (already done above, but ensure DateTime is set)
+            if since_date:
+                filtered_strategies = []
+                for s in strategies:
+                    purchase_dt = s.get('PurchaseDateTime')
+                    if purchase_dt:
+                        if isinstance(purchase_dt, datetime):
+                            dt = purchase_dt
+                        else:
+                            dt = pd.to_datetime(purchase_dt, errors='coerce')
+                        if pd.notna(dt) and dt >= since_date:
+                            filtered_strategies.append(s)
+                strategies = filtered_strategies
+            
+            if not strategies:
+                logger.warning(f"No strategies found on or after {since_date.strftime('%Y-%m-%d')}")
+                sys.exit(0)
+                
+        except ImportError as e:
+            logger.warning(f"Flex strategy reconstructor not available: {e}")
+            logger.info("Falling back to legacy grouping method...")
+            # Fallback to legacy method
+            group_by_strategy = args.group_by_strategy.lower() in ['true', '1', 'yes']
+            strategies = group_multi_leg_strategies(df, group_by_strategy=group_by_strategy)
+            if not strategies:
+                logger.warning("No multi-leg strategies found")
+                sys.exit(0)
     
     # Step 6: Generate output
     if args.output:
