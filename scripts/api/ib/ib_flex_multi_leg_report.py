@@ -554,8 +554,10 @@ def fetch_tws_executions(since_date: Optional[datetime] = None, port: Optional[i
                 logger.debug(f"  execId: {execution.execId}")
                 logger.debug(f"  orderId: {execution.orderId}")
                 logger.debug(f"  orderRef: {execution.orderRef}")
-                # execution.side: 'B' = BOT (Buy), 'S' = SLD (Sell)
-                side_str = 'BOT (BUY)' if execution.side == 'B' else 'SLD (SELL)'
+                # execution.side: 'B' or 'BOT' = BOT (Buy), 'S' or 'SLD' = SLD (Sell)
+                side_upper = str(execution.side).upper()
+                is_buy = side_upper in ('B', 'BOT')
+                side_str = 'BOT (BUY)' if is_buy else 'SLD (SELL)'
                 logger.debug(f"  side: {execution.side} ({side_str})")
                 logger.debug(f"  shares: {execution.shares}")
                 logger.debug(f"  price: {execution.price}")

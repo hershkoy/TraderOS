@@ -483,6 +483,53 @@ class TestExecutionConverter(unittest.TestCase):
         # Should only have 1 row (option execution)
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]['TradeID'], 'exec2')
+    
+    def test_handle_bot_sld_string_formats(self):
+        """Test that converter handles 'BOT'/'SLD' string formats (not just 'B'/'S')."""
+        # Test with 'BOT' string format
+        fill_bot = self._create_mock_fill(
+            sec_type='OPT',
+            symbol='RUT',
+            exec_id='exec_bot',
+            order_id=0,
+            side='BOT',  # String format, not 'B'
+            shares=1.0,
+            price=41.5,
+            expiry='20251218',
+            strike=2545.0,
+            right='C'
+        )
+        
+        # Test with 'SLD' string format
+        fill_sld = self._create_mock_fill(
+            sec_type='OPT',
+            symbol='RUT',
+            exec_id='exec_sld',
+            order_id=0,
+            side='SLD',  # String format, not 'S'
+            shares=1.0,
+            price=13.28,
+            expiry='20251212',
+            strike=2585.0,
+            right='C'
+        )
+        
+        df = self.converter.convert_fills_to_dataframe([fill_bot, fill_sld])
+        
+        # Should have 2 rows
+        self.assertEqual(len(df), 2)
+        
+        # Check BOT (Buy) execution
+        row_bot = df[df['TradeID'] == 'exec_bot'].iloc[0]
+        self.assertEqual(row_bot['Buy/Sell'], 'Buy')
+        self.assertEqual(row_bot['Quantity'], 1.0)  # Positive for Buy
+        self.assertEqual(row_bot['NetCash'], -4150.0)  # Negative for Buy (money out)
+        
+        # Check SLD (Sell) execution
+        row_sld = df[df['TradeID'] == 'exec_sld'].iloc[0]
+        self.assertEqual(row_sld['Buy/Sell'], 'SELL')
+        self.assertEqual(row_sld['Quantity'], -1.0)  # Negative for Sell
+        self.assertEqual(row_sld['NetCash'], 1328.0)  # Positive for Sell (money in)
 
 
 if __name__ == '__main__':

@@ -153,23 +153,25 @@ class ExecutionConverter:
                 bag_id = parts[0]  # First part is the BAG ID
         
         # Map execution side to Buy/Sell
-        # execution.side: 'B' = BOT (Buy), 'S' = SLD (Sell)
+        # execution.side can be: 'B' or 'BOT' (Buy), 'S' or 'SLD' (Sell)
         # For Buy: Quantity positive, NetCash negative (money out)
         # For Sell: Quantity negative, NetCash positive (money in)
-        buy_sell = 'Buy' if execution.side == 'B' else 'SELL'
+        side_upper = str(execution.side).upper()
+        is_buy = side_upper in ('B', 'BOT')
+        buy_sell = 'Buy' if is_buy else 'SELL'
         
         # Calculate quantity and NetCash
         price_per_share = execution.price
         shares = execution.shares
         
         # Quantity: positive for Buy, negative for Sell
-        quantity = shares if execution.side == 'B' else -shares
+        quantity = shares if is_buy else -shares
         
         # NetCash: negative for Buy (money out), positive for Sell (money in)
         # NetCash = price * shares * 100 (contract multiplier)
         # For Buy: NetCash is negative (money out)
         # For Sell: NetCash is positive (money in)
-        if execution.side == 'B':  # Buy
+        if is_buy:  # Buy
             net_cash = -(price_per_share * shares * 100)  # Negative (money out)
         else:  # Sell
             net_cash = price_per_share * shares * 100  # Positive (money in)
