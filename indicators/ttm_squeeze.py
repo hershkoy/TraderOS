@@ -40,6 +40,10 @@ class TTMSqueezeMomentum(bt.Indicator):
         # Need high, low, close from the data feed
         self.data_hlc = self.data  # Assume data feed has high, low, close
         self.addminperiod(self.p.lengthKC)
+        
+        # Cache to store baseline-corrected differences for the last L bars
+        # This allows us to match pandas rolling window behavior exactly
+        self.differences_cache = []
 
     def next(self):
         if len(self.data) < self.p.lengthKC:
@@ -49,63 +53,65 @@ class TTMSqueezeMomentum(bt.Indicator):
 
         L = self.p.lengthKC
         
-        # For each bar in the regression window (last L bars including current),
-        # calculate its baseline and then the difference (close - baseline)
-        # This matches Pine Script: linreg(close - avg(...), lengthKC, 0)
-        # In Backtrader: index 0 = current bar, -1 = previous bar, ..., -(L-1) = L bars ago
-        differences = []
+        # Calculate baseline for current bar using L bars ending at current bar (index 0)
+        # This matches pandas: rolling(L) at bar t uses bars t-L+1 to t
+        # In Backtrader: for current bar (index 0), use bars from -(L-1) to 0
+        highest_high = 0.0
+        lowest_low = float('inf')
+        sum_close = 0.0
         
-        for j in range(L):
-            # Bar index: -L+1+j gives us bars from -(L-1) down to 0 (current bar)
-            # j=0: bar at -(L-1), j=L-1: bar at 0 (current)
-            bar_idx = -L + 1 + j
-            highest_high = 0.0
-            lowest_low = float('inf')
-            sum_close = 0.0
-            
-            # Calculate baseline components for this bar (using last L bars ending at bar_idx)
-            # For bar at bar_idx, look at bars from bar_idx-(L-1) to bar_idx
-            for i in range(L):
-                lookback_idx = bar_idx - (L - 1) + i
-                try:
-                    h = float(self.data_hlc.high[lookback_idx])
-                    l = float(self.data_hlc.low[lookback_idx])
-                    c = float(self.data_hlc.close[lookback_idx])
-                    highest_high = max(highest_high, h)
-                    lowest_low = min(lowest_low, l)
-                    sum_close += c
-                except (IndexError, TypeError, ValueError):
-                    self.lines.momentum[0] = 0.0
-                    self.lines.slope[0] = 0.0
-                    return
-            
-            if lowest_low == float('inf'):
-                self.lines.momentum[0] = 0.0
-                self.lines.slope[0] = 0.0
-                return
-            
-            # Baseline for this bar
-            mid_hl = (highest_high + lowest_low) / 2.0
-            sma_close = sum_close / L
-            baseline = (mid_hl + sma_close) / 2.0
-            
-            # Calculate difference: close - baseline for this bar
+        for i in range(L):
+            lookback_idx = -(L - 1) + i  # Ranges from -(L-1) to 0
             try:
-                c = float(self.data_hlc.close[bar_idx])
-                differences.append(c - baseline)
+                h = float(self.data_hlc.high[lookback_idx])
+                l = float(self.data_hlc.low[lookback_idx])
+                c = float(self.data_hlc.close[lookback_idx])
+                highest_high = max(highest_high, h)
+                lowest_low = min(lowest_low, l)
+                sum_close += c
             except (IndexError, TypeError, ValueError):
                 self.lines.momentum[0] = 0.0
                 self.lines.slope[0] = 0.0
                 return
         
-        # Linear regression on differences
+        if lowest_low == float('inf'):
+            self.lines.momentum[0] = 0.0
+            self.lines.slope[0] = 0.0
+            return
+        
+        # Calculate baseline for current bar
+        mid_hl = (highest_high + lowest_low) / 2.0
+        sma_close = sum_close / L
+        baseline = (mid_hl + sma_close) / 2.0
+        
+        # Calculate difference: close - baseline for current bar
+        try:
+            current_close = float(self.data_hlc.close[0])
+            current_diff = current_close - baseline
+        except (IndexError, TypeError, ValueError):
+            self.lines.momentum[0] = 0.0
+            self.lines.slope[0] = 0.0
+            return
+        
+        # Add to cache (keep only last L values)
+        self.differences_cache.append(current_diff)
+        if len(self.differences_cache) > L:
+            self.differences_cache.pop(0)
+        
+        # Need at least L differences for regression
+        if len(self.differences_cache) < L:
+            self.lines.momentum[0] = 0.0
+            self.lines.slope[0] = 0.0
+            return
+        
+        # Linear regression on last L differences
         # x = 0, 1, 2, ..., L-1 (time indices, where 0 = oldest, L-1 = current)
-        # y = differences[0], differences[1], ..., differences[L-1]
+        # y = differences_cache[0], differences_cache[1], ..., differences_cache[L-1]
         n = L
         sum_x = sum_y = sum_xy = sum_x2 = 0.0
         for i in range(n):
             x = float(i)
-            y = differences[i]
+            y = self.differences_cache[i]
             sum_x += x
             sum_y += y
             sum_xy += x * y
