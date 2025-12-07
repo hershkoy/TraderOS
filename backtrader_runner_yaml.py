@@ -785,6 +785,8 @@ def main():
                    help='Run backtest on universe of symbols from database')
     ap.add_argument('--max-symbols', type=int, default=None,
                    help='Maximum number of symbols to test (for universe backtesting)')
+    ap.add_argument('--start-index', type=int, default=0,
+                   help='Index to start from in the universe (for universe backtesting, default: 0)')
     ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
                    help='Data provider (default: ALPACA)')
     ap.add_argument('--timeframe', type=str, choices=['15m', '1h', '1d'], default='1h',
@@ -888,6 +890,14 @@ def main():
         try:
             from utils.data.ticker_universe import get_combined_universe
             symbols = get_combined_universe(force_refresh=False)
+            # Apply start_index first
+            if args.start_index > 0:
+                if args.start_index >= len(symbols):
+                    print(f"Error: start_index ({args.start_index}) is >= universe size ({len(symbols)})", flush=True)
+                    return
+                symbols = symbols[args.start_index:]
+                print(f"Starting from index {args.start_index}, {len(symbols)} symbols remaining", flush=True)
+            # Then apply max_symbols limit
             if args.max_symbols:
                 symbols = symbols[:args.max_symbols]
             print(f"Running backtest on {len(symbols)} symbols", flush=True)
@@ -901,7 +911,8 @@ def main():
         failed = 0
         
         for i, symbol in enumerate(symbols, 1):
-            print(f"\n[{i}/{len(symbols)}] Processing {symbol}...", flush=True)
+            actual_index = args.start_index + i - 1
+            print(f"\n[{i}/{len(symbols)}] Processing {symbol} (universe index: {actual_index})...", flush=True)
             try:
                 # Load data for this symbol
                 start = global_config.get('fromdate')

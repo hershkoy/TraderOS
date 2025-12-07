@@ -41,6 +41,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 
 # Make project root importable
 # Go up 2 levels from scripts/trading/ to project root
@@ -77,11 +78,61 @@ from strategies.option_strategies import (
     get_strategy, list_strategies,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(log_level: str = "INFO", log_file: str = None, account: str = None):
+    """
+    Set up logging configuration.
+    
+    Args:
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Path to log file (if None, uses default timestamped filename)
+        account: IB account ID (if provided and starts with "DU", adds "paper" to filename)
+    """
+    # Convert string level to logging constant
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {log_level}')
+    
+    # Determine if paper account
+    is_paper = account and account.startswith("DU") if account else False
+    
+    # Determine log file path
+    if log_file is None:
+        # Default: logs\trading\credit_spreads\credit_spreads_YYYYMMDD_HHMMSS.log
+        # If paper account: logs\trading\credit_spreads\credit_spreads_paper_YYYYMMDD_HHMMSS.log
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_dir = os.path.join("logs", "trading", "credit_spreads")
+        os.makedirs(log_dir, exist_ok=True)
+        paper_suffix = "_paper" if is_paper else ""
+        log_file = os.path.join(log_dir, f"credit_spreads{paper_suffix}_{timestamp}.log")
+    else:
+        # Create directory if it doesn't exist
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+    
+    # Configure logging with file handler only (no console output)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Remove existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+    
+    # File handler
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(numeric_level)
+    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    file_handler.setFormatter(file_formatter)
+    root_logger.addHandler(file_handler)
+    
+    # Output log file name to console (using print, not logger, so it doesn't go to the file)
+    print(f"Logging to: {log_file}")
+    
+    # Now that logging is configured, we can log to file
+    root_logger.info("Logging configured: level=%s, file=%s", log_level, log_file)
+    return log_file
 
 # Legacy alias for backward compatibility
 SpreadCandidate = VerticalSpreadCandidate
@@ -206,8 +257,35 @@ def main():
         help="Take profit price (e.g., -0.02 for 2 cents)")
     parser.add_argument("--stop-loss", type=float, default=None,
         help="Stop loss multiplier or absolute price")
+    parser.add_argument("--log-level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: INFO)")
+    parser.add_argument("--log-file", type=str, default=None,
+        help="Path to log file (default: logs/trading/credit_spreads/credit_spreads_YYYYMMDD_HHMMSS.log)")
     
     args = parser.parse_args()
+    
+    # Try to detect account early for log filename (if not provided via --account)
+    # Note: This is optional - if detection fails, we'll continue without "paper" in the log name
+    detected_account = None
+    if args.account:
+        detected_account = args.account
+    else:
+        # Try to auto-detect account if port is available (but don't fail if it doesn't work)
+        try:
+            port = args.port
+            if port is None:
+                # Try to detect port first
+                port = detect_ib_port()
+            if port:
+                detected_account = detect_ib_account(port=port)
+        except Exception:
+            # If detection fails (e.g., IB not connected), continue without account in log name
+            # This is fine - we'll detect it later when needed
+            pass
+    
+    # Set up logging first (before any logging calls)
+    log_file = setup_logging(log_level=args.log_level, log_file=args.log_file, account=detected_account)
     
     # Log command line parameters
     logger.info("=== Command Line Parameters ===")

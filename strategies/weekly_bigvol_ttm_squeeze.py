@@ -558,18 +558,62 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         # STAGE 1: Detect ignition bars (Weekly Big Volume)
         self.debug_log(f"[{self.symbol}] Checking Condition A (Ignition) for week {current_week_idx}")
         ignition_result = self.volume_analytics.is_ignition_bar(-1)  # Evaluate most recent completed week
-        if ignition_result:
-            self.last_ignition_idx = current_week_idx
-            try:
-                self.last_ignition_week_date = self.d_w.datetime.datetime(-1)
-            except:
-                pass
-            self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
+        
+        # Log Condition A status at INFO level
+        try:
+            w = self.d_w
+            vol = float(w.volume[-1]) if len(w.volume) > 0 else 0.0
+            close = float(w.close[-1]) if len(w.close) > 0 else 0.0
+            ma30_val = float(self.ma30[-1]) if len(self.ma30) > 0 else 0.0
+            
+            # Get volume stats for context
+            vol_median = 0.0
+            if hasattr(self.volume_analytics, 'vol_robust_stats') and len(self.volume_analytics.vol_robust_stats.median) > 0:
+                vol_median = float(self.volume_analytics.vol_robust_stats.median[-1])
+            vol_ratio = vol / vol_median if vol_median > 0 else 0.0
+            
+            if ignition_result:
+                self.log(f"[{self.symbol}] CONDITION A (Ignition): PASSED | Week {current_week_idx} | Vol={vol:,.0f} ({vol_ratio:.2f}x median) | Close=${close:.2f} > MA30=${ma30_val:.2f}", level='INFO')
+                self.last_ignition_idx = current_week_idx
+                try:
+                    self.last_ignition_week_date = self.d_w.datetime.datetime(-1)
+                except:
+                    pass
+                self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
+            else:
+                self.log(f"[{self.symbol}] CONDITION A (Ignition): FAILED | Week {current_week_idx} | Vol={vol:,.0f} ({vol_ratio:.2f}x median) | Close=${close:.2f} vs MA30=${ma30_val:.2f}", level='INFO')
+        except Exception as e:
+            self.debug_log(f"Error logging Condition A info: {e}")
+            if ignition_result:
+                self.last_ignition_idx = current_week_idx
+                try:
+                    self.last_ignition_week_date = self.d_w.datetime.datetime(-1)
+                except:
+                    pass
+                self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
 
         # STAGE 2: Check for TTM Confirmation (Zero Cross) - ARM THE TICKER
         if self.last_ignition_idx is not None:
             # Check if TTM crosses from negative to positive
             ttm_cross_result = self.momentum.check_confirmation(-1)
+            
+            # Log Condition B status at INFO level
+            try:
+                mom = self.momentum.mom
+                if len(mom) >= 2:
+                    mom_prev = float(mom.slope[-2]) if len(mom.slope) >= 2 else 0.0
+                    mom_curr = float(mom.slope[-1]) if len(mom.slope) >= 1 else 0.0
+                    weeks_since_ignition = current_week_idx - self.last_ignition_idx
+                    
+                    if ttm_cross_result:
+                        self.log(f"[{self.symbol}] CONDITION B (TTM Cross): PASSED | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | {weeks_since_ignition} weeks after ignition", level='INFO')
+                    else:
+                        self.log(f"[{self.symbol}] CONDITION B (TTM Cross): FAILED | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | {weeks_since_ignition} weeks after ignition", level='INFO')
+                else:
+                    self.log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Insufficient momentum data (len={len(mom)})", level='INFO')
+            except Exception as e:
+                self.debug_log(f"Error logging Condition B info: {e}")
+            
             if ttm_cross_result:
                 # TTM cross must occur after ignition
                 if self.last_ttm_cross_idx is None or current_week_idx > self.last_ttm_cross_idx:
@@ -637,6 +681,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 self.last_ignition_idx = None
                 self.last_ignition_week_date = None
                 self.intraday_manager.reset_armed_state()
+        else:
+            # Log Condition B status even when Condition A hasn't passed yet
+            try:
+                mom = self.momentum.mom
+                if len(mom) >= 2:
+                    mom_prev = float(mom.slope[-2]) if len(mom.slope) >= 2 else 0.0
+                    mom_curr = float(mom.slope[-1]) if len(mom.slope) >= 1 else 0.0
+                    self.log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | Waiting for Condition A (Ignition)", level='INFO')
+            except Exception:
+                pass
 
         # Check if entry window expired (check on every bar, not just weekly)
         if self.armed and self.entry_window_end_date is not None:

@@ -352,7 +352,29 @@ class TimescaleDBClient:
             rows = cursor.fetchall()
             
             if not rows:
-                logger.warning(f"No data found for {symbol} {timeframe}")
+                # Check what timeframes are available for this symbol
+                cursor.execute("""
+                    SELECT DISTINCT timeframe 
+                    FROM market_data 
+                    WHERE symbol = %s
+                    ORDER BY timeframe
+                """, [symbol.upper()])
+                available_timeframes = [row[0] for row in cursor.fetchall()]
+                
+                if available_timeframes:
+                    logger.warning(f"No data found for {symbol} {timeframe}. Available timeframes: {', '.join(available_timeframes)}")
+                else:
+                    # Check if symbol exists at all
+                    cursor.execute("""
+                        SELECT COUNT(*) 
+                        FROM market_data 
+                        WHERE symbol = %s
+                    """, [symbol.upper()])
+                    symbol_count = cursor.fetchone()[0]
+                    if symbol_count == 0:
+                        logger.warning(f"No data found for {symbol} {timeframe}. Symbol does not exist in database.")
+                    else:
+                        logger.warning(f"No data found for {symbol} {timeframe}")
                 return pd.DataFrame()
             
             logger.info(f"Retrieved {len(rows)} raw rows from database")
@@ -381,6 +403,45 @@ class TimescaleDBClient:
         except Exception as e:
             logger.error(f"Failed to retrieve market data: {e}")
             return None
+        finally:
+            if cursor:
+                cursor.close()
+    
+    def get_available_timeframes(self, symbol: str, provider: Optional[str] = None) -> List[str]:
+        """
+        Get list of available timeframes for a symbol
+        
+        Args:
+            symbol: Stock symbol
+            provider: Filter by provider (optional)
+        
+        Returns:
+            List of available timeframes
+        """
+        if not self.ensure_connection():
+            logger.error("No database connection")
+            return []
+        
+        try:
+            cursor = self.connection.cursor()
+            
+            query = "SELECT DISTINCT timeframe FROM market_data WHERE symbol = %s"
+            params = [symbol.upper()]
+            
+            if provider:
+                query += " AND provider = %s"
+                params.append(provider.upper())
+            
+            query += " ORDER BY timeframe"
+            
+            cursor.execute(query, params)
+            timeframes = [row[0] for row in cursor.fetchall()]
+            
+            return timeframes
+            
+        except Exception as e:
+            logger.error(f"Failed to get available timeframes: {e}")
+            return []
         finally:
             if cursor:
                 cursor.close()

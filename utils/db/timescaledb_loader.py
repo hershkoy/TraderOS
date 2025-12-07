@@ -59,7 +59,24 @@ def load_timescaledb_data(symbol: str, timeframe: str, provider: Optional[str] =
         )
         
         if df.empty:
-            raise ValueError(f"No data found for {symbol} {timeframe}")
+            # Get available timeframes for better error message
+            available_timeframes = client.get_available_timeframes(symbol, provider)
+            if available_timeframes:
+                error_msg = f"No data found for {symbol} {timeframe}"
+                if provider:
+                    error_msg += f" from provider {provider}"
+                error_msg += f". Available timeframes: {', '.join(available_timeframes)}"
+                raise ValueError(error_msg)
+            else:
+                # Check if symbol exists at all
+                available_symbols = client.get_available_symbols(provider, timeframe)
+                if symbol.upper() not in [s.upper() for s in available_symbols]:
+                    error_msg = f"Symbol {symbol} not found in database"
+                    if provider:
+                        error_msg += f" for provider {provider}"
+                    raise ValueError(error_msg)
+                else:
+                    raise ValueError(f"No data found for {symbol} {timeframe}")
         
         # Convert to BackTrader format
         df_bt = pd.DataFrame({
