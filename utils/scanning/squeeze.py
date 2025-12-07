@@ -6,6 +6,16 @@ import pandas as pd
 from dataclasses import dataclass
 from typing import Optional, Iterable, Dict, List
 
+# Import unified squeeze calculation from indicators module
+try:
+    from indicators.ttm_squeeze import calculate_squeeze_momentum
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from indicators.ttm_squeeze import calculate_squeeze_momentum
+
 # -----------------------------
 # Data helpers (same style as HL scanner)
 # -----------------------------
@@ -25,60 +35,21 @@ def latest_price(raw_df: pd.DataFrame) -> float:
     return float(raw_df["close"].iloc[-1])
 
 # -----------------------------
-# LazyBear Squeeze "val" (histogram) reimplementation
-# We only need val and the 0-line cross up (red->green).
-# Pine:
-# val = linreg(close - avg(avg(highest(high,L), lowest(low,L)), sma(close,L)), L, 0)
+# Squeeze calculation wrapper (uses unified indicator)
 # -----------------------------
 
-def rolling_linreg_yhat(x: pd.Series, length: int) -> pd.Series:
-    """
-    Rolling least-squares fit (degree=1) evaluated at the most-recent x.
-    Equivalent to Pine's linreg(x, length, 0).
-    """
-    # index positions 0..length-1 for regression
-    idx = np.arange(length, dtype=float)
-
-    def _fit(arr):
-        y = np.asarray(arr, dtype=float)
-        # polyfit on [0..length-1], return predicted y at last x (length-1)
-        m, b = np.polyfit(idx, y, 1)
-        return m * (length - 1) + b
-
-    return x.rolling(length, min_periods=length).apply(_fit, raw=False)
-
 def squeeze_val(df_w: pd.DataFrame, lengthKC: int = 20) -> pd.Series:
+    """
+    Calculate squeeze momentum values using the unified indicator function.
+    
+    This is a wrapper around calculate_squeeze_momentum from indicators.ttm_squeeze
+    that enables logging for scanner use cases.
+    """
     import logging
     logger = logging.getLogger(__name__)
     
-    src = df_w["close"]
-    logger.debug(f"Calculating squeeze val with lengthKC={lengthKC}")
-    
-    # component = close - avg( avg(highest(high,L), lowest(low,L)), sma(close,L) )
-    highest_h = df_w["high"].rolling(lengthKC, min_periods=lengthKC).max()
-    lowest_l  = df_w["low"].rolling(lengthKC,  min_periods=lengthKC).min()
-    mid_hl    = (highest_h + lowest_l) / 2.0
-    sma_c     = src.rolling(lengthKC, min_periods=lengthKC).mean()
-    baseline  = (mid_hl + sma_c) / 2.0
-    x = src - baseline
-    
-    # Log key intermediate values for the last few periods
-    if len(df_w) >= 3:
-        logger.debug(f"Last 3 periods - Close: {src.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - Highest H: {highest_h.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - Lowest L: {lowest_l.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - Mid HL: {mid_hl.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - SMA C: {sma_c.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - Baseline: {baseline.tail(3).tolist()}")
-        logger.debug(f"Last 3 periods - X (close-baseline): {x.tail(3).tolist()}")
-    
-    val = rolling_linreg_yhat(x, lengthKC)
-    
-    # Log the final squeeze values
-    valid_vals = val.dropna()
-    if len(valid_vals) > 0:
-        logger.debug(f"Final squeeze val range: {valid_vals.min():.4f} to {valid_vals.max():.4f}")
-        logger.debug(f"Last 3 squeeze vals: {valid_vals.tail(3).tolist()}")
+    # Use the unified calculation function with logging enabled
+    val = calculate_squeeze_momentum(df_w, lengthKC=lengthKC, use_logging=True)
     
     return val
 
