@@ -6,6 +6,8 @@ from typing import Tuple, List
 import backtrader as bt
 import numpy as np
 
+from indicators.ttm_squeeze import TTMSqueezeMomentum
+
 
 class WeightedVolStats(bt.Indicator):
     """Weighted volume statistics (mean and stddev) with exponential decay."""
@@ -511,9 +513,16 @@ class MomentumDetector:
 
     def __init__(self, strategy):
         self.strategy = strategy
-        self.mom = LinRegSlope(strategy.d_w.close, period=strategy.p.mom_period)
+        # Use TTM Squeeze Momentum indicator (matches Pine Script LazyBear implementation)
+        self.mom = TTMSqueezeMomentum(strategy.d_w, lengthKC=strategy.p.lengthKC)
 
     def is_squeeze_on(self, idx: int) -> bool:
+        """
+        Check if squeeze is "on" (compression phase).
+        Note: This is a heuristic - in the full TTM Squeeze, squeeze-on is determined
+        by Bollinger Bands being inside Keltner Channels. For now, we use a simple
+        momentum magnitude check as a proxy.
+        """
         mom = self.mom
         if len(mom) == 0:
             return False
@@ -522,7 +531,8 @@ class MomentumDetector:
         if idx >= len(mom):
             return False
         try:
-            mom_val = float(mom.slope[idx])
+            # Use momentum value (not slope) for squeeze detection
+            mom_val = float(mom.momentum[idx])
             return abs(mom_val) < 0.5
         except (IndexError, TypeError):
             return False
@@ -560,8 +570,10 @@ class MomentumDetector:
                 )
                 return False
 
-            mom_prev = float(mom.slope[idx - 1])
-            mom_curr = float(mom.slope[idx])
+            # Use momentum value (predicted value from linear regression) for zero-cross detection
+            # This matches Pine Script's 'val' which is linreg(x, length, 0)
+            mom_prev = float(mom.momentum[idx - 1])
+            mom_curr = float(mom.momentum[idx])
 
             if not (mom_prev <= 0 and mom_curr > 0):
                 log_debug(
@@ -570,6 +582,7 @@ class MomentumDetector:
                 )
                 return False
 
+            # Check momentum value threshold (not slope)
             if mom_curr <= p.mom_slope_min:
                 log_debug(
                     f"CONDITION B (TTM): Momentum {mom_curr:.4f} <= threshold {p.mom_slope_min}"

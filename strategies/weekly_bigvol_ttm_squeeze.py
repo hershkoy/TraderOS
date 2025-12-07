@@ -581,7 +581,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                     pass
                 self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
             else:
-                self.log(f"[{self.symbol}] CONDITION A (Ignition): FAILED | Week {current_week_idx} | Vol={vol:,.0f} ({vol_ratio:.2f}x median) | Close=${close:.2f} vs MA30=${ma30_val:.2f}", level='INFO')
+                self.debug_log(f"[{self.symbol}] CONDITION A (Ignition): FAILED | Week {current_week_idx} | Vol={vol:,.0f} ({vol_ratio:.2f}x median) | Close=${close:.2f} vs MA30=${ma30_val:.2f}")
         except Exception as e:
             self.debug_log(f"Error logging Condition A info: {e}")
             if ignition_result:
@@ -601,16 +601,16 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             try:
                 mom = self.momentum.mom
                 if len(mom) >= 2:
-                    mom_prev = float(mom.slope[-2]) if len(mom.slope) >= 2 else 0.0
-                    mom_curr = float(mom.slope[-1]) if len(mom.slope) >= 1 else 0.0
+                    mom_prev = float(mom.momentum[-2]) if len(mom.momentum) >= 2 else 0.0
+                    mom_curr = float(mom.momentum[-1]) if len(mom.momentum) >= 1 else 0.0
                     weeks_since_ignition = current_week_idx - self.last_ignition_idx
                     
                     if ttm_cross_result:
                         self.log(f"[{self.symbol}] CONDITION B (TTM Cross): PASSED | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | {weeks_since_ignition} weeks after ignition", level='INFO')
                     else:
-                        self.log(f"[{self.symbol}] CONDITION B (TTM Cross): FAILED | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | {weeks_since_ignition} weeks after ignition", level='INFO')
+                        self.debug_log(f"[{self.symbol}] CONDITION B (TTM Cross): FAILED | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | {weeks_since_ignition} weeks after ignition")
                 else:
-                    self.log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Insufficient momentum data (len={len(mom)})", level='INFO')
+                    self.debug_log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Insufficient momentum data (len={len(mom)})")
             except Exception as e:
                 self.debug_log(f"Error logging Condition B info: {e}")
             
@@ -682,13 +682,13 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 self.last_ignition_week_date = None
                 self.intraday_manager.reset_armed_state()
         else:
-            # Log Condition B status even when Condition A hasn't passed yet
+            # Log Condition B status even when Condition A hasn't passed yet (DEBUG only)
             try:
                 mom = self.momentum.mom
                 if len(mom) >= 2:
-                    mom_prev = float(mom.slope[-2]) if len(mom.slope) >= 2 else 0.0
-                    mom_curr = float(mom.slope[-1]) if len(mom.slope) >= 1 else 0.0
-                    self.log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | Waiting for Condition A (Ignition)", level='INFO')
+                    mom_prev = float(mom.momentum[-2]) if len(mom.momentum) >= 2 else 0.0
+                    mom_curr = float(mom.momentum[-1]) if len(mom.momentum) >= 1 else 0.0
+                    self.debug_log(f"[{self.symbol}] CONDITION B (TTM Cross): CHECKING | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f} | Waiting for Condition A (Ignition)")
             except Exception:
                 pass
 
