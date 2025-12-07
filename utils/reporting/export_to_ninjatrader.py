@@ -14,14 +14,16 @@ NinjaTrader 8 CSV Format Requirements:
 import sys
 from pathlib import Path
 import argparse
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple
 import logging
+import re
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-from ..db.timescaledb_client import get_timescaledb_client
+from utils.db.timescaledb_client import get_timescaledb_client
 import pandas as pd
 
 # Configure logging
@@ -30,6 +32,145 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def parse_timeframe_to_minutes(timeframe: str) -> int:
+    """
+    Parse timeframe string to minutes
+    
+    Args:
+        timeframe: Timeframe string (e.g., '1d', '1h', '15m', '4h')
+    
+    Returns:
+        Number of minutes
+    """
+    # Match patterns like: 1d, 1h, 15m, 4h, 30m, etc.
+    match = re.match(r'^(\d+)([dhm])$', timeframe.lower())
+    if not match:
+        raise ValueError(f"Invalid timeframe format: {timeframe}")
+    
+    value = int(match.group(1))
+    unit = match.group(2)
+    
+    if unit == 'd':
+        return value * 24 * 60  # days to minutes
+    elif unit == 'h':
+        return value * 60  # hours to minutes
+    elif unit == 'm':
+        return value  # minutes
+    else:
+        raise ValueError(f"Unknown timeframe unit: {unit}")
+
+
+def find_best_lower_timeframe(requested_timeframe: str, available_timeframes: List[str]) -> Optional[str]:
+    """
+    Find the best lower timeframe to aggregate from
+    
+    Args:
+        requested_timeframe: The requested timeframe (e.g., '1d')
+        available_timeframes: List of available timeframes
+    
+    Returns:
+        Best lower timeframe to use, or None if none found
+    """
+    try:
+        requested_minutes = parse_timeframe_to_minutes(requested_timeframe)
+    except ValueError:
+        return None
+    
+    # Parse all available timeframes to minutes
+    available_with_minutes = []
+    for tf in available_timeframes:
+        try:
+            minutes = parse_timeframe_to_minutes(tf)
+            available_with_minutes.append((tf, minutes))
+        except ValueError:
+            continue
+    
+    # Filter to only timeframes smaller than requested
+    lower_timeframes = [(tf, mins) for tf, mins in available_with_minutes if mins < requested_minutes]
+    
+    if not lower_timeframes:
+        return None
+    
+    # Sort by minutes descending (largest lower timeframe first)
+    lower_timeframes.sort(key=lambda x: x[1], reverse=True)
+    
+    # Return the largest lower timeframe (closest to requested)
+    return lower_timeframes[0][0]
+
+
+def aggregate_ohlcv(df: pd.DataFrame, target_timeframe: str) -> pd.DataFrame:
+    """
+    Aggregate OHLCV data to a higher timeframe
+    
+    Args:
+        df: DataFrame with columns: ts (or timestamp), open, high, low, close, volume
+        target_timeframe: Target timeframe to aggregate to (e.g., '1d', '1h')
+    
+    Returns:
+        Aggregated DataFrame
+    """
+    # Ensure we have a timestamp column
+    if 'ts' in df.columns:
+        df = df.copy()
+        df['timestamp'] = pd.to_datetime(df['ts'], utc=True)
+    elif 'timestamp' in df.columns:
+        df = df.copy()
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+    else:
+        raise ValueError("No timestamp column found in data")
+    
+    # Ensure timestamp is timezone-aware and in UTC
+    if df['timestamp'].dt.tz is None:
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+    else:
+        df['timestamp'] = df['timestamp'].dt.tz_convert('UTC')
+    
+    # Parse target timeframe to pandas frequency
+    target_minutes = parse_timeframe_to_minutes(target_timeframe)
+    
+    # Determine pandas frequency string
+    if target_minutes >= 1440:  # 1 day or more
+        days = target_minutes // 1440
+        freq = f'{days}D'
+    elif target_minutes >= 60:  # 1 hour or more
+        hours = target_minutes // 60
+        freq = f'{hours}H'
+    else:  # minutes
+        freq = f'{target_minutes}min'
+    
+    # Set timestamp as index for resampling
+    df_indexed = df.set_index('timestamp')
+    
+    # Ensure numeric types
+    df_indexed['open'] = pd.to_numeric(df_indexed['open'], errors='coerce')
+    df_indexed['high'] = pd.to_numeric(df_indexed['high'], errors='coerce')
+    df_indexed['low'] = pd.to_numeric(df_indexed['low'], errors='coerce')
+    df_indexed['close'] = pd.to_numeric(df_indexed['close'], errors='coerce')
+    df_indexed['volume'] = pd.to_numeric(df_indexed['volume'], errors='coerce')
+    
+    # Resample and aggregate OHLCV
+    # Open: first value in period
+    # High: maximum value in period
+    # Low: minimum value in period
+    # Close: last value in period
+    # Volume: sum of volumes in period
+    aggregated = pd.DataFrame()
+    aggregated['open'] = df_indexed['open'].resample(freq).first()
+    aggregated['high'] = df_indexed['high'].resample(freq).max()
+    aggregated['low'] = df_indexed['low'].resample(freq).min()
+    aggregated['close'] = df_indexed['close'].resample(freq).last()
+    aggregated['volume'] = df_indexed['volume'].resample(freq).sum()
+    
+    # Remove any rows with NaN values (incomplete periods)
+    aggregated = aggregated.dropna()
+    
+    # Reset index to get timestamp back as column
+    aggregated = aggregated.reset_index()
+    aggregated['ts'] = aggregated['timestamp']
+    
+    return aggregated
 
 
 def export_to_ninjatrader(
@@ -74,10 +215,46 @@ def export_to_ninjatrader(
             limit=limit
         )
         
+        # If no data found, try to aggregate from lower timeframe
         if df is None or df.empty:
-            raise ValueError(f"No data found for {symbol} {timeframe}")
-        
-        logger.info(f"Retrieved {len(df)} records")
+            logger.info(f"No data found for {symbol} {timeframe}, checking for lower timeframes to aggregate...")
+            available_timeframes = client.get_available_timeframes(symbol, provider)
+            
+            if not available_timeframes:
+                raise ValueError(f"No data found for {symbol} {timeframe} and no available timeframes to aggregate from")
+            
+            # Find best lower timeframe to aggregate from
+            lower_timeframe = find_best_lower_timeframe(timeframe, available_timeframes)
+            
+            if not lower_timeframe:
+                raise ValueError(
+                    f"No data found for {symbol} {timeframe}. "
+                    f"Available timeframes: {', '.join(available_timeframes)}, "
+                    f"but none are suitable for aggregation to {timeframe}"
+                )
+            
+            logger.info(f"Aggregating from {lower_timeframe} to {timeframe}...")
+            
+            # Get data from lower timeframe
+            df = client.get_market_data(
+                symbol=symbol,
+                timeframe=lower_timeframe,
+                provider=provider,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit
+            )
+            
+            if df is None or df.empty:
+                raise ValueError(f"No data found for {symbol} {lower_timeframe} to aggregate")
+            
+            logger.info(f"Retrieved {len(df)} records from {lower_timeframe}")
+            
+            # Aggregate to requested timeframe
+            df = aggregate_ohlcv(df, timeframe)
+            logger.info(f"Aggregated to {len(df)} records for {timeframe}")
+        else:
+            logger.info(f"Retrieved {len(df)} records")
         
         # Convert timestamp to NinjaTrader format (YYYYMMDD HHMMSS)
         # Ensure timestamps are timezone-aware, then convert to UTC and remove timezone

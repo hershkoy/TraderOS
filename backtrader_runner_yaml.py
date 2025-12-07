@@ -192,6 +192,28 @@ def resample_to_weekly_pandas(df: pd.DataFrame) -> pd.DataFrame:
         'volume': 'sum'
     }).dropna()
     
+    # Validate weekly bars for completeness
+    # Check if any weekly bars are missing Friday data (incomplete weeks)
+    for week_end_date in df_weekly.index:
+        # Week starts on Monday (4 days before Friday)
+        week_start = week_end_date - pd.Timedelta(days=4)  # Monday of the week
+        # Week ends at end of Friday (week_end_date is at 00:00:00, need to include all of Friday)
+        week_end_inclusive = week_end_date + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        week_data = df[(df.index >= week_start) & (df.index <= week_end_inclusive)]
+        
+        # Count unique trading days (should be 5 for a complete week)
+        if len(week_data) > 0:
+            unique_days = pd.Series(week_data.index.date).nunique()
+            if unique_days < 5:
+                # Log warning about incomplete week (but don't fail)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Incomplete weekly bar for week ending {week_end_date.date()}: "
+                    f"only {unique_days} trading days (expected 5). "
+                    f"This may cause TTM Squeeze calculations to differ from TradingView."
+                )
+    
     return df_weekly
 
 # -----------------------------

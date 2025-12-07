@@ -171,6 +171,7 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         self.last_ignition_week_date = None
         self.last_ttm_cross_idx = None
         self.last_ttm_cross_week_date = None
+        self.last_logged_ttm_cross_idx = None  # Track last logged TTM cross (for informational logging)
         
         # Armed state (A + B detected, ready for daily entry)
         self.armed = False
@@ -591,6 +592,43 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
                 except:
                     pass
                 self.debug_log(f"*** STAGE 1: IGNITION BAR DETECTED at week {current_week_idx} ***")
+
+        # Check for TTM Cross regardless of Condition A (for informational logging)
+        # Use stricter criteria: momentum must be negative (not just <= 0) and cross to positive
+        try:
+            mom = self.momentum.mom
+            if len(mom) >= 2:
+                mom_prev = float(mom.momentum[-2]) if len(mom.momentum) >= 2 else 0.0
+                mom_curr = float(mom.momentum[-1]) if len(mom.momentum) >= 1 else 0.0
+                
+                # Stricter zero-cross detection: 
+                # 1. Previous momentum must be < 0 (not just <= 0, to avoid noise around zero)
+                # 2. Current momentum must be > 0
+                # 3. Verify momentum was negative for at least 2 of the previous 4 bars
+                #    (to ensure it was genuinely negative, not just a brief dip)
+                is_valid_cross = False
+                if mom_prev < 0 and mom_curr > 0:
+                    # Count how many of the previous bars were negative
+                    negative_count = 0
+                    lookback = min(4, len(mom) - 1)
+                    for i in range(1, lookback + 1):
+                        if len(mom) >= i + 1:
+                            past_mom = float(mom.momentum[-(i + 1)])
+                            if past_mom < 0:
+                                negative_count += 1
+                    
+                    # Require at least 2 negative bars in the lookback to confirm genuine negative momentum
+                    if negative_count >= 2:
+                        is_valid_cross = True
+                
+                if is_valid_cross:
+                    # Log TTM cross even if Condition A is not met (only once per cross)
+                    if self.last_ignition_idx is None and (self.last_logged_ttm_cross_idx is None or current_week_idx > self.last_logged_ttm_cross_idx):
+                        self.last_logged_ttm_cross_idx = current_week_idx
+                        self.log(f"[{self.symbol}] TTM Squeeze Cross Detected (No Ignition) | Week {current_week_idx} | Momentum: {mom_prev:.4f} -> {mom_curr:.4f}", level='INFO')
+        except Exception as e:
+            # Silently ignore errors in this informational check
+            pass
 
         # STAGE 2: Check for TTM Confirmation (Zero Cross) - ARM THE TICKER
         if self.last_ignition_idx is not None:
