@@ -77,6 +77,7 @@ def _candidate_ib_ports(explicit_port):
             logger.warning("Invalid IB_PORT environment value: %s", env_port)
 
     # If no explicit port and no env var, try auto-detection
+    auto_detection_succeeded = False
     if not ports_to_try:
         try:
             detected_port = detect_ib_port()
@@ -85,13 +86,15 @@ def _candidate_ib_ports(explicit_port):
                 ports_to_try.append(detected_port)
                 # Set it in environment for future use
                 os.environ["IB_PORT"] = str(detected_port)
+                auto_detection_succeeded = True
         except Exception as e:
             logger.debug("Auto-detection failed: %s, falling back to default ports", e)
 
-    # Fall back to default ports if auto-detection didn't work
-    for default_port in DEFAULT_PORTS:
-        if default_port not in ports_to_try:
-            ports_to_try.append(default_port)
+    # Fall back to default ports ONLY if auto-detection didn't work
+    if not auto_detection_succeeded:
+        for default_port in DEFAULT_PORTS:
+            if default_port not in ports_to_try:
+                ports_to_try.append(default_port)
 
     return ports_to_try
 
@@ -193,9 +196,9 @@ def create_ib_contract_with_primary_exchange(symbol):
     from ib_insync import Stock, Index
     
     # Define index symbols that need special handling (actual indices, not ETFs)
-    # SPX, RUT, NDX, VIX, DJX are indices
+    # SPX, RUT, NDX, VIX, DJX, XSP are indices
     # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:
@@ -247,9 +250,9 @@ def create_ib_contract_from_cache(symbol, con_id, primary_exchange):
     from ib_insync import Stock, Index
     
     # Define index symbols that need special handling (actual indices, not ETFs)
-    # SPX, RUT, NDX, VIX, DJX are indices
+    # SPX, RUT, NDX, VIX, DJX, XSP are indices
     # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:

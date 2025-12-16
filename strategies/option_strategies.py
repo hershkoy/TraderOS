@@ -161,18 +161,24 @@ class OTMCreditSpreadsStrategy(OptionStrategy):
             actual_width = width
             
             if not long_row or long_row.mid is None:
+                # Fallback: find closest available strike
+                # Strictly prefer exact match, only accept very close alternatives
                 available_strikes = [s for s in strike_map.keys() if s < r.strike]
                 if available_strikes:
+                    # Sort by closeness to requested width
                     available_strikes.sort(key=lambda s: abs((r.strike - s) - width))
                     for candidate_long_strike in available_strikes:
                         actual_width_candidate = r.strike - candidate_long_strike
-                        if actual_width_candidate >= width * 0.5:
+                        # Only accept if very close to requested width (within 0.5 for exact match preference)
+                        # For $1 strike increments, this effectively means exact match only
+                        if abs(actual_width_candidate - width) <= 0.5:
                             long_row = strike_map.get(candidate_long_strike)
                             if long_row and long_row.mid is not None:
                                 long_strike = candidate_long_strike
                                 actual_width = actual_width_candidate
-                                if abs(actual_width - width) > 0.5:
-                                    logger.debug(f"Using adjusted width: {r.strike}/{long_strike} (width={actual_width:.1f} instead of {width:.1f})")
+                                # Log if not exact match
+                                if abs(actual_width - width) > 0.1:
+                                    logger.info(f"Using adjusted width: {r.strike}/{long_strike} (width={actual_width:.1f} instead of {width:.1f})")
                                 break
             
             if not long_row or long_row.mid is None:

@@ -81,7 +81,7 @@ def get_underlying_and_chain(
     
     # Determine security type and exchange for indices
     # Index options typically trade on CBOE
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
     if actual_underlying_symbol in INDEX_SYMBOLS:
         # For indices, use Index class with CBOE exchange
         logger.info(f"Detected index symbol {actual_underlying_symbol}, using Index contract with CBOE exchange")
@@ -1079,7 +1079,7 @@ def place_order_from_csv_row(
     
     # Determine exchange - check if symbol is a weekly class that maps to an index
     WEEKLY_OPTION_CLASSES = {'SPXW', 'SPXQ'}
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
     
     # Map weekly classes to underlying for exchange determination
     underlying_symbol_for_exchange = symbol.upper()
