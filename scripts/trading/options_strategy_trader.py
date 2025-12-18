@@ -254,9 +254,11 @@ def main():
     parser.add_argument("--max-workers", type=int, default=None,
         help="Maximum number of parallel workers when using --conf-file")
     parser.add_argument("--take-profit", type=float, default=None,
-        help="Take profit price (e.g., -0.02 for 2 cents)")
+        help="Take profit price (e.g., -0.02 for 2 cents). Default: -0.02 if not specified")
     parser.add_argument("--stop-loss", type=float, default=None,
-        help="Stop loss multiplier or absolute price")
+        help="Stop loss multiplier or absolute price. Default: 1.5x if not specified")
+    parser.add_argument("--no-bracket-orders", action="store_true",
+        help="Disable automatic bracket orders (take profit and stop loss will not be set)")
     parser.add_argument("--log-level", type=str, default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: INFO)")
@@ -671,60 +673,67 @@ def main():
         order.account = args.account
         logger.info("Using account: %s", args.account)
     
-    # Calculate bracket prices if specified
+    # Calculate bracket prices - apply defaults if not specified
     take_profit_price = None
     stop_loss_price = None
     
-    if args.take_profit is not None or args.stop_loss is not None:
-        stop_loss_multiplier = None
+    if args.no_bracket_orders:
+        # User explicitly disabled bracket orders - don't create them
+        logger.info("Bracket orders disabled via --no-bracket-orders flag")
+    else:
+        # Default values for credit spreads (can be overridden via command line)
+        default_take_profit = args.take_profit if args.take_profit is not None else -0.02  # Close at 2 cents profit
+        default_stop_loss_multiplier = None
+        
         if args.stop_loss is not None:
             if isinstance(args.stop_loss, str) and args.stop_loss.lower() == "double":
-                stop_loss_multiplier = 2.0
+                default_stop_loss_multiplier = 2.0
             else:
                 try:
-                    stop_loss_multiplier = float(args.stop_loss)
+                    default_stop_loss_multiplier = float(args.stop_loss)
                 except (ValueError, TypeError):
                     logger.warning(f"Invalid stop_loss value: {args.stop_loss}, ignoring")
+        else:
+            # Default stop loss: 1.5x the limit price (about 2x the credit received)
+            default_stop_loss_multiplier = 1.5
         
+        # Always create bracket orders with defaults if not explicitly disabled
         take_profit_price, stop_loss_price = calculate_bracket_prices(
             limit_price=ib_limit_price,
             order_action=args.order_action,
-            take_profit_price_target=args.take_profit,
-            stop_loss_multiplier=stop_loss_multiplier
+            take_profit_price_target=default_take_profit,
+            stop_loss_multiplier=default_stop_loss_multiplier
         )
         
-        if take_profit_price is not None or stop_loss_price is not None:
-            trade, tp_trade, sl_trade = create_ib_bracket_order(
-                spread_contract=spread_contract,
-                parent_order=order,
-                take_profit_price=take_profit_price,
-                stop_loss_price=stop_loss_price,
-                ib=ib
-            )
-            
-            logger.info(
-                f"Placed IB bracket order: {args.order_action} {args.symbol} {args.expiry} "
-                f"{args.quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
-            )
-            
-            if take_profit_price is not None:
-                logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
-            if stop_loss_price is not None:
-                logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
-            
-            logger.info("Verifying bracket order structure...")
-            verify_bracket_order_structure(
-                ib=ib,
-                parent_order_id=trade.order.orderId,
-                expected_tp_price=take_profit_price,
-                expected_sl_price=stop_loss_price
-            )
-        else:
-            trade = ib.placeOrder(spread_contract, order)
-            logger.info(
-                f"Placed IB order: {args.order_action} {args.symbol} {args.expiry} "
-                f"{args.quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
-            )
+        if args.take_profit is None and args.stop_loss is None:
+            logger.info("Using default bracket order settings: take_profit=-0.02, stop_loss=1.5x")
+    
+    if take_profit_price is not None or stop_loss_price is not None:
+        trade, tp_trade, sl_trade = create_ib_bracket_order(
+            spread_contract=spread_contract,
+            parent_order=order,
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+            ib=ib
+        )
+        
+        logger.info(
+            f"Placed IB bracket order: {args.order_action} {args.symbol} {args.expiry} "
+            f"{args.quantity}x {selected.short.strike}/{selected.long.strike} @ {ib_limit_price:.2f}"
+        )
+        
+        if take_profit_price is not None:
+            logger.info(f"  Take profit: @ ${take_profit_price:.2f}")
+        if stop_loss_price is not None:
+            logger.info(f"  Stop loss: @ ${stop_loss_price:.2f}")
+        
+        logger.info("Verifying bracket order structure...")
+        verify_bracket_order_structure(
+            ib=ib,
+            parent_order_id=trade.order.orderId,
+            expected_tp_price=take_profit_price,
+            expected_sl_price=stop_loss_price
+        )
     else:
         trade = ib.placeOrder(spread_contract, order)
         logger.info(
