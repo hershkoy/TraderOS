@@ -351,7 +351,7 @@ def load_symbols(
 def resolve_symbol_list(args: argparse.Namespace) -> List[str]:
     if args.symbols:
         return [s.upper() for s in args.symbols]
-    if args.max_symbols and args.max_symbols > 0 and not args.liquid_only:
+    if not args.liquid_only:
         client = get_timescaledb_client()
         if not client.ensure_connection():
             raise RuntimeError("Cannot connect to TimescaleDB")
@@ -364,11 +364,15 @@ def resolve_symbol_list(args: argparse.Namespace) -> List[str]:
                 WHERE provider = %s AND timeframe = %s
             ) s
             ORDER BY symbol
-            LIMIT %s OFFSET %s
         """
-        rows = client.execute_query(
-            q, (args.provider, args.timeframe, args.max_symbols, args.start_index)
-        )
+        params: list = [args.provider, args.timeframe]
+        if args.max_symbols and args.max_symbols > 0:
+            q += " LIMIT %s OFFSET %s"
+            params.extend([args.max_symbols, args.start_index])
+        elif args.start_index:
+            q += " OFFSET %s"
+            params.append(args.start_index)
+        rows = client.execute_query(q, tuple(params))
         client.disconnect()
         if not rows:
             return []

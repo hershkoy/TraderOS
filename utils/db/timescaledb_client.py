@@ -570,18 +570,20 @@ class TimescaleDBClient:
             params = []
             
             if provider or timeframe:
-                query += " WHERE"
                 conditions = []
-                
+                params = []
+
                 if provider:
                     conditions.append("provider = %s")
                     params.append(provider.upper())
-                
+
                 if timeframe:
                     conditions.append("timeframe = %s")
                     params.append(timeframe)
-                
-                query += " AND ".join(conditions)
+
+                query += " WHERE " + " AND ".join(conditions)
+            else:
+                params = []
             
             query += " ORDER BY symbol"
             

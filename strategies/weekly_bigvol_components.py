@@ -806,7 +806,11 @@ class IntradayManager:
             d = strategy.d_15
             entry_price = float(d.close[0])
             stop_price = entry_price * (1.0 - strategy.p.stop_loss_pct)
-            profit_target_price = entry_price * (1.0 + strategy.p.take_profit_pct)
+            # take_profit_pct <= 0 disables fixed TP so rare winners can run (MA/stop exits only)
+            tp_pct = float(getattr(strategy.p, "take_profit_pct", 0.0) or 0.0)
+            profit_target_price = (
+                entry_price * (1.0 + tp_pct) if tp_pct > 0 else None
+            )
 
             risk_per_share = entry_price * strategy.p.stop_loss_pct
             risk_capital = strategy.broker.getvalue() * strategy.p.risk_per_trade
@@ -822,11 +826,16 @@ class IntradayManager:
             strategy.entry_week_idx = len(strategy.d_w) - 1
 
             stop_pct_str = f"-{strategy.p.stop_loss_pct * 100:.0f}%"
-            profit_pct_str = f"+{strategy.p.take_profit_pct * 100:.0f}%"
+            profit_pct_str = (
+                f"+{tp_pct * 100:.0f}%" if profit_target_price is not None else "disabled"
+            )
+            tp_price_str = (
+                f"${profit_target_price:.2f}" if profit_target_price is not None else "n/a"
+            )
             strategy.log(
                 f"[{strategy.symbol}] INTRADAY BUY SIGNAL | Entry: ${entry_price:.2f}, "
                 f"Stop: ${stop_price:.2f} ({stop_pct_str}), "
-                f"Target: ${profit_target_price:.2f} ({profit_pct_str}), Size: {size}"
+                f"Target: {tp_price_str} ({profit_pct_str}), Size: {size}"
             )
             strategy.track_trade_entry(entry_price, size)
         except Exception as exc:

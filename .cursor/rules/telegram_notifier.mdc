@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+Always call the MCP tool `notify_user` with a short bulleted summary of your work whenever you finish a multi-step task, run into a blocker, or need user verification.

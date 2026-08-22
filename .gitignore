@@ -21,3 +21,4 @@ __pycache__
 failed.txt
 /temp/
 /.cursor/hooks/state/
+.cursor/mcp.json

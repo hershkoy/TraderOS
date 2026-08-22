@@ -899,6 +899,9 @@ def run_one_universe_symbol(job: dict) -> dict:
             "total_trades": stats.get("total_trades", 0),
             "win_rate": stats.get("win_rate", 0.0),
             "profit_factor": stats.get("profit_factor", 0.0),
+            "avg_win": stats.get("avg_win", 0.0),
+            "avg_loss": stats.get("avg_loss", 0.0),
+            "max_drawdown_pct": stats.get("max_drawdown_pct", 0.0),
             "elapsed_seconds": round(elapsed_sym, 3),
             "error": None,
         }
@@ -954,6 +957,10 @@ def main():
     ap.add_argument('--reversal', type=int, help='PnF reversal boxes (overrides config for pnf strategy)')
     ap.add_argument('--period', type=int, help='MA period (overrides config for mean_reversion strategy)')
     ap.add_argument('--devfactor', type=float, help='Std dev factor (overrides config for mean_reversion strategy)')
+    ap.add_argument('--stop-loss-pct', type=float,
+                    help='Override strategy stop_loss_pct (e.g. 0.15)')
+    ap.add_argument('--take-profit-pct', type=float,
+                    help='Override strategy take_profit_pct (0 disables fixed TP)')
     
     args = ap.parse_args()
 
@@ -1020,6 +1027,10 @@ def main():
     
     # Get strategy configuration
     strategy_config = get_strategy_config(config, args.strategy)
+    if args.stop_loss_pct is not None:
+        strategy_config["stop_loss_pct"] = args.stop_loss_pct
+    if args.take_profit_pct is not None:
+        strategy_config["take_profit_pct"] = args.take_profit_pct
     print(f"Strategy configuration: {strategy_config}")
     
     # Load data based on strategy requirements
@@ -1032,8 +1043,23 @@ def main():
         # Universe backtesting mode
         print("Universe backtesting mode enabled", flush=True)
         try:
-            from utils.data.ticker_universe import get_combined_universe
-            symbols = get_combined_universe(force_refresh=False)
+            # Prefer symbols that actually have the requested provider+timeframe
+            # (combined ticker universe includes many names without IB 15m bars).
+            from utils.db.timescaledb_client import get_timescaledb_client
+
+            tf = args.timeframe
+            if data_reqs.get("base_timeframe") == "15m":
+                tf = "15m"
+            elif data_reqs.get("base_timeframe") == "daily":
+                tf = "1d"
+            client = get_timescaledb_client()
+            client.ensure_connection()
+            symbols = client.get_available_symbols(provider=args.provider, timeframe=tf)
+            client.disconnect()
+            if not symbols:
+                from utils.data.ticker_universe import get_combined_universe
+                print("Warning: no provider/timeframe symbols found; falling back to combined universe", flush=True)
+                symbols = get_combined_universe(force_refresh=False)
             # Apply start_index first
             if args.start_index > 0:
                 if args.start_index >= len(symbols):
@@ -1044,7 +1070,11 @@ def main():
             # Then apply max_symbols limit
             if args.max_symbols:
                 symbols = symbols[:args.max_symbols]
-            print(f"Running backtest on {len(symbols)} symbols", flush=True)
+            print(
+                f"Running backtest on {len(symbols)} symbols "
+                f"(provider={args.provider}, timeframe={tf})",
+                flush=True,
+            )
         except Exception as e:
             print(f"Error loading universe: {e}", flush=True)
             return
@@ -1093,6 +1123,9 @@ def main():
                         "total_trades": result["total_trades"],
                         "win_rate": result["win_rate"],
                         "profit_factor": result["profit_factor"],
+                        "avg_win": result.get("avg_win", 0.0),
+                        "avg_loss": result.get("avg_loss", 0.0),
+                        "max_drawdown_pct": result.get("max_drawdown_pct", 0.0),
                         "elapsed_seconds": result["elapsed_seconds"],
                     }
                 )
@@ -1177,9 +1210,30 @@ def main():
                 'total_trades': r['total_trades'],
                 'win_rate': r['win_rate'],
                 'profit_factor': r['profit_factor'],
+                'avg_win': r.get('avg_win', 0.0),
+                'avg_loss': r.get('avg_loss', 0.0),
+                'max_drawdown_pct': r.get('max_drawdown_pct', 0.0),
                 'elapsed_seconds': r.get('elapsed_seconds'),
             } for r in all_results])
             results_df.to_csv(report_dir / "universe_results.csv", index=False)
+            # assessing_strategies-style aggregate scorecard (rare-signal friendly)
+            traded = results_df[results_df["total_trades"] > 0]
+            if len(traded):
+                pf_fin = traded["profit_factor"].replace([float("inf"), float("-inf")], pd.NA).dropna()
+                aw = traded["avg_win"]
+                al = traded["avg_loss"].abs()
+                payoff = (aw / al).replace([float("inf"), float("-inf")], pd.NA).dropna()
+                print("\nAssessing-strategies scorecard (traded symbols):")
+                print(f"  Trade count: {int(traded['total_trades'].sum())}")
+                print(f"  Mean/median return: {traded['total_return'].mean():.3f}% / {traded['total_return'].median():.3f}%")
+                print(f"  Mean WR: {traded['win_rate'].mean():.2f}%")
+                print(f"  Mean/median PF: {pf_fin.mean():.3f} / {pf_fin.median():.3f}" if len(pf_fin) else "  PF: n/a")
+                print(f"  Mean avg_win / |avg_loss|: {aw.mean():.2f} / {al.mean():.2f}")
+                if len(payoff):
+                    print(f"  Mean payoff (avg_win/|avg_loss|): {payoff.mean():.3f}")
+                print(f"  Mean max DD%: {traded['max_drawdown_pct'].mean():.2f}%")
+                print(f"  % traded symbols > +10% return: {(traded['total_return'] > 10).mean()*100:.1f}%")
+
             print(f"\nResults saved to: {report_dir / 'universe_results.csv'}")
             with open(report_dir / "timing.txt", "w", encoding="utf-8") as f:
                 f.write(
