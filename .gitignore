@@ -19,3 +19,5 @@ __pycache__
 *.log
 
 failed.txt
+/temp/
+/.cursor/hooks/state/

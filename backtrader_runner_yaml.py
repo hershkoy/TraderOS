@@ -12,6 +12,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import sys
 import atexit
+import time
 
 # Completely disable all plotting functionality
 bt.Cerebro.plot = lambda *args, **kwargs: None
@@ -33,6 +34,20 @@ from utils.db.timescaledb_loader import (
 
 # Global variable to store strategy backup in case of backtrader failure
 _strategy_backup = None
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Human-readable duration for timing logs."""
+    if seconds < 0:
+        seconds = 0.0
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{seconds:.1f}s"
 
 def load_config(config_path="defaults.yaml"):
     """Load configuration from YAML file"""
@@ -931,9 +946,13 @@ def main():
         all_results = []
         successful = 0
         failed = 0
+        symbol_timings = []
+        t_universe0 = time.perf_counter()
+        print(f"Universe run started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
         
         for i, symbol in enumerate(symbols, 1):
             actual_index = args.start_index + i - 1
+            t_sym0 = time.perf_counter()
             print(f"\n[{i}/{len(symbols)}] Processing {symbol} (universe index: {actual_index})...", flush=True)
             try:
                 # Load data for this symbol
@@ -995,6 +1014,7 @@ def main():
                         final_value = cerebro.broker.getvalue()
                         initial_value = global_config.get('cash', 100000.0)
                         total_return = (final_value - initial_value) / initial_value * 100
+                        elapsed_sym = time.perf_counter() - t_sym0
                         
                         all_results.append({
                             'symbol': symbol,
@@ -1004,10 +1024,16 @@ def main():
                             'total_trades': stats.get('total_trades', 0),
                             'win_rate': stats.get('win_rate', 0.0),
                             'profit_factor': stats.get('profit_factor', 0.0),
+                            'elapsed_seconds': round(elapsed_sym, 3),
                             'strategy': strategy
                         })
                         successful += 1
-                        print(f"  {symbol}: {total_return:.2f}% return, {stats.get('total_trades', 0)} trades", flush=True)
+                        print(
+                            f"  {symbol}: {total_return:.2f}% return, "
+                            f"{stats.get('total_trades', 0)} trades, "
+                            f"elapsed={_format_elapsed(elapsed_sym)}",
+                            flush=True,
+                        )
                     else:
                         failed += 1
                 except Exception as e:
@@ -1017,14 +1043,21 @@ def main():
             except Exception as e:
                 print(f"  {symbol}: Error - {e}", flush=True)
                 failed += 1
+            finally:
+                symbol_timings.append(time.perf_counter() - t_sym0)
         
         # Generate aggregated report
+        total_elapsed = time.perf_counter() - t_universe0
+        avg_sym = (sum(symbol_timings) / len(symbol_timings)) if symbol_timings else 0.0
         print(f"\n{'='*60}")
         print(f"Universe Backtest Summary")
         print(f"{'='*60}")
         print(f"Total symbols: {len(symbols)}")
         print(f"Successful: {successful}")
         print(f"Failed: {failed}")
+        print(f"Timing: total={_format_elapsed(total_elapsed)} "
+              f"(avg/symbol={_format_elapsed(avg_sym)}, "
+              f"finished={datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
         
         if all_results:
             # Calculate aggregate statistics
@@ -1049,10 +1082,40 @@ def main():
                 'total_return': r['total_return'],
                 'total_trades': r['total_trades'],
                 'win_rate': r['win_rate'],
-                'profit_factor': r['profit_factor']
+                'profit_factor': r['profit_factor'],
+                'elapsed_seconds': r.get('elapsed_seconds'),
             } for r in all_results])
             results_df.to_csv(report_dir / "universe_results.csv", index=False)
             print(f"\nResults saved to: {report_dir / 'universe_results.csv'}")
+            with open(report_dir / "timing.txt", "w", encoding="utf-8") as f:
+                f.write(
+                    f"total_elapsed_seconds={total_elapsed:.3f}\n"
+                    f"total_elapsed={_format_elapsed(total_elapsed)}\n"
+                    f"avg_symbol_seconds={avg_sym:.3f}\n"
+                    f"avg_symbol={_format_elapsed(avg_sym)}\n"
+                    f"symbols={len(symbols)}\n"
+                    f"successful={successful}\n"
+                    f"failed={failed}\n"
+                    f"finished_at={datetime.now().isoformat(timespec='seconds')}\n"
+                )
+            print(f"Timing saved to: {report_dir / 'timing.txt'}")
+        else:
+            # Still persist timing when no successful symbol results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_dir = Path("reports") / f"{args.strategy}_universe_backtest_{timestamp}"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            with open(report_dir / "timing.txt", "w", encoding="utf-8") as f:
+                f.write(
+                    f"total_elapsed_seconds={total_elapsed:.3f}\n"
+                    f"total_elapsed={_format_elapsed(total_elapsed)}\n"
+                    f"avg_symbol_seconds={avg_sym:.3f}\n"
+                    f"avg_symbol={_format_elapsed(avg_sym)}\n"
+                    f"symbols={len(symbols)}\n"
+                    f"successful={successful}\n"
+                    f"failed={failed}\n"
+                    f"finished_at={datetime.now().isoformat(timespec='seconds')}\n"
+                )
+            print(f"Timing saved to: {report_dir / 'timing.txt'}")
         
         return
     
