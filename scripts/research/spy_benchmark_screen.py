@@ -5,12 +5,13 @@ Edge hunt: compare price-only strategies vs SPY buy-and-hold.
 Candidates:
   1) SPY buy-and-hold (benchmark)
   2) Absolute momentum: long SPY iff close > SMA200 (month-end signal, next open)
-  3) Cross-sectional 12-1 momentum: equal-weight top N among SPX ∩ ALPACA daily
+  3) Cross-sectional 12-1 momentum: equal-weight top N among SPX intersect ALPACA daily
   4) Weekly BigVol portfolio: setups CSV + daily prices, stop + 10w MA exit
+  5) Dual momentum (GEM-style): SPY vs EFA 12m relative; if winner 12m < 0 -> SHY/BIL
 
 Usage (Windows CMD):
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\spy_benchmark_screen.py
-  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\spy_benchmark_screen.py --candidates bh abs xs
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\spy_benchmark_screen.py --candidates bh dual --start 2010-01-04 --spy-provider IB
 """
 from __future__ import annotations
 
@@ -176,9 +177,15 @@ def perf_stats(
     )
 
 
-def load_spy(start: str, end: str, provider: str = "ALPACA") -> pd.DataFrame:
+def load_symbol(
+    symbol: str,
+    start: str,
+    end: str,
+    provider: str,
+) -> pd.DataFrame:
+    """Load one symbol/provider; start may include warmup beyond evaluation window."""
     data = load_ohlcv_many(
-        ["SPY"],
+        [symbol],
         timeframe="1d",
         provider=provider,
         start=datetime.strptime(start, "%Y-%m-%d"),
@@ -186,9 +193,14 @@ def load_spy(start: str, end: str, provider: str = "ALPACA") -> pd.DataFrame:
         use_cache=True,
         workers=1,
     )
-    if "SPY" not in data or data["SPY"].empty:
-        raise RuntimeError("SPY daily not found in TimescaleDB. Fetch with utils/data/fetch_data.py")
-    return _clip_dates(_to_naive_index(data["SPY"]), start, end)
+    sym = symbol.upper()
+    if sym not in data or data[sym].empty:
+        raise RuntimeError(f"{sym} daily not found for provider={provider}")
+    return _clip_dates(_to_naive_index(data[sym]), start, end)
+
+
+def load_spy(start: str, end: str, provider: str = "ALPACA") -> pd.DataFrame:
+    return load_symbol("SPY", start, end, provider)
 
 
 def strategy_buy_hold(spy: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
@@ -216,12 +228,85 @@ def strategy_abs_momentum_sma200(
     # Avoid look-ahead: use prior month-end signal for today's return
     position = daily_signal.shift(1).fillna(0.0)
 
-    open_ret = df["open"].pct_change().fillna(0.0)
     # Approximate: invested days earn close-to-close; simpler and standard for timing tests
     close_ret = df["close"].pct_change().fillna(0.0)
     strat_ret = position * close_ret
     equity = equity_from_returns(strat_ret)
     return equity, position
+
+
+def strategy_dual_momentum(
+    spy: pd.DataFrame,
+    efa: pd.DataFrame,
+    risk_off: pd.DataFrame,
+    lookback_days: int = 252,
+) -> Tuple[pd.Series, pd.Series, str]:
+    """
+    Gary Antonacci GEM-style dual momentum (price-only):
+      - Relative: pick SPY vs EFA by trailing ~12m total return at month-end
+      - Absolute: if winner's 12m return <= 0, hold risk-off (SHY/BIL)
+      - Hold from day after month-end signal (no look-ahead)
+    """
+    def _close_daily(df: pd.DataFrame) -> pd.Series:
+        s = _to_naive_index(df)["close"].astype(float).sort_index()
+        # Align providers that stamp different times of day onto calendar dates
+        s.index = s.index.normalize()
+        return s[~s.index.duplicated(keep="last")]
+
+    closes = pd.DataFrame(
+        {
+            "SPY": _close_daily(spy),
+            "EFA": _close_daily(efa),
+            "SAFE": _close_daily(risk_off),
+        }
+    ).dropna(how="any").sort_index()
+    if len(closes) < lookback_days + 30:
+        raise RuntimeError(f"Dual momentum needs more overlap history (have {len(closes)} days)")
+
+    rets = closes.pct_change().fillna(0.0)
+    me = _month_ends(closes.index)
+    holdings: Dict[pd.Timestamp, str] = {}
+    for dt in me:
+        loc = closes.index.get_loc(dt)
+        if isinstance(loc, slice) or loc < lookback_days:
+            continue
+        px_now = closes.iloc[loc]
+        px_past = closes.iloc[loc - lookback_days]
+        mom = (px_now / px_past) - 1.0
+        if float(mom["SPY"]) >= float(mom["EFA"]):
+            winner, wret = "SPY", float(mom["SPY"])
+        else:
+            winner, wret = "EFA", float(mom["EFA"])
+        holdings[dt] = winner if wret > 0.0 else "SAFE"
+
+    asset = pd.Series(index=closes.index, dtype=object)
+    me_sorted = sorted(holdings.keys())
+    for i, dt in enumerate(me_sorted):
+        after = closes.index[closes.index > dt]
+        if after.empty:
+            continue
+        start_d = after[0]
+        if i + 1 < len(me_sorted):
+            end_d = me_sorted[i + 1]
+            hold_idx = closes.index[(closes.index >= start_d) & (closes.index <= end_d)]
+        else:
+            hold_idx = closes.index[closes.index >= start_d]
+        asset.loc[hold_idx] = holdings[dt]
+
+    asset = asset.shift(1)  # extra safety vs same-day fill
+    strat_ret = pd.Series(0.0, index=closes.index)
+    for name in ("SPY", "EFA", "SAFE"):
+        mask = asset == name
+        strat_ret.loc[mask] = rets[name].loc[mask]
+
+    invested = asset.isin(["SPY", "EFA", "SAFE"]).astype(float)
+    equity = equity_from_returns(strat_ret.fillna(0.0))
+    counts = asset.value_counts(dropna=True).to_dict()
+    notes = (
+        f"GEM dual mom 12m (~{lookback_days}d); rebalances={len(holdings)}; "
+        f"hold_days={counts}"
+    )
+    return equity, invested.fillna(0.0), notes
 
 
 def _month_ends(index: pd.DatetimeIndex) -> pd.DatetimeIndex:

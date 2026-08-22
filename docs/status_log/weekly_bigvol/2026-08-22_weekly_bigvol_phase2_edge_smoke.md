@@ -307,3 +307,56 @@ Results: `reports/weekly_bigvol_ttm_squeeze_universe_backtest_20260822_123554/` 
 1. Optional stop-width sweep (e.g. 10%/15%/20%) with TP off — watch payoff vs MDD.
 2. Then robustness / walk-forward on the no-TP path.
 3. Do not reintroduce a tight fixed TP unless payoff stays ≥~2x after costs.
+
+## Ablation H — stop-width sweep (no fixed TP, 200 IB 15m)
+
+Same first-200 IB 15m names; TP off; stops 10% / 15% / 20%.
+
+| Stop | Trades | Mean / med ret | Payoff | Gross $ PF | &gt;10% / &gt;20% | Mean DD | Mean w/o top |
+|------|--------|----------------|--------|------------|------------------|---------|--------------|
+| **10%** | 131 | **+6.36% / +1.28%** | 4.60 | 9.14 | **16.8% / 6.1%** | 6.6% | **+5.30%** |
+| 15% | 131 | +4.24% / +0.85% | 4.60 | 9.15 | 11.5% / 5.3% | 4.6% | +3.53% |
+| 20% | 131 | +3.17% / +0.64% | 4.61 | 9.17 | 6.1% / 3.8% | **3.6%** | +2.65% |
+
+Reports: `..._125907` (10%), `..._121354` (15%), `..._130836` (20%).
+
+**Sweep read:** Payoff/PF stay ~flat across stops; **tighter stop wins on expectancy and right-tail frequency**, wider stop wins on MDD. Part of the 10% lift is **risk-based sizing** (tighter stop → larger share count for same risk budget) — not pure path edge. Still, 10% does not blow up DD (6.6% vs 4.6%).
+
+**Working default candidate:** TP off + **10% stop** (confirmed on 500). 15% remains acceptable if preferring milder DD.
+
+### H2 — 500-symbol confirm @ 10% stop (TP off)
+
+Results: `reports/weekly_bigvol_ttm_squeeze_universe_backtest_20260822_133041/`
+
+| Metric | 500 @ 15% stop | **500 @ 10% stop** |
+|--------|----------------|--------------------|
+| Trades | 333 | **333** |
+| Mean / med return (traded) | +3.18% / +0.88% | **+4.78% / +1.33%** |
+| Payoff | 4.02 | 4.01 |
+| Gross $ PF | 7.66 | 7.65 |
+| % traded &gt; +10% | 7.8% | **14.1%** |
+| Mean DD | 4.16% | 5.99% |
+| Mean w/o top | +2.90% | **+4.36%** |
+
+**Confirm:** 10% stop scales to 500 names with the same payoff/PF and higher expectancy/right-tail; DD rises but stays moderate. Prefer **10% stop + no TP** as the research default (sizing confound still noted).
+
+### Updated next actions
+
+1. Walk-forward / robustness on **10% stop + no fixed TP** (default research path).
+2. Optional: compare risk-normalized stops (fixed $ risk already; also report return-per-unit-DD).
+3. Keep fixed TP rejected; note sizing confound when comparing raw stop widths.
+4. Portfolio vs SPY (see below) still lags CAGR — treat BigVol as lower-DD sleeve research unless WF improves.
+
+## Cross-link — portfolio vs SPY (edge hunt Phase 1)
+
+Reconfirm run (same params): `reports/weekly_bigvol_ttm_squeeze_universe_backtest_20260822_130007/` (21m 54s) — metrics match G2.
+
+Portfolio equity curve vs SPY B&H (daily confirms, 10% alloc, max 15 names, stop+MA10): documented in `docs/status_log/edge_hunt/2026-08-22_edge_hunt_phase1_scorecard.md`.
+
+| | WeeklyBigVol portfolio | SPY B&H |
+|--|------------------------|---------|
+| CAGR | 8.82% | 13.75% |
+| Sharpe | 0.73 | 0.73 |
+| Max DD | -12.51% | -25.38% |
+
+**Verdict:** risk-reduced near-miss; **not** a CAGR beater of SPY on 2018-11 → 2025-11. Continue BigVol as optional lower-DD sleeve research; for beating SPY returns, move to Phase 2 dual momentum (needs SHY + EFA daily).

@@ -2,9 +2,10 @@
 
 - Prefer workspace-scoped MCP config (project `.cursor/mcp.json`) over global always-on Cursor MCP for tools like TradingView
 - When validating a strategy, prefer finding historical examples in TimescaleDB before live signal hunting or full-universe backtests
-- Persist coverage inventories, strategy plans, and phase status under `docs/status_log/` (Weekly BigVol under `docs/status_log/weekly_bigvol/`)
+- Persist coverage inventories, strategy plans, and phase status under `docs/status_log/` (Weekly BigVol under `docs/status_log/weekly_bigvol/`; edge hunt under `docs/status_log/edge_hunt/`)
 - For market-data coverage questions, focus on stocks and exclude options unless options are requested
 - For long multi-symbol hunts or backtests, record wall-clock timings in the relevant status log
+- For rare-signal strategies, assess with PF/expectancy/payoff/MDD per `docs/assessing_strategies.md`; do not treat win rate as the primary gate
 
 ## Learned Workspace Facts
 
@@ -19,3 +20,4 @@
 - Weekly BigVol example hunter is `scripts/data/find_weekly_bigvol_examples.py`; multi-symbol OHLCV loads should use `utils/data/ohlcv_loader.py` (batch SQL, parquet cache, workers)
 - Weekly confirm dates from W-FRI resample + squeeze heuristics can lag TradingView LazyBear TTM flips by weeks; split-unadjusted forward returns can badly distort example outcomes
 - For 15m universe backtests, prefer the IB 15m symbol set over the full daily universe to avoid empty loads
+- Weekly BigVol research default execution is no fixed TP + ~10% stop (plus MA exit); fixed +30% TP was rejected because it caps the fat right tail

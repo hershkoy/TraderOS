@@ -43,4 +43,46 @@ Date: 2026-08-22
 Near-miss (much better MDD, but CAGR too far below SPY):
 - `WeeklyBigVol_portfolio`: CAGR=8.82% Sharpe=0.73 MDD=-12.51% (invested 48%)
 
-Next data to add for Phase 2 dual momentum: daily **SHY** (or BIL) and **EFA**/**VXUS**, plus ideally longer SPY history pre-2018 if available.
+### Weekly BigVol IB 15m execution (500-sym, no fixed TP)
+
+Completed same day: `reports/weekly_bigvol_ttm_squeeze_universe_backtest_20260822_130007/` (21m 54s, workers=4).
+
+| Metric (traded symbols) | Value |
+|-------------------------|-------|
+| Symbols / traded / trades | 500 / 333 / **333** |
+| Mean / median return | +3.18% / +0.88% |
+| Mean WR | ~65.5% |
+| Gross $ PF proxy | ~7.66 |
+| Mean max DD% | ~4.16% |
+| Mean without ABVX | +2.90% |
+| % traded > +10% / +20% / +30% | 7.8% / 2.7% / 1.8% |
+
+Per-symbol no-TP execution clears sample-size and PF-proxy gates vs the rejected fixed-TP path, but **portfolio equity vs SPY still fails CAGR gate** (see scorecard above). Do not promote as a SPY-beater on this window.
+
+Next data to add for Phase 2 dual momentum: daily **SHY** (or BIL) and **EFA**/**VXUS**, plus ideally longer SPY history pre-2018 if available. Also fetch **QQQ** daily if testing risk-on Nasdaq sleeve.
+
+## Data ingest update (2026-08-22, IB Gateway)
+
+Pulled via `utils/data/fetch_data.py --provider ib --timeframe 1d --bars max --since 2010-01-01` (Gateway `127.0.0.1:4001`).
+
+| Symbol | Provider | Bars | Range |
+|--------|----------|------|-------|
+| SPY | IB (+ prior ALPACA) | IB ~4184 | 2010-01-04 -> 2026-08-21 |
+| QQQ | IB | ~4021 | ~2010-08 -> 2026-08-21 |
+| EFA | IB | ~4184 | 2010-01-04 -> 2026-08-21 |
+| SHY | IB | ~2274 | **2017-08-04** -> 2026-08-21 (IB HMDS empty before that) |
+| BIL | IB | 4021 | 2010-08-26 -> 2026-08-21 (T-bill ETF; better depth than SHY) |
+
+**Issue:** Python process often exits with Windows access-violation (`0xC0000005` / `-1073741819`) *after* successful DB commit — likely `ib_insync` disconnect teardown. Data in TimescaleDB is fine; treat exit code as noisy.
+
+**SHY caveat:** only back to 2017-08 on this IB subscription; dual momentum absolute filter on SHY is limited before that (use BIL or cash=0% for earlier years).
+
+### TradingView Desktop dump (same day)
+
+Looped the loaded main-series bars via CDP (TV MCP `data_get_ohlcv` only returns the *latest* 500 of the series; paging older bars requires index walks on the same API). After scrolling the chart to ~2008 to force history load:
+
+| Symbol | Provider | Bars | Range |
+|--------|----------|------|-------|
+| SHY | TRADINGVIEW | ~5300 | **2005-07-28** -> 2026-08-21 |
+
+Artifact: `temp/shy_tv/shy_all_bars.json` + ingest `temp/ingest_shy_tv.py`.
