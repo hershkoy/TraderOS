@@ -731,6 +731,9 @@ class IntradayManager:
             return
         if strategy.position or strategy.order is not None:
             return
+        # Walk-forward / OOS: block new entries outside the allowed trade window
+        if hasattr(strategy, "in_trade_window") and not strategy.in_trade_window():
+            return
         if strategy.pivot_level is None:
             strategy.debug_log("Intraday entry check: Pivot level unavailable (need more daily data)")
             return

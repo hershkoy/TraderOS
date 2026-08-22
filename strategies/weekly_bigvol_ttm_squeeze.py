@@ -103,6 +103,10 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
         commission=0.001,
         printlog=True,
         log_level="INFO",
+        # Optional OOS window (YYYY-MM-DD). Empty = no restriction.
+        # Load earlier bars for indicator warmup; only allow new entries inside this window.
+        trade_start_date="",
+        trade_end_date="",
     )
 
     def log(self, txt, level='INFO'):
@@ -126,6 +130,26 @@ class WeeklyBigVolTTMSqueeze(CustomTrackingMixin, bt.Strategy):
             except (IndexError, AttributeError):
                 # Data not available yet (e.g., during __init__)
                 print(f'[{timestamp}] [INIT] [DEBUG] {txt}', flush=True)
+
+    def in_trade_window(self, dt=None) -> bool:
+        """True if dt is inside optional trade_start_date/trade_end_date (inclusive)."""
+        start_s = str(getattr(self.p, "trade_start_date", "") or "").strip()
+        end_s = str(getattr(self.p, "trade_end_date", "") or "").strip()
+        if not start_s and not end_s:
+            return True
+        try:
+            from datetime import datetime as _dt
+
+            if dt is None:
+                dt = self.datetime.datetime(0)
+            d = dt.date() if hasattr(dt, "date") else dt
+            if start_s and d < _dt.strptime(start_s[:10], "%Y-%m-%d").date():
+                return False
+            if end_s and d > _dt.strptime(end_s[:10], "%Y-%m-%d").date():
+                return False
+            return True
+        except Exception:
+            return True
 
     @staticmethod
     def get_data_requirements():

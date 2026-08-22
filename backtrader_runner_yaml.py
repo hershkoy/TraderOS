@@ -823,15 +823,31 @@ def run_one_universe_symbol(job: dict) -> dict:
 
         start = global_config.get("fromdate")
         end = global_config.get("todate")
-        if data_reqs["base_timeframe"] == "daily":
-            df_data = load_timescaledb_daily(symbol, provider, start_date=start, end_date=end)
-        elif data_reqs["base_timeframe"] == "15m":
-            df_data = load_timescaledb_15m(symbol, provider, start_date=start, end_date=end)
-        else:
-            df_data = load_timescaledb_1h(symbol, provider, start_date=start, end_date=end)
+        # Optional OOS trade window: load earlier bars for warmup, restrict entries via strategy params
+        trade_start = str(strategy_config.get("trade_start_date") or "").strip()
+        trade_end = str(strategy_config.get("trade_end_date") or "").strip()
+        load_start = start
+        if trade_start:
+            try:
+                ts = pd.Timestamp(trade_start)
+                warm = ts - pd.Timedelta(days=800)
+                if load_start:
+                    load_start = min(pd.Timestamp(load_start), warm).strftime("%Y-%m-%d")
+                else:
+                    load_start = warm.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        load_end = trade_end or end
 
-        fromdate = global_config.get("fromdate", "2018-01-01")
-        todate = global_config.get("todate", "2069-12-31")
+        if data_reqs["base_timeframe"] == "daily":
+            df_data = load_timescaledb_daily(symbol, provider, start_date=load_start, end_date=load_end)
+        elif data_reqs["base_timeframe"] == "15m":
+            df_data = load_timescaledb_15m(symbol, provider, start_date=load_start, end_date=load_end)
+        else:
+            df_data = load_timescaledb_1h(symbol, provider, start_date=load_start, end_date=load_end)
+
+        fromdate = load_start or global_config.get("fromdate", "2018-01-01")
+        todate = load_end or global_config.get("todate", "2069-12-31")
         df_data = df_data.loc[
             (df_data.index >= pd.to_datetime(fromdate))
             & (df_data.index <= pd.to_datetime(todate))
@@ -961,6 +977,10 @@ def main():
                     help='Override strategy stop_loss_pct (e.g. 0.15)')
     ap.add_argument('--take-profit-pct', type=float,
                     help='Override strategy take_profit_pct (0 disables fixed TP)')
+    ap.add_argument('--trade-start-date', type=str, default=None,
+                    help='OOS/WF: only allow new entries on/after this date (YYYY-MM-DD); earlier bars used for warmup')
+    ap.add_argument('--trade-end-date', type=str, default=None,
+                    help='OOS/WF: only allow new entries on/before this date (YYYY-MM-DD)')
     
     args = ap.parse_args()
 
@@ -1031,6 +1051,10 @@ def main():
         strategy_config["stop_loss_pct"] = args.stop_loss_pct
     if args.take_profit_pct is not None:
         strategy_config["take_profit_pct"] = args.take_profit_pct
+    if getattr(args, "trade_start_date", None):
+        strategy_config["trade_start_date"] = args.trade_start_date
+    if getattr(args, "trade_end_date", None):
+        strategy_config["trade_end_date"] = args.trade_end_date
     print(f"Strategy configuration: {strategy_config}")
     
     # Load data based on strategy requirements
