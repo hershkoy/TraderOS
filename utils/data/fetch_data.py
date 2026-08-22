@@ -198,7 +198,7 @@ def create_ib_contract_with_primary_exchange(symbol):
     # Define index symbols that need special handling (actual indices, not ETFs)
     # SPX, RUT, NDX, VIX, DJX, XSP are indices
     # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP', 'VIX3M', 'VXV', 'VIX9D', 'VVIX'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:
@@ -252,7 +252,7 @@ def create_ib_contract_from_cache(symbol, con_id, primary_exchange):
     # Define index symbols that need special handling (actual indices, not ETFs)
     # SPX, RUT, NDX, VIX, DJX, XSP are indices
     # SPY, QQQ, IWM, DIA are ETFs and should be treated as stocks
-    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP'}
+    INDEX_SYMBOLS = {'SPX', 'RUT', 'NDX', 'VIX', 'DJX', 'XSP', 'VIX3M', 'VXV', 'VIX9D', 'VVIX'}
     
     # Check if this is an index
     if symbol.upper() in INDEX_SYMBOLS:
