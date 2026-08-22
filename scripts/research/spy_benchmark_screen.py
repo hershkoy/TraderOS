@@ -487,12 +487,14 @@ def strategy_bigvol_portfolio(
     split_filter: float = 0.45,
     provider: str = "ALPACA",
     workers: int = 4,
+    cost_bps_rt: float = 0.0,
 ) -> Tuple[pd.Series, pd.Series, str]:
     """
     Portfolio simulation from Weekly BigVol confirms.
     Entry: next daily open after confirm_week.
-    Exit: stop -15% from entry OR close < weekly MA10 (checked daily on close).
+    Exit: stop from entry OR close < weekly MA10 (checked daily on close).
     Position size: alloc_frac of equity at entry, capped at max_positions.
+    cost_bps_rt: round-trip cost in bps per completed trade (split half entry / half exit).
     """
     raw = pd.read_csv(setups_csv)
     if raw.empty:
@@ -510,10 +512,12 @@ def strategy_bigvol_portfolio(
     notes = (
         f"setups={len(dedup)} symbols={len(symbols)} alloc={alloc_frac:.0%} "
         f"max_pos={max_positions} stop={stop_loss_pct:.0%} + MA10 exit; "
-        f"source={setups_csv.name}"
+        f"cost_rt={cost_bps_rt:.0f}bps; source={setups_csv.name}"
     )
     if not symbols:
         raise RuntimeError("No BigVol setups in window")
+
+    one_way = (float(cost_bps_rt) / 2.0) / 10000.0
 
     load_start = (pd.Timestamp(start) - pd.DateOffset(months=10)).strftime("%Y-%m-%d")
     logger.info("Loading %d BigVol symbols...", len(symbols))
@@ -586,7 +590,7 @@ def strategy_bigvol_portfolio(
                 to_close.append((sym, px, "ma10"))
         for sym, px, reason in to_close:
             pos = positions.pop(sym)
-            cash += pos["shares"] * px
+            cash += pos["shares"] * px * (1.0 - one_way)
             n_trades += 1
             if reason == "stop":
                 n_stops += 1
@@ -628,7 +632,9 @@ def strategy_bigvol_portfolio(
             if alloc <= 0 or cash < alloc * 0.5:
                 continue
             spend = min(alloc, cash)
-            shares = spend / entry_px
+            # Pay one-way cost on entry: fewer shares for same cash outlay
+            gross_px = entry_px * (1.0 + one_way)
+            shares = spend / gross_px
             cash -= spend
             positions[sym] = {
                 "entry_px": entry_px,
@@ -654,7 +660,7 @@ def strategy_bigvol_portfolio(
         for sym, pos in list(positions.items()):
             df = ohlc[sym]
             px = float(df.loc[last_dt, "close"]) if last_dt in df.index else pos["last_px"]
-            cash += pos["shares"] * px
+            cash += pos["shares"] * px * (1.0 - one_way)
             n_trades += 1
         positions.clear()
         equity_points[-1] = (last_dt, cash)
