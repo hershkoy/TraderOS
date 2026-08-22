@@ -488,13 +488,17 @@ def strategy_bigvol_portfolio(
     provider: str = "ALPACA",
     workers: int = 4,
     cost_bps_rt: float = 0.0,
-) -> Tuple[pd.Series, pd.Series, str]:
+    return_trades: bool = False,
+):
     """
     Portfolio simulation from Weekly BigVol confirms.
     Entry: next daily open after confirm_week.
     Exit: stop from entry OR close < weekly MA10 (checked daily on close).
     Position size: alloc_frac of equity at entry, capped at max_positions.
     cost_bps_rt: round-trip cost in bps per completed trade (split half entry / half exit).
+
+    If return_trades=True, also returns a DataFrame of closed trades
+    (symbol, entry_date, exit_date, entry_px, exit_px, reason, pnl_pct).
     """
     raw = pd.read_csv(setups_csv)
     if raw.empty:
@@ -568,10 +572,34 @@ def strategy_bigvol_portfolio(
     positions: Dict[str, dict] = {}
     equity_points = []
     invested_points = []
+    trade_log: List[dict] = []
     entry_i = 0
     n_trades = 0
     n_stops = 0
     n_ma_exits = 0
+
+    def _close_trade(sym: str, px: float, reason: str, exit_dt: pd.Timestamp) -> None:
+        nonlocal cash, n_trades, n_stops, n_ma_exits
+        pos = positions.pop(sym)
+        cash += pos["shares"] * px * (1.0 - one_way)
+        n_trades += 1
+        if reason == "stop":
+            n_stops += 1
+        elif reason == "ma10":
+            n_ma_exits += 1
+        entry_px = float(pos["entry_px"])
+        trade_log.append(
+            {
+                "symbol": sym,
+                "entry_date": pd.Timestamp(pos["entry_date"]).strftime("%Y-%m-%d"),
+                "exit_date": pd.Timestamp(exit_dt).strftime("%Y-%m-%d"),
+                "entry_px": entry_px,
+                "exit_px": float(px),
+                "shares": float(pos["shares"]),
+                "reason": reason,
+                "pnl_pct": (float(px) / entry_px - 1.0) if entry_px else 0.0,
+            }
+        )
 
     for dt in calendar:
         # Exits on close
@@ -589,13 +617,7 @@ def strategy_bigvol_portfolio(
             elif ma_v is not None and px < ma_v and dt > pos["entry_date"]:
                 to_close.append((sym, px, "ma10"))
         for sym, px, reason in to_close:
-            pos = positions.pop(sym)
-            cash += pos["shares"] * px * (1.0 - one_way)
-            n_trades += 1
-            if reason == "stop":
-                n_stops += 1
-            else:
-                n_ma_exits += 1
+            _close_trade(sym, px, reason, dt)
 
         # Mark-to-market equity before new entries
         mtm = cash
@@ -660,9 +682,7 @@ def strategy_bigvol_portfolio(
         for sym, pos in list(positions.items()):
             df = ohlc[sym]
             px = float(df.loc[last_dt, "close"]) if last_dt in df.index else pos["last_px"]
-            cash += pos["shares"] * px * (1.0 - one_way)
-            n_trades += 1
-        positions.clear()
+            _close_trade(sym, px, "eod", last_dt)
         equity_points[-1] = (last_dt, cash)
 
     eq_s = pd.Series({d: v for d, v in equity_points}).sort_index()
@@ -671,6 +691,9 @@ def strategy_bigvol_portfolio(
     if not eq_s.empty and eq_s.iloc[0] != 0:
         eq_s = eq_s / eq_s.iloc[0]
     notes += f"; closed_trades~={n_trades} stops={n_stops} ma_exits={n_ma_exits}"
+    if return_trades:
+        trades_df = pd.DataFrame(trade_log)
+        return eq_s, inv_s, notes, trades_df
     return eq_s, inv_s, notes
 
 

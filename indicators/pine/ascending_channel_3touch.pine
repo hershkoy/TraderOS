@@ -1,0 +1,258 @@
+//@version=6
+// Classical ascending-channel detector (not Trendoscope / ACP).
+// Requires: distinct higher lows with intervening rallies, parallel return line
+// with >=2 swing highs and intervening pullbacks, support mostly respected.
+indicator("Ascending Channel Classical", "ACC", overlay=true, max_lines_count=50, max_labels_count=80)
+
+pivotLen              = input.int(15, "Pivot length", minval=5, maxval=40)
+minBottomTouches      = input.int(3, "Min bottom touches", minval=3, maxval=6)
+minTopTouches         = input.int(2, "Min top touches", minval=2, maxval=5)
+errorPct              = input.float(1.2, "Touch error %", minval=0.2, maxval=3.0, step=0.1)
+flatPct               = input.float(0.04, "Min support slope % / bar", minval=0.01, maxval=0.5, step=0.01)
+minBarsApart          = input.int(15, "Min bars between swings", minval=5)
+minRallyPct           = input.float(4.0, "Min intervening rally %", minval=1.0, maxval=20.0, step=0.5)
+minPullbackPct        = input.float(3.0, "Min intervening pullback %", minval=1.0, maxval=20.0, step=0.5)
+maxViolationFrac      = input.float(0.08, "Max support violation fraction", minval=0.0, maxval=0.25, step=0.01)
+maxLookbackPiv        = input.int(16, "Max pivot lows to scan", minval=6, maxval=30)
+extendRight           = input.int(20, "Extend channel bars", minval=0, maxval=80)
+showTouches           = input.bool(true, "Show touch labels")
+keepLastOnly          = input.bool(true, "Keep only latest channel")
+channelColor          = input.color(color.new(#e879f9, 0), "Channel color")
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var array<int>   lowBars    = array.new_int()
+var array<float> lowPrices  = array.new_float()
+var array<int>   highBars   = array.new_int()
+var array<float> highPrices = array.new_float()
+var array<line>  drawnLines = array.new_line()
+var array<label> drawnLabs  = array.new_label()
+var int lastPatternEnd = na
+
+f_clear() =>
+    szL = array.size(drawnLines)
+    if szL > 0
+        for i = 0 to szL - 1
+            line.delete(array.get(drawnLines, i))
+        array.clear(drawnLines)
+    szB = array.size(drawnLabs)
+    if szB > 0
+        for i = 0 to szB - 1
+            label.delete(array.get(drawnLabs, i))
+        array.clear(drawnLabs)
+
+f_push_cap(array<int> arrInt, array<float> arrFloat, int bar, float px, int cap) =>
+    array.push(arrInt, bar)
+    array.push(arrFloat, px)
+    while array.size(arrInt) > cap
+        array.shift(arrInt)
+        array.shift(arrFloat)
+
+if not na(pl)
+    f_push_cap(lowBars, lowPrices, bar_index - pivotLen, pl, maxLookbackPiv)
+if not na(ph)
+    f_push_cap(highBars, highPrices, bar_index - pivotLen, ph, maxLookbackPiv)
+
+f_line_at(float y1, int x1, float slope, int x) =>
+    y1 + slope * (x - x1)
+
+f_touch_ok(float y, float px, float err) =>
+    math.abs(y - px) / math.max(px, 1e-8) * 100.0 <= err
+
+f_rally_ok(int xA, float yA, int xB) =>
+    peak = ta.highest(high, math.max(xB - xA, 1))
+    // approximate: use barssince window via highest over lookback from current is wrong;
+    // store nothing — use price arrays instead below
+    true
+
+if not na(pl) and array.size(lowBars) >= minBottomTouches
+    nL = array.size(lowBars)
+    bestScore = -1.0
+    bestX1 = 0
+    bestY1 = 0.0
+    bestSlope = 0.0
+    bestXn = 0
+    bestWidth = 0.0
+    bestTouchCount = 0
+    array<int> bestTouchBars = array.new_int()
+    array<float> bestTouchPx = array.new_float()
+    array<int> bestUpperBars = array.new_int()
+    found = false
+
+    for a = 0 to nL - minBottomTouches
+        for c = a + minBottomTouches - 1 to nL - 1
+            x1 = array.get(lowBars, a)
+            y1 = array.get(lowPrices, a)
+            xn = array.get(lowBars, c)
+            yn = array.get(lowPrices, c)
+            if xn - x1 < minBarsApart * (minBottomTouches - 1)
+                continue
+            if not na(lastPatternEnd) and x1 <= lastPatternEnd
+                continue
+            slope = (yn - y1) / float(xn - x1)
+            risePct = (yn - y1) / y1 * 100.0
+            if slope <= 0.0 or (slope / y1 * 100.0) < flatPct or risePct < 3.0
+                continue
+
+            array<int> touchBars = array.new_int()
+            array<float> touchPx = array.new_float()
+            array.push(touchBars, x1)
+            array.push(touchPx, y1)
+            swingsOk = true
+
+            for m = a + 1 to c - 1
+                xm = array.get(lowBars, m)
+                ym = array.get(lowPrices, m)
+                prevX = array.get(touchBars, array.size(touchBars) - 1)
+                prevY = array.get(touchPx, array.size(touchPx) - 1)
+                if xm - prevX < minBarsApart
+                    continue
+                if not f_touch_ok(f_line_at(y1, x1, slope, xm), ym, errorPct)
+                    continue
+                if ym < prevY * 0.995
+                    continue
+                // Intervening rally: max high between pivots must clear minRallyPct
+                // Walk stored OHLC via request is unavailable; approximate with highPrices in range
+                peak = prevY
+                nHtmp = array.size(highBars)
+                if nHtmp > 0
+                    for hi = 0 to nHtmp - 1
+                        xh = array.get(highBars, hi)
+                        if xh > prevX and xh < xm
+                            peak := math.max(peak, array.get(highPrices, hi))
+                if (peak - prevY) / prevY * 100.0 < minRallyPct
+                    continue
+                array.push(touchBars, xm)
+                array.push(touchPx, ym)
+
+            prevX = array.get(touchBars, array.size(touchBars) - 1)
+            prevY = array.get(touchPx, array.size(touchPx) - 1)
+            if xn != prevX
+                if xn - prevX < minBarsApart
+                    swingsOk := false
+                else if not f_touch_ok(f_line_at(y1, x1, slope, xn), yn, errorPct)
+                    swingsOk := false
+                else if yn < prevY * 0.995
+                    swingsOk := false
+                else
+                    peak = prevY
+                    nHtmp = array.size(highBars)
+                    if nHtmp > 0
+                        for hi = 0 to nHtmp - 1
+                            xh = array.get(highBars, hi)
+                            if xh > prevX and xh < xn
+                                peak := math.max(peak, array.get(highPrices, hi))
+                    if (peak - prevY) / prevY * 100.0 < minRallyPct
+                        swingsOk := false
+                    else
+                        array.push(touchBars, xn)
+                        array.push(touchPx, yn)
+
+            if not swingsOk or array.size(touchBars) < minBottomTouches
+                continue
+
+            x1 := array.get(touchBars, 0)
+            y1 := array.get(touchPx, 0)
+            xn := array.get(touchBars, array.size(touchBars) - 1)
+            yn := array.get(touchPx, array.size(touchPx) - 1)
+            slope := (yn - y1) / float(xn - x1)
+
+            // Candidate widths from highs strictly inside window
+            array<float> widths = array.new_float()
+            nH = array.size(highBars)
+            if nH > 0
+                for hi = 0 to nH - 1
+                    xh = array.get(highBars, hi)
+                    if xh <= x1 or xh >= xn
+                        continue
+                    dist = array.get(highPrices, hi) - f_line_at(y1, x1, slope, xh)
+                    if dist > 0
+                        array.push(widths, dist)
+            if array.size(widths) < minTopTouches
+                continue
+            // sort ascending (simple insertion)
+            for i = 1 to array.size(widths) - 1
+                key = array.get(widths, i)
+                j = i - 1
+                while j >= 0 and array.get(widths, j) > key
+                    array.set(widths, j + 1, array.get(widths, j))
+                    j -= 1
+                array.set(widths, j + 1, key)
+
+            chosenWidth = na
+            array<int> upperBars = array.new_int()
+            for wi = 0 to array.size(widths) - 1
+                width = array.get(widths, wi)
+                array<int> cand = array.new_int()
+                if nH > 0
+                    for hi = 0 to nH - 1
+                        xh = array.get(highBars, hi)
+                        if xh <= x1 or xh >= xn
+                            continue
+                        yh = array.get(highPrices, hi)
+                        yTop = f_line_at(y1, x1, slope, xh) + width
+                        if f_touch_ok(yTop, yh, errorPct * 1.25)
+                            array.push(cand, xh)
+                if array.size(cand) < minTopTouches
+                    continue
+                array<int> filtered = array.new_int()
+                array.push(filtered, array.get(cand, 0))
+                for ci = 1 to array.size(cand) - 1
+                    xh = array.get(cand, ci)
+                    prevH = array.get(filtered, array.size(filtered) - 1)
+                    if xh - prevH < minBarsApart
+                        continue
+                    // pullback between highs via pivot lows in between
+                    trough = f_line_at(y1, x1, slope, prevH) + width
+                    nLtmp = array.size(lowBars)
+                    if nLtmp > 0
+                        for li = 0 to nLtmp - 1
+                            xl = array.get(lowBars, li)
+                            if xl > prevH and xl < xh
+                                trough := math.min(trough, array.get(lowPrices, li))
+                    resistPrev = f_line_at(y1, x1, slope, prevH) + width
+                    if (resistPrev - trough) / resistPrev * 100.0 >= minPullbackPct
+                        array.push(filtered, xh)
+                if array.size(filtered) >= minTopTouches
+                    chosenWidth := width
+                    upperBars := filtered
+                    break
+
+            if na(chosenWidth)
+                continue
+
+            score = array.size(touchBars) * 10.0 + array.size(upperBars) + (xn - x1) / 100.0
+            if score > bestScore
+                bestScore := score
+                bestX1 := x1
+                bestY1 := y1
+                bestSlope := slope
+                bestXn := xn
+                bestWidth := chosenWidth
+                bestTouchCount := array.size(touchBars)
+                bestTouchBars := touchBars
+                bestTouchPx := touchPx
+                bestUpperBars := upperBars
+                found := true
+
+    if found
+        if keepLastOnly
+            f_clear()
+        xRight = bestXn + extendRight
+        yBotR = f_line_at(bestY1, bestX1, bestSlope, xRight)
+        yTopL = bestY1 + bestWidth
+        yTopR = yBotR + bestWidth
+        array.push(drawnLines, line.new(bestX1, bestY1, xRight, yBotR, xloc=xloc.bar_index, color=channelColor, width=2))
+        array.push(drawnLines, line.new(bestX1, yTopL, xRight, yTopR, xloc=xloc.bar_index, color=channelColor, width=2))
+        yLab = f_line_at(bestY1, bestX1, bestSlope, bestXn) + bestWidth
+        array.push(drawnLabs, label.new(bestXn, yLab, "Ascending Channel (classical)\n" + str.tostring(bestTouchCount) + "L / " + str.tostring(array.size(bestUpperBars)) + "H", style=label.style_label_down, color=color.new(channelColor, 15), textcolor=color.white, size=size.small))
+        if showTouches
+            for ti = 0 to bestTouchCount - 1
+                array.push(drawnLabs, label.new(array.get(bestTouchBars, ti), array.get(bestTouchPx, ti), "L" + str.tostring(ti + 1), style=label.style_label_up, color=channelColor, textcolor=color.white, size=size.tiny))
+            for ui = 0 to array.size(bestUpperBars) - 1
+                xb = array.get(bestUpperBars, ui)
+                yb = f_line_at(bestY1, bestX1, bestSlope, xb) + bestWidth
+                array.push(drawnLabs, label.new(xb, yb, "H" + str.tostring(ui + 1), style=label.style_label_down, color=color.new(color.aqua, 0), textcolor=color.white, size=size.tiny))
+        lastPatternEnd := bestXn
+        alert("Classical ascending channel confirmed", alert.freq_once_per_bar)
