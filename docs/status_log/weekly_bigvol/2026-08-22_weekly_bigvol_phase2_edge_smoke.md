@@ -6,15 +6,39 @@ Date: 2026-08-22
 
 | Run | Scope | Elapsed |
 |-----|-------|---------|
-| Weekly completeness sample | 10 symbols | ~1.4 min (86.7s) |
-| Setup hunt (300 ALPACA daily) | 300 symbols | ~21.5 min (1292s) |
-| IB 15m Backtrader smoke | 20 symbols | ~3.0 min (182s) |
+| Weekly completeness sample | 10 symbols | ~1.4 min (86.7s) baseline; **50.0s** cold batch / **0.1s** warm cache |
+| Setup hunt (300 ALPACA daily) | 300 symbols | ~21.5 min (1292s) baseline (pre-opt) |
+| Setup hunt smoke | 10 symbols | **15.1s** cold / **6.2s** warm cache |
+| IB 15m Backtrader smoke | 20 symbols | ~3.0 min (182s) baseline; **48.6s** with `--workers 4` + quiet weekly |
 
 Going forward, scripts print timing in the summary:
-- `find_weekly_bigvol_examples.py` — total / load / analyze / avg per symbol
-- `score_weekly_bigvol_examples.py` — total
-- `check_weekly_completeness_sample.py` — total
-- `backtrader_runner_yaml.py --universe` — total, avg/symbol, per-symbol elapsed, `timing.txt` + `elapsed_seconds` column in CSV
+- `find_weekly_bigvol_examples.py` - total / load / analyze / avg per symbol
+- `score_weekly_bigvol_examples.py` - total
+- `check_weekly_completeness_sample.py` - total
+- `backtrader_runner_yaml.py --universe` - total, avg/symbol, per-symbol elapsed, `timing.txt` + `elapsed_seconds` column in CSV
+
+## Runtime optimizations (2026-08-22)
+
+Implemented end-to-end speedups:
+
+1. **Batch OHLCV** - `TimescaleDBClient.get_ohlcv_batch()` (`ANY(%s)` chunks)
+2. **Parquet cache + thread workers** - `utils/data/ohlcv_loader.py` (`data/cache/ohlcv/`)
+3. **Hunter / completeness** wired to loader (`--no-cache`, `--workers`, `--chunk-size`)
+4. **Quiet weekly resample** - skip O(weeks*bars) incomplete-week scan in universe mode
+5. **Universe `--workers N`** - process pool over symbols (`run_one_universe_symbol`)
+
+| Before -> After | Result |
+|-----------------|--------|
+| Completeness 10-sym | 86.7s -> 50s cold / 0.1s cached |
+| Hunt 10-sym | (was ~4s/sym load-ish) -> 7.1s load cold / 0.1s cached |
+| IB universe 20 | 182s -> **48.6s** (~3.7x) at workers=4 |
+
+Fast commands:
+
+```bat
+python scripts\data\find_weekly_bigvol_examples.py --no-liquid-only --max-symbols 300 --workers 4
+python backtrader_runner_yaml.py --strategy weekly_bigvol_ttm_squeeze --universe --max-symbols 20 --provider IB --timeframe 15m --fromdate 2022-01-01 --todate 2025-11-26 --quiet --workers 4
+```
 
 ## Hygiene (quick)
 

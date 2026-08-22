@@ -377,8 +377,8 @@ class TimescaleDBClient:
                         logger.warning(f"No data found for {symbol} {timeframe}")
                 return pd.DataFrame()
             
-            logger.info(f"Retrieved {len(rows)} raw rows from database")
-            logger.info(f"Sample raw row: {rows[0] if rows else 'No rows'}")
+            # Lean path: avoid INFO spam (was dominant cost on multi-symbol sweeps)
+            logger.debug("Retrieved %s raw rows for %s %s", len(rows), symbol, timeframe)
             
             # Convert to DataFrame
             df = pd.DataFrame(rows, columns=[
@@ -386,18 +386,16 @@ class TimescaleDBClient:
                 'open', 'high', 'low', 'close', 'volume', 'created_at'
             ])
             
-            logger.info(f"DataFrame created with shape: {df.shape}")
-            logger.info(f"DataFrame columns: {df.columns.tolist()}")
-            logger.info(f"DataFrame data types: {df.dtypes.to_dict()}")
-            logger.info(f"Sample data (first 3 rows):")
-            logger.info(f"  {df.head(3).to_dict('records')}")
-            
             # Convert timestamp
             df['timestamp'] = pd.to_datetime(df['ts'], utc=True)
-            logger.info(f"Timestamp conversion completed")
-            logger.info(f"Timestamp range: {df['timestamp'].min()} to {df['timestamp'].max()}")
-            
-            logger.info(f"Retrieved {len(df)} records for {symbol} {timeframe}")
+            logger.debug(
+                "Retrieved %s records for %s %s (%s -> %s)",
+                len(df),
+                symbol,
+                timeframe,
+                df['timestamp'].min(),
+                df['timestamp'].max(),
+            )
             return df
             
         except Exception as e:
@@ -406,7 +404,111 @@ class TimescaleDBClient:
         finally:
             if cursor:
                 cursor.close()
-    
+
+    def get_ohlcv_batch(
+        self,
+        symbols: List[str],
+        timeframe: str,
+        provider: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        chunk_size: int = 50,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch OHLCV for many symbols in chunked SQL queries.
+
+        Returns dict symbol -> DataFrame with columns
+        open/high/low/close/volume indexed by naive datetime (ts).
+        Empty/missing symbols are omitted.
+        """
+        if not symbols:
+            return {}
+        if not self.ensure_connection():
+            logger.error("No database connection")
+            return {}
+
+        symbols_u = [s.upper() for s in symbols]
+        out: Dict[str, pd.DataFrame] = {}
+
+        for i in range(0, len(symbols_u), max(1, chunk_size)):
+            chunk = symbols_u[i : i + chunk_size]
+            cursor = None
+            try:
+                cursor = self.connection.cursor()
+                query = """
+                    SELECT ts, symbol, open, high, low, close, volume
+                    FROM market_data
+                    WHERE timeframe = %s
+                      AND symbol = ANY(%s)
+                """
+                params: List[Any] = [timeframe, chunk]
+                if provider:
+                    query += " AND provider = %s"
+                    params.append(provider.upper())
+                if start_time:
+                    query += " AND ts >= %s"
+                    params.append(start_time)
+                if end_time:
+                    query += " AND ts <= %s"
+                    params.append(end_time)
+                query += " ORDER BY symbol, ts"
+
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                if not rows:
+                    continue
+
+                df = pd.DataFrame(
+                    rows,
+                    columns=["ts", "symbol", "open", "high", "low", "close", "volume"],
+                )
+                df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+                df = df.dropna(subset=["ts"])
+                if df.empty:
+                    continue
+                # naive index for resampling compatibility
+                if getattr(df["ts"].dt, "tz", None) is not None:
+                    df["ts"] = df["ts"].dt.tz_convert(None)
+
+                for sym, g in df.groupby("symbol", sort=False):
+                    d = pd.DataFrame(
+                        {
+                            "open": g["open"].astype(float).to_numpy(),
+                            "high": g["high"].astype(float).to_numpy(),
+                            "low": g["low"].astype(float).to_numpy(),
+                            "close": g["close"].astype(float).to_numpy(),
+                            "volume": g["volume"].astype(float).to_numpy(),
+                        },
+                        index=pd.DatetimeIndex(g["ts"].to_numpy()),
+                    ).dropna().sort_index()
+                    if d.index.has_duplicates:
+                        d = d.groupby(level=0).agg(
+                            {
+                                "open": "first",
+                                "high": "max",
+                                "low": "min",
+                                "close": "last",
+                                "volume": "sum",
+                            }
+                        )
+                    if not d.empty:
+                        out[str(sym).upper()] = d
+
+                logger.debug(
+                    "Batch OHLCV chunk %s-%s: %s rows -> %s symbols",
+                    i,
+                    i + len(chunk),
+                    len(rows),
+                    len(chunk),
+                )
+            except Exception as e:
+                logger.error("Batch OHLCV fetch failed for chunk starting %s: %s", chunk[0], e)
+            finally:
+                if cursor:
+                    cursor.close()
+
+        return out
+
     def get_available_timeframes(self, symbol: str, provider: Optional[str] = None) -> List[str]:
         """
         Get list of available timeframes for a symbol

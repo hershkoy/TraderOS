@@ -328,48 +328,24 @@ def load_symbols(
     provider: str,
     start: datetime,
     end: datetime,
+    *,
+    use_cache: bool = True,
+    chunk_size: int = 50,
+    workers: int = 4,
 ) -> Dict[str, pd.DataFrame]:
-    client = get_timescaledb_client()
-    if not client.ensure_connection():
-        raise RuntimeError("Cannot connect to TimescaleDB")
+    """Load OHLCV via batch SQL + optional parquet cache (see utils.data.ohlcv_loader)."""
+    from utils.data.ohlcv_loader import load_ohlcv_many
 
-    out: Dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        df = client.get_market_data(
-            sym, timeframe, provider=provider, start_time=start, end_time=end
-        )
-        if df is None or df.empty:
-            logger.warning("%s: no data", sym)
-            continue
-        ts = pd.to_datetime(df["ts"], errors="coerce")
-        if getattr(ts.dt, "tz", None) is not None:
-            ts = ts.dt.tz_convert(None)
-        valid = ~ts.isna()
-        if not valid.any():
-            logger.warning("%s: all timestamps invalid", sym)
-            continue
-        # Use numpy arrays so column values are not reindexed against DatetimeIndex labels
-        d = pd.DataFrame(
-            {
-                "open": df.loc[valid, "open"].astype(float).to_numpy(),
-                "high": df.loc[valid, "high"].astype(float).to_numpy(),
-                "low": df.loc[valid, "low"].astype(float).to_numpy(),
-                "close": df.loc[valid, "close"].astype(float).to_numpy(),
-                "volume": df.loc[valid, "volume"].astype(float).to_numpy(),
-            },
-            index=pd.DatetimeIndex(ts.loc[valid].to_numpy()),
-        ).dropna().sort_index()
-        # Collapse duplicate timestamps (same day rows from overlapping ingests)
-        if d.index.has_duplicates:
-            d = d.groupby(level=0).agg(
-                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-            )
-        if not d.empty:
-            out[sym] = d
-        else:
-            logger.warning("%s: empty after normalize", sym)
-    client.disconnect()
-    return out
+    return load_ohlcv_many(
+        list(symbols),
+        timeframe=timeframe,
+        provider=provider,
+        start=start,
+        end=end,
+        use_cache=use_cache,
+        chunk_size=chunk_size,
+        workers=workers,
+    )
 
 
 def resolve_symbol_list(args: argparse.Namespace) -> List[str]:
@@ -422,6 +398,12 @@ def main() -> int:
     parser.add_argument("--fromdate", default="2018-01-01")
     parser.add_argument("--todate", default="2025-11-26")
     parser.add_argument("--outdir", default="reports/examples")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable parquet OHLCV cache under data/cache/ohlcv")
+    parser.add_argument("--chunk-size", type=int, default=50,
+                        help="Symbols per batch SQL query (default 50)")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Parallel batch fetch workers (default 4; 1=serial)")
     args = parser.parse_args()
 
     t_run0 = time.perf_counter()
@@ -431,7 +413,16 @@ def main() -> int:
     logger.info("Hunting examples for %d symbols (%s -> %s)", len(symbols), args.fromdate, args.todate)
 
     t_load0 = time.perf_counter()
-    data = load_symbols(symbols, args.timeframe, args.provider, start, end)
+    data = load_symbols(
+        symbols,
+        args.timeframe,
+        args.provider,
+        start,
+        end,
+        use_cache=not args.no_cache,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
+    )
     load_s = time.perf_counter() - t_load0
     logger.info(
         "Loaded OHLCV for %d / %d symbols in %s",
@@ -479,7 +470,7 @@ def main() -> int:
 
     print("")
     print("=" * 60)
-    print("WEEKLY BIGVOL + TTM SQUEEZE — EXAMPLE HUNT SUMMARY")
+    print("WEEKLY BIGVOL + TTM SQUEEZE - EXAMPLE HUNT SUMMARY")
     print("=" * 60)
     print(f"Symbols requested : {len(symbols)}")
     print(f"Symbols with data : {len(data)}")

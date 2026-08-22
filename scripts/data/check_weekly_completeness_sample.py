@@ -43,7 +43,7 @@ def main() -> int:
     t0 = time.perf_counter()
     start = datetime(2018, 1, 1)
     end = datetime(2025, 11, 26)
-    data = load_symbols(SYMBOLS, "1d", "ALPACA", start, end)
+    data = load_symbols(SYMBOLS, "1d", "ALPACA", start, end, use_cache=True, workers=4)
     print(f"Loaded {len(data)}/{len(SYMBOLS)} symbols\n")
     print(f"{'symbol':<8} {'weeks':>6} {'lt5':>6} {'lt5%':>7} {'lt4':>6} {'range'}")
     rows = []

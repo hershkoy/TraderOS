@@ -178,27 +178,23 @@ def load_daily_data(parquet_path: Path):
     print(f"Resampled to {len(df_daily)} daily bars from {df_daily.index.min()} to {df_daily.index.max()}")
     return df_daily
 
-def resample_to_weekly_pandas(df: pd.DataFrame) -> pd.DataFrame:
+def resample_to_weekly_pandas(
+    df: pd.DataFrame, validate_incomplete_weeks: bool = True
+) -> pd.DataFrame:
     """
     Resample any OHLCV DataFrame to weekly bars using pandas.
-    More accurate and transparent than Backtrader's on-the-fly resampling.
-    
-    Weekly bars end on Friday (W-FRI) and aggregate:
-    - open: first value of the week
-    - high: max value of the week
-    - low: min value of the week
-    - close: last value of the week
-    - volume: sum of all volumes in the week
+
+    Weekly bars end on Friday (W-FRI). Set validate_incomplete_weeks=False
+    for universe/quiet runs — the old per-week scan is O(weeks*bars) and
+    dominates 15m universe runtime.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError("DataFrame must be indexed by datetime")
-    
-    # Remove timezone if present (pandas resampling works better without tz)
+
     if df.index.tz is not None:
         df = df.copy()
         df.index = df.index.tz_localize(None)
-    
-    # Resample to weekly (W-FRI = week ending on Friday)
+
     df_weekly = df.resample('W-FRI').agg({
         'open': 'first',
         'high': 'max',
@@ -206,29 +202,24 @@ def resample_to_weekly_pandas(df: pd.DataFrame) -> pd.DataFrame:
         'close': 'last',
         'volume': 'sum'
     }).dropna()
-    
-    # Validate weekly bars for completeness
-    # Check if any weekly bars are missing Friday data (incomplete weeks)
+
+    if not validate_incomplete_weeks or df_weekly.empty:
+        return df_weekly
+
+    import logging
+    logger = logging.getLogger(__name__)
+    # Fast path: count unique session dates per W-FRI period
+    sessions = pd.Series(df.index.normalize().unique())
+    day_counts = sessions.groupby(sessions.dt.to_period("W-FRI")).size()
     for week_end_date in df_weekly.index:
-        # Week starts on Monday (4 days before Friday)
-        week_start = week_end_date - pd.Timedelta(days=4)  # Monday of the week
-        # Week ends at end of Friday (week_end_date is at 00:00:00, need to include all of Friday)
-        week_end_inclusive = week_end_date + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        week_data = df[(df.index >= week_start) & (df.index <= week_end_inclusive)]
-        
-        # Count unique trading days (should be 5 for a complete week)
-        if len(week_data) > 0:
-            unique_days = pd.Series(week_data.index.date).nunique()
-            if unique_days < 5:
-                # Log warning about incomplete week (but don't fail)
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    f"Incomplete weekly bar for week ending {week_end_date.date()}: "
-                    f"only {unique_days} trading days (expected 5). "
-                    f"This may cause TTM Squeeze calculations to differ from TradingView."
-                )
-    
+        unique_days = int(day_counts.get(week_end_date.to_period("W-FRI"), 0))
+        if 0 < unique_days < 5:
+            logger.warning(
+                f"Incomplete weekly bar for week ending {week_end_date.date()}: "
+                f"only {unique_days} trading days (expected 5). "
+                f"This may cause TTM Squeeze calculations to differ from TradingView."
+            )
+
     return df_weekly
 
 # -----------------------------
@@ -686,7 +677,7 @@ def _strategy_requests_4h(strategy_class) -> bool:
 
     return False
 
-def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None):
+def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None, quiet_mode=False):
     """Setup data feeds based on strategy requirements"""
     data_reqs = strategy_class.get_data_requirements()
     
@@ -752,13 +743,16 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None):
                 # Use pandas pre-aggregation for more accurate and transparent weekly data
                 # This ensures volume is correctly summed and we can verify the aggregation
                 try:
-                    df_weekly = resample_to_weekly_pandas(df_data)
-                    print(f"Pre-aggregated {len(df_weekly)} weekly bars using pandas (from {len(df_data)} 15m bars)")
-                    print(f"  Weekly date range: {df_weekly.index.min()} to {df_weekly.index.max()}")
-                    # Sample volume check for debugging
-                    if len(df_weekly) > 0:
-                        sample_vol = df_weekly['volume'].iloc[-1]
-                        print(f"  Sample weekly volume (most recent): {sample_vol:,.0f}")
+                    df_weekly = resample_to_weekly_pandas(
+                        df_data, validate_incomplete_weeks=not quiet_mode
+                    )
+                    if not quiet_mode:
+                        print(f"Pre-aggregated {len(df_weekly)} weekly bars using pandas (from {len(df_data)} 15m bars)")
+                        print(f"  Weekly date range: {df_weekly.index.min()} to {df_weekly.index.max()}")
+                        # Sample volume check for debugging
+                        if len(df_weekly) > 0:
+                            sample_vol = df_weekly['volume'].iloc[-1]
+                            print(f"  Sample weekly volume (most recent): {sample_vol:,.0f}")
                     
                     wfeed = bt.feeds.PandasData(
                         dataname=df_weekly,
@@ -808,6 +802,117 @@ def setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=None):
         return [data_feed]
 
 # -----------------------------
+# Universe symbol worker (picklable for ProcessPoolExecutor)
+# -----------------------------
+def run_one_universe_symbol(job: dict) -> dict:
+    """
+    Run a single-symbol universe backtest. Returns a serializable result dict.
+    Used by serial loop and --workers process pool.
+    """
+    t0 = time.perf_counter()
+    symbol = job["symbol"]
+    try:
+        strategy_class = get_strategy(job["strategy_name"])
+        data_reqs = strategy_class.get_data_requirements()
+        config = job["config"]
+        global_config = job["global_config"]
+        strategy_config = job["strategy_config"]
+        provider = job["provider"]
+        quiet = bool(job.get("quiet", True))
+        log_level = job.get("log_level", "WARNING")
+
+        start = global_config.get("fromdate")
+        end = global_config.get("todate")
+        if data_reqs["base_timeframe"] == "daily":
+            df_data = load_timescaledb_daily(symbol, provider, start_date=start, end_date=end)
+        elif data_reqs["base_timeframe"] == "15m":
+            df_data = load_timescaledb_15m(symbol, provider, start_date=start, end_date=end)
+        else:
+            df_data = load_timescaledb_1h(symbol, provider, start_date=start, end_date=end)
+
+        fromdate = global_config.get("fromdate", "2018-01-01")
+        todate = global_config.get("todate", "2069-12-31")
+        df_data = df_data.loc[
+            (df_data.index >= pd.to_datetime(fromdate))
+            & (df_data.index <= pd.to_datetime(todate))
+        ]
+
+        data_config = config.get("data", {})
+        min_points = data_config.get("min_data_points", 30)
+        edge_trim = data_config.get("edge_trim", 5)
+        if len(df_data) < min_points:
+            return {
+                "symbol": symbol,
+                "ok": False,
+                "skipped": True,
+                "error": f"insufficient data ({len(df_data)} < {min_points})",
+                "elapsed_seconds": round(time.perf_counter() - t0, 3),
+            }
+
+        df_data = df_data.iloc[:-edge_trim]
+
+        cerebro = bt.Cerebro(stdstats=False)
+        cerebro.broker.setcash(global_config.get("cash", 100000.0))
+        cerebro.broker.set_checksubmit(False)
+        cerebro.broker.set_coo(False)
+        timezone = config.get("backtrader", {}).get("timezone", "UTC")
+        cerebro.addtz(timezone)
+
+        setup_data_feeds(
+            cerebro,
+            strategy_class,
+            df_data,
+            config,
+            symbol=symbol,
+            quiet_mode=quiet,
+        )
+
+        strategy_params = strategy_config.copy()
+        strategy_params["size"] = global_config.get("size", 1)
+        strategy_params["printlog"] = not quiet
+        strategy_params["log_level"] = log_level
+        cerebro.addstrategy(strategy_class, **strategy_params)
+
+        results = cerebro.run()
+        if not results:
+            return {
+                "symbol": symbol,
+                "ok": False,
+                "skipped": False,
+                "error": "empty cerebro results",
+                "elapsed_seconds": round(time.perf_counter() - t0, 3),
+            }
+
+        strategy = results[0]
+        stats = strategy.get_trade_statistics() if hasattr(strategy, "get_trade_statistics") else {}
+        final_value = cerebro.broker.getvalue()
+        initial_value = global_config.get("cash", 100000.0)
+        total_return = (final_value - initial_value) / initial_value * 100
+        elapsed_sym = time.perf_counter() - t0
+        return {
+            "symbol": symbol,
+            "ok": True,
+            "skipped": False,
+            "initial_value": initial_value,
+            "final_value": final_value,
+            "total_return": total_return,
+            "total_trades": stats.get("total_trades", 0),
+            "win_rate": stats.get("win_rate", 0.0),
+            "profit_factor": stats.get("profit_factor", 0.0),
+            "elapsed_seconds": round(elapsed_sym, 3),
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "symbol": symbol,
+            "ok": False,
+            "skipped": False,
+            "error": str(e),
+            "elapsed_seconds": round(time.perf_counter() - t0, 3),
+        }
+
+
+# -----------------------------
 # Runner
 # -----------------------------
 def main():
@@ -824,6 +929,8 @@ def main():
                    help='Maximum number of symbols to test (for universe backtesting)')
     ap.add_argument('--start-index', type=int, default=0,
                    help='Index to start from in the universe (for universe backtesting, default: 0)')
+    ap.add_argument('--workers', type=int, default=1,
+                   help='Parallel workers for --universe (process pool; default 1=serial)')
     ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
                    help='Data provider (default: ALPACA)')
     ap.add_argument('--timeframe', type=str, choices=['15m', '1h', '1d'], default='1h',
@@ -942,110 +1049,96 @@ def main():
             print(f"Error loading universe: {e}", flush=True)
             return
         
-        # Run backtest on each symbol
+        # Run backtest on each symbol (serial or process pool)
         all_results = []
         successful = 0
         failed = 0
         symbol_timings = []
         t_universe0 = time.perf_counter()
-        print(f"Universe run started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-        
-        for i, symbol in enumerate(symbols, 1):
+        quiet_feeds = True  # universe: skip incomplete-week validation spam
+        workers = max(1, int(args.workers or 1))
+        print(
+            f"Universe run started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            f"(workers={workers})",
+            flush=True,
+        )
+
+        jobs = [
+            {
+                "symbol": symbol,
+                "strategy_name": args.strategy,
+                "config": config,
+                "global_config": global_config,
+                "strategy_config": strategy_config,
+                "provider": args.provider,
+                "quiet": quiet_feeds,
+                "log_level": args.log_level if not args.quiet else "ERROR",
+            }
+            for symbol in symbols
+        ]
+
+        def _consume_result(i: int, result: dict) -> None:
+            nonlocal successful, failed
             actual_index = args.start_index + i - 1
-            t_sym0 = time.perf_counter()
-            print(f"\n[{i}/{len(symbols)}] Processing {symbol} (universe index: {actual_index})...", flush=True)
-            try:
-                # Load data for this symbol
-                start = global_config.get('fromdate')
-                end = global_config.get('todate')
-                if data_reqs['base_timeframe'] == 'daily':
-                    df_data = load_timescaledb_daily(symbol, args.provider, start_date=start, end_date=end)
-                elif data_reqs['base_timeframe'] == '15m':
-                    df_data = load_timescaledb_15m(symbol, args.provider, start_date=start, end_date=end)
-                else:
-                    df_data = load_timescaledb_1h(symbol, args.provider, start_date=start, end_date=end)
-                
-                # Apply date filter
-                fromdate = global_config.get('fromdate', '2018-01-01')
-                todate = global_config.get('todate', '2069-12-31')
-                df_data = df_data.loc[(df_data.index >= pd.to_datetime(fromdate)) & 
-                                     (df_data.index <= pd.to_datetime(todate))]
-                
-                # Check minimum data
-                data_config = config.get('data', {})
-                min_points = data_config.get('min_data_points', 30)
-                edge_trim = data_config.get('edge_trim', 5)
-                
-                if len(df_data) < min_points:
-                    print(f"  Skipping {symbol}: insufficient data ({len(df_data)} < {min_points})", flush=True)
-                    failed += 1
-                    continue
-                
-                df_data = df_data.iloc[:-edge_trim]
-                
-                # Setup Cerebro for this symbol
-                cerebro = bt.Cerebro(stdstats=False)
-                cerebro.broker.setcash(global_config.get('cash', 100000.0))
-                cerebro.broker.set_checksubmit(False)
-                cerebro.broker.set_coo(False)
-                
-                backtrader_config = config.get('backtrader', {})
-                timezone = backtrader_config.get('timezone', 'UTC')
-                cerebro.addtz(timezone)
-                
-                # Setup data feeds
-                data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=symbol)
-                
-                # Prepare strategy parameters
-                strategy_params = strategy_config.copy()
-                strategy_params['size'] = global_config.get('size', 1)
-                # Respect user's log level even in universe mode
-                strategy_params['printlog'] = True  # Enable logging to capture in log file
-                strategy_params['log_level'] = args.log_level  # Use user's log level
-                
-                cerebro.addstrategy(strategy_class, **strategy_params)
-                
-                # Run backtest
-                try:
-                    results = cerebro.run()
-                    if results and len(results) > 0:
-                        strategy = results[0]
-                        stats = strategy.get_trade_statistics() if hasattr(strategy, 'get_trade_statistics') else {}
-                        final_value = cerebro.broker.getvalue()
-                        initial_value = global_config.get('cash', 100000.0)
-                        total_return = (final_value - initial_value) / initial_value * 100
-                        elapsed_sym = time.perf_counter() - t_sym0
-                        
-                        all_results.append({
-                            'symbol': symbol,
-                            'initial_value': initial_value,
-                            'final_value': final_value,
-                            'total_return': total_return,
-                            'total_trades': stats.get('total_trades', 0),
-                            'win_rate': stats.get('win_rate', 0.0),
-                            'profit_factor': stats.get('profit_factor', 0.0),
-                            'elapsed_seconds': round(elapsed_sym, 3),
-                            'strategy': strategy
-                        })
-                        successful += 1
+            symbol = result["symbol"]
+            elapsed_sym = float(result.get("elapsed_seconds") or 0.0)
+            symbol_timings.append(elapsed_sym)
+            if result.get("ok"):
+                all_results.append(
+                    {
+                        "symbol": symbol,
+                        "initial_value": result["initial_value"],
+                        "final_value": result["final_value"],
+                        "total_return": result["total_return"],
+                        "total_trades": result["total_trades"],
+                        "win_rate": result["win_rate"],
+                        "profit_factor": result["profit_factor"],
+                        "elapsed_seconds": result["elapsed_seconds"],
+                    }
+                )
+                successful += 1
+                print(
+                    f"[{i}/{len(symbols)}] {symbol} (idx {actual_index}): "
+                    f"{result['total_return']:.2f}% return, "
+                    f"{result['total_trades']} trades, "
+                    f"elapsed={_format_elapsed(elapsed_sym)}",
+                    flush=True,
+                )
+            else:
+                failed += 1
+                reason = result.get("error") or "failed"
+                kind = "Skipping" if result.get("skipped") else "Failed"
+                print(
+                    f"[{i}/{len(symbols)}] {symbol} (idx {actual_index}): "
+                    f"{kind} - {reason} (elapsed={_format_elapsed(elapsed_sym)})",
+                    flush=True,
+                )
+
+        if workers == 1:
+            for i, job in enumerate(jobs, 1):
+                _consume_result(i, run_one_universe_symbol(job))
+        else:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            # Map future -> 1-based index for stable progress labels
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                fut_to_i = {
+                    pool.submit(run_one_universe_symbol, job): i
+                    for i, job in enumerate(jobs, 1)
+                }
+                for fut in as_completed(fut_to_i):
+                    i = fut_to_i[fut]
+                    try:
+                        _consume_result(i, fut.result())
+                    except Exception as e:
+                        symbol = jobs[i - 1]["symbol"]
+                        failed += 1
+                        symbol_timings.append(0.0)
                         print(
-                            f"  {symbol}: {total_return:.2f}% return, "
-                            f"{stats.get('total_trades', 0)} trades, "
-                            f"elapsed={_format_elapsed(elapsed_sym)}",
+                            f"[{i}/{len(symbols)}] {symbol}: worker crashed - {e}",
                             flush=True,
                         )
-                    else:
-                        failed += 1
-                except Exception as e:
-                    print(f"  {symbol}: Backtest failed - {e}", flush=True)
-                    failed += 1
-                    
-            except Exception as e:
-                print(f"  {symbol}: Error - {e}", flush=True)
-                failed += 1
-            finally:
-                symbol_timings.append(time.perf_counter() - t_sym0)
-        
+
         # Generate aggregated report
         total_elapsed = time.perf_counter() - t_universe0
         avg_sym = (sum(symbol_timings) / len(symbol_timings)) if symbol_timings else 0.0
@@ -1055,6 +1148,7 @@ def main():
         print(f"Total symbols: {len(symbols)}")
         print(f"Successful: {successful}")
         print(f"Failed: {failed}")
+        print(f"Workers: {workers}")
         print(f"Timing: total={_format_elapsed(total_elapsed)} "
               f"(avg/symbol={_format_elapsed(avg_sym)}, "
               f"finished={datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
@@ -1093,6 +1187,7 @@ def main():
                     f"total_elapsed={_format_elapsed(total_elapsed)}\n"
                     f"avg_symbol_seconds={avg_sym:.3f}\n"
                     f"avg_symbol={_format_elapsed(avg_sym)}\n"
+                    f"workers={workers}\n"
                     f"symbols={len(symbols)}\n"
                     f"successful={successful}\n"
                     f"failed={failed}\n"
@@ -1110,6 +1205,7 @@ def main():
                     f"total_elapsed={_format_elapsed(total_elapsed)}\n"
                     f"avg_symbol_seconds={avg_sym:.3f}\n"
                     f"avg_symbol={_format_elapsed(avg_sym)}\n"
+                    f"workers={workers}\n"
                     f"symbols={len(symbols)}\n"
                     f"successful={successful}\n"
                     f"failed={failed}\n"
@@ -1118,7 +1214,7 @@ def main():
             print(f"Timing saved to: {report_dir / 'timing.txt'}")
         
         return
-    
+
     # Handle data loading - support both old parquet path and new TimescaleDB parameters
     if args.parquet:
         # Legacy parquet path support
@@ -1180,7 +1276,9 @@ def main():
     cerebro.addtz(timezone)
 
     # Setup data feeds
-    data_feeds = setup_data_feeds(cerebro, strategy_class, df_data, config, symbol=args.symbol)
+    data_feeds = setup_data_feeds(
+        cerebro, strategy_class, df_data, config, symbol=args.symbol, quiet_mode=args.quiet
+    )
 
     # Custom tracking is now handled by the strategy itself
     # No need for Backtrader analyzers or observers that can cause compatibility issues
