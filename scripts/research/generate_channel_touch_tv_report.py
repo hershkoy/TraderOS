@@ -191,8 +191,21 @@ def render_html(
   table {{ width:100%; border-collapse:collapse; font-size:12px; }}
   th, td {{ padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; }}
   th {{ color:var(--muted); font-weight:500; position:sticky; top:0; background:var(--panel); }}
+  th.sortable {{ cursor:pointer; user-select:none; white-space:nowrap; }}
+  th.sortable:hover {{ color:var(--text); }}
+  th.sortable .sort-ind {{ color:var(--accent); margin-left:4px; font-size:10px; }}
   td.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
   .table-scroll {{ max-height:560px; overflow:auto; border:1px solid var(--border); border-radius:6px; }}
+  .trade-filters {{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px 12px;
+    margin:10px 0 12px; align-items:end;
+  }}
+  .trade-filters label {{ display:block; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }}
+  .trade-filters input, .trade-filters select {{
+    width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
+    border-radius:4px; padding:7px 9px; font-size:12px;
+  }}
+  .trade-filters .actions {{ display:flex; gap:8px; }}
   .metric-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:14px; }}
   .metric-grid .mh,.metric-grid .mc {{ padding:9px 12px; border-bottom:1px solid var(--border); border-right:1px solid var(--border); font-size:12px; }}
   .metric-grid .mh {{ background:var(--panel2); color:var(--muted); }}
@@ -275,13 +288,60 @@ def render_html(
 
   <div id="trades" class="panel">
     <h2>List of trades</h2>
+    <div class="trade-filters">
+      <div>
+        <label for="tfSymbol">Symbol</label>
+        <input id="tfSymbol" type="text" placeholder="e.g. GLD, AAPL" />
+      </div>
+      <div>
+        <label for="tfOutcome">Outcome</label>
+        <select id="tfOutcome">
+          <option value="all">All</option>
+          <option value="win">Winners</option>
+          <option value="loss">Losers</option>
+        </select>
+      </div>
+      <div>
+        <label for="tfExit">Exit reason</label>
+        <select id="tfExit"><option value="all">All</option></select>
+      </div>
+      <div>
+        <label for="tfMinPnl">Min P&amp;L %</label>
+        <input id="tfMinPnl" type="number" step="0.1" placeholder="any" />
+      </div>
+      <div>
+        <label for="tfMaxPnl">Max P&amp;L %</label>
+        <input id="tfMaxPnl" type="number" step="0.1" placeholder="any" />
+      </div>
+      <div>
+        <label for="tfFrom">Entry from</label>
+        <input id="tfFrom" type="date" />
+      </div>
+      <div>
+        <label for="tfTo">Entry to</label>
+        <input id="tfTo" type="date" />
+      </div>
+      <div class="actions">
+        <button class="btn secondary" id="tfClear" type="button">Clear filters</button>
+      </div>
+    </div>
     <p class="muted" id="tradesNote"></p>
     <div class="table-scroll">
-      <table>
+      <table id="tradesTable">
         <thead>
           <tr>
-            <th>#</th><th>Symbol</th><th>Signal</th><th>Entry</th><th>Exit</th>
-            <th>Entry px</th><th>Exit px</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Cum. P&amp;L</th><th>Bars</th><th>Exit</th>
+            <th class="sortable" data-sort="n">#</th>
+            <th class="sortable" data-sort="symbol">Symbol</th>
+            <th class="sortable" data-sort="signal">Signal</th>
+            <th class="sortable" data-sort="entry_date">Entry</th>
+            <th class="sortable" data-sort="exit_date">Exit</th>
+            <th class="sortable" data-sort="entry_price">Entry px</th>
+            <th class="sortable" data-sort="exit_price">Exit px</th>
+            <th class="sortable" data-sort="pnl">P&amp;L $</th>
+            <th class="sortable" data-sort="pnl_pct">P&amp;L %</th>
+            <th class="sortable" data-sort="cum_pnl">Cum. P&amp;L</th>
+            <th class="sortable" data-sort="hold_days">Bars</th>
+            <th class="sortable" data-sort="exit_reason">Exit</th>
           </tr>
         </thead>
         <tbody id="tradesBody"></tbody>
@@ -468,6 +528,8 @@ function buildOverlay(stratEq, spyEq, capital) {{
 }}
 
 let eqChart, ddChart, cmpChart;
+let tradeRowsAll = [];
+let tradeSort = {{ key: 'exit_date', dir: 'asc' }};
 
 function ensureCharts() {{
   const common = {{
@@ -585,22 +647,16 @@ function render(sim, spy) {{
   `);
   setHTML('exitMix', 'Exit mix: ' + Object.entries(m.exits).map(([k,v]) => k + ': ' + v).join(' · '));
 
-  const maxRows = 500;
-  const slice = sim.rows.slice(0, maxRows);
-  setHTML('tradesNote', sim.rows.length > maxRows
-    ? ('Showing first ' + maxRows + ' of ' + sim.rows.length + ' trades (sorted by exit date).')
-    : (sim.rows.length + ' trades.'));
-  setHTML('tradesBody', slice.map(t => `
-    <tr>
-      <td>${{t.n}}</td><td>${{t.symbol}}</td><td>${{t.signal}}</td>
-      <td>${{t.entry_date}}</td><td>${{t.exit_date}}</td>
-      <td class="num">${{t.entry_price.toFixed(4)}}</td><td class="num">${{t.exit_price.toFixed(4)}}</td>
-      <td class="num ${{cls(t.pnl)}}">${{money(t.pnl,true)}}</td>
-      <td class="num ${{cls(t.pnl_pct)}}">${{pct(t.pnl_pct,true)}}</td>
-      <td class="num">${{money(t.cum_pnl,true)}}</td>
-      <td class="num">${{t.hold_days == null ? '' : t.hold_days}}</td>
-      <td>${{t.exit_reason}}</td>
-    </tr>`).join(''));
+  tradeRowsAll = sim.rows.slice();
+  // Populate exit-reason filter options from current sim
+  const exitSel = document.getElementById('tfExit');
+  const prevExit = exitSel.value || 'all';
+  const reasons = Object.keys(m.exits).sort();
+  exitSel.innerHTML = '<option value="all">All</option>' +
+    reasons.map(r => '<option value="' + r.replace(/"/g, '&quot;') + '">' + r + '</option>').join('');
+  if ([...exitSel.options].some(o => o.value === prevExit)) exitSel.value = prevExit;
+  else exitSel.value = 'all';
+  paintTradesTable();
 
   const months = Object.keys(sim.monthly).sort();
   setHTML('monthBody', months.map(mo => {{
@@ -623,6 +679,103 @@ function render(sim, spy) {{
   cmpChart.data.datasets[0].data = overlay.map(p => p.strategy);
   cmpChart.data.datasets[1].data = overlay.map(p => p.spy);
   cmpChart.update();
+}}
+
+function readTradeFilters() {{
+  const minRaw = document.getElementById('tfMinPnl').value;
+  const maxRaw = document.getElementById('tfMaxPnl').value;
+  return {{
+    symbol: (document.getElementById('tfSymbol').value || '').trim().toUpperCase(),
+    outcome: document.getElementById('tfOutcome').value,
+    exit: document.getElementById('tfExit').value,
+    minPnl: minRaw === '' ? null : Number(minRaw),
+    maxPnl: maxRaw === '' ? null : Number(maxRaw),
+    from: document.getElementById('tfFrom').value || '',
+    to: document.getElementById('tfTo').value || '',
+  }};
+}}
+
+function filterTradeRows(rows) {{
+  const f = readTradeFilters();
+  return rows.filter(t => {{
+    if (f.symbol) {{
+      const toks = f.symbol.split(/[,\s]+/).filter(Boolean);
+      if (toks.length && !toks.some(s => t.symbol.includes(s))) return false;
+    }}
+    if (f.outcome === 'win' && !(t.pnl > 0)) return false;
+    if (f.outcome === 'loss' && !(t.pnl <= 0)) return false;
+    if (f.exit !== 'all' && t.exit_reason !== f.exit) return false;
+    if (f.minPnl != null && !Number.isNaN(f.minPnl) && t.pnl_pct < f.minPnl) return false;
+    if (f.maxPnl != null && !Number.isNaN(f.maxPnl) && t.pnl_pct > f.maxPnl) return false;
+    if (f.from && t.entry_date < f.from) return false;
+    if (f.to && t.entry_date > f.to) return false;
+    return true;
+  }});
+}}
+
+function sortTradeRows(rows) {{
+  const {{ key, dir }} = tradeSort;
+  const mul = dir === 'asc' ? 1 : -1;
+  const out = rows.slice();
+  out.sort((a, b) => {{
+    let va = a[key], vb = b[key];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'string') return mul * va.localeCompare(vb);
+    return mul * (va - vb);
+  }});
+  return out;
+}}
+
+function updateSortHeaders() {{
+  const labels = {{
+    n:'#', symbol:'Symbol', signal:'Signal', entry_date:'Entry', exit_date:'Exit',
+    entry_price:'Entry px', exit_price:'Exit px', pnl:'P&amp;L $', pnl_pct:'P&amp;L %',
+    cum_pnl:'Cum. P&amp;L', hold_days:'Bars', exit_reason:'Exit'
+  }};
+  document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
+    const key = th.dataset.sort;
+    const label = labels[key] || key;
+    th.innerHTML = label + (tradeSort.key === key
+      ? ('<span class="sort-ind">' + (tradeSort.dir === 'asc' ? '▲' : '▼') + '</span>')
+      : '');
+  }});
+}}
+
+function paintTradesTable() {{
+  const filtered = filterTradeRows(tradeRowsAll);
+  const sorted = sortTradeRows(filtered);
+  const maxRows = 2000;
+  const slice = sorted.slice(0, maxRows);
+  let note = filtered.length + ' of ' + tradeRowsAll.length + ' trades';
+  if (filtered.length !== tradeRowsAll.length) note += ' (filtered)';
+  note += ' · sort: ' + tradeSort.key + ' ' + tradeSort.dir;
+  if (sorted.length > maxRows) note += ' · showing first ' + maxRows;
+  setHTML('tradesNote', note);
+  updateSortHeaders();
+  setHTML('tradesBody', slice.map(t => `
+    <tr>
+      <td>${{t.n}}</td><td>${{t.symbol}}</td><td>${{t.signal}}</td>
+      <td>${{t.entry_date}}</td><td>${{t.exit_date}}</td>
+      <td class="num">${{t.entry_price.toFixed(4)}}</td><td class="num">${{t.exit_price.toFixed(4)}}</td>
+      <td class="num ${{cls(t.pnl)}}">${{money(t.pnl,true)}}</td>
+      <td class="num ${{cls(t.pnl_pct)}}">${{pct(t.pnl_pct,true)}}</td>
+      <td class="num">${{money(t.cum_pnl,true)}}</td>
+      <td class="num">${{t.hold_days == null ? '' : t.hold_days}}</td>
+      <td>${{t.exit_reason}}</td>
+    </tr>`).join(''));
+}}
+
+function clearTradeFilters() {{
+  document.getElementById('tfSymbol').value = '';
+  document.getElementById('tfOutcome').value = 'all';
+  document.getElementById('tfExit').value = 'all';
+  document.getElementById('tfMinPnl').value = '';
+  document.getElementById('tfMaxPnl').value = '';
+  document.getElementById('tfFrom').value = '';
+  document.getElementById('tfTo').value = '';
+  paintTradesTable();
 }}
 
 function apply() {{
@@ -658,6 +811,22 @@ document.getElementById('btnReset').addEventListener('click', resetDefaults);
 document.querySelector('.controls').addEventListener('keydown', e => {{
   if (e.key === 'Enter') {{ e.preventDefault(); apply(); }}
 }});
+
+// Trade table sort + filter
+document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
+  th.addEventListener('click', () => {{
+    const key = th.dataset.sort;
+    if (tradeSort.key === key) tradeSort.dir = tradeSort.dir === 'asc' ? 'desc' : 'asc';
+    else {{ tradeSort.key = key; tradeSort.dir = (key === 'pnl' || key === 'pnl_pct' || key === 'cum_pnl') ? 'desc' : 'asc'; }}
+    paintTradesTable();
+  }});
+}});
+['tfSymbol','tfOutcome','tfExit','tfMinPnl','tfMaxPnl','tfFrom','tfTo'].forEach(id => {{
+  const el = document.getElementById(id);
+  el.addEventListener('input', paintTradesTable);
+  el.addEventListener('change', paintTradesTable);
+}});
+document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 
 document.getElementById('genAt').textContent = RAW.generated;
 resetDefaults();

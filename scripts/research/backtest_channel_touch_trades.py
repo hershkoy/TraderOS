@@ -91,8 +91,17 @@ def _simulate_trade(
     *,
     stop_pct: float,
     trail_pct: float,
+    trail_pct_wide: Optional[float] = None,
+    squeeze_mom: Optional[np.ndarray] = None,
+    squeeze_pctile: float = 75.0,
+    squeeze_lookback: int = 100,
 ) -> Optional[dict]:
-    """Long from entry_i close; exit on hard stop or trailing stop (intrabar low)."""
+    """Long from entry_i close; exit on hard stop or trailing stop (intrabar low).
+
+    If trail_pct_wide and squeeze_mom are provided, widen the trail when TTM
+    Squeeze momentum is positive, non-decreasing, and strong vs its recent
+    distribution (LazyBear lime-green / strong-up regime).
+    """
     n = len(close)
     if entry_i < 0 or entry_i >= n - 1:
         return None
@@ -105,13 +114,31 @@ def _simulate_trade(
     exit_i = n - 1
     exit_px = float(close[exit_i])
     exit_reason = "eod"
+    used_wide = False
+    wide = float(trail_pct_wide) if trail_pct_wide is not None else None
 
     for i in range(entry_i + 1, n):
         hi = float(high[i])
         lo = float(low[i])
         if np.isfinite(hi):
             peak = max(peak, hi)
-        trail_stop = peak * (1.0 - trail_pct)
+
+        trail_use = float(trail_pct)
+        wide_now = False
+        if wide is not None and squeeze_mom is not None and i < len(squeeze_mom):
+            mom = float(squeeze_mom[i])
+            mom_prev = float(squeeze_mom[i - 1]) if i > 0 else float("nan")
+            if np.isfinite(mom) and mom > 0 and (not np.isfinite(mom_prev) or mom >= mom_prev):
+                start = max(0, i - int(squeeze_lookback) + 1)
+                window = squeeze_mom[start : i + 1]
+                window = window[np.isfinite(window)]
+                if len(window) >= 20:
+                    thr = float(np.nanpercentile(window, float(squeeze_pctile)))
+                    if mom >= thr:
+                        trail_use = wide
+                        wide_now = True
+
+        trail_stop = peak * (1.0 - trail_use)
         stop_level = max(hard_stop, trail_stop)
         if np.isfinite(lo) and lo <= stop_level:
             exit_i = i
@@ -119,7 +146,8 @@ def _simulate_trade(
             if abs(stop_level - hard_stop) < 1e-9:
                 exit_reason = "hard_stop"
             elif stop_level > hard_stop + 1e-9:
-                exit_reason = "trail_stop"
+                exit_reason = "trail_stop_wide" if wide_now else "trail_stop"
+                used_wide = wide_now
             else:
                 exit_reason = "hard_stop"
             break
@@ -138,6 +166,7 @@ def _simulate_trade(
         "hold_days": hold,
         "exit_reason": exit_reason,
         "peak_price": round(float(peak), 4),
+        "trail_wide_used": bool(used_wide),
         "entry_i": int(entry_i),
         "exit_i": int(exit_i),
     }
@@ -150,6 +179,10 @@ def trades_for_symbol(
     entry_touch: int = 3,
     stop_pct: float = 0.03,
     trail_pct: float = 0.10,
+    trail_pct_wide: Optional[float] = None,
+    squeeze_adaptive: bool = False,
+    squeeze_pctile: float = 75.0,
+    squeeze_lookback: int = 100,
     pivot_len: int = 15,
     adv_lookback: int = 20,
     atr_len: int = 14,
@@ -176,6 +209,15 @@ def trades_for_symbol(
     dates = out.index
     n = len(out)
 
+    squeeze_mom = None
+    wide = None
+    if squeeze_adaptive and trail_pct_wide is not None:
+        from indicators.ttm_squeeze import calculate_squeeze_momentum
+
+        mom = calculate_squeeze_momentum(out, lengthKC=20, use_logging=False)
+        squeeze_mom = mom.to_numpy(dtype=float)
+        wide = float(trail_pct_wide)
+
     channels = find_channels(out, pivot_len=pivot_len, **channel_kwargs)
     trades: List[dict] = []
     busy_until = -1
@@ -198,6 +240,10 @@ def trades_for_symbol(
                 entry_i,
                 stop_pct=stop_pct,
                 trail_pct=trail_pct,
+                trail_pct_wide=wide,
+                squeeze_mom=squeeze_mom,
+                squeeze_pctile=squeeze_pctile,
+                squeeze_lookback=squeeze_lookback,
             )
             if sim is None:
                 continue
@@ -232,6 +278,10 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         entry_touch=payload["entry_touch"],
         stop_pct=payload["stop_pct"],
         trail_pct=payload["trail_pct"],
+        trail_pct_wide=payload.get("trail_pct_wide"),
+        squeeze_adaptive=bool(payload.get("squeeze_adaptive", False)),
+        squeeze_pctile=float(payload.get("squeeze_pctile", 75.0)),
+        squeeze_lookback=int(payload.get("squeeze_lookback", 100)),
         pivot_len=payload["pivot_len"],
     )
 
@@ -275,6 +325,7 @@ def _summarize(trades: pd.DataFrame, gain_col: str = "gain_pct") -> dict:
     if "exit_reason" in trades.columns:
         out["hard_stop_exits"] = int((trades["exit_reason"] == "hard_stop").sum())
         out["trail_stop_exits"] = int((trades["exit_reason"] == "trail_stop").sum())
+        out["trail_stop_wide_exits"] = int((trades["exit_reason"] == "trail_stop_wide").sum())
         out["eod_exits"] = int((trades["exit_reason"] == "eod").sum())
     return out
 
@@ -462,6 +513,7 @@ REPORT_COLS = [
     "hold_days",
     "exit_reason",
     "peak_price",
+    "trail_wide_used",
     "adv_20",
     "atr_pct",
     "rs_spy_63d",
@@ -481,6 +533,19 @@ def main() -> int:
     ap.add_argument("--entry-touch", type=int, default=3, help="First touch number to buy")
     ap.add_argument("--stop-pct", type=float, default=0.03)
     ap.add_argument("--trail-pct", type=float, default=0.10)
+    ap.add_argument(
+        "--trail-pct-wide",
+        type=float,
+        default=0.18,
+        help="Wider trail when TTM Squeeze momentum is strong (with --squeeze-adaptive)",
+    )
+    ap.add_argument(
+        "--squeeze-adaptive",
+        action="store_true",
+        help="Widen trail when TTM Squeeze mom is +rising and strong vs recent pctile",
+    )
+    ap.add_argument("--squeeze-pctile", type=float, default=75.0, help="Mom strength percentile threshold")
+    ap.add_argument("--squeeze-lookback", type=int, default=100, help="Bars for mom percentile window")
     ap.add_argument("--pivot-len", type=int, default=15)
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument("--timeframe", default="1d")
@@ -533,11 +598,13 @@ def main() -> int:
         symbols = list(symbols) + ["SPY"]
 
     logger.info(
-        "Backtest %d symbols | entry touch>=%d | stop=%.1f%% trail=%.1f%% | workers=%d load_workers=%d",
+        "Backtest %d symbols | entry touch>=%d | stop=%.1f%% trail=%.1f%% wide=%.1f%% adaptive=%s | workers=%d load_workers=%d",
         len(symbols),
         args.entry_touch,
         args.stop_pct * 100,
         args.trail_pct * 100,
+        args.trail_pct_wide * 100,
+        bool(args.squeeze_adaptive),
         args.workers,
         args.load_workers,
     )
@@ -573,6 +640,10 @@ def main() -> int:
             "entry_touch": args.entry_touch,
             "stop_pct": args.stop_pct,
             "trail_pct": args.trail_pct,
+            "trail_pct_wide": args.trail_pct_wide,
+            "squeeze_adaptive": bool(args.squeeze_adaptive),
+            "squeeze_pctile": args.squeeze_pctile,
+            "squeeze_lookback": args.squeeze_lookback,
             "pivot_len": args.pivot_len,
         }
         for sym in symbols
@@ -635,6 +706,10 @@ def main() -> int:
         f"entry_touch>={args.entry_touch}",
         f"stop_pct={args.stop_pct}",
         f"trail_pct={args.trail_pct}",
+        f"trail_pct_wide={args.trail_pct_wide}",
+        f"squeeze_adaptive={args.squeeze_adaptive}",
+        f"squeeze_pctile={args.squeeze_pctile}",
+        f"squeeze_lookback={args.squeeze_lookback}",
         f"pivot_len={args.pivot_len} (entry at touch+pivot_len close)",
         f"provider={args.provider} timeframe={args.timeframe}",
         f"start={args.start} end={args.end}",
