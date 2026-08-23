@@ -65,18 +65,29 @@ def _pick_symbols(n: int, provider: str, timeframe: str, min_bars: int) -> List[
         cur.close()
 
 
+def list_symbols_fast(provider: str = "ALPACA", timeframe: str = "1d") -> List[str]:
+    """Full-universe symbol list via DISTINCT only (no heavy HAVING aggregates)."""
+    client = get_timescaledb_client()
+    if not client.ensure_connection():
+        raise RuntimeError("Failed to connect to TimescaleDB")
+    return client.get_available_symbols(provider=provider.upper(), timeframe=timeframe)
+
+
 def _pivots(high: np.ndarray, low: np.ndarray, length: int) -> Tuple[List[int], List[int]]:
-    """Confirmed fractal pivots (ta.pivothigh / pivotlow style)."""
+    """Confirmed fractal pivots via centered rolling extrema."""
     n = len(high)
-    highs: List[int] = []
-    lows: List[int] = []
-    for i in range(length, n - length):
-        window_h = high[i - length : i + length + 1]
-        window_l = low[i - length : i + length + 1]
-        if high[i] >= window_h.max() and int(np.argmax(window_h)) == length:
-            highs.append(i)
-        if low[i] <= window_l.min() and int(np.argmin(window_l)) == length:
-            lows.append(i)
+    if n < 2 * length + 1:
+        return [], []
+    hs = pd.Series(high)
+    ls = pd.Series(low)
+    win = 2 * length + 1
+    roll_max = hs.rolling(win, center=True, min_periods=win).max()
+    roll_min = ls.rolling(win, center=True, min_periods=win).min()
+    is_high = (hs == roll_max) & (hs > hs.shift(1)) & (hs >= hs.shift(-1))
+    is_low = (ls == roll_min) & (ls < ls.shift(1)) & (ls <= ls.shift(-1))
+    valid = roll_max.notna() & roll_min.notna()
+    highs = [int(i) for i in np.flatnonzero((is_high & valid).to_numpy())]
+    lows = [int(i) for i in np.flatnonzero((is_low & valid).to_numpy())]
     return highs, lows
 
 
@@ -147,12 +158,21 @@ def find_channels(
     """
     if df is None or df.empty or len(df) < pivot_len * 4 + 40:
         return []
-    out = df.copy()
-    if not isinstance(out.index, pd.DatetimeIndex):
-        out.index = pd.DatetimeIndex(out.index)
-    if out.index.tz is not None:
-        out.index = out.index.tz_convert(None)
-    out = out.sort_index()
+
+    if (
+        isinstance(df.index, pd.DatetimeIndex)
+        and df.index.tz is None
+        and bool(df.index.is_monotonic_increasing)
+        and all(c in df.columns for c in ("high", "low", "close"))
+    ):
+        out = df
+    else:
+        out = df.copy()
+        if not isinstance(out.index, pd.DatetimeIndex):
+            out.index = pd.DatetimeIndex(out.index)
+        if out.index.tz is not None:
+            out.index = out.index.tz_convert(None)
+        out = out.sort_index()
 
     high = out["high"].to_numpy(dtype=float)
     low = out["low"].to_numpy(dtype=float)
