@@ -4,7 +4,7 @@
 
 ## Context
 
-ALPACA `1d` gap-fill completed same evening (see `2026-08-23_alpaca_1d_refresh_monday_plan.md`). Ran full-universe channel-touch with data through **2026-08-23** (last bar mostly **2026-08-21**).
+ALPACA `1d` gap-fill completed same evening (see `../../daily/2026-08-23_alpaca_1d_refresh_monday_plan.md`). Ran full-universe channel-touch with data through **2026-08-23** (last bar mostly **2026-08-21**).
 
 
 

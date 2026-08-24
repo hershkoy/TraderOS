@@ -21,7 +21,7 @@ Do **not** start with live signal scanning or a full universe backtest. First an
 ## Context
 
 - Strategy rules: [WEEKLY_BIGVOL_TTM_SQUEEZE_README.md](../strategies/WEEKLY_BIGVOL_TTM_SQUEEZE_README.md); logic in `strategies/weekly_bigvol_components.py` (`is_ignition_bar`, TTM confirmation, trend filter).
-- DB: ~2,203 ALPACA daily symbols, 2017-11-29 → 2025-11-26; **no weekly bars** — resample from daily ([stock market data status](../2026-08-21_stock_market_data.md)).
+- DB: ~2,203 ALPACA daily symbols, 2017-11-29 → 2025-11-26; **no weekly bars** — resample from daily ([current status](../current_status.md)).
 - Existing squeeze scanner = TTM zero-cross only; **not** full strategy examples.
 - Incomplete weekly bars can invent false TTM crosses vs TradingView.
 

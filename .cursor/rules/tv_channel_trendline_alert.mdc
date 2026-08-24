@@ -1,0 +1,19 @@
+---
+description: How to draw ascending channel rails and create open-ended support trendline alerts on TradingView for channel-touch candidates
+alwaysApply: false
+---
+
+# TV channel draw + trendline alert
+
+When the user asks to draw channels and/or add trendline alerts for channel-touch candidates, follow **`docs/features/tv_channel_trendline_alert.md`**.
+
+## Quick path (do not improvise)
+
+1. Geometry from `reports/ascending_channels/watchlist_channels_draw.json` (or rebuild).
+2. `chart_set_symbol` → `1D` → **`chart_get_state` must match** before draw/alert.
+3. Draw teal support + red resistance (`extendRight: true`). Batch draws: `ui_evaluate` + `createMultipointShape` — **never** call `setVisibleRange` in page JS (`Not implemented`); zoom with MCP `chart_set_visible_range`.
+4. Alert on **support only** via `POST https://pricealerts.tradingview.com/create_alert` from `ui_evaluate` (drawing / `LineToolTrendLine` / `cross` / `on_bar_close` / `expiration: null`). MCP `alert_create` is flat-price only — insufficient.
+5. Do not `draw_clear` lines that existing drawing alerts still reference unless you recreate those alerts.
+6. Ask user to **Ctrl+S** the layout after a batch.
+
+Full payload, offset math, and gotchas: `docs/features/tv_channel_trendline_alert.md`.

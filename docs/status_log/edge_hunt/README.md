@@ -13,7 +13,7 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 | 2026-08-22 | [Phase 6b VolTarget+BigVol](2026-08-22_edge_hunt_phase6b_voltarget_bigvol.md) |
 | 2026-08-22 | [Phase 6c VIX curve overlay](2026-08-22_edge_hunt_phase6c_vix_curve.md) |
 
-Related: [stock market data coverage](../2026-08-21_stock_market_data.md), [Weekly BigVol](../weekly_bigvol/README.md)
+Related: [current status](../current_status.md), [channel-touch](channel_touch/README.md), [Weekly BigVol](../weekly_bigvol/README.md), [daily digests](../daily/README.md)
 
 ## Harness
 
