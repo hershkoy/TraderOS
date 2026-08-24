@@ -73,6 +73,7 @@ def _run_data_update(
     batch_size: int,
     delay_tickers: float,
     delay_batches: float,
+    multi_symbol: bool,
 ) -> Dict:
     updater = UniverseDataUpdater(provider="alpaca", timeframe="1d")
     stats = updater.update_universe_data(
@@ -81,6 +82,7 @@ def _run_data_update(
         delay_between_tickers=delay_tickers,
         universe_file=str(universe_file),
         start_date=since,
+        multi_symbol=multi_symbol,
     )
     return stats or {}
 
@@ -109,9 +111,20 @@ def main() -> int:
     ap.add_argument("--max-symbols", type=int, default=0, help="Debug: limit universe size")
     ap.add_argument("--max-entries-per-day", type=int, default=1)
     ap.add_argument("--atr-stop-mult", type=float, default=2.0)
-    ap.add_argument("--batch-size", type=int, default=25)
-    ap.add_argument("--delay-tickers", type=float, default=0.2)
-    ap.add_argument("--delay-batches", type=float, default=2.0)
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Alpaca multi-symbol request size (also legacy per-ticker batch size)",
+    )
+    ap.add_argument("--delay-tickers", type=float, default=0.0)
+    ap.add_argument("--delay-batches", type=float, default=0.25)
+    ap.add_argument(
+        "--multi-symbol",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fetch many Alpaca symbols per HTTP request (default: on)",
+    )
     ap.add_argument(
         "--universe-file",
         type=Path,
@@ -156,6 +169,7 @@ def main() -> int:
                 batch_size=int(args.batch_size),
                 delay_tickers=float(args.delay_tickers),
                 delay_batches=float(args.delay_batches),
+                multi_symbol=bool(args.multi_symbol),
             )
             logger.info(
                 "Update done in %.1fs | stats=%s",

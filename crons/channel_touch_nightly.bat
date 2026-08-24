@@ -16,7 +16,7 @@ echo Log: %logfile%
 echo.
 
 call venv\Scripts\activate.bat
-venv\Scripts\python.exe scripts\scanners\channel_touch_nightly.py >> "%logfile%" 2>&1
+venv\Scripts\python.exe scripts\scanners\channel_touch_nightly.py --multi-symbol --batch-size 100 --delay-tickers 0 --delay-batches 0.25 >> "%logfile%" 2>&1
 set EXITCODE=%ERRORLEVEL%
 
 echo EXIT_CODE=%EXITCODE% >> "%logfile%"

@@ -69,5 +69,7 @@ schtasks /Run /TN "backTraderTest\ChannelTouchNightly"
 
 - Update uses last 14 calendar days via `--since` over the ALPACA 1d symbol list
   written to `reports/ascending_channels/alpaca_1d_symbols.txt`
+- Daily refresh uses Alpaca **multi-symbol** batches (`--multi-symbol`, batch-size 100,
+  near-zero delays) instead of one HTTP call per ticker
 - Artifacts: `reports/ascending_channels/channel_touch_nightly_*.csv`
 - Logs: `logs/scanners/channel_touch_nightly_*.log`

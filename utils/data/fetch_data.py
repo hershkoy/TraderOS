@@ -601,6 +601,159 @@ def fetch_from_alpaca(symbol, bars, timeframe, start_date=None):
         logger.info(f"Fetching {bars} bars from Alpaca for {symbol} @ {timeframe}...")
         return fetch_single_alpaca_request(symbol, bars, timeframe, start_date=start_date)
 
+
+def _parse_alpaca_start_date(start_date):
+    """Normalize start_date to a timezone-aware UTC datetime."""
+    if start_date is None:
+        return None
+    if isinstance(start_date, str):
+        start_time = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+    else:
+        start_time = start_date
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
+    else:
+        start_time = start_time.astimezone(timezone.utc)
+    return start_time
+
+
+def _split_alpaca_multi_symbol_df(raw_df, symbols, timeframe):
+    """
+    Split an Alpaca multi-symbol bars DataFrame into per-symbol prepared frames.
+
+    Alpaca returns a MultiIndex (symbol, timestamp) for multi-symbol requests.
+    """
+    out = {}
+    if raw_df is None or getattr(raw_df, "empty", True):
+        return out
+
+    df = raw_df.reset_index()
+    symbols_upper = [str(s).upper() for s in symbols]
+
+    if "symbol" not in df.columns:
+        if len(symbols_upper) == 1:
+            sym = symbols_upper[0]
+            out[sym] = prepare_nautilus_dataframe(df.copy(), sym, "ALPACA", timeframe)
+        return out
+
+    for sym, group in df.groupby("symbol", sort=False):
+        sym_u = str(sym).upper()
+        g = group.drop(columns=["symbol"], errors="ignore").reset_index(drop=True)
+        if g.empty:
+            continue
+        out[sym_u] = prepare_nautilus_dataframe(g, sym_u, "ALPACA", timeframe)
+
+    return out
+
+
+def fetch_many_from_alpaca(symbols, timeframe, start_date=None):
+    """
+    Fetch bars for many symbols in a single Alpaca StockBarsRequest.
+
+    Intended for short lookback incremental updates (e.g. nightly daily gap-fill).
+    Returns dict[symbol -> prepared DataFrame]. Symbols with no bars are omitted.
+    """
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    from alpaca.data.enums import DataFeed
+
+    if not symbols:
+        return {}
+
+    tf_map = {
+        "1m": TimeFrame.Minute,
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
+        "1h": TimeFrame.Hour,
+        "1d": TimeFrame.Day,
+    }
+    if timeframe not in tf_map:
+        raise ValueError(f"Unsupported timeframe for Alpaca: {timeframe}")
+
+    symbols_clean = [str(s).upper().strip() for s in symbols if str(s).strip()]
+    if not symbols_clean:
+        return {}
+
+    end_time = datetime.now(timezone.utc)
+    start_time = _parse_alpaca_start_date(start_date)
+    if start_time is None:
+        # Default: ~1 month for daily, shorter windows for intraday
+        if timeframe == "1d":
+            start_time = end_time - timedelta(days=35)
+        elif timeframe == "1h":
+            start_time = end_time - timedelta(days=7)
+        else:
+            start_time = end_time - timedelta(days=3)
+
+    # Alpaca limit is total bars across the response; size for ~1 bar/day (plus buffer).
+    calendar_days = max(1, (end_time.date() - start_time.date()).days + 2)
+    if timeframe == "1d":
+        est_bars_per_symbol = calendar_days
+    elif timeframe == "1h":
+        est_bars_per_symbol = calendar_days * 8
+    elif timeframe == "15m":
+        est_bars_per_symbol = calendar_days * 30
+    else:
+        est_bars_per_symbol = calendar_days * 400
+    limit = min(ALPACA_BAR_CAP, max(len(symbols_clean) * est_bars_per_symbol, len(symbols_clean)))
+
+    client = StockHistoricalDataClient(
+        api_key=api_key,
+        secret_key=secret_key,
+    )
+
+    logger.info(
+        "Fetching Alpaca multi-symbol batch: %d symbols @ %s from %s to %s (limit=%d)",
+        len(symbols_clean),
+        timeframe,
+        start_time.date(),
+        end_time.date(),
+        limit,
+    )
+
+    req = StockBarsRequest(
+        feed=DataFeed.IEX,
+        symbol_or_symbols=symbols_clean,
+        timeframe=tf_map[timeframe],
+        start=format_date_for_alpaca(start_time),
+        end=format_date_for_alpaca(end_time),
+        limit=limit,
+    )
+
+    raw_data = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            raw_data = client.get_stock_bars(req)
+            break
+        except Exception as e:
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                logger.warning("Rate limited by Alpaca (multi). Waiting %s seconds...", RETRY_DELAY)
+                time.sleep(RETRY_DELAY)
+            elif attempt < MAX_RETRIES - 1:
+                logger.warning("Multi-symbol attempt %d failed: %s. Retrying...", attempt + 1, e)
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error("Failed multi-symbol Alpaca fetch after %d attempts: %s", MAX_RETRIES, e)
+                raise
+
+    if raw_data is None:
+        return {}
+
+    try:
+        raw_df = raw_data.df
+    except Exception as e:
+        logger.warning("Alpaca multi-symbol response had no usable df: %s", e)
+        return {}
+
+    result = _split_alpaca_multi_symbol_df(raw_df, symbols_clean, timeframe)
+    logger.info(
+        "Alpaca multi-symbol batch returned data for %d/%d symbols (%d total bars)",
+        len(result),
+        len(symbols_clean),
+        sum(len(df) for df in result.values()),
+    )
+    return result
+
 def fetch_single_alpaca_request_with_range(symbol, bars, timeframe, start_time, end_time):
     """Fetch a single request from Alpaca using a specific time range."""
     from alpaca.data.historical import StockHistoricalDataClient

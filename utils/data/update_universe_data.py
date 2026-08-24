@@ -24,11 +24,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from .ticker_universe import TickerUniverseManager
-    from .fetch_data import fetch_from_alpaca, fetch_from_ib
+    from .fetch_data import fetch_from_alpaca, fetch_from_ib, fetch_many_from_alpaca
 except ImportError:
     # Fallback for when running from utils directory
     from utils.data.ticker_universe import TickerUniverseManager
-    from utils.data.fetch_data import fetch_from_alpaca, fetch_from_ib
+    from utils.data.fetch_data import fetch_from_alpaca, fetch_from_ib, fetch_many_from_alpaca
 
 # Configure logging
 log_dir = 'logs/data/universe'
@@ -748,20 +748,24 @@ class UniverseDataUpdater:
                            use_max_bars: bool = False,
                            skip_existing: bool = False,
                            universe_file: Optional[str] = None,
-                           start_date: Optional[str] = None) -> Dict[str, Any]:
+                           start_date: Optional[str] = None,
+                           multi_symbol: bool = False) -> Dict[str, Any]:
         """
         Update market data for all tickers in the universe
         
         Args:
             batch_size: Number of tickers to process before taking a break
+                (also the Alpaca multi-symbol request size when multi_symbol=True)
             delay_between_batches: Seconds to wait between batches
             delay_between_tickers: Seconds to wait between individual tickers
+                (ignored when multi_symbol=True)
             max_tickers: Maximum number of tickers to process (None for all)
             start_from_index: Index to start processing from (for resuming)
             use_max_bars: If True, fetch maximum available bars, otherwise use fixed amounts
             skip_existing: If True, skip tickers that already have data for the timeframe
             universe_file: Optional custom universe file to load tickers from
             start_date: Optional start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+            multi_symbol: If True and provider is alpaca, fetch many symbols per HTTP request
             
         Returns:
             Dict with update statistics
@@ -777,10 +781,17 @@ class UniverseDataUpdater:
             tickers = tickers[:max_tickers]
         
         total_tickers = len(tickers)
+        use_multi = bool(multi_symbol and self.provider == "alpaca" and not use_max_bars)
+        if multi_symbol and self.provider != "alpaca":
+            logger.warning("[WARN] multi_symbol only supported for alpaca; falling back to per-ticker fetches")
+        if multi_symbol and use_max_bars:
+            logger.warning("[WARN] multi_symbol ignored when use_max_bars=True; falling back to per-ticker fetches")
+
         logger.info(f"Starting universe update for {total_tickers} tickers")
         logger.info(f"Provider: {self.provider}, Timeframe: {self.timeframe}")
         logger.info(f"Max bars: {'Yes' if use_max_bars else 'No (fixed amounts)'}")
         logger.info(f"Skip existing: {'Yes' if skip_existing else 'No'}")
+        logger.info(f"Multi-symbol Alpaca batches: {'Yes' if use_multi else 'No'}")
         logger.info(f"Index range: {start_from_index} to {start_from_index + total_tickers - 1}")
         logger.info(f"Batch size: {batch_size}, Delays: {delay_between_batches}s between batches, {delay_between_tickers}s between tickers")
         
@@ -793,91 +804,167 @@ class UniverseDataUpdater:
         skipped = 0
         failed_symbols = []
         skipped_symbols = []
+        i = -1
         
         start_time = datetime.now()
         logger.info(f"[START] Starting main processing loop at {start_time}")
         
         try:
-            for i, symbol in enumerate(tickers):
-                ticker_start_time = datetime.now()
-                current_index = start_from_index + i
-                
-                logger.info(f"[PROCESSING] {symbol} ({i+1}/{total_tickers}, overall index: {current_index})")
-                
-                # Check if we should skip this ticker
-                if skip_existing:
-                    has_data = self.ticker_has_data(symbol)
-                    
-                    if has_data:
+            if use_multi:
+                # Filter skip_existing up front so batches stay dense
+                pending = []
+                for symbol in tickers:
+                    if skip_existing and self.ticker_has_data(symbol):
                         logger.info(f"[SKIP] {symbol} - already has data")
                         skipped += 1
                         skipped_symbols.append(symbol)
-                        continue
                     else:
-                        logger.info(f"[OK] {symbol} doesn't have data, will fetch...")
-                else:
-                    logger.info(f"[OK] Skip existing disabled, will fetch data for {symbol}")
-                
-                # Ensure IB connection is valid before fetching (for IB provider)
-                if self.provider == "ib":
-                    if not self._ensure_ib_connection():
-                        logger.error(f"[ERROR] Cannot proceed with {symbol} - IB connection failed")
-                        failed += 1
-                        failed_symbols.append(symbol)
-                        continue
-                
-                # Fetch data for this ticker with timeout protection
-                logger.info(f"[FETCH] Starting data fetch for {symbol}...")
-                try:
-                    # For IB provider, we need to run in main thread due to event loop requirements
-                    # Use a simple approach without threading
-                    fetch_result = self.fetch_ticker_data(symbol, use_max_bars, start_date=start_date)
+                        pending.append(symbol)
+
+                num_batches = (len(pending) + batch_size - 1) // batch_size if pending else 0
+                logger.info(
+                    "[MULTI] Fetching %d tickers in %d Alpaca multi-symbol batches (size=%d)",
+                    len(pending),
+                    num_batches,
+                    batch_size,
+                )
+
+                for batch_idx in range(0, len(pending), batch_size):
+                    chunk = pending[batch_idx:batch_idx + batch_size]
+                    batch_num = batch_idx // batch_size + 1
+                    i = batch_idx + len(chunk) - 1
+                    batch_start = datetime.now()
+                    logger.info(
+                        "[MULTI] Batch %d/%d: %d symbols (%s ... %s)",
+                        batch_num,
+                        num_batches,
+                        len(chunk),
+                        chunk[0],
+                        chunk[-1],
+                    )
+                    try:
+                        frames = fetch_many_from_alpaca(
+                            chunk,
+                            self.timeframe,
+                            start_date=start_date,
+                        )
+                        for symbol in chunk:
+                            df = frames.get(str(symbol).upper())
+                            if df is not None and not df.empty:
+                                self.db_worker.save_data(
+                                    df, symbol, self.provider.upper(), self.timeframe
+                                )
+                                successful += 1
+                            else:
+                                failed += 1
+                                failed_symbols.append(symbol)
+                                logger.warning("[MULTI] No data returned for %s", symbol)
+                        batch_dur = datetime.now() - batch_start
+                        logger.info(
+                            "[MULTI] Batch %d done in %s | Progress: %d/%d | Success: %d Failed: %d Skipped: %d",
+                            batch_num,
+                            batch_dur,
+                            min(batch_idx + len(chunk), len(pending)),
+                            len(pending),
+                            successful,
+                            failed,
+                            skipped,
+                        )
+                    except Exception as e:
+                        logger.error("[MULTI] Batch %d failed: %s", batch_num, e)
+                        import traceback
+                        logger.error("[MULTI] Exception traceback: %s", traceback.format_exc())
+                        for symbol in chunk:
+                            failed += 1
+                            failed_symbols.append(symbol)
+
+                    if batch_idx + batch_size < len(pending) and delay_between_batches > 0:
+                        logger.info(
+                            "[BATCH] Taking %.2fs break before next multi-symbol batch...",
+                            delay_between_batches,
+                        )
+                        time.sleep(delay_between_batches)
+            else:
+                for i, symbol in enumerate(tickers):
+                    ticker_start_time = datetime.now()
+                    current_index = start_from_index + i
                     
-                    if fetch_result:
-                        successful += 1
-                        ticker_end_time = datetime.now()
-                        ticker_duration = ticker_end_time - ticker_start_time
-                        logger.info(f"[SUCCESS] COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
-                    else:
-                        failed += 1
-                        failed_symbols.append(symbol)
-                        ticker_end_time = datetime.now()
-                        ticker_duration = ticker_end_time - ticker_start_time
-                        logger.info(f"[FAILED] FAILED {symbol} in {ticker_duration}")
+                    logger.info(f"[PROCESSING] {symbol} ({i+1}/{total_tickers}, overall index: {current_index})")
+                    
+                    # Check if we should skip this ticker
+                    if skip_existing:
+                        has_data = self.ticker_has_data(symbol)
                         
-                except Exception as e:
-                    logger.error(f"[ERROR] Exception during processing {symbol}: {e}")
-                    import traceback
-                    logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
+                        if has_data:
+                            logger.info(f"[SKIP] {symbol} - already has data")
+                            skipped += 1
+                            skipped_symbols.append(symbol)
+                            continue
+                        else:
+                            logger.info(f"[OK] {symbol} doesn't have data, will fetch...")
+                    else:
+                        logger.info(f"[OK] Skip existing disabled, will fetch data for {symbol}")
                     
-                    # Check if it's a common IB error
-                    error_str = str(e).lower()
-                    if "no security definition" in error_str or "contract not found" in error_str:
-                        logger.warning(f"[WARN] Symbol {symbol} not found in IB - this is normal for some symbols")
-                    elif self._is_timeout_error(e):
-                        logger.warning(f"[WARN] Timeout for {symbol} - IB API may be slow or experiencing issues")
-                        # Add extra delay for timeout errors to help with rate limiting
-                        if self.provider == "ib":
-                            extra_delay = 3.0
-                            logger.info(f"[WARN] Adding extra {extra_delay}s delay after timeout for {symbol}")
-                            time.sleep(extra_delay)
-                    elif "rate limit" in error_str:
-                        logger.warning(f"[WARN] Rate limited for {symbol} - IB API throttling")
+                    # Ensure IB connection is valid before fetching (for IB provider)
+                    if self.provider == "ib":
+                        if not self._ensure_ib_connection():
+                            logger.error(f"[ERROR] Cannot proceed with {symbol} - IB connection failed")
+                            failed += 1
+                            failed_symbols.append(symbol)
+                            continue
                     
-                    failed += 1
-                    failed_symbols.append(symbol)
-                    continue
-                
-                # Delay between tickers (except for the last one)
-                if i < total_tickers - 1:
-                    time.sleep(delay_between_tickers)
-                
-                # Batch processing with delays
-                if (i + 1) % batch_size == 0 and i < total_tickers - 1:
-                    logger.info(f"[BATCH] Completed batch {i//batch_size + 1}. Taking {delay_between_batches}s break...")
-                    logger.info(f"[PROGRESS] Progress: {i+1}/{total_tickers} tickers processed")
-                    logger.info(f"[STATS] Success: {successful}, Failed: {failed}, Skipped: {skipped}")
-                    time.sleep(delay_between_batches)
+                    # Fetch data for this ticker with timeout protection
+                    logger.info(f"[FETCH] Starting data fetch for {symbol}...")
+                    try:
+                        # For IB provider, we need to run in main thread due to event loop requirements
+                        # Use a simple approach without threading
+                        fetch_result = self.fetch_ticker_data(symbol, use_max_bars, start_date=start_date)
+                        
+                        if fetch_result:
+                            successful += 1
+                            ticker_end_time = datetime.now()
+                            ticker_duration = ticker_end_time - ticker_start_time
+                            logger.info(f"[SUCCESS] COMPLETED {symbol} in {ticker_duration} (fetch + queue)")
+                        else:
+                            failed += 1
+                            failed_symbols.append(symbol)
+                            ticker_end_time = datetime.now()
+                            ticker_duration = ticker_end_time - ticker_start_time
+                            logger.info(f"[FAILED] FAILED {symbol} in {ticker_duration}")
+                            
+                    except Exception as e:
+                        logger.error(f"[ERROR] Exception during processing {symbol}: {e}")
+                        import traceback
+                        logger.error(f"[ERROR] Exception traceback: {traceback.format_exc()}")
+                        
+                        # Check if it's a common IB error
+                        error_str = str(e).lower()
+                        if "no security definition" in error_str or "contract not found" in error_str:
+                            logger.warning(f"[WARN] Symbol {symbol} not found in IB - this is normal for some symbols")
+                        elif self._is_timeout_error(e):
+                            logger.warning(f"[WARN] Timeout for {symbol} - IB API may be slow or experiencing issues")
+                            # Add extra delay for timeout errors to help with rate limiting
+                            if self.provider == "ib":
+                                extra_delay = 3.0
+                                logger.info(f"[WARN] Adding extra {extra_delay}s delay after timeout for {symbol}")
+                                time.sleep(extra_delay)
+                        elif "rate limit" in error_str:
+                            logger.warning(f"[WARN] Rate limited for {symbol} - IB API throttling")
+                        
+                        failed += 1
+                        failed_symbols.append(symbol)
+                        continue
+                    
+                    # Delay between tickers (except for the last one)
+                    if i < total_tickers - 1:
+                        time.sleep(delay_between_tickers)
+                    
+                    # Batch processing with delays
+                    if (i + 1) % batch_size == 0 and i < total_tickers - 1:
+                        logger.info(f"[BATCH] Completed batch {i//batch_size + 1}. Taking {delay_between_batches}s break...")
+                        logger.info(f"[PROGRESS] Progress: {i+1}/{total_tickers} tickers processed")
+                        logger.info(f"[STATS] Success: {successful}, Failed: {failed}, Skipped: {skipped}")
+                        time.sleep(delay_between_batches)
                 
         except KeyboardInterrupt:
             logger.warning("Update interrupted by user")
@@ -953,6 +1040,7 @@ class UniverseDataUpdater:
             "timeframe": self.timeframe,
             "use_max_bars": use_max_bars,
             "skip_existing": skip_existing,
+            "multi_symbol": use_multi,
             "last_processed_index": start_from_index + total_tickers - 1,
             "database_stats": db_stats
         }
@@ -1646,6 +1734,12 @@ Examples:
         type=str, 
         help="Load tickers from this custom universe file instead of default"
     )
+
+    parser.add_argument(
+        "--multi-symbol",
+        action="store_true",
+        help="Alpaca only: fetch many symbols per HTTP request (fast incremental updates)"
+    )
     
     parser.add_argument(
         "--max-retries", 
@@ -1808,7 +1902,8 @@ Examples:
             use_max_bars=args.max_bars,
             skip_existing=args.skip_existing,
             universe_file=args.universe_file,
-            start_date=args.since
+            start_date=args.since,
+            multi_symbol=args.multi_symbol,
         )
         
         if "error" in results:
