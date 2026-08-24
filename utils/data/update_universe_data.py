@@ -80,17 +80,20 @@ class DatabaseWorker:
         """Initialize a single database connection and cursor for reuse"""
         try:
             logger.info("[INIT] Initializing database connection...")
-            from ..db.timescaledb_client import get_timescaledb_client
-            
+            try:
+                from utils.db.timescaledb_client import get_timescaledb_client
+            except ImportError:
+                from ..db.timescaledb_client import get_timescaledb_client
+
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
                 logger.error("[ERROR] Failed to connect to database")
                 return False
-            
+
             self.db_cursor = self.db_client.connection.cursor()
             logger.info("[SUCCESS] Database connection and cursor initialized successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"[ERROR] Failed to initialize database connection: {e}")
             return False
@@ -406,17 +409,20 @@ class UniverseDataUpdater:
         """Initialize a single database connection and cursor for reuse"""
         try:
             logger.info("[INIT] Initializing database connection...")
-            from ..db.timescaledb_client import get_timescaledb_client
-            
+            try:
+                from utils.db.timescaledb_client import get_timescaledb_client
+            except ImportError:
+                from ..db.timescaledb_client import get_timescaledb_client
+
             self.db_client = get_timescaledb_client()
             if not self.db_client.ensure_connection():
                 logger.error("[ERROR] Failed to connect to database")
                 return False
-            
+
             self.db_cursor = self.db_client.connection.cursor()
             logger.info("[SUCCESS] Database connection and cursor initialized successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"[ERROR] Failed to initialize database connection: {e}")
             return False
@@ -1865,7 +1871,10 @@ Examples:
         
         # Ensure TimescaleDB client is cleaned up
         try:
-            from ..db.timescaledb_client import close_timescaledb_client
+            try:
+                from utils.db.timescaledb_client import close_timescaledb_client
+            except ImportError:
+                from ..db.timescaledb_client import close_timescaledb_client
             close_timescaledb_client()
             logger.info("[CLEANUP] Cleaned up TimescaleDB client in finally block")
         except Exception as cleanup_error:

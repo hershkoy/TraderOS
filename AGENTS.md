@@ -5,17 +5,18 @@
 - Persist coverage inventories, strategy plans, and phase status under `docs/status_log/` (Weekly BigVol under `docs/status_log/weekly_bigvol/`; edge hunt under `docs/status_log/edge_hunt/`)
 - For market-data coverage questions, focus on stocks and exclude options unless options are requested
 - For long multi-symbol hunts or backtests, record wall-clock timings in the relevant status log
-- For rare-signal strategies, assess with PF/expectancy/payoff/MDD per `docs/assessing_strategies.md`; do not treat win rate as the primary gate
+- For rare-signal strategies, assess with PF/expectancy/payoff/MDD per `docs/assessing_strategies.md`; do not treat win rate as the primary gate; channel-touch: same-day RS vs SPY top1 and ATR hard-stop k≈2.0 (clamped) helped; hard ADV/ATR floors, SPY SMA50 alone, and structure-exit bundles did not; prefer longer history than 2022-only windows (RS-top1 density still mostly 2024+)
 - Edge-hunt promotion vs SPY is risk-adjusted: Sharpe > 1.0, Sharpe >= SPY, and MDD better than SPY (CAGR is reported, not the ranking objective)
 - After Phase 5 stock-level signals and Phase 6c VIX overlays failed to clear or lift the gate, prefer freezing and productionizing Phase 6b near-KEEP `Blend_VT60_BV40` over more Sharpe>1 fishing on the same window
 - Validate the BigVol backtester visually via TradingView entry/exit order markers on discrete sleeve trades before trusting vectorized fills
 - Classical chart-pattern detectors must follow Edwards & Magee / Murphy / Bulkowski rules: ascending channel ≠ ascending triangle (flat top); require distinct swings with significant intervening moves, ≥2 confirmed opposite-boundary touches, and reject repeated support/resistance violations
 - Prefer original Pine/Python pattern implementations over copying proprietary or CC BY-NC-SA chart-pattern libraries (e.g. Trendoscope ACP)
+- For large-universe daily strategies (~2k symbols), monitor with a post-close EOD scan on stored bars; do not stream the full universe via IB — use IB only for execution and open positions
 
 ## Learned Workspace Facts
 
 - Stock OHLCV lives in TimescaleDB `market_data`; use `utils.db.timescaledb_client.get_timescaledb_client()`
-- Daily (`1d`) coverage is about 2,203 symbols (~7.63M bars), mainly ALPACA, roughly 2017-11-29 to 2025-11-26; no weekly timeframe is stored (resample from daily)
+- Daily (`1d`) coverage is about 2,217 symbols, mainly ALPACA; after the 2026-08-23 gap-fill most names reach ~2026-08-20/21 (~2109/2217 fresh); no weekly timeframe is stored (resample from daily)
 - 15m coverage is about 1,478 symbols (~58.7M bars estimated), mainly IB, roughly 2018-01-02 to 2025-12-02; ALPACA 15m is effectively unused aside from leftover `AEO`; for 15m universe backtests prefer the IB 15m symbol set over the full daily universe to avoid empty loads
 - Heavy full-table `COUNT`/`GROUP BY` on `market_data` is slow and can hit shared-memory or disk pressure; prefer per-timeframe/provider queries and `EXPLAIN` estimates
 - TradingView MCP (`tradesdontlie/tradingview-mcp`) is enabled only for this workspace via `.cursor/mcp.json`, with the server under the user home `tradingview-mcp` folder and CDP on port 9222; it exposes price/quote/indicator/chart control, not historical fundamentals/financials; Polygon Stocks Basic also excludes Financials & Ratios (paid add-on)
@@ -24,5 +25,5 @@
 - ALPACA daily panel coverage for many names starts ~2020-2022 (wide panel early years mostly empty); compute SPY SMA on full IB SPY history then align to the panel index
 - Macro ETFs for overlays (TLT/GLD/USO/UUP/IEF/DBC) were Alpaca-ingested for Phase 6 with history often from ~2020-07; IB can supply CBOE `VIX`/`VIX3M`/`VVIX` when Gateway farms (especially `ushmds`) are connected; Alpaca VIX ETF proxies (VIXY/VXX/etc.) are also available; VX futures history from IB was too thin to use
 - `ticker_universe` holds about 6,072 tickers; current daily and 15m symbols are subsets of that universe
-- Ascending-channel research: classical detector in `scripts/research/find_ascending_channels.py` with Pine `indicators/pine/ascending_channel_3touch.pine`; reports under `reports/ascending_channels/`
+- Ascending-channel / channel-touch research: classical detector in `scripts/research/find_ascending_channels.py` with Pine `indicators/pine/ascending_channel_3touch.pine`; backtest `scripts/research/backtest_channel_touch_trades.py` (RS top1/day, optional TTM squeeze-adaptive wider trail, `--edge-v2` ATR-stop/geometry sweeps; default start ~2018-11-01); interactive TV-style reports via `scripts/research/generate_channel_touch_tv_report.py` (SPY compare, client-side params); reports under `reports/ascending_channels/`; status under `docs/status_log/` (e.g. edge-v2 long-history); full-universe runs use parquet OHLCV cache + parallel workers (TimescaleDB cold load is the bottleneck); do not promote `entry_mode=reclaim` until pivot-confirmation look-ahead is fixed
 - Largest-breakouts research report: `scripts/research/largest_breakouts_report.py`; outputs under `reports/largest_breakouts/`

@@ -50,6 +50,13 @@ logging.basicConfig(
 logger = logging.getLogger("backtest_channel_touch_trades")
 logging.getLogger("utils.db.timescaledb_client").setLevel(logging.WARNING)
 
+YEAR_BUCKETS: Sequence[Tuple[str, str, str]] = (
+    ("2018-2019", "2018-01-01", "2019-12-31"),
+    ("2020-2021", "2020-01-01", "2021-12-31"),
+    ("2022-2023", "2022-01-01", "2023-12-31"),
+    ("2024-2026", "2024-01-01", "2026-12-31"),
+)
+
 
 def _true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
     prev_close = np.roll(close, 1)
@@ -82,6 +89,33 @@ def _adv_20(close: np.ndarray, volume: np.ndarray, i: int, lookback: int = 20) -
     return float(np.nanmean(dv))
 
 
+def _line_at(y0: float, x0: int, slope: float, x: int) -> float:
+    return float(y0 + slope * (x - x0))
+
+
+def _hard_stop_price(
+    entry_px: float,
+    *,
+    stop_pct: float,
+    atr_at_entry: Optional[float] = None,
+    atr_stop_mult: Optional[float] = None,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
+) -> float:
+    """Fixed %% stop, or ATR-scaled distance clamped to [floor, ceil] of price."""
+    if (
+        atr_stop_mult is not None
+        and atr_at_entry is not None
+        and np.isfinite(atr_at_entry)
+        and atr_at_entry > 0
+        and entry_px > 0
+    ):
+        dist = float(atr_stop_mult) * float(atr_at_entry)
+        dist = max(entry_px * stop_pct_floor, min(entry_px * stop_pct_ceil, dist))
+        return entry_px - dist
+    return entry_px * (1.0 - float(stop_pct))
+
+
 def _simulate_trade(
     high: np.ndarray,
     low: np.ndarray,
@@ -95,8 +129,20 @@ def _simulate_trade(
     squeeze_mom: Optional[np.ndarray] = None,
     squeeze_pctile: float = 75.0,
     squeeze_lookback: int = 100,
+    atr_at_entry: Optional[float] = None,
+    atr_stop_mult: Optional[float] = None,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
+    support_x0: Optional[int] = None,
+    support_y0: Optional[float] = None,
+    support_slope: Optional[float] = None,
+    channel_width: Optional[float] = None,
+    resist_exit: bool = False,
+    trail_pct_tight: Optional[float] = None,
+    squeeze_fade_tighten: bool = False,
+    max_hold_days: Optional[int] = None,
 ) -> Optional[dict]:
-    """Long from entry_i close; exit on hard stop or trailing stop (intrabar low).
+    """Long from entry_i close; exit on hard/trail/resist/time (intrabar).
 
     If trail_pct_wide and squeeze_mom are provided, widen the trail when TTM
     Squeeze momentum is positive, non-decreasing, and strong vs its recent
@@ -109,13 +155,30 @@ def _simulate_trade(
     if not np.isfinite(entry_px) or entry_px <= 0:
         return None
 
-    hard_stop = entry_px * (1.0 - stop_pct)
+    hard_stop = _hard_stop_price(
+        entry_px,
+        stop_pct=stop_pct,
+        atr_at_entry=atr_at_entry,
+        atr_stop_mult=atr_stop_mult,
+        stop_pct_floor=stop_pct_floor,
+        stop_pct_ceil=stop_pct_ceil,
+    )
     peak = entry_px
     exit_i = n - 1
     exit_px = float(close[exit_i])
     exit_reason = "eod"
     used_wide = False
     wide = float(trail_pct_wide) if trail_pct_wide is not None else None
+    tight = float(trail_pct_tight) if trail_pct_tight is not None else None
+    have_line = (
+        support_x0 is not None
+        and support_y0 is not None
+        and support_slope is not None
+        and channel_width is not None
+        and np.isfinite(support_y0)
+        and np.isfinite(support_slope)
+        and np.isfinite(channel_width)
+    )
 
     for i in range(entry_i + 1, n):
         hi = float(high[i])
@@ -123,12 +186,31 @@ def _simulate_trade(
         if np.isfinite(hi):
             peak = max(peak, hi)
 
+        if max_hold_days is not None and (i - entry_i) >= int(max_hold_days):
+            exit_i = i
+            exit_px = float(close[i])
+            exit_reason = "time_stop"
+            break
+
+        if resist_exit and have_line and np.isfinite(hi):
+            resist = _line_at(float(support_y0), int(support_x0), float(support_slope), i) + float(
+                channel_width
+            )
+            if hi >= resist:
+                exit_i = i
+                exit_px = float(resist)
+                exit_reason = "resist_exit"
+                break
+
         trail_use = float(trail_pct)
         wide_now = False
-        if wide is not None and squeeze_mom is not None and i < len(squeeze_mom):
+        fade_now = False
+        if squeeze_mom is not None and i < len(squeeze_mom):
             mom = float(squeeze_mom[i])
             mom_prev = float(squeeze_mom[i - 1]) if i > 0 else float("nan")
-            if np.isfinite(mom) and mom > 0 and (not np.isfinite(mom_prev) or mom >= mom_prev):
+            if wide is not None and np.isfinite(mom) and mom > 0 and (
+                not np.isfinite(mom_prev) or mom >= mom_prev
+            ):
                 start = max(0, i - int(squeeze_lookback) + 1)
                 window = squeeze_mom[start : i + 1]
                 window = window[np.isfinite(window)]
@@ -137,6 +219,18 @@ def _simulate_trade(
                     if mom >= thr:
                         trail_use = wide
                         wide_now = True
+            if squeeze_fade_tighten and tight is not None and not wide_now and np.isfinite(mom):
+                start = max(0, i - int(squeeze_lookback) + 1)
+                window = squeeze_mom[start : i + 1]
+                window = window[np.isfinite(window)]
+                below_med = False
+                if len(window) >= 20:
+                    med = float(np.nanpercentile(window, 50.0))
+                    below_med = mom < med
+                fading = (np.isfinite(mom_prev) and mom < mom_prev) or below_med
+                if fading:
+                    trail_use = tight
+                    fade_now = True
 
         trail_stop = peak * (1.0 - trail_use)
         stop_level = max(hard_stop, trail_stop)
@@ -146,8 +240,13 @@ def _simulate_trade(
             if abs(stop_level - hard_stop) < 1e-9:
                 exit_reason = "hard_stop"
             elif stop_level > hard_stop + 1e-9:
-                exit_reason = "trail_stop_wide" if wide_now else "trail_stop"
-                used_wide = wide_now
+                if wide_now:
+                    exit_reason = "trail_stop_wide"
+                    used_wide = True
+                elif fade_now:
+                    exit_reason = "trail_stop_tight"
+                else:
+                    exit_reason = "trail_stop"
             else:
                 exit_reason = "hard_stop"
             break
@@ -167,9 +266,39 @@ def _simulate_trade(
         "exit_reason": exit_reason,
         "peak_price": round(float(peak), 4),
         "trail_wide_used": bool(used_wide),
+        "hard_stop_price": round(float(hard_stop), 4),
         "entry_i": int(entry_i),
         "exit_i": int(exit_i),
     }
+
+
+def _resolve_entry_i(
+    *,
+    t_idx: int,
+    pivot_len: int,
+    entry_mode: str,
+    close: np.ndarray,
+    n: int,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    max_wait: Optional[int] = None,
+) -> Optional[int]:
+    mode = (entry_mode or "pivot").lower().strip()
+    if mode == "pivot":
+        entry_i = int(t_idx) + int(pivot_len)
+        if entry_i < 0 or entry_i >= n:
+            return None
+        return entry_i
+    if mode == "reclaim":
+        wait = int(max_wait) if max_wait is not None else max(5, int(pivot_len) * 2)
+        for i in range(int(t_idx) + 1, min(n, int(t_idx) + 1 + wait)):
+            sup = _line_at(support_y0, support_x0, support_slope, i)
+            px = float(close[i])
+            if np.isfinite(px) and np.isfinite(sup) and px > sup:
+                return i
+        return None
+    raise ValueError(f"Unknown entry_mode={entry_mode!r}")
 
 
 def trades_for_symbol(
@@ -184,6 +313,14 @@ def trades_for_symbol(
     squeeze_pctile: float = 75.0,
     squeeze_lookback: int = 100,
     pivot_len: int = 15,
+    entry_mode: str = "pivot",
+    atr_stop_mult: Optional[float] = None,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
+    resist_exit: bool = False,
+    trail_pct_tight: Optional[float] = None,
+    squeeze_fade_tighten: bool = False,
+    max_hold_days: Optional[int] = None,
     adv_lookback: int = 20,
     atr_len: int = 14,
     **channel_kwargs,
@@ -211,12 +348,14 @@ def trades_for_symbol(
 
     squeeze_mom = None
     wide = None
-    if squeeze_adaptive and trail_pct_wide is not None:
+    need_squeeze = squeeze_adaptive or squeeze_fade_tighten
+    if need_squeeze:
         from indicators.ttm_squeeze import calculate_squeeze_momentum
 
         mom = calculate_squeeze_momentum(out, lengthKC=20, use_logging=False)
         squeeze_mom = mom.to_numpy(dtype=float)
-        wide = float(trail_pct_wide)
+        if squeeze_adaptive and trail_pct_wide is not None:
+            wide = float(trail_pct_wide)
 
     channels = find_channels(out, pivot_len=pivot_len, **channel_kwargs)
     trades: List[dict] = []
@@ -226,12 +365,26 @@ def trades_for_symbol(
         touch_idxs: List[int] = list(ch.get("touch_indices") or [])
         if len(touch_idxs) < entry_touch:
             continue
+        sx0 = int(ch["support_x0"])
+        sy0 = float(ch["support_y0"])
+        sslope = float(ch["support_slope"])
+        width = float(ch["channel_width"])
         for touch_num, t_idx in enumerate(touch_idxs, start=1):
             if touch_num < entry_touch:
                 continue
-            entry_i = int(t_idx) + int(ch.get("pivot_len", pivot_len))
-            if entry_i <= busy_until or entry_i >= n:
+            entry_i = _resolve_entry_i(
+                t_idx=int(t_idx),
+                pivot_len=int(ch.get("pivot_len", pivot_len)),
+                entry_mode=entry_mode,
+                close=close,
+                n=n,
+                support_x0=sx0,
+                support_y0=sy0,
+                support_slope=sslope,
+            )
+            if entry_i is None or entry_i <= busy_until or entry_i >= n:
                 continue
+            atr_i = float(atr[entry_i]) if entry_i < len(atr) else float("nan")
             sim = _simulate_trade(
                 high,
                 low,
@@ -244,13 +397,36 @@ def trades_for_symbol(
                 squeeze_mom=squeeze_mom,
                 squeeze_pctile=squeeze_pctile,
                 squeeze_lookback=squeeze_lookback,
+                atr_at_entry=atr_i if np.isfinite(atr_i) else None,
+                atr_stop_mult=atr_stop_mult,
+                stop_pct_floor=stop_pct_floor,
+                stop_pct_ceil=stop_pct_ceil,
+                support_x0=sx0,
+                support_y0=sy0,
+                support_slope=sslope,
+                channel_width=width,
+                resist_exit=resist_exit,
+                trail_pct_tight=trail_pct_tight,
+                squeeze_fade_tighten=squeeze_fade_tighten,
+                max_hold_days=max_hold_days,
             )
             if sim is None:
                 continue
             entry_px = float(close[entry_i])
-            atr_i = float(atr[entry_i]) if entry_i < len(atr) else float("nan")
             atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
             adv = _adv_20(close, volume, entry_i, lookback=adv_lookback)
+            support_at = _line_at(sy0, sx0, sslope, entry_i)
+            resist_at = support_at + width
+            channel_pos = (
+                (entry_px - support_at) / width
+                if width > 0 and np.isfinite(support_at)
+                else float("nan")
+            )
+            room_to_resist_pct = (
+                (resist_at - entry_px) / entry_px * 100.0
+                if entry_px > 0 and np.isfinite(resist_at)
+                else float("nan")
+            )
             trades.append(
                 {
                     "stock": symbol.upper(),
@@ -264,6 +440,13 @@ def trades_for_symbol(
                     "exit_i": sim["exit_i"],
                     "adv_20": round(adv, 2) if np.isfinite(adv) else None,
                     "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
+                    "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
+                    "channel_width_pct": ch.get("channel_width_pct"),
+                    "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
+                    "room_to_resist_pct": (
+                        round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
+                    ),
+                    "entry_mode": entry_mode,
                 }
             )
             busy_until = sim["exit_i"]
@@ -283,6 +466,14 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         squeeze_pctile=float(payload.get("squeeze_pctile", 75.0)),
         squeeze_lookback=int(payload.get("squeeze_lookback", 100)),
         pivot_len=payload["pivot_len"],
+        entry_mode=str(payload.get("entry_mode", "pivot")),
+        atr_stop_mult=payload.get("atr_stop_mult"),
+        stop_pct_floor=float(payload.get("stop_pct_floor", 0.015)),
+        stop_pct_ceil=float(payload.get("stop_pct_ceil", 0.06)),
+        resist_exit=bool(payload.get("resist_exit", False)),
+        trail_pct_tight=payload.get("trail_pct_tight"),
+        squeeze_fade_tighten=bool(payload.get("squeeze_fade_tighten", False)),
+        max_hold_days=payload.get("max_hold_days"),
     )
 
 
@@ -326,6 +517,9 @@ def _summarize(trades: pd.DataFrame, gain_col: str = "gain_pct") -> dict:
         out["hard_stop_exits"] = int((trades["exit_reason"] == "hard_stop").sum())
         out["trail_stop_exits"] = int((trades["exit_reason"] == "trail_stop").sum())
         out["trail_stop_wide_exits"] = int((trades["exit_reason"] == "trail_stop_wide").sum())
+        out["trail_stop_tight_exits"] = int((trades["exit_reason"] == "trail_stop_tight").sum())
+        out["resist_exits"] = int((trades["exit_reason"] == "resist_exit").sum())
+        out["time_stop_exits"] = int((trades["exit_reason"] == "time_stop").sum())
         out["eod_exits"] = int((trades["exit_reason"] == "eod").sum())
     return out
 
@@ -399,6 +593,12 @@ def filter_trades(
     *,
     min_adv: Optional[float] = None,
     min_atr_pct: Optional[float] = None,
+    max_channel_pos: Optional[float] = None,
+    min_width_pct: Optional[float] = None,
+    max_width_pct: Optional[float] = None,
+    min_slope_pct: Optional[float] = None,
+    max_slope_pct: Optional[float] = None,
+    require_spy_above_sma: bool = False,
 ) -> pd.DataFrame:
     if trades.empty:
         return trades
@@ -407,6 +607,18 @@ def filter_trades(
         m &= trades["adv_20"].fillna(0) >= float(min_adv)
     if min_atr_pct is not None:
         m &= trades["atr_pct"].fillna(0) >= float(min_atr_pct)
+    if max_channel_pos is not None and "channel_pos" in trades.columns:
+        m &= trades["channel_pos"].fillna(999) <= float(max_channel_pos)
+    if min_width_pct is not None and "channel_width_pct" in trades.columns:
+        m &= trades["channel_width_pct"].fillna(-1) >= float(min_width_pct)
+    if max_width_pct is not None and "channel_width_pct" in trades.columns:
+        m &= trades["channel_width_pct"].fillna(1e9) <= float(max_width_pct)
+    if min_slope_pct is not None and "slope_pct_per_bar" in trades.columns:
+        m &= trades["slope_pct_per_bar"].fillna(-1) >= float(min_slope_pct)
+    if max_slope_pct is not None and "slope_pct_per_bar" in trades.columns:
+        m &= trades["slope_pct_per_bar"].fillna(1e9) <= float(max_slope_pct)
+    if require_spy_above_sma and "spy_above_sma50" in trades.columns:
+        m &= trades["spy_above_sma50"].fillna(False).astype(bool)
     return trades.loc[m].copy()
 
 
@@ -498,6 +710,258 @@ def edge_scenarios(
     return pd.DataFrame(rows)
 
 
+
+def summarize_by_year(
+    trades: pd.DataFrame,
+    *,
+    gain_col: str = "gain_pct",
+    buckets: Sequence[Tuple[str, str, str]] = YEAR_BUCKETS,
+) -> pd.DataFrame:
+    rows: List[dict] = []
+    if trades.empty or "buy_date" not in trades.columns:
+        return pd.DataFrame(rows)
+    bd = pd.to_datetime(trades["buy_date"])
+    for name, start, end in buckets:
+        m = (bd >= pd.Timestamp(start)) & (bd <= pd.Timestamp(end))
+        s = _summarize(trades.loc[m], gain_col=gain_col)
+        rows.append(
+            {
+                "bucket": name,
+                "n_trades": s["n_trades"],
+                "win_rate_pct": s["win_rate_pct"],
+                "expectancy_pct": s["expectancy_pct"],
+                "profit_factor": s["profit_factor"],
+                "avg_win_pct": s["avg_win_pct"],
+                "avg_loss_pct": s["avg_loss_pct"],
+                "hard_stop_exits": s.get("hard_stop_exits"),
+            }
+        )
+    full = _summarize(trades, gain_col=gain_col)
+    rows.append(
+        {
+            "bucket": "FULL",
+            "n_trades": full["n_trades"],
+            "win_rate_pct": full["win_rate_pct"],
+            "expectancy_pct": full["expectancy_pct"],
+            "profit_factor": full["profit_factor"],
+            "avg_win_pct": full["avg_win_pct"],
+            "avg_loss_pct": full["avg_loss_pct"],
+            "hard_stop_exits": full.get("hard_stop_exits"),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def enrich_spy_regime(trades: pd.DataFrame, spy_df: pd.DataFrame, *, sma_len: int = 50) -> pd.DataFrame:
+    if trades.empty:
+        return trades
+    out = trades.copy()
+    spy = spy_df["close"].astype(float).copy()
+    if not isinstance(spy.index, pd.DatetimeIndex):
+        spy.index = pd.DatetimeIndex(spy.index)
+    if spy.index.tz is not None:
+        spy.index = spy.index.tz_convert(None)
+    spy = spy.sort_index()
+    sma = spy.rolling(int(sma_len), min_periods=int(sma_len)).mean()
+    above: List[Optional[bool]] = []
+    for _, row in out.iterrows():
+        asof = pd.Timestamp(row["buy_date"])
+        hist_c = spy.loc[:asof]
+        hist_s = sma.loc[:asof]
+        if hist_c.empty or hist_s.empty or not np.isfinite(float(hist_s.iloc[-1])):
+            above.append(None)
+            continue
+        above.append(bool(float(hist_c.iloc[-1]) > float(hist_s.iloc[-1])))
+    out["spy_above_sma50"] = above
+    return out
+
+
+def _scan_trades(
+    panels: Dict[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+    workers: int,
+    base: dict,
+) -> pd.DataFrame:
+    payloads = [
+        {"symbol": sym, "df": panels[sym], **base}
+        for sym in symbols
+        if sym in panels and sym != "SPY"
+    ]
+    all_trades: List[dict] = []
+    if workers and workers > 1 and len(payloads) > 1:
+        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+            futs = [pool.submit(_worker_symbol_trades, p) for p in payloads]
+            for fut in as_completed(futs):
+                all_trades.extend(fut.result())
+    else:
+        for p in payloads:
+            all_trades.extend(_worker_symbol_trades(p))
+    return pd.DataFrame(all_trades) if all_trades else pd.DataFrame()
+
+
+def _finalize_report_trades(
+    trades: pd.DataFrame,
+    *,
+    max_entries_per_day: int = 1,
+    friction_pct: float = 0.25,
+    geometry: bool = False,
+    spy_regime: bool = False,
+) -> Tuple[pd.DataFrame, str]:
+    out = trades
+    if geometry:
+        out = filter_trades(
+            out,
+            max_channel_pos=0.40,
+            min_width_pct=3.0,
+            max_width_pct=35.0,
+            min_slope_pct=0.02,
+            max_slope_pct=0.50,
+        )
+    if spy_regime:
+        out = filter_trades(out, require_spy_above_sma=True)
+    if max_entries_per_day and max_entries_per_day > 0:
+        out = select_same_day_rs(out, rs_col="rs_spy_126d", max_per_day=int(max_entries_per_day))
+    gain_col = "gain_pct"
+    if friction_pct and friction_pct > 0:
+        out = apply_friction(out, friction_pct)
+        gain_col = "gain_pct_net"
+    return out, gain_col
+
+
+def run_edge_v2(
+    panels: Dict[str, pd.DataFrame],
+    spy_df: pd.DataFrame,
+    symbols: Sequence[str],
+    *,
+    workers: int,
+    friction_pct: float = 0.25,
+    max_entries_per_day: int = 1,
+    squeeze_pctile: float = 75.0,
+    squeeze_lookback: int = 100,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, pd.DataFrame]]:
+    """Run H0 baseline + H1-H5 scenarios on one loaded panel set."""
+    base_common = {
+        "entry_touch": 3,
+        "trail_pct": 0.10,
+        "trail_pct_wide": 0.18,
+        "squeeze_adaptive": True,
+        "squeeze_pctile": squeeze_pctile,
+        "squeeze_lookback": squeeze_lookback,
+        "stop_pct": 0.03,
+        "pivot_len": 15,
+        "entry_mode": "pivot",
+        "atr_stop_mult": None,
+        "stop_pct_floor": 0.015,
+        "stop_pct_ceil": 0.06,
+        "resist_exit": False,
+        "trail_pct_tight": None,
+        "squeeze_fade_tighten": False,
+        "max_hold_days": None,
+    }
+    scan_specs: List[Tuple[str, dict]] = [
+        ("H0_baseline", {}),
+        ("H1_atr_stop_k1.0", {"atr_stop_mult": 1.0}),
+        ("H1_atr_stop_k1.5", {"atr_stop_mult": 1.5}),
+        ("H1_atr_stop_k2.0", {"atr_stop_mult": 2.0}),
+        ("H2_pivot_len_5", {"pivot_len": 5}),
+        ("H2_pivot_len_10", {"pivot_len": 10}),
+        ("H2_entry_reclaim", {"entry_mode": "reclaim"}),
+        (
+            "H5_struct_exits",
+            {
+                "resist_exit": True,
+                "squeeze_fade_tighten": True,
+                "trail_pct_tight": 0.07,
+                "max_hold_days": 50,
+            },
+        ),
+        ("H1k1.5+H2_pivot10", {"atr_stop_mult": 1.5, "pivot_len": 10}),
+        (
+            "H1k1.5+H5_struct",
+            {
+                "atr_stop_mult": 1.5,
+                "resist_exit": True,
+                "squeeze_fade_tighten": True,
+                "trail_pct_tight": 0.07,
+                "max_hold_days": 50,
+            },
+        ),
+    ]
+    raw_by_name: Dict[str, pd.DataFrame] = {}
+    for name, overrides in scan_specs:
+        cfg = dict(base_common)
+        cfg.update(overrides)
+        t1 = time.perf_counter()
+        logger.info("edge-v2 scan %s ...", name)
+        raw = _scan_trades(panels, symbols=symbols, workers=workers, base=cfg)
+        if raw.empty:
+            raw_by_name[name] = raw
+            logger.info("edge-v2 scan %s -> 0 trades (%.1fs)", name, time.perf_counter() - t1)
+            continue
+        raw = enrich_rs(raw, panels, spy_df, lookbacks=(63, 126))
+        raw = enrich_spy_regime(raw, spy_df, sma_len=50)
+        raw_by_name[name] = raw
+        logger.info("edge-v2 scan %s -> %d raw trades (%.1fs)", name, len(raw), time.perf_counter() - t1)
+
+    post_specs: List[Tuple[str, str, bool, bool]] = [
+        ("H3_geometry", "H0_baseline", True, False),
+        ("H4_spy_sma50", "H0_baseline", False, True),
+        ("H3+H4", "H0_baseline", True, True),
+        ("H1k1.5+H3", "H1_atr_stop_k1.5", True, False),
+        ("H1k1.5+H4", "H1_atr_stop_k1.5", False, True),
+    ]
+    summary_rows: List[dict] = []
+    year_frames: List[pd.DataFrame] = []
+
+    def _add(name: str, raw: Optional[pd.DataFrame], geometry: bool, spy_regime: bool) -> None:
+        if raw is None or raw.empty:
+            summary_rows.append({"scenario": name, "n_trades": 0, "expectancy_pct": None, "profit_factor": None})
+            return
+        final, gain_col = _finalize_report_trades(
+            raw,
+            max_entries_per_day=max_entries_per_day,
+            friction_pct=friction_pct,
+            geometry=geometry,
+            spy_regime=spy_regime,
+        )
+        s = _summarize(final, gain_col=gain_col)
+        summary_rows.append(
+            {
+                "scenario": name,
+                "n_trades": s["n_trades"],
+                "n_symbols": s["n_symbols"],
+                "expectancy_pct": s["expectancy_pct"],
+                "profit_factor": s["profit_factor"],
+                "win_rate_pct": s["win_rate_pct"],
+                "avg_win_pct": s["avg_win_pct"],
+                "avg_loss_pct": s["avg_loss_pct"],
+                "avg_hold_days": s["avg_hold_days"],
+                "hard_stop_exits": s.get("hard_stop_exits"),
+                "trail_stop_exits": s.get("trail_stop_exits"),
+                "trail_stop_wide_exits": s.get("trail_stop_wide_exits"),
+                "trail_stop_tight_exits": s.get("trail_stop_tight_exits"),
+                "resist_exits": s.get("resist_exits"),
+                "time_stop_exits": s.get("time_stop_exits"),
+                "eod_exits": s.get("eod_exits"),
+            }
+        )
+        ydf = summarize_by_year(final, gain_col=gain_col)
+        if not ydf.empty:
+            ydf = ydf.copy()
+            ydf.insert(0, "scenario", name)
+            year_frames.append(ydf)
+
+    for name, _ in scan_specs:
+        _add(name, raw_by_name.get(name), geometry=False, spy_regime=False)
+    for name, src, geo, regime in post_specs:
+        _add(name, raw_by_name.get(src), geometry=geo, spy_regime=regime)
+
+    summary_df = pd.DataFrame(summary_rows)
+    year_df = pd.concat(year_frames, ignore_index=True) if year_frames else pd.DataFrame()
+    return summary_df, year_df, raw_by_name
+
+
 REPORT_COLS = [
     "stock",
     "channel_start",
@@ -549,8 +1013,8 @@ def main() -> int:
     ap.add_argument("--pivot-len", type=int, default=15)
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument("--timeframe", default="1d")
-    ap.add_argument("--start", default="2020-01-01")
-    ap.add_argument("--end", default="2025-11-26")
+    ap.add_argument("--start", default="2018-11-01")
+    ap.add_argument("--end", default="2026-08-23")
     ap.add_argument("--min-bars", type=int, default=180)
     ap.add_argument("--workers", type=int, default=1, help="Process workers for scan/backtest")
     ap.add_argument("--load-workers", type=int, default=4, help="Thread workers for OHLCV load")
@@ -574,6 +1038,33 @@ def main() -> int:
         action="store_true",
         help="Write liquidity/vol/RS/friction scenario comparison table",
     )
+    ap.add_argument(
+        "--edge-v2",
+        action="store_true",
+        help="Run long-history H0-H5 improvement matrix + year splits (one data load)",
+    )
+    ap.add_argument(
+        "--geometry-filter",
+        action="store_true",
+        help="Keep entries in lower 40%% of channel with moderate width/slope",
+    )
+    ap.add_argument(
+        "--spy-regime",
+        action="store_true",
+        help="Only take entries when SPY close > SMA50",
+    )
+    ap.add_argument(
+        "--entry-mode",
+        choices=("pivot", "reclaim"),
+        default="pivot",
+    )
+    ap.add_argument("--atr-stop-mult", type=float, default=None)
+    ap.add_argument("--stop-pct-floor", type=float, default=0.015)
+    ap.add_argument("--stop-pct-ceil", type=float, default=0.06)
+    ap.add_argument("--resist-exit", action="store_true")
+    ap.add_argument("--trail-pct-tight", type=float, default=None)
+    ap.add_argument("--squeeze-fade-tighten", action="store_true")
+    ap.add_argument("--max-hold-days", type=int, default=None)
     ap.add_argument(
         "--outdir",
         type=Path,
@@ -630,6 +1121,71 @@ def main() -> int:
     if spy_df is None or spy_df.empty:
         logger.error("SPY panel missing; cannot compute relative strength")
         return 1
+
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.edge_v2:
+        friction = args.friction_pct if args.friction_pct > 0 else 0.25
+        max_day = args.max_entries_per_day if args.max_entries_per_day > 0 else 1
+        summary_df, year_df, raw_by_name = run_edge_v2(
+            panels,
+            spy_df,
+            symbols,
+            workers=int(args.workers),
+            friction_pct=friction,
+            max_entries_per_day=max_day,
+            squeeze_pctile=args.squeeze_pctile,
+            squeeze_lookback=args.squeeze_lookback,
+        )
+        scenarios_csv = args.outdir / f"channel_touch_edge_v2_{stamp}.csv"
+        year_csv = args.outdir / f"channel_touch_edge_v2_years_{stamp}.csv"
+        summary_df.to_csv(scenarios_csv, index=False)
+        year_df.to_csv(year_csv, index=False)
+        h0 = raw_by_name.get("H0_baseline", pd.DataFrame())
+        trades_csv = args.outdir / f"channel_touch_trades_{stamp}.csv"
+        summary_txt = args.outdir / f"channel_touch_trades_summary_{stamp}.txt"
+        if not h0.empty:
+            filtered, gain_col = _finalize_report_trades(
+                h0, max_entries_per_day=max_day, friction_pct=friction
+            )
+            export_cols = [c for c in REPORT_COLS if c in filtered.columns]
+            if "gain_pct_net" in filtered.columns:
+                export_cols = export_cols + ["gain_pct_net"]
+            filtered = filtered.sort_values(
+                [gain_col, "buy_date"], ascending=[False, True]
+            ).reset_index(drop=True)
+            filtered[export_cols].to_csv(trades_csv, index=False)
+            s = _summarize(filtered, gain_col=gain_col)
+            y = summarize_by_year(filtered, gain_col=gain_col)
+            lines = [
+                "Ascending channel bottom-touch long backtest (edge-v2 H0 baseline)",
+                f"start={args.start} end={args.end}",
+                f"friction_pct={friction} max_entries_per_day={max_day}",
+                f"elapsed_sec={time.perf_counter() - t0:.1f}",
+                "",
+                *[f"{k}={v}" for k, v in s.items()],
+                "",
+                "Year splits:",
+                y.to_string(index=False) if not y.empty else "(none)",
+                "",
+                "Edge-v2 scenarios:",
+                summary_df.to_string(index=False),
+            ]
+            summary_txt.write_text("\n".join(lines), encoding="utf-8")
+        else:
+            pd.DataFrame().to_csv(trades_csv, index=False)
+            summary_txt.write_text("No H0 trades\n", encoding="utf-8")
+        logger.info("edge-v2 scenarios -> %s", scenarios_csv)
+        print("\nEdge-v2 scenario summary:")
+        print(summary_df.to_string(index=False))
+        print("\nYear splits:")
+        print(year_df.to_string(index=False))
+        print(f"\nScenarios CSV: {scenarios_csv}")
+        print(f"Years CSV: {year_csv}")
+        print(f"H0 trades: {trades_csv}")
+        print(f"Summary: {summary_txt}")
+        return 0
 
     t_scan = time.perf_counter()
     all_trades: List[dict] = []
