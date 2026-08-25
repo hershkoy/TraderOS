@@ -160,6 +160,7 @@ Convenience pattern used in the 2026-08-24 batch: define `window.__createSupport
 | Layout change / TV relaunch | Drawings live on a layout; short URL id like `WSlUWqyb` may vanish; redraw on current chart; alerts still fire if geometry is embedded in the alert payload |
 | `setVisibleRange` in `ui_evaluate` | Throws `Not implemented`; zoom via MCP tool |
 | Alert on resistance | Not the default; monitor **support** (touch / reclaim thesis) |
+| Left-endpoint time snap | Long multi-year channels: TV may snap `t1` forward while keeping old `p1`, so rails float under recent candles. Always verify `draw_get_properties` times vs `watchlist_channels_draw.json`; redraw if `t1` drifted |
 
 ## Geometry rebuild (if JSON missing)
 

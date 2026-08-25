@@ -446,6 +446,7 @@ def trades_for_symbol(
                     "room_to_resist_pct": (
                         round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
                     ),
+                    "bars_span": ch.get("bars_span"),
                     "entry_mode": entry_mode,
                 }
             )
@@ -599,27 +600,48 @@ def filter_trades(
     min_slope_pct: Optional[float] = None,
     max_slope_pct: Optional[float] = None,
     require_spy_above_sma: bool = False,
+    max_channel_span_days: Optional[float] = None,
+    max_channel_age_days: Optional[float] = None,
+    require_in_channel: bool = False,
 ) -> pd.DataFrame:
     if trades.empty:
         return trades
-    m = pd.Series(True, index=trades.index)
+    out = trades
+    # Derive span/age when dates exist (quality gates; detector unchanged)
+    if (
+        max_channel_span_days is not None or max_channel_age_days is not None
+    ) and {"channel_start", "channel_end", "buy_date"}.issubset(out.columns):
+        if "channel_span_days" not in out.columns or "channel_age_at_buy_days" not in out.columns:
+            cs = pd.to_datetime(out["channel_start"], errors="coerce")
+            ce = pd.to_datetime(out["channel_end"], errors="coerce")
+            bd = pd.to_datetime(out["buy_date"], errors="coerce")
+            out = out.copy()
+            out["channel_span_days"] = (ce - cs).dt.days
+            out["channel_age_at_buy_days"] = (bd - cs).dt.days
+    m = pd.Series(True, index=out.index)
     if min_adv is not None:
-        m &= trades["adv_20"].fillna(0) >= float(min_adv)
+        m &= out["adv_20"].fillna(0) >= float(min_adv)
     if min_atr_pct is not None:
-        m &= trades["atr_pct"].fillna(0) >= float(min_atr_pct)
-    if max_channel_pos is not None and "channel_pos" in trades.columns:
-        m &= trades["channel_pos"].fillna(999) <= float(max_channel_pos)
-    if min_width_pct is not None and "channel_width_pct" in trades.columns:
-        m &= trades["channel_width_pct"].fillna(-1) >= float(min_width_pct)
-    if max_width_pct is not None and "channel_width_pct" in trades.columns:
-        m &= trades["channel_width_pct"].fillna(1e9) <= float(max_width_pct)
-    if min_slope_pct is not None and "slope_pct_per_bar" in trades.columns:
-        m &= trades["slope_pct_per_bar"].fillna(-1) >= float(min_slope_pct)
-    if max_slope_pct is not None and "slope_pct_per_bar" in trades.columns:
-        m &= trades["slope_pct_per_bar"].fillna(1e9) <= float(max_slope_pct)
-    if require_spy_above_sma and "spy_above_sma50" in trades.columns:
-        m &= trades["spy_above_sma50"].fillna(False).astype(bool)
-    return trades.loc[m].copy()
+        m &= out["atr_pct"].fillna(0) >= float(min_atr_pct)
+    if max_channel_pos is not None and "channel_pos" in out.columns:
+        m &= out["channel_pos"].fillna(999) <= float(max_channel_pos)
+    if require_in_channel and "channel_pos" in out.columns:
+        m &= out["channel_pos"].fillna(999) <= 1.0
+    if min_width_pct is not None and "channel_width_pct" in out.columns:
+        m &= out["channel_width_pct"].fillna(-1) >= float(min_width_pct)
+    if max_width_pct is not None and "channel_width_pct" in out.columns:
+        m &= out["channel_width_pct"].fillna(1e9) <= float(max_width_pct)
+    if min_slope_pct is not None and "slope_pct_per_bar" in out.columns:
+        m &= out["slope_pct_per_bar"].fillna(-1) >= float(min_slope_pct)
+    if max_slope_pct is not None and "slope_pct_per_bar" in out.columns:
+        m &= out["slope_pct_per_bar"].fillna(1e9) <= float(max_slope_pct)
+    if require_spy_above_sma and "spy_above_sma50" in out.columns:
+        m &= out["spy_above_sma50"].fillna(False).astype(bool)
+    if max_channel_span_days is not None and "channel_span_days" in out.columns:
+        m &= out["channel_span_days"].fillna(1e9) <= float(max_channel_span_days)
+    if max_channel_age_days is not None and "channel_age_at_buy_days" in out.columns:
+        m &= out["channel_age_at_buy_days"].fillna(1e9) <= float(max_channel_age_days)
+    return out.loc[m].copy()
 
 
 def select_same_day_rs(
@@ -982,6 +1004,12 @@ REPORT_COLS = [
     "atr_pct",
     "rs_spy_63d",
     "rs_spy_126d",
+    "slope_pct_per_bar",
+    "channel_width_pct",
+    "channel_pos",
+    "room_to_resist_pct",
+    "bars_span",
+    "entry_mode",
 ]
 
 
@@ -1047,6 +1075,23 @@ def main() -> int:
         "--geometry-filter",
         action="store_true",
         help="Keep entries in lower 40%% of channel with moderate width/slope",
+    )
+    ap.add_argument(
+        "--require-in-channel",
+        action="store_true",
+        help="Reject entries with channel_pos > 1 (buy already above resistance)",
+    )
+    ap.add_argument(
+        "--max-channel-span-days",
+        type=float,
+        default=None,
+        help="Reject channels whose start->end span exceeds N calendar days",
+    )
+    ap.add_argument(
+        "--max-channel-age-days",
+        type=float,
+        default=None,
+        help="Reject entries where buy_date - channel_start exceeds N calendar days",
     )
     ap.add_argument(
         "--spy-regime",
@@ -1201,6 +1246,14 @@ def main() -> int:
             "squeeze_pctile": args.squeeze_pctile,
             "squeeze_lookback": args.squeeze_lookback,
             "pivot_len": args.pivot_len,
+            "entry_mode": str(args.entry_mode),
+            "atr_stop_mult": args.atr_stop_mult,
+            "stop_pct_floor": float(args.stop_pct_floor),
+            "stop_pct_ceil": float(args.stop_pct_ceil),
+            "resist_exit": bool(args.resist_exit),
+            "trail_pct_tight": args.trail_pct_tight,
+            "squeeze_fade_tighten": bool(args.squeeze_fade_tighten),
+            "max_hold_days": args.max_hold_days,
         }
         for sym in symbols
         if sym in panels and sym != "SPY"
@@ -1234,7 +1287,27 @@ def main() -> int:
     logger.info("RS enrichment done in %.1fs", time.perf_counter() - t_rs)
 
     # Optional live filters for the primary report
-    filtered = filter_trades(trades, min_adv=args.min_adv, min_atr_pct=args.min_atr_pct)
+    geo_kwargs = {}
+    if args.geometry_filter:
+        geo_kwargs.update(
+            dict(
+                max_channel_pos=0.40,
+                min_width_pct=3.0,
+                max_width_pct=35.0,
+                min_slope_pct=0.02,
+                max_slope_pct=0.50,
+            )
+        )
+    filtered = filter_trades(
+        trades,
+        min_adv=args.min_adv,
+        min_atr_pct=args.min_atr_pct,
+        require_in_channel=bool(args.require_in_channel),
+        max_channel_span_days=args.max_channel_span_days,
+        max_channel_age_days=args.max_channel_age_days,
+        require_spy_above_sma=bool(args.spy_regime),
+        **geo_kwargs,
+    )
     if args.max_entries_per_day and args.max_entries_per_day > 0:
         filtered = select_same_day_rs(
             filtered, rs_col="rs_spy_126d", max_per_day=int(args.max_entries_per_day)

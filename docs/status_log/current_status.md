@@ -60,12 +60,13 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
 | Item | State |
 |------|--------|
-| Detector | Classical Edwards/Magee rules; Pine `indicators/pine/ascending_channel_3touch.pine` |
+| Detector | Classical Edwards/Magee rules; Pine `indicators/pine/ascending_channel_3touch.pine` (v1 unchanged) |
 | Backtest keepers | Same-day RS vs SPY **top1**; TTM squeeze-adaptive trail (10%/18%); **ATR hard-stop k≈2.0** (clamped 1.5%–6%); friction 0.25% |
-| Rejected | Hard ADV/ATR floors; SPY SMA50 alone; structure-exit bundle; `entry_mode=reclaim` until pivot look-ahead fixed |
+| Soft promote (2026-08-25) | `--require-in-channel` + `--max-channel-span-days 365` — drops ~22% above-resist entries; live ATR stack **n=374 E +2.66% PF 1.96** vs unfiltered **n=496 E +2.29% PF 1.82** |
+| Rejected | Hard ADV/ATR floors; SPY SMA50 alone; structure-exit bundle; H3 lower-40% geometry; `entry_mode=reclaim` until pivot look-ahead fixed |
 | Long-history (2018-11 → 2026-08-23) | H0 E +1.63% / PF 1.72 (n=496); best ATR k=2.0 E **+2.29%** / PF **1.82**; density still mostly **2024–2026** |
 | Live monitor | Nightly Windows task: Alpaca multi-symbol 1d refresh → pivot-confirm scan → Telegram. First bat run 2026-08-25: **HOOD** trigger (as_of 2026-08-21) |
-| Reports | `reports/ascending_channels/`; TV watchlist / trendline alerts per `docs/features/tv_channel_trendline_alert.md` |
+| Reports | `reports/ascending_channels/`; TV watchlist / trendline alerts per `docs/features/tv_channel_trendline_alert.md` (verify left-endpoint times — TV snap bug) |
 
 ### What is frozen vs in motion
 
