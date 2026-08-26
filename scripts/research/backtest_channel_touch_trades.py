@@ -1040,6 +1040,17 @@ def main() -> int:
     ap.add_argument("--squeeze-lookback", type=int, default=100, help="Bars for mom percentile window")
     ap.add_argument("--pivot-len", type=int, default=15)
     ap.add_argument("--provider", default="ALPACA")
+    ap.add_argument(
+        "--fallback-provider",
+        default="",
+        help="Secondary provider for daily prefix stitch (e.g. IB). Empty=disabled until IB 1d backfilled.",
+    )
+    ap.add_argument(
+        "--merge-mode",
+        choices=("", "prefix", "none"),
+        default="prefix",
+        help="How to combine fallback when set: prefix=IB bars before first Alpaca bar",
+    )
     ap.add_argument("--timeframe", default="1d")
     ap.add_argument("--start", default="2018-11-01")
     ap.add_argument("--end", default="2026-08-23")
@@ -1145,6 +1156,11 @@ def main() -> int:
         args.load_workers,
     )
     t_load = time.perf_counter()
+    fb = (args.fallback_provider or "").strip()
+    merge = (args.merge_mode or "").strip().lower()
+    if merge in ("", "none"):
+        fb = ""
+        merge = None
     panels = load_ohlcv_many(
         symbols,
         timeframe=args.timeframe,
@@ -1154,6 +1170,8 @@ def main() -> int:
         use_cache=True,
         chunk_size=args.chunk_size,
         workers=max(1, int(args.load_workers)),
+        fallback_provider=fb or None,
+        merge_mode=merge,
     )
     logger.info(
         "Loaded %d/%d panels in %.1fs",

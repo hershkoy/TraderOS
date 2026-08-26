@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-08-25**
+Last updated: **2026-08-26**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -12,7 +12,7 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 
 | Timeframe | Symbols | Bars (approx) | Date range / freshness |
 |-----------|---------|---------------|------------------------|
-| Daily (`1d`) | **~2,217** | ~7.6M+ | ALPACA primary; after 2026-08-23 gap-fill most names reach **~2026-08-20/21** (~2109/2217 fresh). Nightly 2026-08-25 update: 2113 saved / 104 failed (multi-symbol batches). |
+| Daily (`1d`) | **~2,217** | ~7.6M+ | ALPACA primary; gap-fill 2026-08-23 + nightly multi-symbol refresh. Nightly 2026-08-25 ~23:00: **2113 saved / 104 failed** (95.3%), `as_of` scan bar **2026-08-24**. |
 | 15-minute (`15m`) | **1,478** | ~58.7M (EXPLAIN est.) | IB primary, ~2018-01-02 → 2025-12-02; ALPACA 15m effectively unused aside from leftover `AEO` |
 | Weekly | **0** | — | Not stored — resample from daily |
 
@@ -20,7 +20,7 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 
 | Source | Role | Persist? |
 |--------|------|----------|
-| **Alpaca** | Historical OHLCV (primary daily) via `utils/data/fetch_data.py` / `update_universe_data.py`; IEX default | Yes — provider `ALPACA` |
+| **Alpaca** | Historical OHLCV (primary daily) via `utils/data/fetch_data.py` / `update_universe_data.py`; IEX default; nightly `--multi-symbol` batches | Yes — provider `ALPACA` |
 | **IBKR** | Historical OHLCV (primary 15m); Gateway ~4001 | Yes — provider `IB` |
 | **TradingView** | Chart / Pine verify only (workspace MCP, CDP 9222) | No |
 
@@ -34,7 +34,7 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 
 ---
 
-## Research status (2026-08-25)
+## Research status (2026-08-26)
 
 ### Edge hunt (SPY-beating portfolio sleeves)
 
@@ -60,19 +60,24 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
 | Item | State |
 |------|--------|
-| Detector | Classical Edwards/Magee rules; Pine `indicators/pine/ascending_channel_3touch.pine` (v1 unchanged) |
-| Backtest keepers | Same-day RS vs SPY **top1**; TTM squeeze-adaptive trail (10%/18%); **ATR hard-stop k≈2.0** (clamped 1.5%–6%); friction 0.25% |
-| Soft promote (2026-08-25) | `--require-in-channel` + `--max-channel-span-days 365` — drops ~22% above-resist entries; live ATR stack **n=374 E +2.66% PF 1.96** vs unfiltered **n=496 E +2.29% PF 1.82** |
-| Rejected | Hard ADV/ATR floors; SPY SMA50 alone; structure-exit bundle; H3 lower-40% geometry; `entry_mode=reclaim` until pivot look-ahead fixed |
-| Long-history (2018-11 → 2026-08-23) | H0 E +1.63% / PF 1.72 (n=496); best ATR k=2.0 E **+2.29%** / PF **1.82**; density still mostly **2024–2026** |
-| Live monitor | Nightly Windows task: Alpaca multi-symbol 1d refresh → pivot-confirm scan → Telegram. First bat run 2026-08-25: **HOOD** trigger (as_of 2026-08-21) |
-| Reports | `reports/ascending_channels/`; TV watchlist / trendline alerts per `docs/features/tv_channel_trendline_alert.md` (verify left-endpoint times — TV snap bug) |
+| Detector | Classical Edwards/Magee; Pine `indicators/pine/ascending_channel_3touch.pine` (**v1 unchanged** — quality via post-filters, not rewrite) |
+| Backtest keepers | RS vs SPY **top1**; squeeze trail 10%/18%; **ATR hard-stop k=2.0** (clamp 1.5%–6%); friction 0.25% |
+| Soft promote | `--require-in-channel` + `--max-channel-span-days 365` — ~22% of RS-top1 entries were already above resist (drag); filtered live ATR stack **n=374 E +2.66% PF 1.96** vs unfiltered **n=496 E +2.29% PF 1.82** |
+| History gap | Research window starts 2018-11 but **kept trades from 2023+** (Alpaca IEX per-symbol starts often ~2020–22; RS top1). IB `1d` in DB today: **~14 symbols** only — not enough to fill. |
+| Alpaca+IB path | Loader supports `fallback_provider=IB` + `merge_mode=prefix` (`utils/data/ohlcv_loader.py`). Backfill: `scripts/data/backfill_ib_daily_prefix.py` (needs Gateway). Enable research with `--fallback-provider IB` after backfill. |
+| Robustness (014435) | Drop BETR: E **+1.70** PF **1.61**; top-3 tail **24.8%**; bootstrap P(mean&lt;0) **0.3%**; **median trade −3.05%** (fat-tail); drop top-5% winners kills PF; concurrent opens max **29** / med **11** — see [robustness](edge_hunt/channel_touch/2026-08-25_channel_touch_robustness.md) |
+| Rejected | Hard ADV/ATR floors; SPY SMA50 alone; structure-exit bundle; H3 lower-40% geometry; `entry_mode=reclaim` until look-ahead fixed |
+| Long-history window | 2018-11-01 → 2026-08-23; density still mostly **2024–2026** |
+| Interactive report | `reports/ascending_channels/channel_touch_tv_report_interactive_rs_top1_default_fric0.25_atr_k2_inchannel_span365_robust_20260825_213406.html` (Robustness tab: win-cap, exclude, max concurrent, bootstrap) |
+| Live monitor | Nightly: Alpaca multi-symbol 1d refresh → pivot scan → Telegram (`utils/notify/telegram_pinger.py`). **2026-08-25 23:00** run: **KRYS** @ 341.57 (as_of 2026-08-24; stop −6%; RS126 +21.3%; channel pos 0.35) |
+| TV draw caveat | Left-endpoint time-snap can float long rails — verify vs `watchlist_channels_draw.json` ([playbook](../features/tv_channel_trendline_alert.md)) |
 
 ### What is frozen vs in motion
 
-- **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch edge-v2 keepers + nightly cron.
-- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c stock overlays; reclaim entry until look-ahead fixed.
-- **Ops cadence:** Post-close EOD scan on stored bars for large universes — do not stream full universe via IB.
+- **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch keepers + in-channel/span filters + nightly cron.
+- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; lower-40% geometry.
+- **Next (optional):** Wire quality flags into nightly scanner; portfolio max-open in live sizing; ADV-tiered friction.
+- **Ops cadence:** Post-close EOD scan on stored bars — do not stream full universe via IB.
 
 ---
 
