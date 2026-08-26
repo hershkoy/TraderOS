@@ -10,6 +10,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-24 | [Edge-v2 long-history sweep](2026-08-24_channel_touch_edge_v2_long_history.md) |
 | 2026-08-25 | [Nightly cron + Telegram](2026-08-25_channel_touch_nightly_cron.md) |
 | 2026-08-25 | [Geometry quality audit + in-channel filters](2026-08-25_channel_touch_quality_audit.md) |
+| 2026-08-25 | [Robustness: outliers, bootstrap, capacity](2026-08-25_channel_touch_robustness.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -30,6 +31,8 @@ venv\Scripts\activate
 set PYTHONPATH=.
 python scripts\research\backtest_channel_touch_trades.py --all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-entries-per-day 1 --friction-pct 0.25 --workers 4 --load-workers 8 --start 2018-11-01
 python scripts\research\audit_channel_touch_quality.py
+python scripts\research\channel_touch_robustness.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv
+python scripts\research\generate_channel_touch_tv_report.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv --friction-pct 0.25 --rs-top1 --tag atr_k2_inchannel_span365_robust
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
 ```

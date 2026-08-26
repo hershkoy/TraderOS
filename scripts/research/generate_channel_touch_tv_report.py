@@ -247,17 +247,30 @@ def render_html(
       <label for="maxPerDay">Max entries / day (0 = all)</label>
       <input id="maxPerDay" type="number" min="0" max="50" step="1" />
     </div>
+    <div>
+      <label for="maxOpen">Max concurrent opens (0 = none)</label>
+      <input id="maxOpen" type="number" min="0" max="100" step="1" />
+    </div>
+    <div>
+      <label for="winCap">Win cap P&amp;L % (0 = none)</label>
+      <input id="winCap" type="number" min="0" max="500" step="1" title="Winsorize: cap each trade gain at this %% before sizing" />
+    </div>
+    <div>
+      <label for="excludeSym">Exclude symbols</label>
+      <input id="excludeSym" type="text" placeholder="e.g. BETR, SANM" />
+    </div>
     <div class="actions">
       <button class="btn" id="btnApply" type="button">Apply</button>
       <button class="btn secondary" id="btnReset" type="button">Reset</button>
     </div>
-    <div class="hint">{rs_note} Change parameters and click Apply (or press Enter). Charts and metrics update in-browser.</div>
+    <div class="hint">{rs_note} Use <b>Win cap</b> / <b>Exclude</b> / <b>Max concurrent</b> for robustness &amp; capacity stress. Trade-table Max P&amp;L also has &quot;Push to equity&quot;.</div>
   </div>
 
   <div class="tabs">
     <button class="tab active" data-tab="overview">Overview</button>
     <button class="tab" data-tab="compare">Compare to S&amp;P 500</button>
     <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="robustness">Robustness</button>
     <button class="tab" data-tab="trades">List of trades</button>
     <button class="tab" data-tab="monthly">Monthly</button>
   </div>
@@ -284,6 +297,29 @@ def render_html(
     <h2>Performance summary</h2>
     <div class="metric-grid" id="perfGrid"></div>
     <p class="muted" id="exitMix"></p>
+  </div>
+
+  <div id="robustness" class="panel">
+    <h2>Robustness &amp; capacity</h2>
+    <div class="cards" id="robustCards"></div>
+    <h2>Outlier stripping / winsorize (trade P&amp;L % after friction)</h2>
+    <div class="table-scroll" style="max-height:320px;margin-bottom:12px">
+      <table>
+        <thead><tr><th>Scenario</th><th>n</th><th>E%</th><th>Median%</th><th>Trimmed5%</th><th>PF</th><th>Win%</th></tr></thead>
+        <tbody id="robustScenBody"></tbody>
+      </table>
+    </div>
+    <h2>Bootstrap (with replacement)</h2>
+    <div class="cards" id="bootCards"></div>
+    <p class="muted" id="bootNote"></p>
+    <h2>Capacity (greedy max concurrent)</h2>
+    <div class="table-scroll" style="max-height:240px;margin-bottom:12px">
+      <table>
+        <thead><tr><th>Max open</th><th>n kept</th><th>E%</th><th>PF</th></tr></thead>
+        <tbody id="capBody"></tbody>
+      </table>
+    </div>
+    <p class="note">Criterion: if drop-top-1 or winsorized E flips negative / PF &lt; 1, treat edge as tail-fragile. Tail dependency = top-3 wins / gross profit of winners. Bootstrap uses trade P&amp;L %% (not path-dependent equity).</p>
   </div>
 
   <div id="trades" class="panel">
@@ -323,6 +359,7 @@ def render_html(
       </div>
       <div class="actions">
         <button class="btn secondary" id="tfClear" type="button">Clear filters</button>
+        <button class="btn" id="tfPushEquity" type="button" title="Copy Max P&amp;L into Win cap and re-run equity">Push Max P&amp;L to equity</button>
       </div>
     </div>
     <p class="muted" id="tradesNote"></p>
@@ -384,6 +421,9 @@ function readParams() {{
     sizeVal: Math.max(0, Number(document.getElementById('sizeVal').value) || 0),
     friction: Math.max(0, Number(document.getElementById('friction').value) || 0),
     maxPerDay: Math.max(0, Math.floor(Number(document.getElementById('maxPerDay').value) || 0)),
+    maxOpen: Math.max(0, Math.floor(Number(document.getElementById('maxOpen').value) || 0)),
+    winCap: Math.max(0, Number(document.getElementById('winCap').value) || 0),
+    excludeSym: (document.getElementById('excludeSym').value || '').trim().toUpperCase(),
   }};
 }}
 
@@ -391,6 +431,11 @@ function syncSizeLabel() {{
   const mode = document.getElementById('sizeMode').value;
   document.getElementById('sizeValLabel').textContent =
     mode === 'fixed' ? 'Size ($)' : 'Size (%)';
+}}
+
+function parseExclude(p) {{
+  if (!p.excludeSym) return new Set();
+  return new Set(p.excludeSym.split(/[,\s]+/).filter(Boolean));
 }}
 
 function filterMaxPerDay(trades, maxPerDay) {{
@@ -414,10 +459,49 @@ function filterMaxPerDay(trades, maxPerDay) {{
   return out;
 }}
 
+function filterExclude(trades, excludeSet) {{
+  if (!excludeSet || !excludeSet.size) return trades.slice();
+  return trades.filter(t => !excludeSet.has(String(t.symbol).toUpperCase()));
+}}
+
+function filterMaxOpen(trades, maxOpen) {{
+  if (!maxOpen || maxOpen <= 0) return trades.slice();
+  const ordered = trades.slice().sort((a, b) => {{
+    if (a.buy !== b.buy) return a.buy < b.buy ? -1 : 1;
+    const ra = (a.rs === undefined || a.rs === null) ? -Infinity : a.rs;
+    const rb = (b.rs === undefined || b.rs === null) ? -Infinity : b.rs;
+    return rb - ra;
+  }});
+  const kept = [];
+  const openExits = [];
+  for (const t of ordered) {{
+    while (openExits.length && openExits[0] < t.buy) openExits.shift();
+    if (openExits.length >= maxOpen) continue;
+    kept.push(t);
+    openExits.push(t.sell);
+    openExits.sort();
+  }}
+  kept.sort((a, b) => (a.sell < b.sell ? -1 : a.sell > b.sell ? 1 : a.buy < b.buy ? -1 : a.symbol.localeCompare(b.symbol)));
+  return kept;
+}}
+
+function prepareTrades(raw, p) {{
+  let t = filterExclude(raw, parseExclude(p));
+  t = filterMaxPerDay(t, p.maxPerDay);
+  t = filterMaxOpen(t, p.maxOpen);
+  return t;
+}}
+
 function notionalFor(equity, capital, p) {{
   if (p.sizeMode === 'pct_equity') return equity * (p.sizeVal / 100);
   if (p.sizeMode === 'pct_initial') return capital * (p.sizeVal / 100);
   return p.sizeVal;
+}}
+
+function cappedGain(t, p) {{
+  let g = t.gain - p.friction;
+  if (p.winCap > 0 && g > p.winCap) g = p.winCap;
+  return g;
 }}
 
 function simulate(trades, p) {{
@@ -437,11 +521,13 @@ function simulate(trades, p) {{
   let sumHold = 0, nHold = 0;
   let largestWin = 0, largestLoss = 0;
   let avgWinSum = 0, avgLossSum = 0;
+  const gainPcts = [];
 
   for (let i = 0; i < trades.length; i++) {{
     const t = trades[i];
     const notion = Math.max(0, notionalFor(equity, p.capital, p));
-    const gainPct = t.gain - p.friction;
+    const gainPct = cappedGain(t, p);
+    gainPcts.push(gainPct);
     const pnl = notion * gainPct / 100;
     cum += pnl;
     equity = p.capital + cum;
@@ -482,10 +568,153 @@ function simulate(trades, p) {{
       symbols: new Set(trades.map(t => t.symbol)).size,
       from: trades.length ? trades.reduce((a,t)=>t.buy<a?t.buy:a, trades[0].buy) : '',
       to: trades.length ? trades.reduce((a,t)=>t.sell>a?t.sell:a, trades[0].sell) : '',
-      exits
+      exits, gainPcts
     }},
-    rows, eqCurve, ddCurve, monthly, params: p
+    rows, eqCurve, ddCurve, monthly, params: p, trades
   }};
+}}
+
+function mean(arr) {{ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }}
+function median(arr) {{
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length % 2 ? s[m] : (s[m-1]+s[m])/2;
+}}
+function trimmedMean(arr, frac) {{
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a,b)=>a-b);
+  const lo = Math.floor(frac * s.length);
+  const hi = Math.ceil((1-frac) * s.length);
+  if (hi <= lo) return mean(s);
+  return mean(s.slice(lo, hi));
+}}
+function pfOf(arr) {{
+  let gp=0, gl=0;
+  for (const x of arr) {{ if (x > 0) gp += x; else gl += -x; }}
+  if (gl < 1e-12) return gp > 0 ? Infinity : 0;
+  return gp / gl;
+}}
+function dropTopN(arr, n) {{
+  const s = arr.slice().sort((a,b)=>b-a);
+  const drop = new Set(s.slice(0, n));
+  // drop by value multiset: remove n largest occurrences
+  const sortedIdx = arr.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).slice(0,n).map(x=>x[1]);
+  const kill = new Set(sortedIdx);
+  return arr.filter((_,i)=>!kill.has(i));
+}}
+function winsor(arr, cap) {{
+  if (!(cap > 0)) return arr.slice();
+  return arr.map(x => x > cap ? cap : x);
+}}
+function concurrentStats(trades) {{
+  if (!trades.length) return {{max:0,p95:0,median:0}};
+  const events = [];
+  for (const t of trades) {{
+    events.push({{d:t.buy, dn:1}});
+    events.push({{d:t.sell, dn:-1}});
+  }}
+  events.sort((a,b)=> a.d < b.d ? -1 : a.d > b.d ? 1 : a.dn - b.dn);
+  let cur=0, max=0;
+  const samples=[];
+  for (const e of events) {{
+    cur += e.dn;
+    if (e.dn > 0) {{ samples.push(cur); if (cur > max) max = cur; }}
+  }}
+  samples.sort((a,b)=>a-b);
+  const med = samples.length ? samples[Math.floor(samples.length/2)] : 0;
+  const p95 = samples.length ? samples[Math.min(samples.length-1, Math.floor(0.95*(samples.length-1)))] : 0;
+  return {{max, p95, median: med}};
+}}
+function bootstrapGains(arr, nIter) {{
+  if (!arr.length) return {{pctNegMean:0, pctNegSum:0, pctPfLt1:0, meanP05:0, meanP50:0, meanP95:0}};
+  const means=[], sums=[], pfs=[];
+  for (let i=0;i<nIter;i++) {{
+    const sample = new Array(arr.length);
+    for (let j=0;j<arr.length;j++) sample[j] = arr[(Math.random()*arr.length)|0];
+    const m = mean(sample);
+    const s = sample.reduce((a,b)=>a+b,0);
+    means.push(m); sums.push(s); pfs.push(pfOf(sample));
+  }}
+  means.sort((a,b)=>a-b); sums.sort((a,b)=>a-b);
+  const q = (a,p) => a[Math.min(a.length-1, Math.floor(p*(a.length-1)))];
+  return {{
+    pctNegMean: 100 * means.filter(x=>x<0).length / nIter,
+    pctNegSum: 100 * sums.filter(x=>x<0).length / nIter,
+    pctPfLt1: 100 * pfs.filter(x=>x<1).length / nIter,
+    meanP05: q(means,0.05), meanP50: q(means,0.5), meanP95: q(means,0.95)
+  }};
+}}
+function scenRow(label, arr) {{
+  const wins = arr.filter(x=>x>0);
+  return {{
+    label, n: arr.length,
+    e: mean(arr), med: median(arr), trim: trimmedMean(arr, 0.05),
+    pf: pfOf(arr), wr: arr.length ? 100*wins.length/arr.length : 0
+  }};
+}}
+function renderRobustness(sim) {{
+  const gains = sim.metrics.gainPcts || [];
+  const trades = sim.trades || [];
+  const base = scenRow('baseline', gains);
+  const rows = [
+    base,
+    scenRow('drop top-1', dropTopN(gains, 1)),
+    scenRow('drop top-3', dropTopN(gains, 3)),
+    scenRow('drop top-5', dropTopN(gains, 5)),
+    scenRow('drop top 5% winners', dropTopN(gains, Math.max(1, Math.ceil(0.05*gains.length)))),
+    scenRow('winsor 50%', winsor(gains, 50)),
+    scenRow('winsor 30%', winsor(gains, 30)),
+    scenRow('winsor 20%', winsor(gains, 20)),
+  ];
+  const sortedWins = gains.filter(x=>x>0).slice().sort((a,b)=>b-a);
+  const gross = sortedWins.reduce((a,b)=>a+b,0);
+  const top3 = sortedWins.slice(0,3).reduce((a,b)=>a+b,0);
+  const tdr = gross > 0 ? top3/gross : 0;
+  const expo = concurrentStats(trades);
+  const boot = bootstrapGains(gains, 2000);
+  const d1 = rows[1];
+  let verdict = '';
+  if (d1.e <= 0 || d1.pf < 1) verdict = 'FRAGILE: edge fails drop-top-1 criterion';
+  else if (tdr >= 0.4) verdict = 'CAUTION: top-3 tail dependency >= 40% (still positive after drop-top-1)';
+  else verdict = 'SOFT PASS: survives drop-top-1; check winsor / bootstrap';
+
+  setHTML('robustCards', `
+    <div class="card"><div class="label">Verdict</div><div class="value" style="font-size:14px">${{verdict}}</div></div>
+    <div class="card"><div class="label">Mean trade %</div><div class="value ${{cls(base.e)}}">${{pct(base.e,true)}}</div></div>
+    <div class="card"><div class="label">Median trade %</div><div class="value ${{cls(base.med)}}">${{pct(base.med,true)}}</div></div>
+    <div class="card"><div class="label">Trimmed mean 5%</div><div class="value ${{cls(base.trim)}}">${{pct(base.trim,true)}}</div></div>
+    <div class="card"><div class="label">Top-3 / gross wins</div><div class="value">${{(tdr*100).toFixed(1)}}%</div></div>
+    <div class="card"><div class="label">Concurrent open max</div><div class="value">${{expo.max}}</div></div>
+    <div class="card"><div class="label">Concurrent p95 / med</div><div class="value">${{expo.p95}} / ${{expo.median}}</div></div>
+    <div class="card"><div class="label">Trades in sim</div><div class="value">${{trades.length}}</div></div>
+  `);
+  setHTML('robustScenBody', rows.map(r => `
+    <tr>
+      <td>${{r.label}}</td><td class="num">${{r.n}}</td>
+      <td class="num ${{cls(r.e)}}">${{pct(r.e,true)}}</td>
+      <td class="num ${{cls(r.med)}}">${{pct(r.med,true)}}</td>
+      <td class="num ${{cls(r.trim)}}">${{pct(r.trim,true)}}</td>
+      <td class="num">${{Number.isFinite(r.pf)?r.pf.toFixed(3):'inf'}}</td>
+      <td class="num">${{pct(r.wr,false)}}</td>
+    </tr>`).join(''));
+  setHTML('bootCards', `
+    <div class="card"><div class="label">P(mean &lt; 0)</div><div class="value">${{boot.pctNegMean.toFixed(1)}}%</div></div>
+    <div class="card"><div class="label">P(sum &lt; 0)</div><div class="value">${{boot.pctNegSum.toFixed(1)}}%</div></div>
+    <div class="card"><div class="label">P(PF &lt; 1)</div><div class="value">${{boot.pctPfLt1.toFixed(1)}}%</div></div>
+    <div class="card"><div class="label">Mean E p05 / p50 / p95</div><div class="value" style="font-size:14px">${{pct(boot.meanP05,true)}} / ${{pct(boot.meanP50,true)}} / ${{pct(boot.meanP95,true)}}</div></div>
+  `);
+  setHTML('bootNote', '2000 bootstrap resamples of the current filtered trade P&amp;L %% list (after friction / win-cap / excludes / capacity).');
+  const capRows = [0,5,10,15,20].map(c => {{
+    const pp = Object.assign({{}}, sim.params, {{maxOpen: c}});
+    const tt = prepareTrades(RAW.trades, pp);
+    const gg = tt.map(x => cappedGain(x, pp));
+    return scenRow(c === 0 ? 'unlimited' : String(c), gg);
+  }});
+  setHTML('capBody', capRows.map(r => `
+    <tr><td>${{r.label}}</td><td class="num">${{r.n}}</td>
+    <td class="num ${{cls(r.e)}}">${{pct(r.e,true)}}</td>
+    <td class="num">${{Number.isFinite(r.pf)?r.pf.toFixed(3):'inf'}}</td></tr>`).join(''));
 }}
 
 function simulateSpy(spy, capital, from, to) {{
@@ -578,7 +807,10 @@ function render(sim, spy) {{
   document.getElementById('subtitle').textContent =
     m.from + ' to ' + m.to + ' · ' + m.n + ' trades · sizing ' + p.sizeMode + ' ' +
     (p.sizeMode === 'fixed' ? money(p.sizeVal,false) : (p.sizeVal.toFixed(2) + '%')) +
-    ' · friction ' + p.friction.toFixed(2) + '% · max/day ' + (p.maxPerDay || 'all');
+    ' · friction ' + p.friction.toFixed(2) + '% · max/day ' + (p.maxPerDay || 'all') +
+    ' · maxOpen ' + (p.maxOpen || 'none') +
+    (p.winCap > 0 ? (' · winCap ' + p.winCap + '%') : '') +
+    (p.excludeSym ? (' · excl ' + p.excludeSym) : '');
 
   setHTML('overviewCards', `
     <div class="card"><div class="label">Net profit</div><div class="value ${{cls(m.net)}}">${{money(m.net,true)}}</div></div>
@@ -598,8 +830,13 @@ function render(sim, spy) {{
       (p.sizeMode === 'pct_initial' ? (p.sizeVal + '% of initial') : (p.sizeVal + '% of equity'))) +
     '; equity marks on exit dates. Friction ' + pct(p.friction,false) +
     ' round-trip. Orange = SPY buy & hold with same portfolio size.' +
-    (p.sizeMode !== 'pct_equity' ? ' Overlapping multi-symbol fills are not capital-constrained.' : '')
+    (p.maxOpen > 0
+      ? (' Max concurrent opens=' + p.maxOpen + ' (greedy by buy date / RS).')
+      : ' Overlapping multi-symbol fills are not capital-constrained (set Max concurrent).') +
+    (p.winCap > 0 ? (' Win cap=' + p.winCap + '%.') : '')
   );
+
+  renderRobustness(sim);
 
   // Compare
   if (spy) {{
@@ -780,7 +1017,7 @@ function clearTradeFilters() {{
 
 function apply() {{
   const p = readParams();
-  const filtered = filterMaxPerDay(RAW.trades, p.maxPerDay);
+  const filtered = prepareTrades(RAW.trades, p);
   const sim = simulate(filtered, p);
   const spy = simulateSpy(RAW.spy, p.capital, sim.metrics.from, sim.metrics.to);
   render(sim, spy);
@@ -793,8 +1030,25 @@ function resetDefaults() {{
   document.getElementById('sizeVal').value = d.sizeVal;
   document.getElementById('friction').value = d.friction;
   document.getElementById('maxPerDay').value = d.maxPerDay;
+  document.getElementById('maxOpen').value = d.maxOpen != null ? d.maxOpen : 0;
+  document.getElementById('winCap').value = d.winCap != null ? d.winCap : 0;
+  document.getElementById('excludeSym').value = d.excludeSym || '';
   syncSizeLabel();
   apply();
+}}
+
+function pushMaxPnlToEquity() {{
+  const maxRaw = document.getElementById('tfMaxPnl').value;
+  if (maxRaw === '' || Number.isNaN(Number(maxRaw))) {{
+    alert('Set Max P&L % in the trade filters first (e.g. 30 or 50).');
+    return;
+  }}
+  document.getElementById('winCap').value = Number(maxRaw);
+  apply();
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab[data-tab="overview"]').classList.add('active');
+  document.getElementById('overview').classList.add('active');
 }}
 
 document.querySelectorAll('.tab').forEach(btn => {{
@@ -827,6 +1081,7 @@ document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
   el.addEventListener('change', paintTradesTable);
 }});
 document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
+document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
 
 document.getElementById('genAt').textContent = RAW.generated;
 resetDefaults();
@@ -887,6 +1142,9 @@ def main() -> int:
         "sizeVal": size_val,
         "friction": float(args.friction_pct),
         "maxPerDay": int(max_per_day),
+        "maxOpen": 0,
+        "winCap": 0,
+        "excludeSym": "",
     }
 
     label_bits = ["interactive"]
