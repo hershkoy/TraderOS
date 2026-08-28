@@ -19,6 +19,7 @@ Usage (Windows CMD):
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --symbols GLD
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --all-symbols --workers 4 --load-workers 8 --edge-improve
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --preset 15m --symbols GLD,QQQ,AAPL
 """
 from __future__ import annotations
 
@@ -39,8 +40,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
-from find_ascending_channels import _pick_symbols, find_channels, list_symbols_fast
+from find_ascending_channels import (
+    _pick_symbols,
+    find_channels,
+    find_channels_windowed,
+    list_symbols_fast,
+)
 from utils.data.ohlcv_loader import load_ohlcv_many
+from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,6 +148,7 @@ def _simulate_trade(
     trail_pct_tight: Optional[float] = None,
     squeeze_fade_tighten: bool = False,
     max_hold_days: Optional[int] = None,
+    include_time: bool = False,
 ) -> Optional[dict]:
     """Long from entry_i close; exit on hard/trail/resist/time (intrabar).
 
@@ -256,9 +264,11 @@ def _simulate_trade(
 
     hold = int(exit_i - entry_i)
     gain_pct = (exit_px / entry_px - 1.0) * 100.0
-    return {
-        "buy_date": dates[entry_i].strftime("%Y-%m-%d"),
-        "sell_date": dates[exit_i].strftime("%Y-%m-%d"),
+    ts_buy = dates[entry_i]
+    ts_sell = dates[exit_i]
+    out = {
+        "buy_date": ts_buy.strftime("%Y-%m-%d"),
+        "sell_date": ts_sell.strftime("%Y-%m-%d"),
         "buy_price": round(entry_px, 4),
         "sell_price": round(exit_px, 4),
         "gain_pct": round(gain_pct, 2),
@@ -270,6 +280,11 @@ def _simulate_trade(
         "entry_i": int(entry_i),
         "exit_i": int(exit_i),
     }
+    if include_time:
+        out["buy_time"] = ts_buy.strftime("%Y-%m-%d %H:%M")
+        out["sell_time"] = ts_sell.strftime("%Y-%m-%d %H:%M")
+        out["hold_bars"] = hold
+    return out
 
 
 def _resolve_entry_i(
@@ -323,6 +338,9 @@ def trades_for_symbol(
     max_hold_days: Optional[int] = None,
     adv_lookback: int = 20,
     atr_len: int = 14,
+    window_bars: Optional[int] = None,
+    window_step_bars: Optional[int] = None,
+    include_time: bool = False,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -357,7 +375,17 @@ def trades_for_symbol(
         if squeeze_adaptive and trail_pct_wide is not None:
             wide = float(trail_pct_wide)
 
-    channels = find_channels(out, pivot_len=pivot_len, **channel_kwargs)
+    channels = (
+        find_channels_windowed(
+            out,
+            window_bars=int(window_bars),
+            step_bars=int(window_step_bars or window_bars),
+            pivot_len=pivot_len,
+            **channel_kwargs,
+        )
+        if window_bars and int(window_bars) > 0
+        else find_channels(out, pivot_len=pivot_len, **channel_kwargs)
+    )
     trades: List[dict] = []
     busy_until = -1
 
@@ -409,6 +437,7 @@ def trades_for_symbol(
                 trail_pct_tight=trail_pct_tight,
                 squeeze_fade_tighten=squeeze_fade_tighten,
                 max_hold_days=max_hold_days,
+                include_time=include_time,
             )
             if sim is None:
                 continue
@@ -435,6 +464,11 @@ def trades_for_symbol(
                     "touch_num": touch_num,
                     "touch_date": dates[t_idx].strftime("%Y-%m-%d"),
                     "touch_price": round(float(low[t_idx]), 4),
+                    **(
+                        {"touch_time": dates[t_idx].strftime("%Y-%m-%d %H:%M")}
+                        if include_time
+                        else {}
+                    ),
                     **{k: v for k, v in sim.items() if k not in ("entry_i", "exit_i")},
                     "entry_i": sim["entry_i"],
                     "exit_i": sim["exit_i"],
@@ -475,6 +509,11 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         trail_pct_tight=payload.get("trail_pct_tight"),
         squeeze_fade_tighten=bool(payload.get("squeeze_fade_tighten", False)),
         max_hold_days=payload.get("max_hold_days"),
+        adv_lookback=int(payload.get("adv_lookback", 20)),
+        window_bars=payload.get("window_bars"),
+        window_step_bars=payload.get("window_step_bars"),
+        include_time=bool(payload.get("include_time", False)),
+        **(payload.get("channel_kwargs") or {}),
     )
 
 
@@ -550,8 +589,13 @@ def enrich_rs(
     spy_df: pd.DataFrame,
     *,
     lookbacks: Sequence[int] = (63, 126),
+    bars_per_session: int = 1,
 ) -> pd.DataFrame:
-    """Attach relative strength vs SPY at each buy_date."""
+    """Attach relative strength vs SPY at each buy timestamp.
+
+    ``lookbacks`` are session counts (63/126). ``bars_per_session`` converts them
+    to bar lookbacks (1 on daily, 26 on RTH 15m).
+    """
     if trades.empty:
         return trades
     out = trades.copy()
@@ -567,7 +611,8 @@ def enrich_rs(
         vals: List[float] = []
         for _, row in out.iterrows():
             sym = str(row["stock"]).upper()
-            asof = pd.Timestamp(row["buy_date"])
+            asof_src = row["buy_time"] if "buy_time" in out.columns and pd.notna(row.get("buy_time")) else row["buy_date"]
+            asof = pd.Timestamp(asof_src)
             if sym not in close_cache:
                 df = panels.get(sym)
                 if df is None or df.empty:
@@ -579,8 +624,8 @@ def enrich_rs(
                     if c.index.tz is not None:
                         c.index = c.index.tz_convert(None)
                     close_cache[sym] = c
-            stock_ret = _return_lookback(close_cache[sym], asof, lb)
-            spy_ret = _return_lookback(spy, asof, lb)
+            stock_ret = _return_lookback(close_cache[sym], asof, int(lb) * max(1, int(bars_per_session)))
+            spy_ret = _return_lookback(spy, asof, int(lb) * max(1, int(bars_per_session)))
             if np.isfinite(stock_ret) and np.isfinite(spy_ret):
                 vals.append(round((stock_ret - spy_ret) * 100.0, 3))
             else:
@@ -990,13 +1035,17 @@ REPORT_COLS = [
     "channel_end",
     "touch_num",
     "touch_date",
+    "touch_time",
     "touch_price",
     "buy_date",
+    "buy_time",
     "sell_date",
+    "sell_time",
     "buy_price",
     "sell_price",
     "gain_pct",
     "hold_days",
+    "hold_bars",
     "exit_reason",
     "peak_price",
     "trail_wide_used",
@@ -1015,11 +1064,17 @@ REPORT_COLS = [
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Channel bottom-touch long backtest")
+    ap.add_argument(
+        "--preset",
+        default="",
+        choices=("", "15m"),
+        help="15m = IB 15m scaled hunt (shorter pivots, vol-scaled %%, session RS). Daily defaults unchanged.",
+    )
     ap.add_argument("--n-symbols", type=int, default=100)
     ap.add_argument(
         "--all-symbols",
         action="store_true",
-        help="Scan full ALPACA 1d universe (fast DISTINCT list; skips liquidity HAVING)",
+        help="Scan full provider/timeframe universe (fast DISTINCT list; skips liquidity HAVING)",
     )
     ap.add_argument("--symbols", default="", help="Comma list override (e.g. GLD,SPY)")
     ap.add_argument("--entry-touch", type=int, default=3, help="First touch number to buy")
@@ -1039,6 +1094,43 @@ def main() -> int:
     ap.add_argument("--squeeze-pctile", type=float, default=75.0, help="Mom strength percentile threshold")
     ap.add_argument("--squeeze-lookback", type=int, default=100, help="Bars for mom percentile window")
     ap.add_argument("--pivot-len", type=int, default=15)
+    ap.add_argument("--error-pct", type=float, default=1.2)
+    ap.add_argument("--min-rally-pct", type=float, default=4.0)
+    ap.add_argument("--min-pullback-pct", type=float, default=3.0)
+    ap.add_argument("--min-total-rise-pct", type=float, default=3.0)
+    ap.add_argument("--flat-pct", type=float, default=0.04)
+    ap.add_argument("--min-bars-apart", type=int, default=15)
+    ap.add_argument("--max-low-pivots", type=int, default=16)
+    ap.add_argument(
+        "--window-bars",
+        type=int,
+        default=0,
+        help="If >0, slide find_channels over overlapping windows. Daily long-history default "
+        "is applied automatically (~504 bars) unless --no-window-scan.",
+    )
+    ap.add_argument("--window-step-bars", type=int, default=0)
+    ap.add_argument(
+        "--no-window-scan",
+        action="store_true",
+        help="Daily only: disable automatic sliding-window channel scan (legacy last-16-pivot pass)",
+    )
+    ap.add_argument("--adv-lookback", type=int, default=20)
+    ap.add_argument(
+        "--bars-per-session",
+        type=int,
+        default=1,
+        help="Multiply RS 63/126 session lookbacks by this (26 on RTH 15m)",
+    )
+    ap.add_argument(
+        "--include-time",
+        action="store_true",
+        help="Write buy_time/sell_time (HH:MM) for intraday bars",
+    )
+    ap.add_argument(
+        "--rs-symbol",
+        default="SPY",
+        help="Benchmark for relative-strength ranking (default SPY)",
+    )
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument(
         "--fallback-provider",
@@ -1127,6 +1219,34 @@ def main() -> int:
         default=ROOT / "reports" / "ascending_channels",
     )
     args = ap.parse_args()
+    if (args.preset or "").strip() == "15m":
+        overlay_preset(args, PRESET_15M, sys.argv[1:])
+        logger.info(
+            "Preset 15m: provider=%s timeframe=%s pivot_len=%d window=%d/%d "
+            "trail=%.2f%%/%.2f%% stop_clamp=%.2f-%.2f%% rs_bars_per_session=%d span_days=%s",
+            args.provider,
+            args.timeframe,
+            args.pivot_len,
+            args.window_bars,
+            args.window_step_bars,
+            args.trail_pct * 100,
+            args.trail_pct_wide * 100,
+            args.stop_pct_floor * 100,
+            args.stop_pct_ceil * 100,
+            args.bars_per_session,
+            args.max_channel_span_days,
+        )
+        if args.edge_v2:
+            logger.warning("Ignoring --edge-v2 with --preset 15m (daily H0-H5 matrix)")
+            args.edge_v2 = False
+
+    apply_daily_long_history_defaults(args)
+    if str(args.timeframe) == "1d" and int(args.window_bars) > 0:
+        logger.info(
+            "Daily windowed channel scan: window_bars=%d window_step_bars=%d",
+            int(args.window_bars),
+            int(args.window_step_bars or args.window_bars),
+        )
 
     t0 = time.perf_counter()
     t_sym = time.perf_counter()
@@ -1137,12 +1257,14 @@ def main() -> int:
         logger.info("Full universe list: %d symbols (%.1fs)", len(symbols), time.perf_counter() - t_sym)
     else:
         symbols = _pick_symbols(args.n_symbols, args.provider, args.timeframe, args.min_bars)
-        if "GLD" not in symbols:
+        if "GLD" not in symbols and str(args.timeframe) == "1d":
             symbols = ["GLD"] + symbols
 
-    # Always include SPY for relative-strength ranking
-    if "SPY" not in symbols:
-        symbols = list(symbols) + ["SPY"]
+    # Always include RS benchmark (SPY unless --rs-symbol)
+    rs_symbol = (args.rs_symbol or "SPY").strip().upper()
+    args.rs_symbol = rs_symbol
+    if rs_symbol not in symbols:
+        symbols = list(symbols) + [rs_symbol]
 
     logger.info(
         "Backtest %d symbols | entry touch>=%d | stop=%.1f%% trail=%.1f%% wide=%.1f%% adaptive=%s | workers=%d load_workers=%d",
@@ -1180,10 +1302,41 @@ def main() -> int:
         time.perf_counter() - t_load,
     )
 
-    spy_df = panels.get("SPY")
+    spy_df = panels.get(rs_symbol)
+    rs_panels = panels
+    rs_bars_per_session = int(args.bars_per_session)
+    rs_source = f"{args.provider} {args.timeframe}"
     if spy_df is None or spy_df.empty:
-        logger.error("SPY panel missing; cannot compute relative strength")
-        return 1
+        logger.warning(
+            "%s %s missing for RS; falling back to ALPACA 1d (ingest IB 15m %s for session-equivalent RS)",
+            rs_symbol,
+            args.timeframe,
+            rs_symbol,
+        )
+        t_rs_load = time.perf_counter()
+        rs_names = sorted({s.upper() for s in symbols} | {rs_symbol})
+        rs_panels = load_ohlcv_many(
+            rs_names,
+            timeframe="1d",
+            provider="ALPACA",
+            start=datetime.strptime(args.start, "%Y-%m-%d"),
+            end=datetime.strptime(args.end, "%Y-%m-%d"),
+            use_cache=True,
+            chunk_size=50,
+            workers=max(1, int(args.load_workers)),
+        )
+        spy_df = rs_panels.get(rs_symbol)
+        rs_bars_per_session = 1
+        rs_source = "ALPACA 1d fallback"
+        logger.info(
+            "RS fallback loaded %d/%d daily panels in %.1fs",
+            len(rs_panels),
+            len(rs_names),
+            time.perf_counter() - t_rs_load,
+        )
+        if spy_df is None or spy_df.empty:
+            logger.error("%s panel missing; cannot compute relative strength", rs_symbol)
+            return 1
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1252,6 +1405,17 @@ def main() -> int:
 
     t_scan = time.perf_counter()
     all_trades: List[dict] = []
+    channel_kwargs = {
+        "error_pct": float(args.error_pct),
+        "flat_pct": float(args.flat_pct),
+        "min_bars_apart": int(args.min_bars_apart),
+        "min_intervening_rally_pct": float(args.min_rally_pct),
+        "min_intervening_pullback_pct": float(args.min_pullback_pct),
+        "min_total_rise_pct": float(args.min_total_rise_pct),
+        "max_low_pivots": int(args.max_low_pivots),
+    }
+    window_bars = int(args.window_bars) if int(args.window_bars) > 0 else None
+    window_step = int(args.window_step_bars) if int(args.window_step_bars) > 0 else window_bars
     payloads = [
         {
             "symbol": sym,
@@ -1272,9 +1436,14 @@ def main() -> int:
             "trail_pct_tight": args.trail_pct_tight,
             "squeeze_fade_tighten": bool(args.squeeze_fade_tighten),
             "max_hold_days": args.max_hold_days,
+            "adv_lookback": int(args.adv_lookback),
+            "window_bars": window_bars,
+            "window_step_bars": window_step,
+            "include_time": bool(args.include_time),
+            "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
-        if sym in panels and sym != "SPY"
+        if sym in panels and sym != rs_symbol
     ]
     if args.workers and args.workers > 1 and len(payloads) > 1:
         with ProcessPoolExecutor(max_workers=int(args.workers)) as pool:
@@ -1288,9 +1457,10 @@ def main() -> int:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    trades_csv = args.outdir / f"channel_touch_trades_{stamp}.csv"
-    summary_txt = args.outdir / f"channel_touch_trades_summary_{stamp}.txt"
-    scenarios_csv = args.outdir / f"channel_touch_edge_scenarios_{stamp}.csv"
+    file_prefix = "channel_touch_15m" if (args.preset or "").strip() == "15m" else "channel_touch"
+    trades_csv = args.outdir / f"{file_prefix}_trades_{stamp}.csv"
+    summary_txt = args.outdir / f"{file_prefix}_trades_summary_{stamp}.txt"
+    scenarios_csv = args.outdir / f"{file_prefix}_edge_scenarios_{stamp}.csv"
 
     if not all_trades:
         logger.warning("No trades generated")
@@ -1301,7 +1471,13 @@ def main() -> int:
 
     trades = pd.DataFrame(all_trades)
     t_rs = time.perf_counter()
-    trades = enrich_rs(trades, panels, spy_df, lookbacks=(63, 126))
+    trades = enrich_rs(
+        trades,
+        rs_panels,
+        spy_df,
+        lookbacks=(63, 126),
+        bars_per_session=int(rs_bars_per_session),
+    )
     logger.info("RS enrichment done in %.1fs", time.perf_counter() - t_rs)
 
     # Optional live filters for the primary report
@@ -1358,13 +1534,20 @@ def main() -> int:
         f"squeeze_pctile={args.squeeze_pctile}",
         f"squeeze_lookback={args.squeeze_lookback}",
         f"pivot_len={args.pivot_len} (entry at touch+pivot_len close)",
+        f"preset={args.preset or 'daily'} window_bars={args.window_bars} window_step_bars={args.window_step_bars}",
+        f"error_pct={args.error_pct} min_rally_pct={args.min_rally_pct} min_total_rise_pct={args.min_total_rise_pct}",
         f"provider={args.provider} timeframe={args.timeframe}",
+        f"fallback_provider={fb or ''}",
+        f"merge_mode={merge or ''}",
         f"start={args.start} end={args.end}",
         f"symbols={len(panels)}",
         f"min_adv={args.min_adv}",
         f"min_atr_pct={args.min_atr_pct}",
         f"max_entries_per_day={args.max_entries_per_day}",
         f"friction_pct={args.friction_pct}",
+        f"atr_stop_mult={args.atr_stop_mult}",
+        f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
+        f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
         f"elapsed_sec={elapsed:.1f}",
         "",
         *[f"{k}={v}" for k, v in summary.items()],

@@ -42,6 +42,8 @@ logging.getLogger("utils.db.timescaledb_client").setLevel(logging.WARNING)
 
 
 def _pick_symbols(n: int, provider: str, timeframe: str, min_bars: int) -> List[str]:
+    if timeframe == "15m":
+        return _pick_15m_by_daily_adv(n)
     client = get_timescaledb_client()
     if not client.ensure_connection():
         raise RuntimeError("Failed to connect to TimescaleDB")
@@ -61,6 +63,43 @@ def _pick_symbols(n: int, provider: str, timeframe: str, min_bars: int) -> List[
     try:
         cur.execute(sql, (provider.upper(), timeframe, int(min_bars), int(n)))
         return [r[0] for r in cur.fetchall()]
+    finally:
+        cur.close()
+
+
+def _pick_15m_by_daily_adv(n: int) -> List[str]:
+    """Top-N IB 15m names by ALPACA 1d ADV (avoids a heavy 15m GROUP BY)."""
+    client = get_timescaledb_client()
+    if not client.ensure_connection():
+        raise RuntimeError("Failed to connect to TimescaleDB")
+    want = max(1, int(n))
+    cur = client.connection.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT symbol
+            FROM market_data
+            WHERE provider = 'ALPACA' AND timeframe = '1d'
+              AND ts >= NOW() - INTERVAL '90 days'
+            GROUP BY symbol
+            ORDER BY AVG(close * volume) DESC NULLS LAST
+            LIMIT %s
+            """,
+            (want * 3,),
+        )
+        ranked = [r[0] for r in cur.fetchall()]
+        if not ranked:
+            return []
+        cur.execute(
+            """
+            SELECT DISTINCT symbol
+            FROM market_data
+            WHERE provider = 'IB' AND timeframe = '15m' AND symbol = ANY(%s)
+            """,
+            (ranked,),
+        )
+        have = {r[0] for r in cur.fetchall()}
+        return [s for s in ranked if s in have][:want]
     finally:
         cur.close()
 
@@ -145,6 +184,7 @@ def find_channels(
     min_bars_apart: int = 15,
     min_intervening_rally_pct: float = 4.0,
     min_intervening_pullback_pct: float = 3.0,
+    min_total_rise_pct: float = 3.0,
     max_support_violation_frac: float = 0.08,
     max_low_pivots: int = 16,
 ) -> List[dict]:
@@ -199,10 +239,12 @@ def find_channels(
 
             y1 = float(low[i1])
             yn = float(low[in_])
+            if y1 <= 0 or yn <= 0 or not np.isfinite(y1) or not np.isfinite(yn):
+                continue
             slope = (yn - y1) / float(in_ - i1)
             # Must rise enough over the whole span (reject flat bases)
             total_rise_pct = (yn - y1) / y1 * 100.0
-            if slope <= 0 or (slope / y1 * 100.0) < flat_pct or total_rise_pct < 3.0:
+            if slope <= 0 or (slope / y1 * 100.0) < flat_pct or total_rise_pct < float(min_total_rise_pct):
                 continue
 
             # Candidate bottom touches on the line, with distinct intervening rallies
@@ -341,6 +383,57 @@ def find_channels(
     return results
 
 
+def find_channels_windowed(
+    df: pd.DataFrame,
+    *,
+    window_bars: int,
+    step_bars: int,
+    **kwargs,
+) -> List[dict]:
+    """Run ``find_channels`` on overlapping slices and remap indices to the full frame.
+
+    Needed on 15m because v1 only inspects the last ``max_low_pivots`` swing lows.
+    Detector math is unchanged; this is a scan wrapper.
+    """
+    if df is None or df.empty:
+        return []
+    n = len(df)
+    win = int(window_bars)
+    step = int(step_bars) if step_bars else win
+    if win <= 0 or win >= n:
+        return find_channels(df, **kwargs)
+    if step <= 0:
+        step = win
+
+    seen = set()
+    out: List[dict] = []
+    start = 0
+    while start < n:
+        end = min(n, start + win)
+        for ch in find_channels(df.iloc[start:end], **kwargs):
+            idxs = [int(i) + start for i in (ch.get("touch_indices") or [])]
+            if not idxs:
+                continue
+            key = (
+                idxs[0],
+                idxs[-1],
+                round(float(ch.get("support_slope", 0.0)), 8),
+                round(float(ch.get("channel_width", 0.0)), 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            mapped = dict(ch)
+            mapped["touch_indices"] = idxs
+            mapped["support_x0"] = int(ch["support_x0"]) + start
+            out.append(mapped)
+        if end >= n:
+            break
+        start += step
+    out.sort(key=lambda c: (int(c.get("support_x0", 0)), int(c.get("bars_span", 0))))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Find classical ascending channels (strict swing validation)"
@@ -354,6 +447,7 @@ def main() -> int:
     ap.add_argument("--min-bars-apart", type=int, default=15)
     ap.add_argument("--min-rally-pct", type=float, default=4.0)
     ap.add_argument("--min-pullback-pct", type=float, default=3.0)
+    ap.add_argument("--min-total-rise-pct", type=float, default=3.0)
     ap.add_argument("--max-violation-frac", type=float, default=0.08)
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument("--timeframe", default="1d")
@@ -409,6 +503,7 @@ def main() -> int:
             min_bars_apart=args.min_bars_apart,
             min_intervening_rally_pct=args.min_rally_pct,
             min_intervening_pullback_pct=args.min_pullback_pct,
+            min_total_rise_pct=args.min_total_rise_pct,
             max_support_violation_frac=args.max_violation_frac,
         ):
             rows.append({"stock": sym.upper(), **ch})

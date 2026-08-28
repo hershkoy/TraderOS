@@ -22,10 +22,11 @@ import argparse
 import json
 import logging
 import math
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,168 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("generate_channel_touch_tv_report")
+
+DETECTOR_META: Dict[str, str] = {
+    "name": "Classical ascending channel (Edwards / Magee heuristics)",
+    "script": "scripts/research/find_ascending_channels.py",
+    "pine": "indicators/pine/ascending_channel_3touch.pine",
+    "version": "v1 unchanged (quality via post-filters, not detector rewrite)",
+    "notes": (
+        "Distinct swing lows with meaningful intervening rallies; "
+        ">=2 confirmed resistance touches; support respected inside window; "
+        "not Trendoscope ACP."
+    ),
+}
+
+DETECTOR_PARAM_KEYS = frozenset(
+    {
+        "error_pct",
+        "min_rally_pct",
+        "min_total_rise_pct",
+        "pivot_len",
+        "entry_touch",
+        "preset",
+        "window_bars",
+        "window_step_bars",
+    }
+)
+
+DATA_PARAM_KEYS = frozenset(
+    {
+        "provider",
+        "timeframe",
+        "start",
+        "end",
+        "symbols",
+        "fallback_provider",
+        "merge_mode",
+        "bars_per_session",
+        "rs_source",
+        "rs_symbol",
+        "elapsed_sec",
+    }
+)
+
+RESULT_PARAM_KEYS = frozenset(
+    {
+        "n_trades",
+        "n_symbols",
+        "win_rate_pct",
+        "avg_gain_pct",
+        "median_gain_pct",
+        "avg_win_pct",
+        "avg_loss_pct",
+        "expectancy_pct",
+        "profit_factor",
+        "avg_hold_days",
+        "hard_stop_exits",
+        "trail_stop_exits",
+        "trail_stop_wide_exits",
+        "trail_stop_tight_exits",
+        "resist_exits",
+        "time_stop_exits",
+        "eod_exits",
+    }
+)
+
+
+def _git_info() -> Dict[str, str]:
+    def _run(*cmd: str) -> str:
+        try:
+            r = subprocess.run(
+                list(cmd),
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    branch = _run("git", "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+    commit = _run("git", "rev-parse", "--short", "HEAD") or "unknown"
+    dirty = _run("git", "status", "--porcelain")
+    return {"branch": branch, "commit": commit, "dirty": "yes" if dirty else "no"}
+
+
+def _summary_path_for_trades(trades_path: Path) -> Optional[Path]:
+    name = trades_path.name
+    if "_trades_" not in name:
+        return None
+    summary_name = name.replace("_trades_", "_trades_summary_", 1).replace(".csv", ".txt")
+    candidate = trades_path.parent / summary_name
+    return candidate if candidate.exists() else None
+
+
+def _parse_summary_txt(path: Optional[Path]) -> Tuple[Dict[str, str], List[str], List[str]]:
+    """Return (key_values, config_lines, notes)."""
+    kv: Dict[str, str] = {}
+    config_lines: List[str] = []
+    notes: List[str] = []
+    if path is None or not path.exists():
+        return kv, config_lines, notes
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if ">=" in line and "=" not in line.split(">=", 1)[0]:
+            key, _, val = line.partition(">=")
+            kv[key.strip()] = val.strip()
+        elif "=" in line:
+            key, _, val = line.partition("=")
+            kv[key.strip()] = val.strip()
+        elif line.startswith("Exit:") or line.startswith("Features:"):
+            notes.append(line)
+        elif line[0].isupper() and "backtest" in line.lower():
+            config_lines.append(line)
+        else:
+            config_lines.append(line)
+    return kv, config_lines, notes
+
+
+def _split_param_rows(
+    kv: Dict[str, str],
+    config_lines: List[str],
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
+    detector: List[Dict[str, str]] = []
+    backtest: List[Dict[str, str]] = []
+    data: List[Dict[str, str]] = []
+
+    for line in config_lines:
+        if ">=" in line:
+            detector.append({"key": line.split(">=")[0].strip(), "value": line.split(">=", 1)[1].strip()})
+        else:
+            backtest.append({"key": "config", "value": line})
+
+    for key, val in sorted(kv.items()):
+        row = {"key": key, "value": val}
+        if key in RESULT_PARAM_KEYS:
+            continue
+        if key in DETECTOR_PARAM_KEYS or key.startswith("error_") or key.startswith("min_"):
+            detector.append(row)
+        elif key in DATA_PARAM_KEYS or key in {"start", "end"}:
+            data.append(row)
+        else:
+            backtest.append(row)
+    return detector, backtest, data
+
+
+def build_run_meta(trades_path: Path) -> Dict[str, Any]:
+    summary_path = _summary_path_for_trades(trades_path)
+    kv, config_lines, notes = _parse_summary_txt(summary_path)
+    det_rows, bt_rows, data_rows = _split_param_rows(kv, config_lines)
+    return {
+        "git": _git_info(),
+        "detector": {**DETECTOR_META, "params": det_rows},
+        "backtest_params": bt_rows,
+        "data_params": data_rows,
+        "results": {k: kv[k] for k in RESULT_PARAM_KEYS if k in kv},
+        "notes": notes,
+        "summary_file": summary_path.name if summary_path else None,
+        "trades_file": trades_path.name,
+    }
 
 
 def _latest_trades_csv(outdir: Path) -> Path:
@@ -121,6 +284,7 @@ def render_html(
     raw_trades: List[dict],
     spy_closes: List[dict],
     defaults: Dict[str, Any],
+    run_meta: Dict[str, Any],
     title: str,
     source: str,
 ) -> str:
@@ -129,6 +293,7 @@ def render_html(
             "trades": raw_trades,
             "spy": spy_closes,
             "defaults": defaults,
+            "runMeta": run_meta,
             "source": source,
             "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
@@ -212,6 +377,10 @@ def render_html(
   .metric-grid .mc:nth-child(4n) {{ border-right:none; }}
   h2 {{ font-size:15px; margin:8px 0 12px; font-weight:600; }}
   .note {{ color:var(--muted); font-size:12px; margin-top:12px; }}
+  .meta-block {{ background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px 14px; margin-bottom:12px; font-size:13px; }}
+  .meta-block .meta-label {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+  .meta-block .meta-value {{ margin-top:4px; color:var(--text); word-break:break-word; }}
+  .meta-kv td:first-child {{ color:var(--muted); width:38%; }}
 </style>
 </head>
 <body>
@@ -273,6 +442,7 @@ def render_html(
     <button class="tab" data-tab="robustness">Robustness</button>
     <button class="tab" data-tab="trades">List of trades</button>
     <button class="tab" data-tab="monthly">Monthly</button>
+    <button class="tab" data-tab="runinfo">Run info</button>
   </div>
 
   <div id="overview" class="panel active">
@@ -394,6 +564,23 @@ def render_html(
         <tbody id="monthBody"></tbody>
       </table>
     </div>
+  </div>
+
+  <div id="runinfo" class="panel">
+    <h2>Git branch</h2>
+    <div class="metric-grid" id="gitGrid"></div>
+    <h2>Detector</h2>
+    <div id="detectorBlock"></div>
+    <h2>Parameters</h2>
+    <h3 style="font-size:13px;color:var(--muted);margin:8px 0 8px;">Backtest / execution</h3>
+    <div class="table-scroll" style="max-height:360px;margin-bottom:12px">
+      <table class="meta-kv"><tbody id="backtestParamsBody"></tbody></table>
+    </div>
+    <h3 style="font-size:13px;color:var(--muted);margin:8px 0 8px;">Data / universe</h3>
+    <div class="table-scroll" style="max-height:240px;margin-bottom:12px">
+      <table class="meta-kv"><tbody id="dataParamsBody"></tbody></table>
+    </div>
+    <p class="note" id="runMetaNote"></p>
   </div>
 </div>
 
@@ -1023,6 +1210,50 @@ function apply() {{
   render(sim, spy);
 }}
 
+function esc(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}}
+
+function renderRunInfo() {{
+  const m = RAW.runMeta || {{}};
+  const g = m.git || {{}};
+  document.getElementById('gitGrid').innerHTML = [
+    ['Branch', g.branch || '—'],
+    ['Commit', g.commit || '—'],
+    ['Working tree', g.dirty === 'yes' ? 'dirty (uncommitted changes)' : 'clean'],
+  ].map(([h, v]) => `<div class="mh">${{esc(h)}}</div><div class="mc">${{esc(v)}}</div>`).join('');
+
+  const det = m.detector || {{}};
+  const detParams = (det.params || []).map(r =>
+    `<tr><td>${{esc(r.key)}}</td><td>${{esc(r.value)}}</td></tr>`
+  ).join('');
+  document.getElementById('detectorBlock').innerHTML = `
+    <div class="meta-block"><div class="meta-label">Name</div><div class="meta-value">${{esc(det.name || '—')}}</div></div>
+    <div class="meta-block"><div class="meta-label">Script</div><div class="meta-value">${{esc(det.script || '—')}}</div></div>
+    <div class="meta-block"><div class="meta-label">Pine</div><div class="meta-value">${{esc(det.pine || '—')}}</div></div>
+    <div class="meta-block"><div class="meta-label">Version</div><div class="meta-value">${{esc(det.version || '—')}}</div></div>
+    <div class="meta-block"><div class="meta-label">Notes</div><div class="meta-value">${{esc(det.notes || '—')}}</div></div>
+    ${{detParams ? '<div class="table-scroll" style="max-height:200px;margin-top:8px"><table class="meta-kv"><tbody>' + detParams + '</tbody></table></div>' : ''}}
+  `;
+
+  const bt = m.backtest_params || [];
+  document.getElementById('backtestParamsBody').innerHTML = bt.length
+    ? bt.map(r => `<tr><td>${{esc(r.key)}}</td><td>${{esc(r.value)}}</td></tr>`).join('')
+    : '<tr><td colspan="2">No backtest params in summary sidecar</td></tr>';
+
+  const dp = m.data_params || [];
+  document.getElementById('dataParamsBody').innerHTML = dp.length
+    ? dp.map(r => `<tr><td>${{esc(r.key)}}</td><td>${{esc(r.value)}}</td></tr>`).join('')
+    : '<tr><td colspan="2">No data params in summary sidecar</td></tr>';
+
+  const bits = [];
+  if (m.trades_file) bits.push('Trades: ' + m.trades_file);
+  if (m.summary_file) bits.push('Summary: ' + m.summary_file);
+  if ((m.notes || []).length) bits.push(m.notes.join(' · '));
+  document.getElementById('runMetaNote').textContent = bits.join(' · ') || '';
+}}
+
 function resetDefaults() {{
   const d = RAW.defaults;
   document.getElementById('capital').value = d.capital;
@@ -1084,6 +1315,7 @@ document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
 
 document.getElementById('genAt').textContent = RAW.generated;
+renderRunInfo();
 resetDefaults();
 </script>
 </body>
@@ -1163,10 +1395,19 @@ def main() -> int:
     out_html = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.html"
     out_json = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.json"
 
+    run_meta = build_run_meta(trades_path)
+    logger.info(
+        "Run meta: branch=%s commit=%s summary=%s",
+        run_meta["git"]["branch"],
+        run_meta["git"]["commit"],
+        run_meta.get("summary_file"),
+    )
+
     html = render_html(
         raw_trades=raw_trades,
         spy_closes=spy_closes,
         defaults=defaults,
+        run_meta=run_meta,
         title="Ascending Channel Touch Long — Strategy Report",
         source=str(trades_path.name),
     )

@@ -11,6 +11,8 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-25 | [Nightly cron + Telegram](2026-08-25_channel_touch_nightly_cron.md) |
 | 2026-08-25 | [Geometry quality audit + in-channel filters](2026-08-25_channel_touch_quality_audit.md) |
 | 2026-08-25 | [Robustness: outliers, bootstrap, capacity](2026-08-25_channel_touch_robustness.md) |
+| 2026-08-26 | [15m scaled hunt](2026-08-26_channel_touch_15m.md) |
+| 2026-08-28 | [Fixed 2% stop vs ATR k=2](2026-08-28_channel_touch_stop2pct.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -35,6 +37,7 @@ python scripts\research\channel_touch_robustness.py --trades reports\ascending_c
 python scripts\research\generate_channel_touch_tv_report.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv --friction-pct 0.25 --rs-top1 --tag atr_k2_inchannel_span365_robust
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
+python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --workers 4 --load-workers 8
 ```
 
 Outputs: `reports/ascending_channels/`, `logs/scanners/channel_touch_nightly_*.log`
