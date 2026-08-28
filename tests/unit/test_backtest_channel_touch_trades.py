@@ -25,6 +25,7 @@ def _sample() -> pd.DataFrame:
                 "slope_pct_per_bar": 0.05,
                 "adv_20": 1e7,
                 "atr_pct": 2.0,
+                "max_beyond_width": 0.1,
             },
             {
                 "stock": "BBB",
@@ -36,6 +37,7 @@ def _sample() -> pd.DataFrame:
                 "slope_pct_per_bar": 0.05,
                 "adv_20": 1e7,
                 "atr_pct": 2.0,
+                "max_beyond_width": 1.8,
             },
             {
                 "stock": "CCC",
@@ -47,6 +49,7 @@ def _sample() -> pd.DataFrame:
                 "slope_pct_per_bar": 0.05,
                 "adv_20": 1e7,
                 "atr_pct": 2.0,
+                "max_beyond_width": 0.4,
             },
         ]
     )
@@ -71,6 +74,11 @@ def test_max_channel_age_days():
 
 def test_combined_in_channel_and_span():
     out = filter_trades(_sample(), require_in_channel=True, max_channel_span_days=400)
+    assert set(out["stock"]) == {"AAA", "CCC"}
+
+
+def test_max_beyond_width_filter_on_sample():
+    out = filter_trades(_sample(), max_beyond_width=0.5)
     assert set(out["stock"]) == {"AAA", "CCC"}
 
 

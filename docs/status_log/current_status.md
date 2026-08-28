@@ -63,6 +63,7 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 | Detector | Classical Edwards/Magee; Pine `indicators/pine/ascending_channel_3touch.pine` (**v1 unchanged** — quality via post-filters, not rewrite) |
 | Backtest keepers | RS vs SPY **top1**; squeeze trail 10%/18%; **ATR hard-stop k=2.0** (clamp 1.5%–6%); friction 0.25% |
 | Soft promote | `--require-in-channel` + `--max-channel-span-days 365` — ~22% of RS-top1 entries were already above resist (drag); filtered live ATR stack **n=374 E +2.66% PF 1.96** vs unfiltered **n=496 E +2.29% PF 1.82** |
+| Beyond-width (2026-08-28) | `--max-beyond-width 0.25` on IB-windowed ATR keeper: **n=700 E +1.14% PF 1.40** vs off **n=1001 E +0.97% PF 1.32**. `0.0` too few; `0.5`/`1.0` worse. SRCE 2026 pierce was 0.19 (kept). Entry-feature CSV + univariate mining — do not promote RSI/calendar/ADV from raw quintiles. See [entry features](edge_hunt/channel_touch/2026-08-28_channel_touch_entry_features.md) |
 | History gap | Research window starts 2018-11 but **kept trades from 2023+** (Alpaca IEX per-symbol starts often ~2020–22; RS top1). **IB 1d prefix backfill 2026-08-26:** ~1900+ symbols filled via `backfill_ib_daily_prefix.py` (one-shot + 0.25s pacing); remainder mostly recent IPOs with **no prefix gap** (IB history starts at/after Alpaca) — tracked in `logs/data/ib_prefix_no_gap_symbols.txt`. |
 | IB-fallback windowed (2026-08-28) | Default 504/252 window + IB prefix: **n=1001 E +0.97% PF 1.32**; **106 pre-2020 buys (2019)** vs 0 non-windowed. Edge weaker — more history, lower quality density. CSV: `channel_touch_trades_20260828_000726.csv` |
 | Fixed 2% stop (2026-08-28) | Same windowed IB-fallback stack, `--stop-pct 0.02` (no ATR): **n=1014 E +0.84% PF 1.45** WR 16.7% hold 16.3d; 80% hard-stop exits. PF up vs ATR k=2, E down — **do not replace keepers**. CSV: `channel_touch_trades_20260828_023127.csv`. See [stop 2%](edge_hunt/channel_touch/2026-08-28_channel_touch_stop2pct.md) |
@@ -76,7 +77,7 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
 ### What is frozen vs in motion
 
-- **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch keepers + in-channel/span filters + nightly cron.
+- **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch keepers + in-channel/span + max-beyond-width 0.25 + nightly cron.
 - **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; lower-40% geometry.
 - **Next (optional):** Channel-touch 15m robustness (drop-top-N/bootstrap) before expanding past 300 names; wire quality flags into nightly scanner; portfolio max-open in live sizing; ADV-tiered friction.
 - **Ops cadence:** Post-close EOD scan on stored bars — do not stream full universe via IB.

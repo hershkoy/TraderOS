@@ -47,6 +47,13 @@ from find_ascending_channels import (
     list_symbols_fast,
 )
 from utils.data.ohlcv_loader import load_ohlcv_many
+from utils.research.channel_touch_entry_features import (
+    FEATURE_COLS,
+    enrich_spy_entry_features,
+    max_beyond_width,
+    snapshot_stock_features,
+    stock_entry_feature_series,
+)
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
 
 logging.basicConfig(
@@ -341,6 +348,7 @@ def trades_for_symbol(
     window_bars: Optional[int] = None,
     window_step_bars: Optional[int] = None,
     include_time: bool = False,
+    entry_features: bool = True,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -366,7 +374,7 @@ def trades_for_symbol(
 
     squeeze_mom = None
     wide = None
-    need_squeeze = squeeze_adaptive or squeeze_fade_tighten
+    need_squeeze = squeeze_adaptive or squeeze_fade_tighten or bool(entry_features)
     if need_squeeze:
         from indicators.ttm_squeeze import calculate_squeeze_momentum
 
@@ -374,6 +382,8 @@ def trades_for_symbol(
         squeeze_mom = mom.to_numpy(dtype=float)
         if squeeze_adaptive and trail_pct_wide is not None:
             wide = float(trail_pct_wide)
+
+    feat_series = stock_entry_feature_series(out, squeeze_mom=squeeze_mom) if entry_features else None
 
     channels = (
         find_channels_windowed(
@@ -456,6 +466,17 @@ def trades_for_symbol(
                 if entry_px > 0 and np.isfinite(resist_at)
                 else float("nan")
             )
+            beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
+            buy_ts = pd.Timestamp(dates[entry_i])
+            try:
+                ch_start_ts = pd.Timestamp(ch["start_date"])
+                ch_end_ts = pd.Timestamp(ch["end_date"])
+                span_days = int((ch_end_ts - ch_start_ts).days)
+                age_days = int((buy_ts - ch_start_ts).days)
+            except Exception:
+                span_days = None
+                age_days = None
+            feat_snap = snapshot_stock_features(feat_series, entry_i) if feat_series is not None else {}
             trades.append(
                 {
                     "stock": symbol.upper(),
@@ -482,6 +503,12 @@ def trades_for_symbol(
                     ),
                     "bars_span": ch.get("bars_span"),
                     "entry_mode": entry_mode,
+                    "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
+                    "channel_span_days": span_days,
+                    "channel_age_at_buy_days": age_days,
+                    "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
+                    "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
+                    **feat_snap,
                 }
             )
             busy_until = sim["exit_i"]
@@ -513,6 +540,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         window_bars=payload.get("window_bars"),
         window_step_bars=payload.get("window_step_bars"),
         include_time=bool(payload.get("include_time", False)),
+        entry_features=bool(payload.get("entry_features", True)),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -648,6 +676,7 @@ def filter_trades(
     max_channel_span_days: Optional[float] = None,
     max_channel_age_days: Optional[float] = None,
     require_in_channel: bool = False,
+    max_beyond_width: Optional[float] = None,
 ) -> pd.DataFrame:
     if trades.empty:
         return trades
@@ -686,6 +715,8 @@ def filter_trades(
         m &= out["channel_span_days"].fillna(1e9) <= float(max_channel_span_days)
     if max_channel_age_days is not None and "channel_age_at_buy_days" in out.columns:
         m &= out["channel_age_at_buy_days"].fillna(1e9) <= float(max_channel_age_days)
+    if max_beyond_width is not None and "max_beyond_width" in out.columns:
+        m &= out["max_beyond_width"].fillna(999) <= float(max_beyond_width)
     return out.loc[m].copy()
 
 
@@ -1059,7 +1090,81 @@ REPORT_COLS = [
     "room_to_resist_pct",
     "bars_span",
     "entry_mode",
+    "rs_spy_21d",
+    "max_beyond_width",
+    "channel_span_days",
+    "channel_age_at_buy_days",
 ]
+
+
+def _export_trade_columns(df: pd.DataFrame) -> List[str]:
+    cols = [c for c in REPORT_COLS if c in df.columns]
+    extra = [c for c in FEATURE_COLS if c in df.columns and c not in cols]
+    if "gain_pct_net" in df.columns and "gain_pct_net" not in cols:
+        cols = cols + ["gain_pct_net"]
+    return cols + extra
+
+
+def _parse_beyond_width_sweep(raw: str) -> List[Optional[float]]:
+    """Always include None (off); then unique parsed floats."""
+    out: List[Optional[float]] = [None]
+    text = (raw or "").strip()
+    if not text:
+        return out
+    seen = {None}
+    for part in text.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        val = float(p)
+        if val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    return out
+
+
+def _beyond_width_ab(
+    trades: pd.DataFrame,
+    *,
+    thresholds: Sequence[Optional[float]],
+    require_in_channel: bool,
+    max_channel_span_days: Optional[float],
+    max_channel_age_days: Optional[float],
+    max_entries_per_day: int,
+    friction_pct: float,
+    min_adv: Optional[float] = None,
+    min_atr_pct: Optional[float] = None,
+    geo_kwargs: Optional[dict] = None,
+    spy_regime: bool = False,
+) -> pd.DataFrame:
+    """Filter-then-RS A/B for max_beyond_width on one already-enriched trade frame."""
+    rows = []
+    geo_kwargs = geo_kwargs or {}
+    for thresh in thresholds:
+        filtered = filter_trades(
+            trades,
+            min_adv=min_adv,
+            min_atr_pct=min_atr_pct,
+            require_in_channel=bool(require_in_channel),
+            max_channel_span_days=max_channel_span_days,
+            max_channel_age_days=max_channel_age_days,
+            require_spy_above_sma=bool(spy_regime),
+            max_beyond_width=thresh,
+            **geo_kwargs,
+        )
+        if max_entries_per_day and max_entries_per_day > 0:
+            filtered = select_same_day_rs(
+                filtered, rs_col="rs_spy_126d", max_per_day=int(max_entries_per_day)
+            )
+        gain_col = "gain_pct"
+        if friction_pct and friction_pct > 0:
+            filtered = apply_friction(filtered, friction_pct)
+            gain_col = "gain_pct_net"
+        s = _summarize(filtered, gain_col=gain_col)
+        label = "off" if thresh is None else str(thresh)
+        rows.append({"max_beyond_width": label, **s})
+    return pd.DataFrame(rows)
 
 
 def main() -> int:
@@ -1183,6 +1288,32 @@ def main() -> int:
         "--require-in-channel",
         action="store_true",
         help="Reject entries with channel_pos > 1 (buy already above resistance)",
+    )
+    ap.add_argument(
+        "--max-beyond-width",
+        type=float,
+        default=None,
+        help="Reject trades whose max (high-resist)/width from first support touch "
+        "through entry exceeds this (0=no pierce; 1=one extra channel above)",
+    )
+    ap.add_argument(
+        "--beyond-width-sweep",
+        default="0,0.25,0.5,1.0",
+        help="Comma list of max-beyond-width caps to A/B after in-channel/span (empty=skip). "
+        "Always includes an off row.",
+    )
+    ap.add_argument(
+        "--entry-features",
+        dest="entry_features",
+        action="store_true",
+        default=True,
+        help="Snapshot RSI/MA/vol/squeeze/calendar features at entry (default on)",
+    )
+    ap.add_argument(
+        "--no-entry-features",
+        dest="entry_features",
+        action="store_false",
+        help="Skip per-symbol entry feature snapshot",
     )
     ap.add_argument(
         "--max-channel-span-days",
@@ -1440,6 +1571,7 @@ def main() -> int:
             "window_bars": window_bars,
             "window_step_bars": window_step,
             "include_time": bool(args.include_time),
+            "entry_features": bool(args.entry_features),
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
@@ -1459,8 +1591,10 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_prefix = "channel_touch_15m" if (args.preset or "").strip() == "15m" else "channel_touch"
     trades_csv = args.outdir / f"{file_prefix}_trades_{stamp}.csv"
+    raw_csv = args.outdir / f"{file_prefix}_trades_raw_{stamp}.csv"
     summary_txt = args.outdir / f"{file_prefix}_trades_summary_{stamp}.txt"
     scenarios_csv = args.outdir / f"{file_prefix}_edge_scenarios_{stamp}.csv"
+    beyond_csv = args.outdir / f"{file_prefix}_beyond_width_ab_{stamp}.csv"
 
     if not all_trades:
         logger.warning("No trades generated")
@@ -1471,14 +1605,21 @@ def main() -> int:
 
     trades = pd.DataFrame(all_trades)
     t_rs = time.perf_counter()
+    rs_lookbacks = (21, 63, 126) if bool(args.entry_features) else (63, 126)
     trades = enrich_rs(
         trades,
         rs_panels,
         spy_df,
-        lookbacks=(63, 126),
+        lookbacks=rs_lookbacks,
         bars_per_session=int(rs_bars_per_session),
     )
+    if bool(args.entry_features):
+        trades = enrich_spy_entry_features(trades, spy_df)
     logger.info("RS enrichment done in %.1fs", time.perf_counter() - t_rs)
+
+    raw_export_cols = _export_trade_columns(trades)
+    trades[[c for c in raw_export_cols if c in trades.columns]].to_csv(raw_csv, index=False)
+    logger.info("Raw trades (pre quality/RS-top1) -> %s (%d rows)", raw_csv, len(trades))
 
     # Optional live filters for the primary report
     geo_kwargs = {}
@@ -1500,6 +1641,7 @@ def main() -> int:
         max_channel_span_days=args.max_channel_span_days,
         max_channel_age_days=args.max_channel_age_days,
         require_spy_above_sma=bool(args.spy_regime),
+        max_beyond_width=args.max_beyond_width,
         **geo_kwargs,
     )
     if args.max_entries_per_day and args.max_entries_per_day > 0:
@@ -1517,9 +1659,7 @@ def main() -> int:
         ascending=[False, True],
     ).reset_index(drop=True)
 
-    export_cols = [c for c in REPORT_COLS if c in filtered.columns]
-    if "gain_pct_net" in filtered.columns:
-        export_cols = export_cols + ["gain_pct_net"]
+    export_cols = _export_trade_columns(filtered)
     filtered[export_cols].to_csv(trades_csv, index=False)
 
     summary = _summarize(filtered, gain_col=gain_col if gain_col in filtered.columns else "gain_pct")
@@ -1548,6 +1688,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
+        f"max_beyond_width={args.max_beyond_width} entry_features={bool(args.entry_features)}",
         f"elapsed_sec={elapsed:.1f}",
         "",
         *[f"{k}={v}" for k, v in summary.items()],
@@ -1562,6 +1703,27 @@ def main() -> int:
         scenario_df = edge_scenarios(trades, friction_pcts=(0.10, 0.25))
         scenario_df.to_csv(scenarios_csv, index=False)
         logger.info("Edge scenarios -> %s", scenarios_csv)
+
+    beyond_df = None
+    sweep_spec = (args.beyond_width_sweep or "").strip()
+    if "max_beyond_width" in trades.columns:
+        thresh_list = _parse_beyond_width_sweep(sweep_spec)
+        if len(thresh_list) > 1 or (len(thresh_list) == 1 and args.max_beyond_width is not None):
+            beyond_df = _beyond_width_ab(
+                trades,
+                thresholds=thresh_list,
+                require_in_channel=bool(args.require_in_channel),
+                max_channel_span_days=args.max_channel_span_days,
+                max_channel_age_days=args.max_channel_age_days,
+                max_entries_per_day=int(args.max_entries_per_day or 0),
+                friction_pct=float(args.friction_pct or 0.0),
+                min_adv=args.min_adv,
+                min_atr_pct=args.min_atr_pct,
+                geo_kwargs=geo_kwargs,
+                spy_regime=bool(args.spy_regime),
+            )
+            beyond_df.to_csv(beyond_csv, index=False)
+            logger.info("Beyond-width A/B -> %s", beyond_csv)
 
     logger.info("Wrote %d trades -> %s", len(filtered), trades_csv)
     logger.info("Summary -> %s", summary_txt)
@@ -1581,7 +1743,12 @@ def main() -> int:
         print("\nGLD trades:")
         print(gld[show_cols].to_string(index=False))
     print(f"\nFull trades: {trades_csv}")
+    print(f"Raw trades: {raw_csv}")
     print(f"Summary: {summary_txt}")
+    if beyond_df is not None and not beyond_df.empty:
+        print("\nBeyond-width A/B (filter then RS top-N):")
+        print(beyond_df.to_string(index=False))
+        print(f"Beyond-width CSV: {beyond_csv}")
     return 0
 
 

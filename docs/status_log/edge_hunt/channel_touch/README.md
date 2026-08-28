@@ -13,6 +13,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-25 | [Robustness: outliers, bootstrap, capacity](2026-08-25_channel_touch_robustness.md) |
 | 2026-08-26 | [15m scaled hunt](2026-08-26_channel_touch_15m.md) |
 | 2026-08-28 | [Fixed 2% stop vs ATR k=2](2026-08-28_channel_touch_stop2pct.md) |
+| 2026-08-28 | [Entry features + beyond-width sweep](2026-08-28_channel_touch_entry_features.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -23,6 +24,7 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 - Squeeze-adaptive trail 10%/18%
 - ATR hard stop k=2.0 clamped 1.5%–6%
 - **Soft promote:** `--require-in-channel` + `--max-channel-span-days 365` (drops above-resist / multi-year channels; lifts E/PF)
+- **Soft promote:** `--max-beyond-width 0.25` (pattern already pierced; lifts E/PF on IB-windowed ATR stack, n=700; `0.0` too strict, `0.5`/`1.0` worse)
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 
@@ -31,7 +33,8 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 ```bat
 venv\Scripts\activate
 set PYTHONPATH=.
-python scripts\research\backtest_channel_touch_trades.py --all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-entries-per-day 1 --friction-pct 0.25 --workers 4 --load-workers 8 --start 2018-11-01
+python scripts\research\backtest_channel_touch_trades.py --all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-beyond-width 0.25 --max-entries-per-day 1 --friction-pct 0.25 --workers 4 --load-workers 8 --start 2018-11-01
+python scripts\research\analyze_channel_touch_entry_features.py --trades reports\ascending_channels\channel_touch_trades_raw_<stamp>.csv
 python scripts\research\audit_channel_touch_quality.py
 python scripts\research\channel_touch_robustness.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv
 python scripts\research\generate_channel_touch_tv_report.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv --friction-pct 0.25 --rs-top1 --tag atr_k2_inchannel_span365_robust
