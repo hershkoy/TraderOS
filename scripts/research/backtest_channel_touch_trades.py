@@ -44,6 +44,8 @@ from find_ascending_channels import (
     _pick_symbols,
     find_channels,
     find_channels_windowed,
+    find_h2_l3_setups,
+    find_h2_l3_setups_windowed,
     list_symbols_fast,
 )
 from utils.data.ohlcv_loader import load_ohlcv_many
@@ -107,6 +109,27 @@ def _line_at(y0: float, x0: int, slope: float, x: int) -> float:
     return float(y0 + slope * (x - x0))
 
 
+def _support_tagged(bar_low: float, bar_high: float, support: float, error_pct: float) -> bool:
+    """True if the bar's range intersects support (wick can tag mid-day)."""
+    if not np.isfinite(bar_low) or not np.isfinite(bar_high) or not np.isfinite(support) or support <= 0:
+        return False
+    tol = float(error_pct) / 100.0
+    return bar_low <= support * (1.0 + tol) and bar_high >= support * (1.0 - tol)
+
+
+def _limit_fill_at_support(support: float, bar_low: float, bar_high: float, slip_pct: float) -> Optional[float]:
+    """Limit buy at support plus slippage, clipped to the bar's range."""
+    if not np.isfinite(support) or support <= 0:
+        return None
+    if not np.isfinite(bar_low) or not np.isfinite(bar_high) or bar_high < bar_low:
+        return None
+    raw = support * (1.0 + max(0.0, float(slip_pct)))
+    fill = min(float(bar_high), max(float(bar_low), raw))
+    if not np.isfinite(fill) or fill <= 0:
+        return None
+    return float(fill)
+
+
 def _hard_stop_price(
     entry_px: float,
     *,
@@ -156,8 +179,9 @@ def _simulate_trade(
     squeeze_fade_tighten: bool = False,
     max_hold_days: Optional[int] = None,
     include_time: bool = False,
+    entry_px: Optional[float] = None,
 ) -> Optional[dict]:
-    """Long from entry_i close; exit on hard/trail/resist/time (intrabar).
+    """Long from entry_i; default fill is close, or ``entry_px`` for a limit at support.
 
     If trail_pct_wide and squeeze_mom are provided, widen the trail when TTM
     Squeeze momentum is positive, non-decreasing, and strong vs its recent
@@ -166,9 +190,13 @@ def _simulate_trade(
     n = len(close)
     if entry_i < 0 or entry_i >= n - 1:
         return None
-    entry_px = float(close[entry_i])
-    if not np.isfinite(entry_px) or entry_px <= 0:
+    if entry_px is None:
+        fill = float(close[entry_i])
+    else:
+        fill = float(entry_px)
+    if not np.isfinite(fill) or fill <= 0:
         return None
+    entry_px = fill
 
     hard_stop = _hard_stop_price(
         entry_px,
@@ -194,6 +222,32 @@ def _simulate_trade(
         and np.isfinite(support_slope)
         and np.isfinite(channel_width)
     )
+
+    lo0 = float(low[entry_i]) if entry_i < n else float("nan")
+    if np.isfinite(lo0) and lo0 <= hard_stop < entry_px:
+        hold = 0
+        gain_pct = (hard_stop / entry_px - 1.0) * 100.0
+        ts_buy = dates[entry_i]
+        ts_sell = dates[entry_i]
+        out = {
+            "buy_date": ts_buy.strftime("%Y-%m-%d"),
+            "sell_date": ts_sell.strftime("%Y-%m-%d"),
+            "buy_price": round(entry_px, 4),
+            "sell_price": round(float(hard_stop), 4),
+            "gain_pct": round(gain_pct, 2),
+            "hold_days": hold,
+            "exit_reason": "hard_stop",
+            "peak_price": round(float(entry_px), 4),
+            "trail_wide_used": False,
+            "hard_stop_price": round(float(hard_stop), 4),
+            "entry_i": int(entry_i),
+            "exit_i": int(entry_i),
+        }
+        if include_time:
+            out["buy_time"] = ts_buy.strftime("%Y-%m-%d %H:%M")
+            out["sell_time"] = ts_sell.strftime("%Y-%m-%d %H:%M")
+            out["hold_bars"] = hold
+        return out
 
     for i in range(entry_i + 1, n):
         hi = float(high[i])
@@ -349,6 +403,8 @@ def trades_for_symbol(
     window_step_bars: Optional[int] = None,
     include_time: bool = False,
     entry_features: bool = True,
+    entry_slip_pct: float = 0.001,
+    max_l3_wait_bars: int = 252,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -384,134 +440,189 @@ def trades_for_symbol(
             wide = float(trail_pct_wide)
 
     feat_series = stock_entry_feature_series(out, squeeze_mom=squeeze_mom) if entry_features else None
-
-    channels = (
-        find_channels_windowed(
-            out,
-            window_bars=int(window_bars),
-            step_bars=int(window_step_bars or window_bars),
-            pivot_len=pivot_len,
-            **channel_kwargs,
+    mode = (entry_mode or "pivot").lower().strip()
+    if "min_rally_pct" in channel_kwargs:
+        channel_kwargs.setdefault(
+            "min_intervening_rally_pct", channel_kwargs.pop("min_rally_pct")
         )
-        if window_bars and int(window_bars) > 0
-        else find_channels(out, pivot_len=pivot_len, **channel_kwargs)
-    )
+    if "min_pullback_pct" in channel_kwargs:
+        channel_kwargs.setdefault(
+            "min_intervening_pullback_pct", channel_kwargs.pop("min_pullback_pct")
+        )
+    error_pct = float(channel_kwargs.get("error_pct", 1.2))
+
+    pending: List[tuple] = []
+    if mode == "l3_touch":
+        setups = (
+            find_h2_l3_setups_windowed(
+                out,
+                window_bars=int(window_bars),
+                step_bars=int(window_step_bars or window_bars),
+                pivot_len=pivot_len,
+                **channel_kwargs,
+            )
+            if window_bars and int(window_bars) > 0
+            else find_h2_l3_setups(out, pivot_len=pivot_len, **channel_kwargs)
+        )
+        wait = max(1, int(max_l3_wait_bars))
+        slip = float(entry_slip_pct)
+        for ch in setups:
+            sx0 = int(ch["support_x0"])
+            sy0 = float(ch["support_y0"])
+            sslope = float(ch["support_slope"])
+            h2 = int(ch.get("h2_idx", -1))
+            if h2 < 0:
+                continue
+            found = None
+            h2_px = float(high[h2]) if h2 < n else float("nan")
+            for i in range(h2 + 1, min(n, h2 + 1 + wait)):
+                if np.isfinite(h2_px) and float(high[i]) > h2_px:
+                    break
+                sup = _line_at(sy0, sx0, sslope, i)
+                if _support_tagged(float(low[i]), float(high[i]), sup, error_pct):
+                    fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
+                    if fill is not None:
+                        found = (ch, i, fill, 3, i)
+                    break
+            if found is not None:
+                pending.append(found)
+    else:
+        channels = (
+            find_channels_windowed(
+                out,
+                window_bars=int(window_bars),
+                step_bars=int(window_step_bars or window_bars),
+                pivot_len=pivot_len,
+                **channel_kwargs,
+            )
+            if window_bars and int(window_bars) > 0
+            else find_channels(out, pivot_len=pivot_len, **channel_kwargs)
+        )
+        for ch in channels:
+            touch_idxs: List[int] = list(ch.get("touch_indices") or [])
+            if len(touch_idxs) < entry_touch:
+                continue
+            sx0 = int(ch["support_x0"])
+            sy0 = float(ch["support_y0"])
+            sslope = float(ch["support_slope"])
+            for touch_num, t_idx in enumerate(touch_idxs, start=1):
+                if touch_num < entry_touch:
+                    continue
+                entry_i = _resolve_entry_i(
+                    t_idx=int(t_idx),
+                    pivot_len=int(ch.get("pivot_len", pivot_len)),
+                    entry_mode=entry_mode,
+                    close=close,
+                    n=n,
+                    support_x0=sx0,
+                    support_y0=sy0,
+                    support_slope=sslope,
+                )
+                if entry_i is None:
+                    continue
+                pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx)))
+
+    pending.sort(key=lambda t: (int(t[1]), int(t[0].get("h2_idx", 0))))
     trades: List[dict] = []
     busy_until = -1
-
-    for ch in channels:
-        touch_idxs: List[int] = list(ch.get("touch_indices") or [])
-        if len(touch_idxs) < entry_touch:
+    for ch, entry_i, fill_px, touch_num, t_idx in pending:
+        if entry_i is None or entry_i <= busy_until or entry_i >= n:
             continue
         sx0 = int(ch["support_x0"])
         sy0 = float(ch["support_y0"])
         sslope = float(ch["support_slope"])
         width = float(ch["channel_width"])
-        for touch_num, t_idx in enumerate(touch_idxs, start=1):
-            if touch_num < entry_touch:
-                continue
-            entry_i = _resolve_entry_i(
-                t_idx=int(t_idx),
-                pivot_len=int(ch.get("pivot_len", pivot_len)),
-                entry_mode=entry_mode,
-                close=close,
-                n=n,
-                support_x0=sx0,
-                support_y0=sy0,
-                support_slope=sslope,
-            )
-            if entry_i is None or entry_i <= busy_until or entry_i >= n:
-                continue
-            atr_i = float(atr[entry_i]) if entry_i < len(atr) else float("nan")
-            sim = _simulate_trade(
-                high,
-                low,
-                close,
-                dates,
-                entry_i,
-                stop_pct=stop_pct,
-                trail_pct=trail_pct,
-                trail_pct_wide=wide,
-                squeeze_mom=squeeze_mom,
-                squeeze_pctile=squeeze_pctile,
-                squeeze_lookback=squeeze_lookback,
-                atr_at_entry=atr_i if np.isfinite(atr_i) else None,
-                atr_stop_mult=atr_stop_mult,
-                stop_pct_floor=stop_pct_floor,
-                stop_pct_ceil=stop_pct_ceil,
-                support_x0=sx0,
-                support_y0=sy0,
-                support_slope=sslope,
-                channel_width=width,
-                resist_exit=resist_exit,
-                trail_pct_tight=trail_pct_tight,
-                squeeze_fade_tighten=squeeze_fade_tighten,
-                max_hold_days=max_hold_days,
-                include_time=include_time,
-            )
-            if sim is None:
-                continue
-            entry_px = float(close[entry_i])
-            atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
-            adv = _adv_20(close, volume, entry_i, lookback=adv_lookback)
-            support_at = _line_at(sy0, sx0, sslope, entry_i)
-            resist_at = support_at + width
-            channel_pos = (
-                (entry_px - support_at) / width
-                if width > 0 and np.isfinite(support_at)
-                else float("nan")
-            )
-            room_to_resist_pct = (
-                (resist_at - entry_px) / entry_px * 100.0
-                if entry_px > 0 and np.isfinite(resist_at)
-                else float("nan")
-            )
-            beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
-            buy_ts = pd.Timestamp(dates[entry_i])
-            try:
-                ch_start_ts = pd.Timestamp(ch["start_date"])
-                ch_end_ts = pd.Timestamp(ch["end_date"])
-                span_days = int((ch_end_ts - ch_start_ts).days)
-                age_days = int((buy_ts - ch_start_ts).days)
-            except Exception:
-                span_days = None
-                age_days = None
-            feat_snap = snapshot_stock_features(feat_series, entry_i) if feat_series is not None else {}
-            trades.append(
-                {
-                    "stock": symbol.upper(),
-                    "channel_start": ch["start_date"],
-                    "channel_end": ch["end_date"],
-                    "touch_num": touch_num,
-                    "touch_date": dates[t_idx].strftime("%Y-%m-%d"),
-                    "touch_price": round(float(low[t_idx]), 4),
-                    **(
-                        {"touch_time": dates[t_idx].strftime("%Y-%m-%d %H:%M")}
-                        if include_time
-                        else {}
-                    ),
-                    **{k: v for k, v in sim.items() if k not in ("entry_i", "exit_i")},
-                    "entry_i": sim["entry_i"],
-                    "exit_i": sim["exit_i"],
-                    "adv_20": round(adv, 2) if np.isfinite(adv) else None,
-                    "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
-                    "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
-                    "channel_width_pct": ch.get("channel_width_pct"),
-                    "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
-                    "room_to_resist_pct": (
-                        round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
-                    ),
-                    "bars_span": ch.get("bars_span"),
-                    "entry_mode": entry_mode,
-                    "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
-                    "channel_span_days": span_days,
-                    "channel_age_at_buy_days": age_days,
-                    "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
-                    "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
-                    **feat_snap,
-                }
-            )
-            busy_until = sim["exit_i"]
+        atr_i = float(atr[entry_i]) if entry_i < len(atr) else float("nan")
+        sim = _simulate_trade(
+            high,
+            low,
+            close,
+            dates,
+            entry_i,
+            stop_pct=stop_pct,
+            trail_pct=trail_pct,
+            trail_pct_wide=wide,
+            squeeze_mom=squeeze_mom,
+            squeeze_pctile=squeeze_pctile,
+            squeeze_lookback=squeeze_lookback,
+            atr_at_entry=atr_i if np.isfinite(atr_i) else None,
+            atr_stop_mult=atr_stop_mult,
+            stop_pct_floor=stop_pct_floor,
+            stop_pct_ceil=stop_pct_ceil,
+            support_x0=sx0,
+            support_y0=sy0,
+            support_slope=sslope,
+            channel_width=width,
+            resist_exit=resist_exit,
+            trail_pct_tight=trail_pct_tight,
+            squeeze_fade_tighten=squeeze_fade_tighten,
+            max_hold_days=max_hold_days,
+            include_time=include_time,
+            entry_px=fill_px,
+        )
+        if sim is None:
+            continue
+        entry_px = float(sim["buy_price"])
+        atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
+        adv = _adv_20(close, volume, entry_i, lookback=adv_lookback)
+        support_at = _line_at(sy0, sx0, sslope, entry_i)
+        resist_at = support_at + width
+        channel_pos = (
+            (entry_px - support_at) / width
+            if width > 0 and np.isfinite(support_at)
+            else float("nan")
+        )
+        room_to_resist_pct = (
+            (resist_at - entry_px) / entry_px * 100.0
+            if entry_px > 0 and np.isfinite(resist_at)
+            else float("nan")
+        )
+        beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
+        buy_ts = pd.Timestamp(dates[entry_i])
+        try:
+            ch_start_ts = pd.Timestamp(ch["start_date"])
+            ch_end_ts = pd.Timestamp(ch.get("h2_date") or ch["end_date"])
+            span_days = int((ch_end_ts - ch_start_ts).days)
+            age_days = int((buy_ts - ch_start_ts).days)
+        except Exception:
+            span_days = None
+            age_days = None
+        feat_snap = snapshot_stock_features(feat_series, entry_i) if feat_series is not None else {}
+        trades.append(
+            {
+                "stock": symbol.upper(),
+                "channel_start": ch["start_date"],
+                "channel_end": ch.get("h2_date") or ch["end_date"],
+                "touch_num": touch_num,
+                "touch_date": dates[t_idx].strftime("%Y-%m-%d"),
+                "touch_price": round(float(low[t_idx]), 4),
+                **(
+                    {"touch_time": dates[t_idx].strftime("%Y-%m-%d %H:%M")}
+                    if include_time
+                    else {}
+                ),
+                **{k: v for k, v in sim.items() if k not in ("entry_i", "exit_i")},
+                "entry_i": sim["entry_i"],
+                "exit_i": sim["exit_i"],
+                "adv_20": round(adv, 2) if np.isfinite(adv) else None,
+                "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
+                "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
+                "channel_width_pct": ch.get("channel_width_pct"),
+                "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
+                "room_to_resist_pct": (
+                    round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
+                ),
+                "bars_span": ch.get("bars_span"),
+                "entry_mode": entry_mode,
+                "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
+                "channel_span_days": span_days,
+                "channel_age_at_buy_days": age_days,
+                "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
+                "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
+                **feat_snap,
+            }
+        )
+        busy_until = sim["exit_i"]
     return trades
 
 
@@ -541,6 +652,8 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         window_step_bars=payload.get("window_step_bars"),
         include_time=bool(payload.get("include_time", False)),
         entry_features=bool(payload.get("entry_features", True)),
+        entry_slip_pct=float(payload.get("entry_slip_pct", 0.001)),
+        max_l3_wait_bars=int(payload.get("max_l3_wait_bars", 252)),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -1334,8 +1447,21 @@ def main() -> int:
     )
     ap.add_argument(
         "--entry-mode",
-        choices=("pivot", "reclaim"),
+        choices=("pivot", "reclaim", "l3_touch"),
         default="pivot",
+        help="pivot=buy at touch+pivot_len close; l3_touch=arm at H2 print, buy first support tag (+slip)",
+    )
+    ap.add_argument(
+        "--entry-slip-pct",
+        type=float,
+        default=0.001,
+        help="l3_touch: slippage added to support limit fill (0.001=0.1%%)",
+    )
+    ap.add_argument(
+        "--max-l3-wait-bars",
+        type=int,
+        default=252,
+        help="l3_touch: max bars after H2 print to wait for a support tag",
     )
     ap.add_argument("--atr-stop-mult", type=float, default=None)
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
@@ -1572,6 +1698,8 @@ def main() -> int:
             "window_step_bars": window_step,
             "include_time": bool(args.include_time),
             "entry_features": bool(args.entry_features),
+            "entry_slip_pct": float(args.entry_slip_pct),
+            "max_l3_wait_bars": int(args.max_l3_wait_bars),
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
@@ -1673,7 +1801,7 @@ def main() -> int:
         f"squeeze_adaptive={args.squeeze_adaptive}",
         f"squeeze_pctile={args.squeeze_pctile}",
         f"squeeze_lookback={args.squeeze_lookback}",
-        f"pivot_len={args.pivot_len} (entry at touch+pivot_len close)",
+        f"pivot_len={args.pivot_len} entry_mode={args.entry_mode} entry_slip_pct={args.entry_slip_pct}",
         f"preset={args.preset or 'daily'} window_bars={args.window_bars} window_step_bars={args.window_step_bars}",
         f"error_pct={args.error_pct} min_rally_pct={args.min_rally_pct} min_total_rise_pct={args.min_total_rise_pct}",
         f"provider={args.provider} timeframe={args.timeframe}",

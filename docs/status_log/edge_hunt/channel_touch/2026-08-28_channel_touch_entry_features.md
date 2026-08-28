@@ -73,4 +73,4 @@ Next A/Bs worth doing (one at a time, filter then RS): `--max-rsi` ~60; maybe `b
 - `reports/ascending_channels/channel_touch_beyond_width_ab_20260828_164937.csv`
 - `reports/ascending_channels/channel_touch_entry_features_buckets_20260828_165109.csv`
 - `reports/ascending_channels/channel_touch_entry_features_spearman_20260828_165109.csv`
-- `reports/ascending_channels/channel_touch_entry_features_corr_20260828_165109.csv`
+- `reports/ascending_channels/channel_touch_tv_report_interactive_rs_top1_default_fric0.25_beyond025_inchannel_span365_ib_fallback_20260828_165613.html`

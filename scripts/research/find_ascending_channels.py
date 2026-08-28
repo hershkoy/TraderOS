@@ -383,6 +383,223 @@ def find_channels(
     return results
 
 
+def find_h2_l3_setups(
+    df: pd.DataFrame,
+    *,
+    pivot_len: int = 15,
+    error_pct: float = 1.2,
+    flat_pct: float = 0.04,
+    min_bars_apart: int = 15,
+    min_intervening_rally_pct: float = 4.0,
+    min_intervening_pullback_pct: float = 3.0,
+    min_total_rise_pct: float = 3.0,
+    max_support_violation_frac: float = 0.08,
+    max_low_pivots: int = 16,
+    min_top_touches: int = 2,
+) -> List[dict]:
+    """Arm an ascending channel at H2 (L1-H1-L2-H2), before L3 exists.
+
+    Support is fitted on two validated higher lows (L1, L2). The intervening
+    rally between L1 and L2 is H1 structurally; it does not have to tag the
+    parallel (EYE 2024-25: Nov peak sits inside a tighter width than Feb/Mar).
+    Resistance needs >=2 swing-high touches after L1, at least one after L2.
+    H2 is the first post-L2 high that completes those two touches.
+    ``find_channels`` v1 is unchanged; this is a separate live-style setup.
+    """
+    if df is None or df.empty or len(df) < pivot_len * 4 + 40:
+        return []
+    if (
+        isinstance(df.index, pd.DatetimeIndex)
+        and df.index.tz is None
+        and bool(df.index.is_monotonic_increasing)
+        and all(c in df.columns for c in ("high", "low", "close"))
+    ):
+        out = df
+    else:
+        out = df.copy()
+        if not isinstance(out.index, pd.DatetimeIndex):
+            out.index = pd.DatetimeIndex(out.index)
+        if out.index.tz is not None:
+            out.index = out.index.tz_convert(None)
+        out = out.sort_index()
+
+    high = out["high"].to_numpy(dtype=float)
+    low = out["low"].to_numpy(dtype=float)
+    close = out["close"].to_numpy(dtype=float)
+    dates = out.index
+    high_piv, low_piv = _pivots(high, low, pivot_len)
+    if len(low_piv) < 2 or len(high_piv) < min_top_touches:
+        return []
+    low_piv = low_piv[-max_low_pivots:]
+    results: List[dict] = []
+    nL = len(low_piv)
+
+    for a in range(0, nL - 1):
+        for c in range(a + 1, nL):
+            i1 = low_piv[a]
+            in_ = low_piv[c]
+            if in_ - i1 < min_bars_apart:
+                continue
+            y1 = float(low[i1])
+            yn = float(low[in_])
+            if y1 <= 0 or yn <= 0 or not np.isfinite(y1) or not np.isfinite(yn):
+                continue
+            slope = (yn - y1) / float(in_ - i1)
+            total_rise_pct = (yn - y1) / y1 * 100.0
+            if slope <= 0 or (slope / y1 * 100.0) < flat_pct or total_rise_pct < float(min_total_rise_pct):
+                continue
+            if not _touch_ok(_line_at(y1, i1, slope, in_), yn, error_pct):
+                continue
+            if yn < y1 * 0.995:
+                continue
+            if not _intervening_rally_ok(high, i1, in_, y1, min_intervening_rally_pct):
+                continue
+
+            inside_highs = [h for h in high_piv if i1 < h < in_]
+            after_highs = [h for h in high_piv if h > in_]
+            if len(inside_highs) < 1 or len(after_highs) < 1:
+                continue
+            window_highs = inside_highs + after_highs
+            dists = sorted(float(high[h]) - _line_at(y1, i1, slope, h) for h in window_highs)
+            dists = [d for d in dists if d > 0]
+            if len(dists) < min_top_touches:
+                continue
+
+            best_width = None
+            best_upper: List[int] = []
+            h2_idx = None
+            for width in sorted(dists):
+                upper_idxs = []
+                for h in window_highs:
+                    y_top = _line_at(y1, i1, slope, h) + width
+                    if _touch_ok(y_top, float(high[h]), error_pct * 1.25):
+                        upper_idxs.append(h)
+                has_after = any(h > in_ for h in upper_idxs)
+                if not has_after or len(upper_idxs) < min_top_touches:
+                    continue
+                filtered = [upper_idxs[0]]
+                for h in upper_idxs[1:]:
+                    prev_h = filtered[-1]
+                    if h - prev_h < min_bars_apart:
+                        continue
+                    resist_prev = _line_at(y1, i1, slope, prev_h) + width
+                    if _intervening_pullback_ok(
+                        low, prev_h, h, resist_prev, min_intervening_pullback_pct
+                    ):
+                        filtered.append(h)
+                if len(filtered) < min_top_touches:
+                    continue
+                h2_cand = None
+                for h in filtered:
+                    if h <= in_:
+                        continue
+                    if sum(1 for x in filtered if x <= h) >= min_top_touches:
+                        h2_cand = int(h)
+                        break
+                if h2_cand is None:
+                    continue
+                best_width = width
+                best_upper = filtered
+                h2_idx = h2_cand
+                break
+            if best_width is None or h2_idx is None:
+                continue
+
+            viol = 0
+            total = 0
+            for i in range(i1, in_ + 1):
+                total += 1
+                sup = _line_at(y1, i1, slope, i)
+                if float(close[i]) < sup * (1.0 - error_pct / 100.0):
+                    viol += 1
+            if total <= 0 or (viol / total) > max_support_violation_frac:
+                continue
+
+            results.append(
+                {
+                    "start_date": dates[i1].strftime("%Y-%m-%d"),
+                    "end_date": dates[in_].strftime("%Y-%m-%d"),
+                    "h2_date": dates[h2_idx].strftime("%Y-%m-%d"),
+                    "bottom_touches": 2,
+                    "top_touches": len(best_upper),
+                    "touch_dates": "|".join(dates[i].strftime("%Y-%m-%d") for i in (i1, in_)),
+                    "touch_prices": "|".join(str(round(float(low[i]), 4)) for i in (i1, in_)),
+                    "touch_indices": [int(i1), int(in_)],
+                    "upper_touch_dates": "|".join(dates[i].strftime("%Y-%m-%d") for i in best_upper),
+                    "support_x0": int(i1),
+                    "support_y0": float(y1),
+                    "support_slope": float(slope),
+                    "channel_width": float(best_width),
+                    "slope_pct_per_bar": round(slope / y1 * 100.0, 4),
+                    "total_rise_pct": round((yn - y1) / y1 * 100.0, 2),
+                    "channel_width_pct": round(best_width / y1 * 100.0, 2),
+                    "support_violation_frac": round(viol / total, 3),
+                    "bars_span": int(h2_idx - i1),
+                    "pivot_len": int(pivot_len),
+                    "l1_idx": int(i1),
+                    "l2_idx": int(in_),
+                    "h2_idx": int(h2_idx),
+                }
+            )
+
+    return results
+
+
+def _remap_setup_indices(ch: dict, offset: int) -> dict:
+    mapped = dict(ch)
+    for k in ("support_x0", "h2_idx", "l1_idx", "l2_idx"):
+        if k in mapped and mapped[k] is not None:
+            mapped[k] = int(mapped[k]) + int(offset)
+    if mapped.get("touch_indices"):
+        mapped["touch_indices"] = [int(i) + int(offset) for i in mapped["touch_indices"]]
+    return mapped
+
+
+def _windowed_finder(
+    df: pd.DataFrame,
+    finder,
+    *,
+    window_bars: int,
+    step_bars: int,
+    **kwargs,
+) -> List[dict]:
+    if df is None or df.empty:
+        return []
+    n = len(df)
+    win = int(window_bars)
+    step = int(step_bars) if step_bars else win
+    if win <= 0 or win >= n:
+        return finder(df, **kwargs)
+    if step <= 0:
+        step = win
+    seen = set()
+    out: List[dict] = []
+    start = 0
+    while start < n:
+        end = min(n, start + win)
+        for ch in finder(df.iloc[start:end], **kwargs):
+            mapped = _remap_setup_indices(ch, start)
+            idxs = mapped.get("touch_indices") or []
+            if not idxs:
+                continue
+            key = (
+                idxs[0],
+                idxs[-1],
+                int(mapped.get("h2_idx", -1)),
+                round(float(mapped.get("support_slope", 0.0)), 8),
+                round(float(mapped.get("channel_width", 0.0)), 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(mapped)
+        if end >= n:
+            break
+        start += step
+    out.sort(key=lambda c: (int(c.get("support_x0", 0)), int(c.get("bars_span", 0))))
+    return out
+
+
 def find_channels_windowed(
     df: pd.DataFrame,
     *,
@@ -395,43 +612,21 @@ def find_channels_windowed(
     Needed on 15m because v1 only inspects the last ``max_low_pivots`` swing lows.
     Detector math is unchanged; this is a scan wrapper.
     """
-    if df is None or df.empty:
-        return []
-    n = len(df)
-    win = int(window_bars)
-    step = int(step_bars) if step_bars else win
-    if win <= 0 or win >= n:
-        return find_channels(df, **kwargs)
-    if step <= 0:
-        step = win
+    return _windowed_finder(
+        df, find_channels, window_bars=window_bars, step_bars=step_bars, **kwargs
+    )
 
-    seen = set()
-    out: List[dict] = []
-    start = 0
-    while start < n:
-        end = min(n, start + win)
-        for ch in find_channels(df.iloc[start:end], **kwargs):
-            idxs = [int(i) + start for i in (ch.get("touch_indices") or [])]
-            if not idxs:
-                continue
-            key = (
-                idxs[0],
-                idxs[-1],
-                round(float(ch.get("support_slope", 0.0)), 8),
-                round(float(ch.get("channel_width", 0.0)), 6),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            mapped = dict(ch)
-            mapped["touch_indices"] = idxs
-            mapped["support_x0"] = int(ch["support_x0"]) + start
-            out.append(mapped)
-        if end >= n:
-            break
-        start += step
-    out.sort(key=lambda c: (int(c.get("support_x0", 0)), int(c.get("bars_span", 0))))
-    return out
+
+def find_h2_l3_setups_windowed(
+    df: pd.DataFrame,
+    *,
+    window_bars: int,
+    step_bars: int,
+    **kwargs,
+) -> List[dict]:
+    return _windowed_finder(
+        df, find_h2_l3_setups, window_bars=window_bars, step_bars=step_bars, **kwargs
+    )
 
 
 def main() -> int:

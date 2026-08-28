@@ -1,0 +1,132 @@
+"""Unit tests for H2-then-L3 rail-touch entry."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "research"))
+
+from backtest_channel_touch_trades import (  # noqa: E402
+    _limit_fill_at_support,
+    _support_tagged,
+    trades_for_symbol,
+)
+
+
+def test_support_tag_and_limit_fill():
+    assert _support_tagged(10.0, 12.0, 10.5, 1.2)
+    assert not _support_tagged(11.0, 12.0, 10.0, 1.2)
+    fill = _limit_fill_at_support(10.5, 10.0, 12.0, 0.001)
+    assert fill is not None
+    assert abs(fill - 10.5 * 1.001) < 1e-9
+
+
+def test_l3_touch_fills_at_support_not_mid_channel():
+    n = 160
+    idx = pd.date_range("2024-01-02", periods=n, freq="B")
+    support = 10.0 + 0.03 * np.arange(n)
+    close = support + 1.0
+    high = close + 0.4
+    low = close - 0.4
+    l1, h1, l2, h2, l3 = 20, 32, 44, 58, 72
+    low[l1] = support[l1]
+    high[l1] = support[l1] + 0.3
+    close[l1] = support[l1] + 0.15
+    high[h1] = support[h1] + 2.0
+    low[h1] = support[h1] + 1.4
+    close[h1] = support[h1] + 1.8
+    low[l2] = support[l2]
+    high[l2] = support[l2] + 0.3
+    close[l2] = support[l2] + 0.15
+    high[h2] = support[h2] + 2.0
+    low[h2] = support[h2] + 1.4
+    close[h2] = support[h2] + 1.8
+    low[l3] = support[l3] - 0.05
+    high[l3] = support[l3] + 0.8
+    close[l3] = support[l3] + 0.6
+    df = pd.DataFrame(
+        {"open": close, "high": high, "low": low, "close": close, "volume": 1e5},
+        index=idx,
+    )
+    rows = trades_for_symbol(
+        "TEST",
+        df,
+        entry_mode="l3_touch",
+        pivot_len=3,
+        entry_features=False,
+        squeeze_adaptive=False,
+        stop_pct=0.03,
+        trail_pct=0.10,
+        min_bars_apart=8,
+        max_low_pivots=16,
+        error_pct=2.0,
+        min_rally_pct=2.0,
+        min_pullback_pct=2.0,
+        min_total_rise_pct=2.0,
+        entry_slip_pct=0.001,
+        max_l3_wait_bars=40,
+    )
+    assert rows, "expected an L3 rail-touch trade"
+    trade = rows[0]
+    buy = pd.Timestamp(trade["buy_date"])
+    assert buy <= idx[l3 + 2]
+    pos = float(trade["channel_pos"])
+    assert pos <= 0.35, pos
+
+
+def test_l3_touch_two_highs_after_l2_no_rail_h1():
+    """EYE-style: Nov peak inside the channel, both resistance touches after L2."""
+    n = 160
+    idx = pd.date_range("2024-01-02", periods=n, freq="B")
+    support = 10.0 + 0.03 * np.arange(n)
+    close = support + 1.0
+    high = close + 0.4
+    low = close - 0.4
+    l1, h_inside, l2, h2a, h2b, l3 = 20, 32, 44, 58, 72, 90
+    low[l1] = support[l1]
+    high[l1] = support[l1] + 0.3
+    close[l1] = support[l1] + 0.15
+    high[h_inside] = support[h_inside] + 1.65
+    low[h_inside] = support[h_inside] + 0.9
+    close[h_inside] = support[h_inside] + 1.3
+    low[l2] = support[l2]
+    high[l2] = support[l2] + 0.3
+    close[l2] = support[l2] + 0.15
+    for h in (h2a, h2b):
+        high[h] = support[h] + 2.0
+        low[h] = support[h] + 1.4
+        close[h] = support[h] + 1.8
+    low[l3] = support[l3] - 0.05
+    high[l3] = support[l3] + 0.8
+    close[l3] = support[l3] + 0.6
+    df = pd.DataFrame(
+        {"open": close, "high": high, "low": low, "close": close, "volume": 1e5},
+        index=idx,
+    )
+    rows = trades_for_symbol(
+        "TEST",
+        df,
+        entry_mode="l3_touch",
+        pivot_len=3,
+        entry_features=False,
+        squeeze_adaptive=False,
+        stop_pct=0.03,
+        trail_pct=0.10,
+        min_bars_apart=8,
+        max_low_pivots=16,
+        error_pct=2.0,
+        min_rally_pct=2.0,
+        min_pullback_pct=2.0,
+        min_total_rise_pct=2.0,
+        entry_slip_pct=0.001,
+        max_l3_wait_bars=40,
+    )
+    assert rows, "expected L3 fill when both resistance touches are after L2"
+    trade = rows[0]
+    assert pd.Timestamp(trade["buy_date"]) >= idx[l3] - pd.Timedelta(days=10)
+    assert float(trade["channel_pos"]) <= 0.35
