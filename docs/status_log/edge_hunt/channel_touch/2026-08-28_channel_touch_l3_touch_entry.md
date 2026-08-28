@@ -20,25 +20,29 @@ Alpaca EYE 2025: H2 **2025-03-25**, first tag **2025-04-04** low 10.505 vs suppo
 
 `--all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-entries-per-day 1 --friction-pct 0.25 --max-beyond-width 0.25 --fallback-provider IB --merge-mode prefix --start 2018-11-01 --end 2026-08-27`
 
-Windowed 504/252. Wall-clock **~79s** (universe 11s, cache-hit load 4s, scan 54s, RS 10s). Raw **21087** (more 2-low H2 setups than v1 3-touch).
+Windowed 504/252. Raw **18215** after bounce-from-above fill (was 21087).
 
 | entry | n | E% | PF | median% | WR% |
 |-------|---|-----|-----|---------|-----|
 | pivot + beyond 0.25 (prior) | 700 | +1.14 | 1.397 | -3.35 | — |
-| **l3_touch + beyond 0.25** | **1231** | **+0.99** | **1.312** | -3.72 | 33.9 |
+| l3_touch + beyond 0.25 (gap-through fills) | 1231 | +0.99 | 1.312 | -3.72 | 33.9 |
+| **l3_touch + bounce tag** (2026-08-28 eve) | **1164** | **+1.32** | **1.441** | -3.44 | 35.4 |
 
-l3_touch beyond-width A/B (then RS top1): 0.25 still the only useful cap (off n=1723 E −0.30 PF 0.92; 0.0 starves).
+l3_touch beyond-width A/B after bounce filter: 0.25 still the only useful cap (off n=1678 E +0.10 PF 1.03).
 
-**Do not replace pivot keepers with l3_touch on edge.** Use `l3_touch` when the question is live rail-touch fills. Nightly scanner stays on pivot-confirm until explicitly switched.
+**WTFC 2019-07-16:** not the Aug 2019–Jan 2020 3L/2H on TV. The fill used a stale L1 2018-12-26 / L2 2019-03-25 / H2 2019-04-18 rail. Earnings 2019-07-16 gapped **entirely under** support ($67.14): H 66.49 / L 63.77 / C 65.07. That is a break, not a from-above wick tag. Fill now requires high ≥ support, close not broken, and cancels if a prior bar closed below support.
+
+Nightly scanner stays on pivot-confirm until explicitly switched.
 
 ## Code
 
 - `scripts/research/find_ascending_channels.py`: `find_h2_l3_setups` (no `last_end` greedy skip)
-- `scripts/research/backtest_channel_touch_trades.py`: `--entry-mode l3_touch`
+- `scripts/research/backtest_channel_touch_trades.py`: `--entry-mode l3_touch`, `_l3_rail_touch`
 - Tests: `tests/unit/test_l3_touch_entry.py`
 
 ## Artifacts
 
-- `reports/ascending_channels/channel_touch_trades_20260828_172128.csv`
-- `reports/ascending_channels/channel_touch_trades_raw_20260828_172128.csv`
-- `reports/ascending_channels/channel_touch_beyond_width_ab_20260828_172128.csv`
+- `reports/ascending_channels/channel_touch_trades_20260828_192557.csv`
+- `reports/ascending_channels/channel_touch_trades_raw_20260828_192557.csv`
+- `reports/ascending_channels/channel_touch_beyond_width_ab_20260828_192557.csv`
+- `reports/ascending_channels/channel_touch_tv_report_interactive_rs_top1_default_fric0.25_l3_touch_beyond025_inchannel_span365_ib_fallback_20260828_192617.html`

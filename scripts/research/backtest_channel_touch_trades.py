@@ -117,6 +117,29 @@ def _support_tagged(bar_low: float, bar_high: float, support: float, error_pct: 
     return bar_low <= support * (1.0 + tol) and bar_high >= support * (1.0 - tol)
 
 
+def _l3_rail_touch(
+    bar_high: float,
+    bar_low: float,
+    bar_close: float,
+    support: float,
+    error_pct: float,
+) -> bool:
+    """Support tag from above: traded at/above the rail, wick tags, close not broken.
+
+    A gap-through entirely under the line (WTFC 2019-07-16) is not a touch.
+    """
+    if not _support_tagged(bar_low, bar_high, support, error_pct):
+        return False
+    if not np.isfinite(bar_close):
+        return False
+    tol = float(error_pct) / 100.0
+    if bar_high < support:
+        return False
+    if bar_close < support * (1.0 - tol):
+        return False
+    return True
+
+
 def _limit_fill_at_support(support: float, bar_low: float, bar_high: float, slip_pct: float) -> Optional[float]:
     """Limit buy at support plus slippage, clipped to the bar's range."""
     if not np.isfinite(support) or support <= 0:
@@ -405,6 +428,7 @@ def trades_for_symbol(
     entry_features: bool = True,
     entry_slip_pct: float = 0.001,
     max_l3_wait_bars: int = 252,
+    min_l3_wait_bars: int = 1,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -465,6 +489,7 @@ def trades_for_symbol(
             else find_h2_l3_setups(out, pivot_len=pivot_len, **channel_kwargs)
         )
         wait = max(1, int(max_l3_wait_bars))
+        min_wait = max(1, int(min_l3_wait_bars))
         slip = float(entry_slip_pct)
         for ch in setups:
             sx0 = int(ch["support_x0"])
@@ -479,10 +504,27 @@ def trades_for_symbol(
                 if np.isfinite(h2_px) and float(high[i]) > h2_px:
                     break
                 sup = _line_at(sy0, sx0, sslope, i)
-                if _support_tagged(float(low[i]), float(high[i]), sup, error_pct):
+                resist = sup + float(ch.get("channel_width") or 0.0)
+                if i > 0:
+                    sup_prev = _line_at(sy0, sx0, sslope, i - 1)
+                    if float(close[i - 1]) < sup_prev * (1.0 - error_pct / 100.0):
+                        break
+                if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (1.0 + error_pct / 100.0):
+                    break
+                touched = _l3_rail_touch(
+                    float(high[i]), float(low[i]), float(close[i]), sup, error_pct
+                )
+                broke = float(close[i]) < sup * (1.0 - error_pct / 100.0)
+                if i < h2 + min_wait:
+                    if touched or broke:
+                        break
+                    continue
+                if touched:
                     fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
                     if fill is not None:
                         found = (ch, i, fill, 3, i)
+                    break
+                if broke:
                     break
             if found is not None:
                 pending.append(found)
@@ -654,6 +696,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         entry_features=bool(payload.get("entry_features", True)),
         entry_slip_pct=float(payload.get("entry_slip_pct", 0.001)),
         max_l3_wait_bars=int(payload.get("max_l3_wait_bars", 252)),
+        min_l3_wait_bars=int(payload.get("min_l3_wait_bars", 1)),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -790,6 +833,7 @@ def filter_trades(
     max_channel_age_days: Optional[float] = None,
     require_in_channel: bool = False,
     max_beyond_width: Optional[float] = None,
+    max_rsi: Optional[float] = None,
 ) -> pd.DataFrame:
     if trades.empty:
         return trades
@@ -830,6 +874,8 @@ def filter_trades(
         m &= out["channel_age_at_buy_days"].fillna(1e9) <= float(max_channel_age_days)
     if max_beyond_width is not None and "max_beyond_width" in out.columns:
         m &= out["max_beyond_width"].fillna(999) <= float(max_beyond_width)
+    if max_rsi is not None and "rsi_14" in out.columns:
+        m &= out["rsi_14"].fillna(999) <= float(max_rsi)
     return out.loc[m].copy()
 
 
@@ -1463,6 +1509,18 @@ def main() -> int:
         default=252,
         help="l3_touch: max bars after H2 print to wait for a support tag",
     )
+    ap.add_argument(
+        "--min-l3-wait-bars",
+        type=int,
+        default=1,
+        help="l3_touch: abort if support is tagged before N bars after H2 (not a swing L3)",
+    )
+    ap.add_argument(
+        "--max-rsi",
+        type=float,
+        default=None,
+        help="Reject entries with rsi_14 above this (filter then RS)",
+    )
     ap.add_argument("--atr-stop-mult", type=float, default=None)
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
     ap.add_argument("--stop-pct-ceil", type=float, default=0.06)
@@ -1700,6 +1758,7 @@ def main() -> int:
             "entry_features": bool(args.entry_features),
             "entry_slip_pct": float(args.entry_slip_pct),
             "max_l3_wait_bars": int(args.max_l3_wait_bars),
+            "min_l3_wait_bars": int(args.min_l3_wait_bars),
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
@@ -1770,6 +1829,7 @@ def main() -> int:
         max_channel_age_days=args.max_channel_age_days,
         require_spy_above_sma=bool(args.spy_regime),
         max_beyond_width=args.max_beyond_width,
+        max_rsi=args.max_rsi,
         **geo_kwargs,
     )
     if args.max_entries_per_day and args.max_entries_per_day > 0:
@@ -1816,7 +1876,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} entry_features={bool(args.entry_features)}",
         f"elapsed_sec={elapsed:.1f}",
         "",
         *[f"{k}={v}" for k, v in summary.items()],

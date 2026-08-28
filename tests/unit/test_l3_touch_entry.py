@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from backtest_channel_touch_trades import (  # noqa: E402
+    _l3_rail_touch,
     _limit_fill_at_support,
     _support_tagged,
     trades_for_symbol,
@@ -24,6 +25,13 @@ def test_support_tag_and_limit_fill():
     fill = _limit_fill_at_support(10.5, 10.0, 12.0, 0.001)
     assert fill is not None
     assert abs(fill - 10.5 * 1.001) < 1e-9
+
+
+def test_gap_through_is_not_l3_rail_touch():
+    """WTFC 2019-07-16: entire bar below support is not a from-above tag."""
+    support = 67.14
+    assert not _l3_rail_touch(66.49, 63.77, 65.07, support, 1.2)
+    assert _l3_rail_touch(11.45, 10.505, 11.32, 10.44, 1.2)
 
 
 def test_l3_touch_fills_at_support_not_mid_channel():
@@ -130,3 +138,51 @@ def test_l3_touch_two_highs_after_l2_no_rail_h1():
     trade = rows[0]
     assert pd.Timestamp(trade["buy_date"]) >= idx[l3] - pd.Timedelta(days=10)
     assert float(trade["channel_pos"]) <= 0.35
+
+
+def test_min_l3_wait_skips_immediate_tag():
+    n = 160
+    idx = pd.date_range("2024-01-02", periods=n, freq="B")
+    support = 10.0 + 0.03 * np.arange(n)
+    close = support + 1.0
+    high = close + 0.4
+    low = close - 0.4
+    l1, h1, l2, h2, l3 = 20, 32, 44, 58, 72
+    low[l1] = support[l1]
+    high[l1] = support[l1] + 0.3
+    close[l1] = support[l1] + 0.15
+    high[h1] = support[h1] + 2.0
+    low[h1] = support[h1] + 1.4
+    close[h1] = support[h1] + 1.8
+    low[l2] = support[l2]
+    high[l2] = support[l2] + 0.3
+    close[l2] = support[l2] + 0.15
+    high[h2] = support[h2] + 2.0
+    low[h2] = support[h2] + 1.4
+    close[h2] = support[h2] + 1.8
+    low[l3] = support[l3] - 0.05
+    high[l3] = support[l3] + 0.8
+    close[l3] = support[l3] + 0.6
+    df = pd.DataFrame(
+        {"open": close, "high": high, "low": low, "close": close, "volume": 1e5},
+        index=idx,
+    )
+    kw = dict(
+        entry_mode="l3_touch",
+        pivot_len=3,
+        entry_features=False,
+        squeeze_adaptive=False,
+        stop_pct=0.03,
+        trail_pct=0.10,
+        min_bars_apart=8,
+        max_low_pivots=16,
+        error_pct=2.0,
+        min_rally_pct=2.0,
+        min_pullback_pct=2.0,
+        min_total_rise_pct=2.0,
+        entry_slip_pct=0.001,
+        max_l3_wait_bars=40,
+    )
+    assert trades_for_symbol("TEST", df, min_l3_wait_bars=1, **kw)
+    late = trades_for_symbol("TEST", df, min_l3_wait_bars=80, **kw)
+    assert late == []
