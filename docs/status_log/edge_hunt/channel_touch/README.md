@@ -19,10 +19,13 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-29 | [15m l3_touch / L4 / entry-model loops](2026-08-29_channel_touch_15m_opt_loops.md) |
 | 2026-08-29 | [Nightly switched to l3_touch keeper](2026-08-29_channel_touch_nightly_l3.md) | |
 | 2026-08-29 | [Same-bar close leak: prior-bar features + daily 15m hybrid](2026-08-29_channel_touch_samebar_leak.md) |
+| 2026-08-29 | [Ridge P&L confidence sizing](2026-08-29_channel_touch_confidence_size.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
 ## Keepers (live / research)
+
+Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch.html`, `15m_channel_touch.html`). Write-up: `reports/ascending_channels/current_best/README.md`.
 
 - **Live / nightly:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25; RS vs SPY top1; ATR k=2.0 clamped 1.5%–6%; windowed 504/252
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
@@ -30,6 +33,7 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 - **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3. Features default to **prior completed bar** (`--feature-asof auto`). Daily `--intraday-fill 15m` hybrid did not beat same-universe daily wait-6/RSI-50 (n=260 E +1.31 PF 1.47 vs n=314 E +1.73 PF 1.63) — nightly stays **daily** l3_touch (not 15m hybrid).
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
+- Do **not** size from ridge P&L confidence (RS-top1 OOS: 1d E worse; 15m lift dies after RS). Equal-dollar stays the size model.
 
 ## Harness
 
@@ -44,6 +48,8 @@ python scripts\research\generate_channel_touch_tv_report.py --trades reports\asc
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
 python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --entry-mode l3_touch --min-l3-wait-bars 12 --workers 4 --load-workers 8
+python scripts\research\backtest_channel_touch_confidence_size.py --stack 1d
+python scripts\research\backtest_channel_touch_confidence_size.py --stack 15m
 ```
 
 Outputs: `reports/ascending_channels/`, `logs/scanners/channel_touch_nightly_*.log`

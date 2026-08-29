@@ -441,3 +441,571 @@ def scored_to_row(s: ScoredSplit) -> Dict[str, object]:
         **_flat("test", s.test),
         **_flat("test_kept", s.test_kept),
     }
+
+
+# ---------------------------------------------------------------------------
+# Ridge P&L regression + confidence sizing (not a hard entry gate)
+# ---------------------------------------------------------------------------
+
+RIDGE_FEATURES_1D: Sequence[str] = NO_SAMEBAR_CLOSE_FEATURES
+RIDGE_FEATURES_15M: Sequence[str] = MODEL_FEATURES
+
+DEFAULT_EMBARGO_DAYS = 21
+DEFAULT_RIDGE_L2 = 1.0
+SIZE_MIN = 0.25
+SIZE_MAX = 2.0
+MIN_TRAIN_N = 80
+MIN_TEST_N = 30
+
+
+def resolve_ridge_features(
+    df: pd.DataFrame,
+    cols: Sequence[str],
+) -> List[str]:
+    """Keep columns that exist; drop known clone pairs (keep the first of each)."""
+    present = [c for c in cols if c in df.columns]
+    if "channel_pos" in present and "room_to_resist_pct" in present:
+        present = [c for c in present if c != "room_to_resist_pct"]
+    if "channel_span_days" in present and "channel_age_at_buy_days" in present:
+        present = [c for c in present if c != "channel_age_at_buy_days"]
+    return present
+
+
+def buy_timestamps(df: pd.DataFrame) -> pd.Series:
+    if "buy_time" in df.columns:
+        bt = pd.to_datetime(df["buy_time"], errors="coerce")
+        bd = pd.to_datetime(df["buy_date"], errors="coerce")
+        return bt.fillna(bd)
+    return pd.to_datetime(df["buy_date"], errors="coerce")
+
+
+def sell_timestamps(df: pd.DataFrame, *, fallback_days: int = 30) -> pd.Series:
+    if "sell_time" in df.columns:
+        st = pd.to_datetime(df["sell_time"], errors="coerce")
+        sd = (
+            pd.to_datetime(df["sell_date"], errors="coerce")
+            if "sell_date" in df.columns
+            else pd.Series(pd.NaT, index=df.index)
+        )
+        ts = st.fillna(sd)
+    elif "sell_date" in df.columns:
+        ts = pd.to_datetime(df["sell_date"], errors="coerce")
+    else:
+        ts = pd.Series(pd.NaT, index=df.index)
+    buy = buy_timestamps(df)
+    out = ts.copy()
+    missing = out.isna()
+    out.loc[missing] = buy.loc[missing] + pd.Timedelta(days=int(fallback_days))
+    return out
+
+
+def winsorize_y(
+    y: np.ndarray,
+    *,
+    lo_q: float = 0.01,
+    hi_q: float = 0.99,
+    abs_clip: float = 15.0,
+) -> np.ndarray:
+    """Clip train labels. Evaluation always uses uncapped realized P&L."""
+    arr = np.asarray(y, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if len(finite) == 0:
+        return np.zeros_like(arr)
+    lo = float(np.quantile(finite, lo_q))
+    hi = float(np.quantile(finite, hi_q))
+    lo = max(lo, -float(abs_clip))
+    hi = min(hi, float(abs_clip))
+    if hi < lo:
+        hi = lo
+    return np.clip(arr, lo, hi)
+
+
+class RidgePnlScorer:
+    """Closed-form ridge with intercept. Features must already be z-scored on train."""
+
+    def __init__(self, l2: float = DEFAULT_RIDGE_L2):
+        self.l2 = float(l2)
+        self.w: Optional[np.ndarray] = None
+        self.b: float = 0.0
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> "RidgePnlScorer":
+        n, f = x.shape
+        if n == 0 or f == 0:
+            self.w = np.zeros(f, dtype=float)
+            self.b = 0.0
+            return self
+        xx = np.column_stack([np.ones(n), x])
+        reg = np.eye(f + 1) * self.l2
+        reg[0, 0] = 0.0
+        xtx = xx.T @ xx + reg
+        xty = xx.T @ np.asarray(y, dtype=float)
+        try:
+            coef = np.linalg.solve(xtx, xty)
+        except np.linalg.LinAlgError:
+            coef, *_ = np.linalg.lstsq(xtx, xty, rcond=None)
+        self.b = float(coef[0])
+        self.w = np.asarray(coef[1:], dtype=float)
+        return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.w is None:
+            raise RuntimeError("not fit")
+        if x.size == 0:
+            return np.zeros(0, dtype=float)
+        return x @ self.w + self.b
+
+
+@dataclass
+class SizeMap:
+    """Train-only predicted-P&L percentiles mapped to size_min..size_max."""
+
+    pred_lo: float
+    pred_hi: float
+    size_min: float = SIZE_MIN
+    size_max: float = SIZE_MAX
+
+
+def fit_size_map(
+    pred_train: np.ndarray,
+    *,
+    size_min: float = SIZE_MIN,
+    size_max: float = SIZE_MAX,
+    lo_q: float = 0.10,
+    hi_q: float = 0.90,
+) -> SizeMap:
+    p = np.asarray(pred_train, dtype=float)
+    p = p[np.isfinite(p)]
+    if len(p) == 0:
+        return SizeMap(pred_lo=0.0, pred_hi=1.0, size_min=size_min, size_max=size_max)
+    lo = float(np.quantile(p, lo_q))
+    hi = float(np.quantile(p, hi_q))
+    if hi <= lo:
+        hi = lo + 1e-6
+    return SizeMap(pred_lo=lo, pred_hi=hi, size_min=float(size_min), size_max=float(size_max))
+
+
+def apply_size_map(
+    pred: np.ndarray,
+    smap: SizeMap,
+    *,
+    skip_negative: bool = False,
+) -> np.ndarray:
+    p = np.asarray(pred, dtype=float)
+    span = smap.pred_hi - smap.pred_lo
+    t = np.clip((p - smap.pred_lo) / span, 0.0, 1.0)
+    size = smap.size_min + t * (smap.size_max - smap.size_min)
+    size = np.where(np.isfinite(p), size, smap.size_min)
+    if skip_negative:
+        size = np.where(p < 0.0, 0.0, size)
+    return size.astype(float)
+
+
+def sized_trade_metrics(gains: np.ndarray, sizes: np.ndarray) -> dict:
+    """P&L = size * gain. Zeros (skipped) are not wins or losses."""
+    g = np.asarray(gains, dtype=float)
+    s = np.asarray(sizes, dtype=float)
+    n = int(len(g))
+    if n == 0:
+        return {
+            "n_trades": 0,
+            "n_active": 0,
+            "win_rate_pct": None,
+            "expectancy": None,
+            "expectancy_active": None,
+            "profit_factor": None,
+            "median": None,
+            "sum_pnl": None,
+            "max_dd": None,
+            "mean_size": None,
+        }
+    pnl = s * g
+    finite = np.isfinite(pnl)
+    pnl_f = pnl[finite]
+    active = (s > 1e-12) & finite
+    wins = pnl_f[pnl_f > 0]
+    losses = pnl_f[pnl_f < 0]
+    gp = float(wins.sum()) if len(wins) else 0.0
+    gl = float((-losses).sum()) if len(losses) else 0.0
+    if gl > 1e-12:
+        pf = gp / gl
+    elif gp > 0:
+        pf = float("inf")
+    else:
+        pf = 0.0
+    n_act = int(active.sum())
+    wr = float((pnl_f[s[finite] > 1e-12] > 0).mean() * 100.0) if n_act else None
+    eq = np.cumsum(np.where(finite, pnl, 0.0))
+    peak = np.maximum.accumulate(eq)
+    dd = peak - eq
+    max_dd = float(dd.max()) if len(dd) else 0.0
+    return {
+        "n_trades": n,
+        "n_active": n_act,
+        "win_rate_pct": None if wr is None else round(wr, 2),
+        "expectancy": round(float(np.nanmean(pnl)), 4),
+        "expectancy_active": None if n_act == 0 else round(float(np.nanmean(pnl[active])), 4),
+        "profit_factor": None if not np.isfinite(pf) else round(float(pf), 4),
+        "median": round(float(np.nanmedian(pnl)), 4),
+        "sum_pnl": round(float(np.nansum(pnl)), 4),
+        "max_dd": round(max_dd, 4),
+        "mean_size": round(float(np.nanmean(s)), 4),
+    }
+
+
+def drop_top_n_sized_metrics(gains: np.ndarray, sizes: np.ndarray, n: int = 3) -> dict:
+    g = np.asarray(gains, dtype=float)
+    s = np.asarray(sizes, dtype=float)
+    pnl = s * g
+    if len(pnl) <= n:
+        return sized_trade_metrics(np.array([]), np.array([]))
+    order = np.argsort(pnl)[::-1]
+    keep = np.ones(len(pnl), dtype=bool)
+    keep[order[:n]] = False
+    return sized_trade_metrics(g[keep], s[keep])
+
+
+def spearman_pred_actual(pred: np.ndarray, actual: np.ndarray) -> Optional[float]:
+    p = pd.Series(np.asarray(pred, dtype=float))
+    a = pd.Series(np.asarray(actual, dtype=float))
+    mask = p.notna() & a.notna() & np.isfinite(p) & np.isfinite(a)
+    if int(mask.sum()) < 20:
+        return None
+    rho = float(p[mask].corr(a[mask], method="spearman"))
+    if not np.isfinite(rho):
+        return None
+    return round(rho, 4)
+
+
+def pred_quintile_table(pred: np.ndarray, actual: np.ndarray, n_bins: int = 5) -> pd.DataFrame:
+    work = pd.DataFrame(
+        {
+            "pred": np.asarray(pred, dtype=float),
+            "gain": np.asarray(actual, dtype=float),
+        }
+    )
+    work = work.loc[np.isfinite(work["pred"]) & np.isfinite(work["gain"])]
+    if work.empty:
+        return pd.DataFrame()
+    try:
+        work["bucket"] = pd.qcut(work["pred"], q=int(n_bins), duplicates="drop")
+    except (ValueError, TypeError):
+        return pd.DataFrame()
+    rows = []
+    for key, part in work.groupby("bucket", observed=False):
+        m = trade_metrics(part["gain"].to_numpy())
+        rows.append({"pred_bucket": str(key), **m})
+    return pd.DataFrame(rows)
+
+
+def purged_embargo_split(
+    df: pd.DataFrame,
+    test_start: str,
+    test_end: str,
+    *,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Train sells before test_start - embargo; test buys in [test_start, test_end]."""
+    buy = buy_timestamps(df)
+    sell = sell_timestamps(df)
+    t0 = pd.Timestamp(test_start)
+    t1 = pd.Timestamp(test_end)
+    train_cut = t0 - pd.Timedelta(days=int(embargo_days))
+    train_mask = sell < train_cut
+    test_mask = (buy >= t0) & (buy <= t1)
+    return df.loc[train_mask].copy(), df.loc[test_mask].copy()
+
+
+def complementary_purged_split(
+    df: pd.DataFrame,
+    test_start: str,
+    test_end: str,
+    *,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """K-fold diagnostic: train = all non-test rows whose hold does not overlap the test window."""
+    buy = buy_timestamps(df)
+    sell = sell_timestamps(df)
+    t0 = pd.Timestamp(test_start)
+    t1 = pd.Timestamp(test_end)
+    embargo = pd.Timedelta(days=int(embargo_days))
+    test_mask = (buy >= t0) & (buy <= t1)
+    overlap = (buy <= t1 + embargo) & (sell >= t0 - embargo)
+    train_mask = (~test_mask) & (~overlap)
+    return df.loc[train_mask].copy(), df.loc[test_mask].copy()
+
+
+def expanding_year_windows(
+    buy: pd.Series,
+    *,
+    min_train_frac: float = 0.60,
+) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+    """First test fold starts at the min_train_frac quantile of buy dates, then calendar years."""
+    b = pd.to_datetime(buy).dropna().sort_values()
+    if b.empty:
+        return []
+    t60 = pd.Timestamp(b.quantile(float(min_train_frac)))
+    last = pd.Timestamp(b.max())
+    start = t60.normalize()
+    windows: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+    while start <= last:
+        year_end = pd.Timestamp(year=start.year, month=12, day=31)
+        end = min(year_end, last)
+        if end >= start:
+            windows.append((start, end))
+        start = pd.Timestamp(year=start.year + 1, month=1, day=1)
+    return windows
+
+
+def time_quantile_windows(buy: pd.Series, n_splits: int = 5) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+    b = pd.to_datetime(buy).dropna().sort_values()
+    if b.empty or int(n_splits) < 2:
+        return []
+    qs = np.linspace(0.0, 1.0, int(n_splits) + 1)
+    edges = [pd.Timestamp(b.quantile(q)) for q in qs]
+    out: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+    for i in range(int(n_splits)):
+        lo = edges[i]
+        hi = edges[i + 1]
+        if i < int(n_splits) - 1:
+            hi = hi - pd.Timedelta(milliseconds=1)
+        if hi >= lo:
+            out.append((lo, hi))
+    return out
+
+
+def fit_ridge_size_fold(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    *,
+    l2: float = DEFAULT_RIDGE_L2,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, SizeMap, int]:
+    """Fit on train (winsorized y); return test pred, scale-all size, skip-neg size, map, n_features."""
+    cols = resolve_ridge_features(train_df, feature_cols)
+    gain_col = _gain_col(train_df)
+    x_tr_raw, med = feature_matrix(train_df, cols)
+    x_te_raw, _ = feature_matrix(test_df, cols, medians=med)
+    x_tr, x_te, _, _ = _standardize(x_tr_raw, x_te_raw)
+    y_raw = pd.to_numeric(train_df[gain_col], errors="coerce").to_numpy(dtype=float)
+    y_fit = winsorize_y(y_raw)
+    ok = np.isfinite(y_fit)
+    model = RidgePnlScorer(l2=l2)
+    model.fit(x_tr[ok], y_fit[ok])
+    pred_tr = model.predict(x_tr)
+    pred_te = model.predict(x_te) if len(test_df) else np.zeros(0, dtype=float)
+    smap = fit_size_map(pred_tr[ok])
+    size_all = apply_size_map(pred_te, smap, skip_negative=False)
+    size_skip = apply_size_map(pred_te, smap, skip_negative=True)
+    return pred_te, size_all, size_skip, smap, int(x_tr.shape[1])
+
+
+def _attach_fold_sizes(
+    test_df: pd.DataFrame,
+    pred: np.ndarray,
+    size_all: np.ndarray,
+    size_skip: np.ndarray,
+    *,
+    fold: str,
+) -> pd.DataFrame:
+    out = test_df.copy()
+    out["pred_pnl"] = pred
+    out["size_equal"] = 1.0
+    out["size_scale_all"] = size_all
+    out["size_skip_neg"] = size_skip
+    mean_s = float(np.nanmean(size_all)) if len(size_all) else 1.0
+    if not np.isfinite(mean_s) or mean_s <= 1e-12:
+        mean_s = 1.0
+    out["size_scale_all_norm"] = size_all / mean_s
+    out["fold"] = fold
+    return out
+
+
+def _fold_metric_row(
+    name: str,
+    test_start: str,
+    test_end: str,
+    n_train: int,
+    n_features: int,
+    smap: SizeMap,
+    test_df: pd.DataFrame,
+    pred: np.ndarray,
+    size_all: np.ndarray,
+    size_skip: np.ndarray,
+) -> dict:
+    gain_col = _gain_col(test_df)
+    g = pd.to_numeric(test_df[gain_col], errors="coerce").to_numpy(dtype=float)
+    mean_s = float(np.nanmean(size_all)) if len(size_all) else 1.0
+    if not np.isfinite(mean_s) or mean_s <= 1e-12:
+        mean_s = 1.0
+    size_norm = size_all / mean_s
+    equal = sized_trade_metrics(g, np.ones(len(g), dtype=float))
+    scale = sized_trade_metrics(g, size_all)
+    skip = sized_trade_metrics(g, size_skip)
+    norm = sized_trade_metrics(g, size_norm)
+    drop3 = drop_top_n_sized_metrics(g, size_all, n=3)
+    rho = spearman_pred_actual(pred, g)
+    return {
+        "name": name,
+        "test_start": str(test_start)[:10],
+        "test_end": str(test_end)[:10],
+        "n_train": int(n_train),
+        "n_test": int(len(test_df)),
+        "n_features": int(n_features),
+        "pred_lo": round(smap.pred_lo, 4),
+        "pred_hi": round(smap.pred_hi, 4),
+        "spearman": rho,
+        "equal_n": equal["n_trades"],
+        "equal_E": equal["expectancy"],
+        "equal_PF": equal["profit_factor"],
+        "equal_MDD": equal["max_dd"],
+        "equal_sum": equal["sum_pnl"],
+        "scale_n_active": scale["n_active"],
+        "scale_E": scale["expectancy"],
+        "scale_PF": scale["profit_factor"],
+        "scale_MDD": scale["max_dd"],
+        "scale_sum": scale["sum_pnl"],
+        "scale_mean_size": scale["mean_size"],
+        "scale_drop3_PF": drop3["profit_factor"],
+        "scale_drop3_E": drop3["expectancy"],
+        "skip_n_active": skip["n_active"],
+        "skip_E": skip["expectancy"],
+        "skip_PF": skip["profit_factor"],
+        "skip_MDD": skip["max_dd"],
+        "skip_sum": skip["sum_pnl"],
+        "norm_E": norm["expectancy"],
+        "norm_PF": norm["profit_factor"],
+        "norm_MDD": norm["max_dd"],
+        "norm_sum": norm["sum_pnl"],
+    }
+
+
+def expanding_ridge_walk_forward(
+    df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    *,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+    min_train_frac: float = 0.60,
+    min_train_n: int = MIN_TRAIN_N,
+    min_test_n: int = MIN_TEST_N,
+    l2: float = DEFAULT_RIDGE_L2,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Expanding yearly OOS folds. Returns (fold_metrics, stitched_oos_trades)."""
+    buy = buy_timestamps(df)
+    windows = expanding_year_windows(buy, min_train_frac=min_train_frac)
+    rows: List[dict] = []
+    parts: List[pd.DataFrame] = []
+    for start, end in windows:
+        train_df, test_df = purged_embargo_split(
+            df, str(start), str(end), embargo_days=embargo_days
+        )
+        if len(train_df) < int(min_train_n) or len(test_df) < int(min_test_n):
+            continue
+        pred, size_all, size_skip, smap, n_feat = fit_ridge_size_fold(
+            train_df, test_df, feature_cols, l2=l2
+        )
+        name = f"wf {str(start)[:10]}..{str(end)[:10]}"
+        rows.append(
+            _fold_metric_row(
+                name, str(start), str(end), len(train_df), n_feat, smap,
+                test_df, pred, size_all, size_skip,
+            )
+        )
+        parts.append(_attach_fold_sizes(test_df, pred, size_all, size_skip, fold=name))
+    oos = pd.concat(parts, ignore_index=True) if parts else df.iloc[0:0].copy()
+    return pd.DataFrame(rows), oos
+
+
+def purged_kfold_ridge(
+    df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    *,
+    n_splits: int = 5,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+    min_train_n: int = MIN_TRAIN_N,
+    min_test_n: int = MIN_TEST_N,
+    l2: float = DEFAULT_RIDGE_L2,
+) -> pd.DataFrame:
+    """Diagnostic only: complementary time folds with purge (may use future regimes)."""
+    buy = buy_timestamps(df)
+    windows = time_quantile_windows(buy, n_splits=n_splits)
+    rows: List[dict] = []
+    for i, (start, end) in enumerate(windows):
+        train_df, test_df = complementary_purged_split(
+            df, str(start), str(end), embargo_days=embargo_days
+        )
+        if len(train_df) < int(min_train_n) or len(test_df) < int(min_test_n):
+            continue
+        pred, size_all, size_skip, smap, n_feat = fit_ridge_size_fold(
+            train_df, test_df, feature_cols, l2=l2
+        )
+        name = f"kfold{i + 1} {str(start)[:10]}..{str(end)[:10]}"
+        rows.append(
+            _fold_metric_row(
+                name, str(start), str(end), len(train_df), n_feat, smap,
+                test_df, pred, size_all, size_skip,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def stitched_oos_metrics(oos: pd.DataFrame) -> dict:
+    if oos.empty:
+        empty = sized_trade_metrics(np.array([]), np.array([]))
+        return {
+            "equal": empty,
+            "scale_all": empty,
+            "skip_neg": empty,
+            "scale_all_norm": empty,
+            "scale_drop3": empty,
+            "spearman": None,
+        }
+    gain_col = _gain_col(oos)
+    g = pd.to_numeric(oos[gain_col], errors="coerce").to_numpy(dtype=float)
+    pred = pd.to_numeric(oos["pred_pnl"], errors="coerce").to_numpy(dtype=float)
+    size_all = pd.to_numeric(oos["size_scale_all"], errors="coerce").to_numpy(dtype=float)
+    size_skip = pd.to_numeric(oos["size_skip_neg"], errors="coerce").to_numpy(dtype=float)
+    size_norm = pd.to_numeric(oos["size_scale_all_norm"], errors="coerce").to_numpy(dtype=float)
+    ones = np.ones(len(g), dtype=float)
+    return {
+        "equal": sized_trade_metrics(g, ones),
+        "scale_all": sized_trade_metrics(g, size_all),
+        "skip_neg": sized_trade_metrics(g, size_skip),
+        "scale_all_norm": sized_trade_metrics(g, size_norm),
+        "scale_drop3": drop_top_n_sized_metrics(g, size_all, n=3),
+        "spearman": spearman_pred_actual(pred, g),
+    }
+
+
+def confidence_size_verdict(stitched: dict, fold_df: pd.DataFrame) -> str:
+    """Promote-to-research only if OOS scale-all beats equal on PF and E, not one fold, drop-top-3 PF>1."""
+    eq = stitched["equal"]
+    sc = stitched["scale_all"]
+    d3 = stitched["scale_drop3"]
+    if not eq["n_trades"] or sc["expectancy"] is None or eq["expectancy"] is None:
+        return "no_promote"
+    pf_eq = eq["profit_factor"]
+    pf_sc = sc["profit_factor"]
+    if pf_eq is None or pf_sc is None:
+        return "no_promote"
+    beat_e = sc["expectancy"] > eq["expectancy"]
+    beat_pf = pf_sc > pf_eq
+    drop_ok = d3["profit_factor"] is not None and d3["profit_factor"] > 1.0
+    fold_ok = True
+    if fold_df is not None and not fold_df.empty and "scale_E" in fold_df.columns:
+        better = 0
+        n_f = 0
+        for _, row in fold_df.iterrows():
+            if row.get("equal_E") is None or row.get("scale_E") is None:
+                continue
+            n_f += 1
+            if float(row["scale_E"]) > float(row["equal_E"]) and (
+                row.get("scale_PF") is None
+                or row.get("equal_PF") is None
+                or float(row["scale_PF"]) >= float(row["equal_PF"])
+            ):
+                better += 1
+        if n_f >= 2 and better < 2:
+            fold_ok = False
+    if beat_e and beat_pf and drop_ok and fold_ok:
+        return "research_only"
+    return "no_promote"
