@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import math
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -35,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.research.backtest_channel_touch_trades import filter_trades
 from utils.data.ohlcv_loader import load_ohlcv_many
 
 logging.basicConfig(
@@ -131,11 +133,91 @@ def _git_info() -> Dict[str, str]:
 
 def _summary_path_for_trades(trades_path: Path) -> Optional[Path]:
     name = trades_path.name
+    if "_trades_raw_" in name:
+        name = name.replace("_trades_raw_", "_trades_", 1)
     if "_trades_" not in name:
         return None
     summary_name = name.replace("_trades_", "_trades_summary_", 1).replace(".csv", ".txt")
     candidate = trades_path.parent / summary_name
     return candidate if candidate.exists() else None
+
+
+def _raw_sibling_csv(trades_path: Path) -> Optional[Path]:
+    """Map filtered `*_trades_{stamp}.csv` to `*_trades_raw_{stamp}.csv` (or the path itself if raw)."""
+    name = trades_path.name
+    if "_trades_raw_" in name:
+        return trades_path if trades_path.exists() else None
+    if "_trades_" not in name:
+        return None
+    candidate = trades_path.parent / name.replace("_trades_", "_trades_raw_", 1)
+    return candidate if candidate.exists() else None
+
+
+def _opt_float(raw: Optional[str]) -> Optional[float]:
+    text = (raw or "").strip()
+    if text in ("", "None", "none", "null"):
+        return None
+    return float(text)
+
+
+def _opt_bool(raw: Optional[str]) -> bool:
+    return (raw or "").strip().lower() in {"true", "1", "yes"}
+
+
+def parse_summary_tokens(path: Optional[Path]) -> Dict[str, str]:
+    """Parse all key=value tokens in a summary sidecar (lines may hold several pairs)."""
+    kv: Dict[str, str] = {}
+    if path is None or not path.exists():
+        return kv
+    for line in path.read_text(encoding="utf-8").splitlines():
+        for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)", line):
+            kv[match.group(1)] = match.group(2)
+    return kv
+
+
+def filter_kwargs_from_summary(path: Optional[Path]) -> Dict[str, Any]:
+    kv = parse_summary_tokens(path)
+    return {
+        "min_adv": _opt_float(kv.get("min_adv")),
+        "min_atr_pct": _opt_float(kv.get("min_atr_pct")),
+        "require_in_channel": _opt_bool(kv.get("require_in_channel")),
+        "max_channel_span_days": _opt_float(kv.get("max_channel_span_days")),
+        "max_channel_age_days": _opt_float(kv.get("max_channel_age_days")),
+        "max_beyond_width": _opt_float(kv.get("max_beyond_width")),
+        "max_rsi": _opt_float(kv.get("max_rsi")),
+        "min_close_loc": _opt_float(kv.get("min_close_loc")),
+        "require_spy_above_sma": _opt_bool(kv.get("spy_regime")) or _opt_bool(kv.get("require_spy_above_sma")),
+    }
+
+
+def load_trades_for_report(trades_path: Path) -> pd.DataFrame:
+    """
+    Embed quality-filtered trades WITHOUT the same-day RS cap.
+
+    The backtest CSV is often already `max_entries_per_day=1`. The HTML control can only
+    subset the embedded set, so we expand from the raw sibling and re-apply summary filters.
+    """
+    raw_path = _raw_sibling_csv(trades_path)
+    if raw_path is None:
+        logger.warning(
+            "No raw sibling CSV for %s; Max entries/day cannot add same-day fills",
+            trades_path.name,
+        )
+        return pd.read_csv(trades_path)
+
+    df = pd.read_csv(raw_path)
+    kwargs = filter_kwargs_from_summary(_summary_path_for_trades(trades_path))
+    filtered = filter_trades(df, **kwargs)
+    if filtered.empty and not df.empty:
+        logger.warning("Quality filters dropped all raw trades; embedding unfiltered raw set")
+        return df
+    logger.info(
+        "Report embed from %s: raw=%d quality-filtered=%d (no RS/day cap)",
+        raw_path.name,
+        len(df),
+        len(filtered),
+    )
+    return filtered
 
 
 def _parse_summary_txt(path: Optional[Path]) -> Tuple[Dict[str, str], List[str], List[str]]:
@@ -208,7 +290,10 @@ def build_run_meta(trades_path: Path) -> Dict[str, Any]:
 
 
 def _latest_trades_csv(outdir: Path) -> Path:
-    files = sorted(outdir.glob("channel_touch_trades_*.csv"), key=lambda p: p.stat().st_mtime)
+    files = sorted(
+        (p for p in outdir.glob("channel_touch_trades_*.csv") if "_trades_raw_" not in p.name),
+        key=lambda p: p.stat().st_mtime,
+    )
     if not files:
         raise FileNotFoundError(f"No channel_touch_trades_*.csv in {outdir}")
     return files[-1]
@@ -226,7 +311,10 @@ def load_spy_close(
     end: pd.Timestamp,
     *,
     provider: str = "ALPACA",
+    fallback_provider: str = "IB",
+    merge_mode: str = "prefix",
 ) -> pd.Series:
+    """SPY close for the overlay. Default IB prefix so the line covers pre-Alpaca trade years."""
     panels = load_ohlcv_many(
         ["SPY"],
         timeframe="1d",
@@ -235,6 +323,8 @@ def load_spy_close(
         end=datetime(end.year, end.month, end.day),
         use_cache=True,
         workers=1,
+        fallback_provider=fallback_provider or None,
+        merge_mode=merge_mode or None,
     )
     spy = panels.get("SPY")
     if spy is None or spy.empty or "close" not in spy.columns:
@@ -432,7 +522,7 @@ def render_html(
       <button class="btn" id="btnApply" type="button">Apply</button>
       <button class="btn secondary" id="btnReset" type="button">Reset</button>
     </div>
-    <div class="hint">{rs_note} Use <b>Win cap</b> / <b>Exclude</b> / <b>Max concurrent</b> for robustness &amp; capacity stress. Trade-table Max P&amp;L also has &quot;Push to equity&quot;.</div>
+    <div class="hint">{rs_note} <b>Max entries/day</b> ranks same-day fills by RS among the embedded quality-filtered set (0 = all). Use <b>Win cap</b> / <b>Exclude</b> / <b>Max concurrent</b> for robustness &amp; capacity stress. Trade-table Max P&amp;L also has &quot;Push to equity&quot;.</div>
   </div>
 
   <div class="tabs">
@@ -701,8 +791,9 @@ function simulate(trades, p) {{
   const monthly = {{}};
   const exits = {{}};
   if (trades.length) {{
-    eqCurve.push({{x: trades[0].buy, y: p.capital}});
-    ddCurve.push({{x: trades[0].buy, y: 0}});
+    const firstBuy = trades.reduce((a,t)=>t.buy<a?t.buy:a, trades[0].buy);
+    eqCurve.push({{x: firstBuy, y: p.capital}});
+    ddCurve.push({{x: firstBuy, y: 0}});
   }}
   let wins = 0, losses = 0, gp = 0, gl = 0;
   let sumHold = 0, nHold = 0;
@@ -959,8 +1050,8 @@ function ensureCharts() {{
   if (!eqChart) {{
     eqChart = new Chart(document.getElementById('eqChart'), {{
       type: 'line', data: {{ labels: [], datasets: [
-        {{ label:'Strategy', data: [], borderColor:'#2962ff', pointRadius:0, borderWidth:1.5, tension:0.05 }},
-        {{ label:'S&P 500 (SPY)', data: [], borderColor:'#f7931a', pointRadius:0, borderWidth:1.5, tension:0.05 }}
+        {{ label:'Strategy', data: [], borderColor:'#2962ff', pointRadius:0, borderWidth:1.5, tension:0.05, spanGaps:true }},
+        {{ label:'S&P 500 (SPY)', data: [], borderColor:'#f7931a', pointRadius:0, borderWidth:1.5, tension:0.05, spanGaps:true }}
       ]}}, options: common
     }});
   }}
@@ -995,6 +1086,7 @@ function render(sim, spy) {{
     m.from + ' to ' + m.to + ' · ' + m.n + ' trades · sizing ' + p.sizeMode + ' ' +
     (p.sizeMode === 'fixed' ? money(p.sizeVal,false) : (p.sizeVal.toFixed(2) + '%')) +
     ' · friction ' + p.friction.toFixed(2) + '% · max/day ' + (p.maxPerDay || 'all') +
+    (RAW.trades.length > m.n ? (' (' + RAW.trades.length + ' embedded)') : '') +
     ' · maxOpen ' + (p.maxOpen || 'none') +
     (p.winCap > 0 ? (' · winCap ' + p.winCap + '%') : '') +
     (p.excludeSym ? (' · excl ' + p.excludeSym) : '');
@@ -1020,7 +1112,12 @@ function render(sim, spy) {{
     (p.maxOpen > 0
       ? (' Max concurrent opens=' + p.maxOpen + ' (greedy by buy date / RS).')
       : ' Overlapping multi-symbol fills are not capital-constrained (set Max concurrent).') +
-    (p.winCap > 0 ? (' Win cap=' + p.winCap + '%.') : '')
+    (p.winCap > 0 ? (' Win cap=' + p.winCap + '%.') : '') +
+    (RAW.trades.length > m.n
+      ? (' Showing ' + m.n + ' of ' + RAW.trades.length + ' embedded quality-filtered trades after Max entries/day.')
+      : (p.maxPerDay > 0
+        ? ' Embedded trades are already unique by entry date, so Max entries/day cannot add fills (regenerate from *_trades_raw_*.csv).'
+        : ''))
   );
 
   renderRobustness(sim);
@@ -1340,12 +1437,12 @@ def main() -> int:
 
     trades_path = args.trades or _latest_trades_csv(args.outdir)
     logger.info("Loading trades: %s", trades_path)
-    df = pd.read_csv(trades_path)
+    df = load_trades_for_report(trades_path)
     if df.empty:
         logger.error("Empty trades CSV")
         return 1
 
-    # Always embed FULL trade list; UI can filter max/day
+    # Quality-filtered full list (no RS/day cap); UI filterMaxPerDay applies the cap
     raw_trades = trades_to_raw(df)
     max_per_day = args.max_per_day if args.max_per_day is not None else (1 if args.rs_top1 else 0)
 
@@ -1359,7 +1456,18 @@ def main() -> int:
             provider=args.provider,
         )
         spy_closes = spy_to_raw(spy_close, buy_min, sell_max)
-        logger.info("SPY bars for compare: %d", len(spy_closes))
+        logger.info(
+            "SPY bars for compare: %d (%s to %s)",
+            len(spy_closes),
+            spy_closes[0]["x"] if spy_closes else "n/a",
+            spy_closes[-1]["x"] if spy_closes else "n/a",
+        )
+        if spy_closes and spy_closes[0]["x"] > buy_min.strftime("%Y-%m-%d"):
+            logger.warning(
+                "SPY overlay starts %s after first trade %s; IB prefix may be missing",
+                spy_closes[0]["x"],
+                buy_min.strftime("%Y-%m-%d"),
+            )
     except Exception as exc:
         logger.warning("S&P 500 data skipped: %s", exc)
 
@@ -1419,6 +1527,7 @@ def main() -> int:
                 "n_trades_embedded": len(raw_trades),
                 "n_spy_bars": len(spy_closes),
                 "source": str(trades_path),
+                "source_raw": str(_raw_sibling_csv(trades_path) or ""),
             },
             indent=2,
         ),
@@ -1427,7 +1536,7 @@ def main() -> int:
 
     logger.info("Wrote %s (%d trades embedded)", out_html, len(raw_trades))
     print(f"\nInteractive TradingView-style report")
-    print(f"  Trades embedded: {len(raw_trades)}")
+    print(f"  Trades embedded: {len(raw_trades)} (quality-filtered, no RS/day cap)")
     print(f"  Default capital: ${args.initial_capital:,.0f}")
     print(f"  Default sizing:  {args.size_mode} = {size_val}")
     print(f"  Default max/day: {max_per_day or 'all'}")

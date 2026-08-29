@@ -54,6 +54,21 @@ def test_time_split_is_strictly_before_cutoff():
     assert te["buy_date"].min() >= pd.Timestamp("2023-01-01")
 
 
+def test_time_split_uses_buy_time_when_present():
+    df = pd.DataFrame(
+        {
+            "buy_date": ["2022-12-31", "2023-01-01"],
+            "buy_time": ["2022-12-31 15:45", "2023-01-01 09:45"],
+            "gain_pct_net": [1.0, -1.0],
+            "rsi_14": [40.0, 60.0],
+        }
+    )
+    tr, te = time_split(df, "2023-01-01")
+    assert len(tr) == 1
+    assert len(te) == 1
+    assert str(tr.iloc[0]["buy_date"])[:10] == "2022-12-31"
+
+
 def test_fit_and_eval_does_not_empty_train():
     df = _fake_trades()
     split = fit_and_eval(df, cutoff="2023-01-01", model_kind="logistic")

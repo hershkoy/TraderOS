@@ -186,7 +186,7 @@ def stock_entry_feature_series(
 
 
 def snapshot_stock_features(series: Dict[str, np.ndarray], entry_i: int) -> dict:
-    """Scalar snapshot at entry_i. Missing/OOB -> None."""
+    """Scalar snapshot at entry_i (pass fill_i-1 so the fill bar's close is unused). Missing/OOB -> None."""
     out: dict = {}
     for key, arr in series.items():
         if arr is None or entry_i < 0 or entry_i >= len(arr):
@@ -201,8 +201,61 @@ def snapshot_stock_features(series: Dict[str, np.ndarray], entry_i: int) -> dict
     return out
 
 
+def completed_asof(row: object, *, series_is_daily: bool) -> Optional[pd.Timestamp]:
+    """Last completed bar timestamp that is legal at a wick fill.
+
+    Stock/SPY features may only use bars with timestamp < fill time.
+    Daily bars are stamped at session midnight and already contain that
+    session's close, so an intra-day fill must use the prior session.
+    """
+
+    def _get(key: str) -> object:
+        if isinstance(row, dict):
+            return row.get(key)
+        try:
+            return row[key]
+        except Exception:
+            return None
+
+    def _ts(val: object) -> Optional[pd.Timestamp]:
+        if val is None or (isinstance(val, float) and not np.isfinite(val)):
+            return None
+        if pd.isna(val):
+            return None
+        text = str(val).strip()
+        if text in ("", "nan", "None", "NaT"):
+            return None
+        try:
+            return pd.Timestamp(val)
+        except Exception:
+            return None
+
+    feat = _ts(_get("feature_asof"))
+    buy_time = _ts(_get("buy_time"))
+    buy_date = _ts(_get("buy_date"))
+    if feat is not None:
+        ts = feat
+    elif buy_time is not None:
+        ts = buy_time
+        if not series_is_daily:
+            ts = ts - pd.Timedelta(milliseconds=1)
+    elif buy_date is not None:
+        ts = buy_date
+        if series_is_daily:
+            return ts
+    else:
+        return None
+    if series_is_daily:
+        session = pd.Timestamp(ts).normalize()
+        intraday = bool(ts.hour or ts.minute or ts.second or ts.microsecond) or buy_time is not None
+        if intraday:
+            return session - pd.Timedelta(days=1)
+        return ts
+    return ts
+
+
 def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.DataFrame:
-    """Attach SPY 20d return, SMA50 regime, and ATR%% at each buy_date."""
+    """Attach SPY 20d return, SMA50 regime, and ATR%% at last completed bar before fill."""
     if trades.empty:
         return trades
     out = trades.copy()
@@ -225,12 +278,23 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
     else:
         atr = pd.Series(np.nan, index=spy.index)
     atr_pct = (atr / close * 100.0).replace([np.inf, -np.inf], np.nan)
+    spy_is_daily = True
+    if len(spy.index) >= 3:
+        deltas = pd.Series(spy.index).diff().dropna()
+        med = deltas.median()
+        if pd.notna(med) and med < pd.Timedelta(hours=20):
+            spy_is_daily = False
 
     ret20: List[Optional[float]] = []
     above: List[Optional[int]] = []
     atr_list: List[Optional[float]] = []
     for _, row in out.iterrows():
-        asof = pd.Timestamp(row["buy_date"])
+        asof = completed_asof(row, series_is_daily=spy_is_daily)
+        if asof is None:
+            ret20.append(None)
+            above.append(None)
+            atr_list.append(None)
+            continue
         hist_c = close.loc[:asof]
         if len(hist_c) < 21:
             ret20.append(None)

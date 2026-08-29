@@ -32,6 +32,8 @@ MODEL_FEATURES: Sequence[str] = (
 )
 
 # Same-bar OHLC of the fill bar is not known at a wick limit fill.
+# After lagged snapshots (feature_asof=prior-bar), close_loc/RSI/%B on the
+# trade CSV are the previous completed bar and may be used in MODEL_FEATURES.
 NO_SAMEBAR_CLOSE_FEATURES: Sequence[str] = (
     "channel_pos",
     "atr_pct",
@@ -68,9 +70,14 @@ def time_split(
     cutoff: str = DEFAULT_CUTOFF,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     work = df.copy()
-    bd = pd.to_datetime(work["buy_date"])
+    if "buy_time" in work.columns:
+        bt = pd.to_datetime(work["buy_time"], errors="coerce")
+        bd = pd.to_datetime(work["buy_date"])
+        ts = bt.fillna(bd)
+    else:
+        ts = pd.to_datetime(work["buy_date"])
     cut = pd.Timestamp(cutoff)
-    return work.loc[bd < cut].copy(), work.loc[bd >= cut].copy()
+    return work.loc[ts < cut].copy(), work.loc[ts >= cut].copy()
 
 
 def feature_matrix(

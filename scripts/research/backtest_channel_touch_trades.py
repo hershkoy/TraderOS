@@ -51,6 +51,7 @@ from find_ascending_channels import (
 from utils.data.ohlcv_loader import load_ohlcv_many
 from utils.research.channel_touch_entry_features import (
     FEATURE_COLS,
+    completed_asof,
     enrich_spy_entry_features,
     max_beyond_width,
     snapshot_stock_features,
@@ -222,6 +223,113 @@ def _h2_rail_tag_fills(
                 break
             need_leave = True
             arm_i = int(i)
+            continue
+        if broke:
+            break
+    return out
+
+
+def _session_date(ts: object) -> pd.Timestamp:
+    t = pd.Timestamp(ts)
+    if t.tzinfo is not None:
+        t = t.tz_convert("US/Eastern")
+    return pd.Timestamp(t.date())
+
+
+def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if not isinstance(out.index, pd.DatetimeIndex):
+        out.index = pd.DatetimeIndex(out.index)
+    if out.index.tz is not None:
+        out.index = out.index.tz_convert(None)
+    return out.sort_index()
+
+
+def _map_15m_to_daily_i(m15_index: pd.DatetimeIndex, daily_dates: pd.DatetimeIndex) -> np.ndarray:
+    lookup = {_session_date(d): i for i, d in enumerate(daily_dates)}
+    out = np.full(len(m15_index), -1, dtype=int)
+    for j, ts in enumerate(m15_index):
+        di = lookup.get(_session_date(ts))
+        if di is not None:
+            out[j] = int(di)
+    return out
+
+
+def _h2_rail_tag_fills_on_15m(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    daily_i: np.ndarray,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    error_pct: float,
+    slip: float,
+    wait_daily: int,
+    min_wait_daily: int,
+    entry_touch: int = 3,
+    leave_width_frac: float = 0.20,
+    h2_high: float = float("nan"),
+) -> List[Tuple[int, float, int]]:
+    """From-above support tags on 15m bars using daily rail indices.
+
+    ``wait_daily`` / ``min_wait_daily`` are daily sessions after H2. Support is
+    evaluated at each 15m bar's daily session index (constant within the day).
+    """
+    want = max(3, int(entry_touch))
+    wait_n = max(1, int(wait_daily))
+    min_w = max(1, int(min_wait_daily))
+    leave_frac = max(0.0, float(leave_width_frac))
+    h2_px = float(h2_high)
+    n = len(high)
+    out: List[Tuple[int, float, int]] = []
+    touch_count = 2
+    arm_di = int(h2)
+    need_leave = False
+    for j in range(n):
+        di = int(daily_i[j])
+        if di < 0 or di <= int(h2):
+            continue
+        if di > int(h2) + wait_n:
+            break
+        sup = _line_at(support_y0, support_x0, support_slope, di)
+        resist = float(sup) + float(width or 0.0)
+        if j > 0:
+            di_prev = int(daily_i[j - 1])
+            if di_prev >= 0:
+                sup_prev = _line_at(support_y0, support_x0, support_slope, di_prev)
+                if float(close[j - 1]) < sup_prev * (1.0 - error_pct / 100.0):
+                    break
+        if np.isfinite(resist) and resist > 0 and float(close[j]) > resist * (1.0 + error_pct / 100.0):
+            break
+        if touch_count < 3 and np.isfinite(h2_px) and float(high[j]) > h2_px:
+            break
+        touched = _l3_rail_touch(float(high[j]), float(low[j]), float(close[j]), sup, error_pct)
+        broke = float(close[j]) < sup * (1.0 - error_pct / 100.0)
+        if need_leave:
+            leave_lvl = float(sup) + leave_frac * max(float(width or 0.0), 0.0)
+            if np.isfinite(float(close[j])) and float(close[j]) > leave_lvl:
+                need_leave = False
+            elif broke:
+                break
+            continue
+        if di < arm_di + min_w:
+            if touched or broke:
+                break
+            continue
+        if touched:
+            fill = _limit_fill_at_support(sup, float(low[j]), float(high[j]), slip)
+            touch_count += 1
+            if fill is not None and touch_count >= want:
+                out.append((j, float(fill), int(touch_count)))
+                break
+            if fill is None:
+                break
+            need_leave = True
+            arm_di = int(di)
             continue
         if broke:
             break
@@ -504,16 +612,14 @@ def trades_for_symbol(
     entry_slip_pct: float = 0.001,
     max_l3_wait_bars: int = 252,
     min_l3_wait_bars: int = 1,
+    df_15m: Optional[pd.DataFrame] = None,
+    intraday_fill: str = "",
+    feature_asof_prior_bar: bool = False,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
         return []
-    out = df.copy()
-    if not isinstance(out.index, pd.DatetimeIndex):
-        out.index = pd.DatetimeIndex(out.index)
-    if out.index.tz is not None:
-        out.index = out.index.tz_convert(None)
-    out = out.sort_index()
+    out = _normalize_ohlcv_frame(df)
 
     high = out["high"].to_numpy(dtype=float)
     low = out["low"].to_numpy(dtype=float)
@@ -527,19 +633,32 @@ def trades_for_symbol(
     dates = out.index
     n = len(out)
 
+    mode = (entry_mode or "pivot").lower().strip()
+    hybrid = mode == "l3_touch" and (intraday_fill or "").strip().lower() == "15m"
+    if hybrid:
+        if df_15m is None or df_15m.empty:
+            return []
+        m15 = _normalize_ohlcv_frame(df_15m)
+        include_time = True
+        feature_asof_prior_bar = True
+    else:
+        m15 = None
+
     squeeze_mom = None
     wide = None
     need_squeeze = squeeze_adaptive or squeeze_fade_tighten or bool(entry_features)
+    feat_frame = m15 if hybrid else out
     if need_squeeze:
         from indicators.ttm_squeeze import calculate_squeeze_momentum
 
-        mom = calculate_squeeze_momentum(out, lengthKC=20, use_logging=False)
+        mom = calculate_squeeze_momentum(feat_frame, lengthKC=20, use_logging=False)
         squeeze_mom = mom.to_numpy(dtype=float)
         if squeeze_adaptive and trail_pct_wide is not None:
             wide = float(trail_pct_wide)
 
-    feat_series = stock_entry_feature_series(out, squeeze_mom=squeeze_mom) if entry_features else None
-    mode = (entry_mode or "pivot").lower().strip()
+    feat_series = (
+        stock_entry_feature_series(feat_frame, squeeze_mom=squeeze_mom) if entry_features else None
+    )
     if "min_rally_pct" in channel_kwargs:
         channel_kwargs.setdefault(
             "min_intervening_rally_pct", channel_kwargs.pop("min_rally_pct")
@@ -567,31 +686,69 @@ def trades_for_symbol(
         min_wait = max(1, int(min_l3_wait_bars))
         slip = float(entry_slip_pct)
         want_touch = max(3, int(entry_touch))
-        for ch in setups:
-            sx0 = int(ch["support_x0"])
-            sy0 = float(ch["support_y0"])
-            sslope = float(ch["support_slope"])
-            h2 = int(ch.get("h2_idx", -1))
-            if h2 < 0:
-                continue
-            tags = _h2_rail_tag_fills(
-                high,
-                low,
-                close,
-                support_x0=sx0,
-                support_y0=sy0,
-                support_slope=sslope,
-                width=float(ch.get("channel_width") or 0.0),
-                h2=h2,
-                n=n,
-                error_pct=error_pct,
-                slip=slip,
-                wait=wait,
-                min_wait=min_wait,
-                entry_touch=want_touch,
+        if hybrid:
+            m15_high = m15["high"].to_numpy(dtype=float)
+            m15_low = m15["low"].to_numpy(dtype=float)
+            m15_close = m15["close"].to_numpy(dtype=float)
+            m15_vol = (
+                m15["volume"].to_numpy(dtype=float)
+                if "volume" in m15.columns
+                else np.full(len(m15), np.nan, dtype=float)
             )
-            for i, fill, tnum in tags:
-                pending.append((ch, i, fill, tnum, i))
+            m15_dates = m15.index
+            daily_i_map = _map_15m_to_daily_i(m15_dates, dates)
+            for ch in setups:
+                sx0 = int(ch["support_x0"])
+                sy0 = float(ch["support_y0"])
+                sslope = float(ch["support_slope"])
+                h2 = int(ch.get("h2_idx", -1))
+                if h2 < 0:
+                    continue
+                tags = _h2_rail_tag_fills_on_15m(
+                    m15_high,
+                    m15_low,
+                    m15_close,
+                    daily_i_map,
+                    support_x0=sx0,
+                    support_y0=sy0,
+                    support_slope=sslope,
+                    width=float(ch.get("channel_width") or 0.0),
+                    h2=h2,
+                    error_pct=error_pct,
+                    slip=slip,
+                    wait_daily=wait,
+                    min_wait_daily=min_wait,
+                    entry_touch=want_touch,
+                    h2_high=float(high[h2]) if 0 <= h2 < n else float("nan"),
+                )
+                for j, fill, tnum in tags:
+                    pending.append((ch, j, fill, tnum, j, int(daily_i_map[j])))
+        else:
+            for ch in setups:
+                sx0 = int(ch["support_x0"])
+                sy0 = float(ch["support_y0"])
+                sslope = float(ch["support_slope"])
+                h2 = int(ch.get("h2_idx", -1))
+                if h2 < 0:
+                    continue
+                tags = _h2_rail_tag_fills(
+                    high,
+                    low,
+                    close,
+                    support_x0=sx0,
+                    support_y0=sy0,
+                    support_slope=sslope,
+                    width=float(ch.get("channel_width") or 0.0),
+                    h2=h2,
+                    n=n,
+                    error_pct=error_pct,
+                    slip=slip,
+                    wait=wait,
+                    min_wait=min_wait,
+                    entry_touch=want_touch,
+                )
+                for i, fill, tnum in tags:
+                    pending.append((ch, i, fill, tnum, i, i))
     else:
         channels = (
             find_channels_windowed(
@@ -626,24 +783,52 @@ def trades_for_symbol(
                 )
                 if entry_i is None:
                     continue
-                pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx)))
+                pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx), int(entry_i)))
 
     pending.sort(key=lambda t: (int(t[1]), int(t[0].get("h2_idx", 0))))
     trades: List[dict] = []
     busy_until = -1
-    for ch, entry_i, fill_px, touch_num, t_idx in pending:
-        if entry_i is None or entry_i <= busy_until or entry_i >= n:
+    if hybrid:
+        sim_high = m15_high
+        sim_low = m15_low
+        sim_close = m15_close
+        sim_dates = m15_dates
+        sim_n = len(m15)
+        hold_max = None
+        if max_hold_days is not None:
+            hold_max = int(max_hold_days) * 26
+    else:
+        sim_high = high
+        sim_low = low
+        sim_close = close
+        sim_dates = dates
+        sim_n = n
+        hold_max = max_hold_days
+        m15_high = high
+        m15_low = low
+        m15_close = close
+        m15_dates = dates
+        daily_i_map = None
+
+    for ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i in pending:
+        if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
             continue
         sx0 = int(ch["support_x0"])
         sy0 = float(ch["support_y0"])
         sslope = float(ch["support_slope"])
         width = float(ch["channel_width"])
-        atr_i = float(atr[entry_i]) if entry_i < len(atr) else float("nan")
+        line_i = int(daily_entry_i) if hybrid else int(entry_i)
+        atr_i_idx = max(0, line_i - 1) if (hybrid or feature_asof_prior_bar) else line_i
+        if hybrid:
+            atr_i = float(atr[atr_i_idx]) if atr_i_idx < len(atr) else float("nan")
+        else:
+            atr_src_i = max(0, entry_i - 1) if feature_asof_prior_bar else entry_i
+            atr_i = float(atr[atr_src_i]) if atr_src_i < len(atr) else float("nan")
         sim = _simulate_trade(
-            high,
-            low,
-            close,
-            dates,
+            sim_high,
+            sim_low,
+            sim_close,
+            sim_dates,
             entry_i,
             stop_pct=stop_pct,
             trail_pct=trail_pct,
@@ -659,10 +844,10 @@ def trades_for_symbol(
             support_y0=sy0,
             support_slope=sslope,
             channel_width=width,
-            resist_exit=resist_exit,
+            resist_exit=resist_exit and not hybrid,
             trail_pct_tight=trail_pct_tight,
             squeeze_fade_tighten=squeeze_fade_tighten,
-            max_hold_days=max_hold_days,
+            max_hold_days=hold_max,
             include_time=include_time,
             entry_px=fill_px,
         )
@@ -670,8 +855,12 @@ def trades_for_symbol(
             continue
         entry_px = float(sim["buy_price"])
         atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
-        adv = _adv_20(close, volume, entry_i, lookback=adv_lookback)
-        support_at = _line_at(sy0, sx0, sslope, entry_i)
+        if hybrid:
+            adv = _adv_20(close, volume, atr_i_idx, lookback=adv_lookback)
+        else:
+            adv_i = max(0, entry_i - 1) if feature_asof_prior_bar else entry_i
+            adv = _adv_20(close, volume, adv_i, lookback=adv_lookback)
+        support_at = _line_at(sy0, sx0, sslope, line_i)
         resist_at = support_at + width
         channel_pos = (
             (entry_px - support_at) / width
@@ -683,8 +872,22 @@ def trades_for_symbol(
             if entry_px > 0 and np.isfinite(resist_at)
             else float("nan")
         )
-        beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
-        buy_ts = pd.Timestamp(dates[entry_i])
+        if hybrid:
+            beyond_prior = (
+                max_beyond_width(high, sy0, sx0, sslope, width, sx0, max(sx0, line_i - 1))
+                if line_i > sx0
+                else 0.0
+            )
+            fill_over = float("nan")
+            if width > 0 and np.isfinite(resist_at):
+                fill_over = (float(sim_high[entry_i]) - float(resist_at)) / float(width)
+            beyond = max(
+                float(beyond_prior) if np.isfinite(beyond_prior) else 0.0,
+                float(fill_over) if np.isfinite(fill_over) else 0.0,
+            )
+        else:
+            beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
+        buy_ts = pd.Timestamp(sim_dates[entry_i])
         try:
             ch_start_ts = pd.Timestamp(ch["start_date"])
             ch_end_ts = pd.Timestamp(ch.get("h2_date") or ch["end_date"])
@@ -693,17 +896,25 @@ def trades_for_symbol(
         except Exception:
             span_days = None
             age_days = None
-        feat_snap = snapshot_stock_features(feat_series, entry_i) if feat_series is not None else {}
+        feat_i = entry_i - 1 if feature_asof_prior_bar else entry_i
+        feat_snap = snapshot_stock_features(feat_series, feat_i) if feat_series is not None else {}
+        feat_asof = None
+        if feat_series is not None and 0 <= feat_i < len(sim_dates):
+            feat_asof = pd.Timestamp(sim_dates[feat_i]).strftime("%Y-%m-%d %H:%M")
+        h2_idx = int(ch.get("h2_idx", t_idx))
+        wait_bars = int(line_i - h2_idx) if hybrid else int(entry_i - h2_idx)
+        touch_ts = pd.Timestamp(sim_dates[t_idx]) if 0 <= t_idx < len(sim_dates) else buy_ts
+        touch_px = float(sim_low[t_idx]) if 0 <= t_idx < len(sim_low) else float("nan")
         trades.append(
             {
                 "stock": symbol.upper(),
                 "channel_start": ch["start_date"],
                 "channel_end": ch.get("h2_date") or ch["end_date"],
                 "touch_num": touch_num,
-                "touch_date": dates[t_idx].strftime("%Y-%m-%d"),
-                "touch_price": round(float(low[t_idx]), 4),
+                "touch_date": touch_ts.strftime("%Y-%m-%d"),
+                "touch_price": round(touch_px, 4) if np.isfinite(touch_px) else None,
                 **(
-                    {"touch_time": dates[t_idx].strftime("%Y-%m-%d %H:%M")}
+                    {"touch_time": touch_ts.strftime("%Y-%m-%d %H:%M")}
                     if include_time
                     else {}
                 ),
@@ -720,12 +931,13 @@ def trades_for_symbol(
                 ),
                 "bars_span": ch.get("bars_span"),
                 "entry_mode": entry_mode,
-                "wait_bars": int(entry_i - int(ch.get("h2_idx", t_idx))),
+                "wait_bars": wait_bars,
                 "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
                 "channel_span_days": span_days,
                 "channel_age_at_buy_days": age_days,
                 "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
                 "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
+                **({"feature_asof": feat_asof} if feat_asof else {}),
                 **feat_snap,
             }
         )
@@ -762,6 +974,9 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         entry_slip_pct=float(payload.get("entry_slip_pct", 0.001)),
         max_l3_wait_bars=int(payload.get("max_l3_wait_bars", 252)),
         min_l3_wait_bars=int(payload.get("min_l3_wait_bars", 1)),
+        df_15m=payload.get("df_15m"),
+        intraday_fill=str(payload.get("intraday_fill") or ""),
+        feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -855,13 +1070,16 @@ def enrich_rs(
         spy.index = spy.index.tz_convert(None)
 
     close_cache: Dict[str, pd.Series] = {}
+    series_is_daily = int(bars_per_session) <= 1
     for lb in lookbacks:
         col = f"rs_spy_{lb}d"
         vals: List[float] = []
         for _, row in out.iterrows():
             sym = str(row["stock"]).upper()
-            asof_src = row["buy_time"] if "buy_time" in out.columns and pd.notna(row.get("buy_time")) else row["buy_date"]
-            asof = pd.Timestamp(asof_src)
+            asof = completed_asof(row, series_is_daily=series_is_daily)
+            if asof is None:
+                vals.append(float("nan"))
+                continue
             if sym not in close_cache:
                 df = panels.get(sym)
                 if df is None or df.empty:
@@ -1090,7 +1308,9 @@ def enrich_spy_regime(trades: pd.DataFrame, spy_df: pd.DataFrame, *, sma_len: in
     sma = spy.rolling(int(sma_len), min_periods=int(sma_len)).mean()
     above: List[Optional[bool]] = []
     for _, row in out.iterrows():
-        asof = pd.Timestamp(row["buy_date"])
+        asof = completed_asof(row, series_is_daily=True)
+        if asof is None:
+            asof = pd.Timestamp(row["buy_date"])
         hist_c = spy.loc[:asof]
         hist_s = sma.loc[:asof]
         if hist_c.empty or hist_s.empty or not np.isfinite(float(hist_s.iloc[-1])):
@@ -1327,7 +1547,7 @@ REPORT_COLS = [
 
 def _export_trade_columns(df: pd.DataFrame) -> List[str]:
     cols = [c for c in REPORT_COLS if c in df.columns]
-    extra = [c for c in FEATURE_COLS if c in df.columns and c not in cols]
+    extra = [c for c in list(FEATURE_COLS) + ["feature_asof"] if c in df.columns and c not in cols]
     if "gain_pct_net" in df.columns and "gain_pct_net" not in cols:
         cols = cols + ["gain_pct_net"]
     return cols + extra
@@ -1600,8 +1820,22 @@ def main() -> int:
         "--min-close-loc",
         type=float,
         default=None,
-        help="Keep entries whose tag-bar close_loc >= this (0.5=close in upper half). "
-        "Known at bar close; live fill is close/next bar, not the wick",
+        help="Keep entries whose close_loc >= this (0.5=prior completed bar closed in upper half "
+        "when --feature-asof prior-bar). Not the fill bar's close on a wick fill.",
+    )
+    ap.add_argument(
+        "--intraday-fill",
+        default="",
+        choices=("", "15m"),
+        help="Daily l3_touch: first IB 15m from-above tag that session. Skip symbols with no 15m. "
+        "Nightly/pivot unchanged (default off).",
+    )
+    ap.add_argument(
+        "--feature-asof",
+        default="auto",
+        choices=("auto", "prior-bar", "entry-bar"),
+        help="Stock feature snapshot: prior-bar=last completed bar before fill (no fill-bar close); "
+        "entry-bar=fill bar (leaky for wick fills); auto=prior-bar for l3_touch 15m/hybrid.",
     )
     ap.add_argument("--atr-stop-mult", type=float, default=None)
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
@@ -1616,6 +1850,19 @@ def main() -> int:
         default=ROOT / "reports" / "ascending_channels",
     )
     args = ap.parse_args()
+    intraday_fill = (args.intraday_fill or "").strip().lower()
+    feat_asof_mode = (args.feature_asof or "auto").strip().lower()
+    use_prior_bar = feat_asof_mode == "prior-bar" or (
+        feat_asof_mode == "auto"
+        and str(args.entry_mode) == "l3_touch"
+        and (
+            (args.preset or "").strip() == "15m"
+            or str(args.timeframe) == "15m"
+            or intraday_fill == "15m"
+        )
+    )
+    if feat_asof_mode == "entry-bar":
+        use_prior_bar = False
     if (args.preset or "").strip() == "15m":
         overlay_preset(args, PRESET_15M, sys.argv[1:])
         logger.info(
@@ -1647,14 +1894,19 @@ def main() -> int:
 
     t0 = time.perf_counter()
     t_sym = time.perf_counter()
+    pick_provider = args.provider
+    pick_tf = args.timeframe
+    if intraday_fill == "15m" and not args.symbols.strip() and not args.all_symbols:
+        pick_provider = "IB"
+        pick_tf = "15m"
     if args.symbols.strip():
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     elif args.all_symbols:
         symbols = list_symbols_fast(args.provider, args.timeframe)
         logger.info("Full universe list: %d symbols (%.1fs)", len(symbols), time.perf_counter() - t_sym)
     else:
-        symbols = _pick_symbols(args.n_symbols, args.provider, args.timeframe, args.min_bars)
-        if "GLD" not in symbols and str(args.timeframe) == "1d":
+        symbols = _pick_symbols(args.n_symbols, pick_provider, pick_tf, args.min_bars)
+        if "GLD" not in symbols and str(args.timeframe) == "1d" and intraday_fill != "15m":
             symbols = ["GLD"] + symbols
 
     # Always include RS benchmark (SPY unless --rs-symbol)
@@ -1699,6 +1951,31 @@ def main() -> int:
         time.perf_counter() - t_load,
     )
 
+    panels_15m: Dict[str, pd.DataFrame] = {}
+    n_skip_15m = 0
+    if intraday_fill == "15m":
+        t_15 = time.perf_counter()
+        names_15 = sorted({s.upper() for s in symbols})
+        panels_15m = load_ohlcv_many(
+            names_15,
+            timeframe="15m",
+            provider="IB",
+            start=datetime.strptime(args.start, "%Y-%m-%d"),
+            end=datetime.strptime(args.end, "%Y-%m-%d"),
+            use_cache=True,
+            chunk_size=args.chunk_size,
+            workers=max(1, int(args.load_workers)),
+        )
+        have_15 = {s for s, df in panels_15m.items() if df is not None and not df.empty}
+        n_skip_15m = sum(1 for s in symbols if s != rs_symbol and s not in have_15)
+        logger.info(
+            "IB 15m fill panels %d/%d in %.1fs (skip no-15m=%d; intersection only, no prior-day fallback)",
+            len(have_15),
+            len(names_15),
+            time.perf_counter() - t_15,
+            n_skip_15m,
+        )
+
     spy_df = panels.get(rs_symbol)
     rs_panels = panels
     rs_bars_per_session = int(args.bars_per_session)
@@ -1734,6 +2011,18 @@ def main() -> int:
         if spy_df is None or spy_df.empty:
             logger.error("%s panel missing; cannot compute relative strength", rs_symbol)
             return 1
+
+    if (
+        intraday_fill == "15m"
+        and rs_symbol in panels_15m
+        and panels_15m[rs_symbol] is not None
+        and not panels_15m[rs_symbol].empty
+    ):
+        spy_df = panels_15m[rs_symbol]
+        rs_panels = panels_15m
+        rs_bars_per_session = 26
+        rs_source = "IB 15m (completed bar before fill)"
+        logger.info("Hybrid RS: IB 15m %s, bars_per_session=26, as-of last completed 15m", rs_symbol)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1841,11 +2130,25 @@ def main() -> int:
             "entry_slip_pct": float(args.entry_slip_pct),
             "max_l3_wait_bars": int(args.max_l3_wait_bars),
             "min_l3_wait_bars": int(args.min_l3_wait_bars),
+            "df_15m": panels_15m.get(sym) if intraday_fill == "15m" else None,
+            "intraday_fill": intraday_fill,
+            "feature_asof_prior_bar": bool(use_prior_bar),
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
         if sym in panels and sym != rs_symbol
+        and (
+            intraday_fill != "15m"
+            or (sym in panels_15m and panels_15m[sym] is not None and not panels_15m[sym].empty)
+        )
     ]
+    if intraday_fill == "15m":
+        logger.info(
+            "Hybrid l3_touch 15m fill: %d symbols with daily+15m (skipped %d without 15m) feature_asof=%s",
+            len(payloads),
+            n_skip_15m,
+            "prior-bar" if use_prior_bar else "entry-bar",
+        )
     if args.workers and args.workers > 1 and len(payloads) > 1:
         with ProcessPoolExecutor(max_workers=int(args.workers)) as pool:
             futs = [pool.submit(_worker_symbol_trades, p) for p in payloads]
@@ -1858,7 +2161,11 @@ def main() -> int:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_prefix = "channel_touch_15m" if (args.preset or "").strip() == "15m" else "channel_touch"
+    file_prefix = (
+        "channel_touch_hybrid"
+        if intraday_fill == "15m"
+        else ("channel_touch_15m" if (args.preset or "").strip() == "15m" else "channel_touch")
+    )
     trades_csv = args.outdir / f"{file_prefix}_trades_{stamp}.csv"
     raw_csv = args.outdir / f"{file_prefix}_trades_raw_{stamp}.csv"
     summary_txt = args.outdir / f"{file_prefix}_trades_summary_{stamp}.txt"
@@ -1960,6 +2267,7 @@ def main() -> int:
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
         f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} entry_features={bool(args.entry_features)}",
+        f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         f"elapsed_sec={elapsed:.1f}",
         "",
         *[f"{k}={v}" for k, v in summary.items()],

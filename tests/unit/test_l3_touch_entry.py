@@ -13,8 +13,10 @@ sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from backtest_channel_touch_trades import (  # noqa: E402
     _h2_rail_tag_fills,
+    _h2_rail_tag_fills_on_15m,
     _l3_rail_touch,
     _limit_fill_at_support,
+    _map_15m_to_daily_i,
     _support_tagged,
     trades_for_symbol,
 )
@@ -319,3 +321,189 @@ def test_l4_touch_trade_fills_second_tag():
     assert int(t4[0]["touch_num"]) == 4
     assert pd.Timestamp(t4[0]["buy_date"]) >= idx[l4] - pd.Timedelta(days=5)
     assert pd.Timestamp(t4[0]["buy_date"]) > pd.Timestamp(t3[0]["buy_date"])
+
+
+L3_TRADE_KW = dict(
+    entry_mode="l3_touch",
+    pivot_len=3,
+    squeeze_adaptive=False,
+    stop_pct=0.03,
+    trail_pct=0.10,
+    min_bars_apart=8,
+    max_low_pivots=16,
+    error_pct=2.0,
+    min_rally_pct=2.0,
+    min_pullback_pct=2.0,
+    min_total_rise_pct=2.0,
+    entry_slip_pct=0.001,
+    max_l3_wait_bars=80,
+    min_l3_wait_bars=6,
+)
+
+
+def _l3_daily_channel():
+    n = 160
+    idx = pd.date_range("2024-01-02", periods=n, freq="B")
+    support = 10.0 + 0.03 * np.arange(n)
+    close = support + 1.0
+    high = close + 0.4
+    low = close - 0.4
+    l1, h1, l2, h2, l3 = 20, 32, 44, 58, 72
+    low[l1] = support[l1]
+    high[l1] = support[l1] + 0.3
+    close[l1] = support[l1] + 0.15
+    high[h1] = support[h1] + 2.0
+    low[h1] = support[h1] + 1.4
+    close[h1] = support[h1] + 1.8
+    low[l2] = support[l2]
+    high[l2] = support[l2] + 0.3
+    close[l2] = support[l2] + 0.15
+    high[h2] = support[h2] + 2.0
+    low[h2] = support[h2] + 1.4
+    close[h2] = support[h2] + 1.8
+    low[l3] = support[l3] - 0.05
+    high[l3] = support[l3] + 0.8
+    close[l3] = support[l3] + 0.6
+    df = pd.DataFrame(
+        {"open": close, "high": high, "low": low, "close": close, "volume": 1e5},
+        index=idx,
+    )
+    return df, idx, support, h2, l3
+
+
+def test_l3_touch_prior_bar_snapshot_skips_fill_close():
+    df, _idx, _support, _h2, _l3 = _l3_daily_channel()
+    leaky = trades_for_symbol("TEST", df, entry_features=True, feature_asof_prior_bar=False, **L3_TRADE_KW)
+    lagged = trades_for_symbol("TEST", df, entry_features=True, feature_asof_prior_bar=True, **L3_TRADE_KW)
+    assert leaky and lagged
+    fill_i = int(leaky[0]["entry_i"])
+    from utils.research.channel_touch_entry_features import (  # noqa: WPS433
+        snapshot_stock_features,
+        stock_entry_feature_series,
+    )
+
+    series = stock_entry_feature_series(df)
+    prior = snapshot_stock_features(series, fill_i - 1)
+    fill = snapshot_stock_features(series, fill_i)
+    assert lagged[0]["close_loc"] == prior["close_loc"]
+    assert leaky[0]["close_loc"] == fill["close_loc"]
+    assert lagged[0]["close_loc"] != leaky[0]["close_loc"]
+    assert lagged[0]["rsi_14"] == prior["rsi_14"]
+    assert int(lagged[0]["entry_i"]) == fill_i
+
+
+def test_hybrid_skips_when_15m_panel_missing():
+    df, _idx, _support, _h2, _l3 = _l3_daily_channel()
+    daily = trades_for_symbol("TEST", df, entry_features=False, **L3_TRADE_KW)
+    assert daily, "daily wick path should still fill"
+    skipped = trades_for_symbol(
+        "TEST",
+        df,
+        entry_features=False,
+        intraday_fill="15m",
+        df_15m=None,
+        **L3_TRADE_KW,
+    )
+    assert skipped == []
+    empty = trades_for_symbol(
+        "TEST",
+        df,
+        entry_features=False,
+        intraday_fill="15m",
+        df_15m=pd.DataFrame(),
+        **L3_TRADE_KW,
+    )
+    assert empty == []
+
+
+def test_h2_rail_tag_on_15m_fourth_bar():
+    daily_idx = pd.date_range("2024-03-01", periods=12, freq="B")
+    h2 = 3
+    fill_di = 9
+    y0, slope, width = 10.0, 0.03, 2.0
+    times = pd.date_range(daily_idx[fill_di] + pd.Timedelta(hours=9, minutes=30), periods=6, freq="15min")
+    n15 = len(times)
+    sup = y0 + slope * (fill_di - 0)
+    close = np.full(n15, sup + 1.0)
+    high = close + 0.25
+    low = close - 0.25
+    i_tag = 3
+    low[i_tag] = sup - 0.04
+    high[i_tag] = sup + 0.45
+    close[i_tag] = sup + 0.25
+    daily_i = _map_15m_to_daily_i(pd.DatetimeIndex(times), pd.DatetimeIndex(daily_idx))
+    assert int(daily_i[i_tag]) == fill_di
+    tags = _h2_rail_tag_fills_on_15m(
+        high,
+        low,
+        close,
+        daily_i,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=h2,
+        error_pct=1.2,
+        slip=0.001,
+        wait_daily=20,
+        min_wait_daily=1,
+        entry_touch=3,
+        h2_high=sup + 3.0,
+    )
+    assert tags, "expected 15m tag"
+    assert tags[0][0] == i_tag
+
+
+def test_hybrid_tag_bar4_features_from_bar3():
+    df, idx, support, h2, l3 = _l3_daily_channel()
+    fill_di = l3
+    fill_day = idx[fill_di]
+    times = pd.date_range(fill_day + pd.Timedelta(hours=9, minutes=30), periods=8, freq="15min")
+    sup = float(support[fill_di])
+    n15 = len(times)
+    close15 = np.full(n15, sup + 1.0)
+    high15 = close15 + 0.3
+    low15 = close15 - 0.3
+    for i in range(3):
+        low15[i] = sup + 0.70
+        high15[i] = sup + 1.10
+        close15[i] = low15[i] + 0.02
+    i_tag = 3
+    low15[i_tag] = sup - 0.04
+    high15[i_tag] = sup + 0.80
+    close15[i_tag] = high15[i_tag] - 0.02
+    for i in range(4, n15):
+        close15[i] = sup + 1.3
+        high15[i] = close15[i] + 0.2
+        low15[i] = close15[i] - 0.2
+    df15 = pd.DataFrame(
+        {"open": close15, "high": high15, "low": low15, "close": close15, "volume": 1e4},
+        index=times,
+    )
+    from utils.research.channel_touch_entry_features import (  # noqa: WPS433
+        snapshot_stock_features,
+        stock_entry_feature_series,
+    )
+
+    series15 = stock_entry_feature_series(df15)
+    loc3 = snapshot_stock_features(series15, 2)["close_loc"]
+    loc4 = snapshot_stock_features(series15, 3)["close_loc"]
+    assert loc3 is not None and loc4 is not None
+    assert abs(float(loc3) - float(loc4)) > 0.4
+
+    rows = trades_for_symbol(
+        "TEST",
+        df,
+        entry_features=True,
+        intraday_fill="15m",
+        df_15m=df15,
+        **L3_TRADE_KW,
+    )
+    assert rows, "expected hybrid 15m fill"
+    trade = rows[0]
+    assert trade["buy_time"] == times[i_tag].strftime("%Y-%m-%d %H:%M")
+    assert trade["close_loc"] == loc3
+    assert trade["close_loc"] != loc4
+    assert trade["feature_asof"] == times[2].strftime("%Y-%m-%d %H:%M")
+    assert int(trade["entry_i"]) == i_tag
+

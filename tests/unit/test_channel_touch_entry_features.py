@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "research"))
 from backtest_channel_touch_trades import filter_trades
 from analyze_channel_touch_entry_features import analyze_entry_features
 from utils.research.channel_touch_entry_features import (
+    completed_asof,
     enrich_spy_entry_features,
     max_beyond_width,
     snapshot_stock_features,
@@ -120,3 +121,44 @@ def test_enrich_spy_and_analyze_buckets():
     buckets, spearman, _clones = analyze_entry_features(out, friction_pct=0.0)
     assert not buckets.empty
     assert "rsi_14" in set(spearman["feature"])
+
+
+def test_completed_asof_daily_excludes_fill_session():
+    row = {
+        "buy_date": "2024-06-03",
+        "buy_time": "2024-06-03 10:15",
+        "feature_asof": "2024-06-03 10:00",
+    }
+    asof = completed_asof(row, series_is_daily=True)
+    assert asof == pd.Timestamp("2024-06-02")
+    intra = completed_asof(row, series_is_daily=False)
+    assert intra == pd.Timestamp("2024-06-03 10:00")
+
+
+def test_enrich_spy_does_not_use_fill_day_close():
+    idx = pd.date_range("2024-01-02", periods=80, freq="B")
+    close = pd.Series(np.linspace(100.0, 120.0, 80), index=idx)
+    close.iloc[-1] = 999.0
+    spy = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": 1e6,
+        }
+    )
+    trades = pd.DataFrame(
+        [
+            {
+                "stock": "AAA",
+                "buy_date": idx[-1].strftime("%Y-%m-%d"),
+                "buy_time": idx[-1].strftime("%Y-%m-%d") + " 10:15",
+                "feature_asof": idx[-1].strftime("%Y-%m-%d") + " 10:00",
+                "gain_pct": 1.0,
+            }
+        ]
+    )
+    out = enrich_spy_entry_features(trades, spy)
+    # last completed daily close is prior session, not 999
+    assert float(out.loc[0, "spy_ret_20d"]) < 50.0
