@@ -3,8 +3,9 @@
 ## Goal
 
 Productionize channel-touch monitoring: nightly Windows Task Scheduler job that
-refreshes ALPACA `1d` bars, scans for pivot-confirmation entries on the latest
-bar (edge-v2 keepers: RS top1 + ATR hard-stop k=2.0), and Telegram-notifies.
+refreshes ALPACA `1d` bars, scans for **l3_touch** fills on the latest bar
+(min-wait 6, RSI<=50, in-channel, span<=365, beyond-width 0.25, RS top1,
+ATR hard-stop k=2.0), and Telegram-notifies.
 
 ## Components
 
@@ -60,10 +61,15 @@ schtasks /Run /TN "backTraderTest\ChannelTouchNightly"
 
 ## Signal rules (live)
 
-- Ascending-channel bottom touch >= 3, pivot confirmation on as-of bar
-- Same-day RS vs SPY (126d) keep top 1
-- ATR hard stop mult = 2.0 clamped to 1.5%%-6%% of price
+Updated 2026-08-29 to the daily l3_touch keeper (was pivot-confirm):
+
+- `entry_mode=l3_touch`: arm at H2, fill first from-above support tag + 0.1% slip on as-of bar
+- Abort if support is tagged before 6 bars after H2; do not retarget a later dip
+- Quality then RS: in-channel, span<=365d, max beyond-width 0.25, RSI 14 <= 50, then same-day RS vs SPY (126d) top 1
+- ATR hard stop mult = 2.0 clamped to 1.5%-6% of fill price
+- Windowed 504/252 so v1 `max_low_pivots=16` still sees older H2 setups
 - Does **not** use `entry_mode=reclaim` (look-ahead)
+- `--entry-mode pivot` remains available to revert the old confirm-bar path
 
 ## Notes
 

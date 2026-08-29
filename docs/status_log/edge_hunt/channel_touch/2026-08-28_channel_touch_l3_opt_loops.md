@@ -65,7 +65,9 @@ n=203 E +3.30 PF 2.29 on bounce-raw, years all positive, drop-top-3 still PF 1.9
 
 ## Soft promote (research l3_touch)
 
-`--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` on top of in-channel + span365 + beyond 0.25. Nightly scanner stays **pivot** until explicitly switched.
+`--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` on top of in-channel + span365 + beyond 0.25.
+
+Nightly scanner was switched to this stack on 2026-08-29. See [nightly l3](2026-08-29_channel_touch_nightly_l3.md).
 
 ## Artifacts
 

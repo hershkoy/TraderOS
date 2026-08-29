@@ -2,7 +2,8 @@
 """
 Nightly channel-touch job:
   1) Refresh ALPACA 1d bars for the stored daily universe
-  2) Scan for pivot-confirmation entries on the latest bar (RS top1, ATR k=2.0)
+  2) Scan for l3_touch fills on the latest bar (min-wait 6, RSI<=50,
+     in-channel + span365 + beyond 0.25, RS top1, ATR k=2.0)
   3) Telegram-notify triggers (and a no-signal heartbeat)
 
 Usage (Windows CMD):
@@ -31,6 +32,7 @@ from utils.data.ohlcv_loader import load_ohlcv_many
 from utils.data.update_universe_data import UniverseDataUpdater
 from utils.notify.telegram_pinger import send_message
 from utils.scanning.channel_touch import (
+    LIVE_DEFAULTS,
     format_triggers_message,
     resolve_as_of_from_panels,
     scan_live_triggers,
@@ -94,8 +96,7 @@ def _notify(text: str, *, dry_run: bool) -> None:
     send_message(text)
 
 
-def main() -> int:
-    load_env_file()
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Nightly channel-touch update + scan + Telegram")
     ap.add_argument("--skip-update", action="store_true", help="Skip ALPACA 1d refresh")
     ap.add_argument("--dry-run", action="store_true", help="Scan only; do not send Telegram")
@@ -109,8 +110,42 @@ def main() -> int:
     ap.add_argument("--load-workers", type=int, default=8)
     ap.add_argument("--chunk-size", type=int, default=50)
     ap.add_argument("--max-symbols", type=int, default=0, help="Debug: limit universe size")
-    ap.add_argument("--max-entries-per-day", type=int, default=1)
-    ap.add_argument("--atr-stop-mult", type=float, default=2.0)
+    ap.add_argument("--max-entries-per-day", type=int, default=int(LIVE_DEFAULTS["max_entries_per_day"]))
+    ap.add_argument("--atr-stop-mult", type=float, default=float(LIVE_DEFAULTS["atr_stop_mult"]))
+    ap.add_argument(
+        "--entry-mode",
+        default=str(LIVE_DEFAULTS["entry_mode"]),
+        choices=("l3_touch", "pivot", "reclaim"),
+        help="Live fill mode (default: l3_touch keeper)",
+    )
+    ap.add_argument("--entry-touch", type=int, default=int(LIVE_DEFAULTS["entry_touch"]))
+    ap.add_argument("--pivot-len", type=int, default=int(LIVE_DEFAULTS["pivot_len"]))
+    ap.add_argument("--min-l3-wait-bars", type=int, default=int(LIVE_DEFAULTS["min_l3_wait_bars"]))
+    ap.add_argument("--max-l3-wait-bars", type=int, default=int(LIVE_DEFAULTS["max_l3_wait_bars"]))
+    ap.add_argument("--entry-slip-pct", type=float, default=float(LIVE_DEFAULTS["entry_slip_pct"]))
+    ap.add_argument("--max-rsi", type=float, default=float(LIVE_DEFAULTS["max_rsi"]))
+    ap.add_argument(
+        "--require-in-channel",
+        action=argparse.BooleanOptionalAction,
+        default=bool(LIVE_DEFAULTS["require_in_channel"]),
+    )
+    ap.add_argument(
+        "--max-channel-span-days",
+        type=float,
+        default=float(LIVE_DEFAULTS["max_channel_span_days"]),
+    )
+    ap.add_argument(
+        "--max-beyond-width",
+        type=float,
+        default=float(LIVE_DEFAULTS["max_beyond_width"]),
+    )
+    ap.add_argument("--window-bars", type=int, default=int(LIVE_DEFAULTS["window_bars"]))
+    ap.add_argument("--window-step-bars", type=int, default=int(LIVE_DEFAULTS["window_step_bars"]))
+    ap.add_argument(
+        "--no-window-scan",
+        action="store_true",
+        help="Disable sliding-window channel scan (legacy last-16-pivot pass)",
+    )
     ap.add_argument(
         "--batch-size",
         type=int,
@@ -140,8 +175,16 @@ def main() -> int:
         type=Path,
         default=ROOT / "logs" / "scanners",
     )
+    return ap
+
+
+def main() -> int:
+    load_env_file()
+    ap = build_arg_parser()
     args = ap.parse_args()
     dry_run = bool(args.dry_run or args.no_notify)
+    window_bars = 0 if args.no_window_scan else int(args.window_bars)
+    window_step = int(args.window_step_bars) if window_bars else 0
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     _configure_logging(args.log_dir / f"channel_touch_nightly_{stamp}.log")
@@ -205,8 +248,21 @@ def main() -> int:
 
         as_of = resolve_as_of_from_panels(panels, spy_df)
         as_of_s = as_of.strftime("%Y-%m-%d")
-        logger.info("Scanning live triggers as_of=%s ...", as_of_s)
+        logger.info(
+            "Scanning live triggers as_of=%s mode=%s min_wait=%d max_rsi=%.0f "
+            "in_channel=%s span<=%.0f beyond=%.2f window=%d/%d",
+            as_of_s,
+            args.entry_mode,
+            int(args.min_l3_wait_bars),
+            float(args.max_rsi),
+            bool(args.require_in_channel),
+            float(args.max_channel_span_days),
+            float(args.max_beyond_width),
+            window_bars,
+            window_step,
+        )
         t_scan = time.perf_counter()
+        scan_stats: Dict = {}
         raw = scan_live_triggers(
             panels,
             symbols=symbols,
@@ -215,7 +271,21 @@ def main() -> int:
             workers=int(args.workers),
             max_entries_per_day=0,
             atr_stop_mult=float(args.atr_stop_mult),
+            entry_mode=str(args.entry_mode),
+            entry_touch=int(args.entry_touch),
+            pivot_len=int(args.pivot_len),
+            min_l3_wait_bars=int(args.min_l3_wait_bars),
+            max_l3_wait_bars=int(args.max_l3_wait_bars),
+            entry_slip_pct=float(args.entry_slip_pct),
+            window_bars=window_bars if window_bars > 0 else None,
+            window_step_bars=window_step if window_step > 0 else None,
+            require_in_channel=bool(args.require_in_channel),
+            max_channel_span_days=float(args.max_channel_span_days),
+            max_beyond_width=float(args.max_beyond_width),
+            max_rsi=float(args.max_rsi),
+            stats=scan_stats,
         )
+        n_raw = int(scan_stats.get("n_raw", 0 if raw.empty else len(raw)))
         n_cand = 0 if raw.empty else len(raw)
         triggers = raw
         if not raw.empty and int(args.max_entries_per_day) > 0:
@@ -224,8 +294,9 @@ def main() -> int:
             )
         n_trig = 0 if triggers.empty else len(triggers)
         logger.info(
-            "Scan done in %.1fs | candidates=%d triggers=%d",
+            "Scan done in %.1fs | raw=%d quality=%d triggers=%d",
             time.perf_counter() - t_scan,
+            n_raw,
             n_cand,
             n_trig,
         )
@@ -243,6 +314,12 @@ def main() -> int:
             as_of=as_of_s,
             n_candidates=n_cand,
             update_stats=update_stats,
+            n_raw=n_raw,
+            entry_mode=str(args.entry_mode),
+            min_l3_wait_bars=int(args.min_l3_wait_bars),
+            max_rsi=float(args.max_rsi),
+            max_beyond_width=float(args.max_beyond_width),
+            max_channel_span_days=float(args.max_channel_span_days),
         )
         msg = f"{msg}\nelapsed_sec={time.perf_counter() - t0:.1f}\ncsv={out_csv.name}"
         logger.info("Notify payload:\n%s", msg)

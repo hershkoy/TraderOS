@@ -32,7 +32,7 @@ l3_touch beyond-width A/B after bounce filter: 0.25 still the only useful cap (o
 
 **WTFC 2019-07-16:** not the Aug 2019–Jan 2020 3L/2H on TV. The fill used a stale L1 2018-12-26 / L2 2019-03-25 / H2 2019-04-18 rail. Earnings 2019-07-16 gapped **entirely under** support ($67.14): H 66.49 / L 63.77 / C 65.07. That is a break, not a from-above wick tag. Fill now requires high ≥ support, close not broken, and cancels if a prior bar closed below support.
 
-Nightly scanner stays on pivot-confirm until explicitly switched.
+Nightly scanner was switched to this l3_touch stack on 2026-08-29 (min-wait 6, RSI<=50, in-channel, span365, beyond 0.25).
 
 ## Code
 

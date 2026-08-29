@@ -17,18 +17,17 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-28 | [L3 rail-touch entry](2026-08-28_channel_touch_l3_touch_entry.md) |
 | 2026-08-28 | [L3 opt loops](2026-08-28_channel_touch_l3_opt_loops.md) |
 | 2026-08-29 | [15m l3_touch / L4 / entry-model loops](2026-08-29_channel_touch_15m_opt_loops.md) |
+| 2026-08-29 | [Nightly switched to l3_touch keeper](2026-08-29_channel_touch_nightly_l3.md) | |
+| 2026-08-29 | [Same-bar close leak: prior-bar features + daily 15m hybrid](2026-08-29_channel_touch_samebar_leak.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
 ## Keepers (live / research)
 
-- Classical bottom touch ≥3, pivot confirmation
-- Same-day RS vs SPY top1 (126d)
-- Squeeze-adaptive trail 10%/18%
-- ATR hard stop k=2.0 clamped 1.5%–6%
-- **Soft promote:** `--require-in-channel` + `--max-channel-span-days 365` (drops above-resist / multi-year channels; lifts E/PF)
-- **Soft promote:** `--max-beyond-width 0.25` (pattern already pierced; lifts E/PF on IB-windowed ATR stack, n=700; `0.0` too strict, `0.5`/`1.0` worse)
-- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3
+- **Live / nightly:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25; RS vs SPY top1; ATR k=2.0 clamped 1.5%–6%; windowed 504/252
+- Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
+- **Soft promote (still on nightly):** `--require-in-channel` + `--max-channel-span-days 365` + `--max-beyond-width 0.25`
+- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3. Features default to **prior completed bar** (`--feature-asof auto`). Daily `--intraday-fill 15m` hybrid did not beat same-universe daily wait-6/RSI-50 (n=260 E +1.31 PF 1.47 vs n=314 E +1.73 PF 1.63) — nightly stays pivot.
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 
@@ -44,7 +43,7 @@ python scripts\research\channel_touch_robustness.py --trades reports\ascending_c
 python scripts\research\generate_channel_touch_tv_report.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv --friction-pct 0.25 --rs-top1 --tag atr_k2_inchannel_span365_robust
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
-python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --workers 4 --load-workers 8
+python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --entry-mode l3_touch --min-l3-wait-bars 12 --workers 4 --load-workers 8
 ```
 
 Outputs: `reports/ascending_channels/`, `logs/scanners/channel_touch_nightly_*.log`

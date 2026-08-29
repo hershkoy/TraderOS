@@ -1,7 +1,8 @@
 """Point-in-time entry features for channel-touch trades (no look-ahead).
 
-Stock series are computed once per symbol and indexed at the entry bar.
-SPY-regime columns are attached after the scan via enrich_spy_entry_features.
+Stock series are computed once per symbol. Snapshot at the last completed
+bar before a wick fill (fill_i-1). SPY-regime columns use completed_asof
+so a daily bar's close is not treated as known mid-session.
 """
 from __future__ import annotations
 

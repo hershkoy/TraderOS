@@ -6,7 +6,11 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-from utils.scanning.channel_touch import format_triggers_message, live_entries_for_symbol
+from utils.scanning.channel_touch import (
+    format_triggers_message,
+    live_entries_for_symbol,
+    scan_live_triggers,
+)
 
 
 def _ohlcv(n: int = 80, start: str = "2024-01-02") -> pd.DataFrame:
@@ -40,14 +44,148 @@ def test_live_entries_emits_when_entry_is_last_bar():
         }
     ]
     with mock.patch("utils.scanning.channel_touch.find_channels", return_value=fake_channels):
-        rows = live_entries_for_symbol("AAA", df, atr_stop_mult=2.0)
+        rows = live_entries_for_symbol(
+            "AAA", df, atr_stop_mult=2.0, entry_mode="pivot", window_bars=0
+        )
     assert len(rows) == 1
     assert rows[0]["stock"] == "AAA"
     assert rows[0]["buy_date"] == df.index[-1].strftime("%Y-%m-%d")
     assert rows[0]["hard_stop"] < rows[0]["buy_price"]
+    assert rows[0]["entry_mode"] == "pivot"
+
+
+def test_live_l3_touch_emits_fill_on_asof_bar():
+    df = _ohlcv(n=100)
+    n = len(df)
+    h2 = n - 10
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": h2,
+            "h2_date": df.index[h2].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[h2].strftime("%Y-%m-%d"),
+            "slope_pct_per_bar": 0.05,
+            "channel_width_pct": 6.0,
+            "pivot_len": 15,
+        }
+    ]
+    fill_px = 110.5
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=[(n - 1, fill_px, 3)],
+    ):
+        rows = live_entries_for_symbol(
+            "BBB",
+            df,
+            entry_mode="l3_touch",
+            window_bars=0,
+            min_l3_wait_bars=6,
+        )
+    assert len(rows) == 1
+    assert rows[0]["stock"] == "BBB"
+    assert rows[0]["buy_price"] == round(fill_px, 4)
+    assert rows[0]["entry_mode"] == "l3_touch"
+    assert rows[0]["wait_bars"] == (n - 1) - h2
+    assert rows[0]["touch_num"] == 3
+
+
+def test_live_l3_touch_skips_fill_on_other_bar():
+    df = _ohlcv(n=100)
+    n = len(df)
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": n - 20,
+            "h2_date": df.index[n - 20].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[n - 20].strftime("%Y-%m-%d"),
+            "pivot_len": 15,
+        }
+    ]
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=[(n - 5, 110.0, 3)],
+    ):
+        rows = live_entries_for_symbol("CCC", df, entry_mode="l3_touch", window_bars=0)
+    assert rows == []
+
+
+def _trigger_row(stock: str, *, rsi: float, idx) -> dict:
+    return {
+        "stock": stock,
+        "buy_date": idx[-1].strftime("%Y-%m-%d"),
+        "buy_price": 100.0,
+        "hard_stop": 94.0,
+        "stop_pct_used": 6.0,
+        "channel_start": "2024-01-15",
+        "channel_end": "2024-06-01",
+        "touch_num": 3,
+        "channel_pos": 0.05,
+        "max_beyond_width": 0.10,
+        "channel_span_days": 120,
+        "rsi_14": rsi,
+        "entry_mode": "l3_touch",
+        "wait_bars": 12,
+    }
+
+
+def test_scan_quality_drops_high_rsi_before_rs():
+    n = 140
+    idx = pd.bdate_range("2024-01-02", periods=n)
+    close = np.linspace(100.0, 110.0, n)
+    spy = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": np.full(n, 1e6),
+        },
+        index=idx,
+    )
+    aaa = spy.copy()
+    bbb = spy.copy()
+    bbb["close"] = close * 1.2
+    panels = {"AAA": aaa, "BBB": bbb, "SPY": spy}
+
+    def fake_live(symbol, df, **kwargs):
+        if symbol == "AAA":
+            return [_trigger_row("AAA", rsi=80.0, idx=idx)]
+        if symbol == "BBB":
+            return [_trigger_row("BBB", rsi=40.0, idx=idx)]
+        return []
+
+    stats = {}
+    with mock.patch("utils.scanning.channel_touch.live_entries_for_symbol", side_effect=fake_live):
+        out = scan_live_triggers(
+            panels,
+            symbols=["AAA", "BBB", "SPY"],
+            spy_df=spy,
+            workers=1,
+            max_entries_per_day=1,
+            stats=stats,
+        )
+    assert stats["n_raw"] == 2
+    assert stats["n_quality"] == 1
+    assert len(out) == 1
+    assert out.iloc[0]["stock"] == "BBB"
 
 
 def test_format_triggers_message_no_signal():
     msg = format_triggers_message(pd.DataFrame(), as_of="2026-08-25", n_candidates=0)
     assert "No new triggers" in msg
     assert "as_of=2026-08-25" in msg
+    assert "mode=l3_touch" in msg
+    assert "min_wait=6" in msg
+    assert "max_rsi=50" in msg
