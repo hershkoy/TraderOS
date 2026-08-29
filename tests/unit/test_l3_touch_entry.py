@@ -608,3 +608,54 @@ def test_shakeout_rebuy_cancels_if_close_above_resist():
     )
     assert extra is None
 
+
+def test_h2_resist_break_fills_close_above_rail():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    i = 22
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.025
+    high[i] = close[i] + 0.08
+    low[i] = resist - 0.25
+    kw = dict(
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+    )
+    off = _h2_rail_tag_fills(high, low, close, h2_resist_break=False, **kw)
+    assert off == []
+    on = _h2_rail_tag_fills(high, low, close, h2_resist_break=True, **kw)
+    assert len(on) == 1 and on[0][0] == 22 and on[0][4] is True
+
+
+def test_h2_resist_break_skips_if_support_already_broken():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _below_bar(high, low, close, 20, y0, slope)
+    i = 22
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.025
+    high[i] = close[i] + 0.08
+    low[i] = resist - 0.25
+    kw = dict(
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+        h2_resist_break=True,
+    )
+    assert _h2_rail_tag_fills(high, low, close, **kw) == []
+
