@@ -154,6 +154,87 @@ def _limit_fill_at_support(support: float, bar_low: float, bar_high: float, slip
     return float(fill)
 
 
+def _close_broke_support(
+    close: np.ndarray,
+    i: int,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    error_pct: float,
+) -> bool:
+    """True if bar ``i`` closed through support (beyond error_pct)."""
+    if i < 0 or i >= len(close):
+        return False
+    sup = _line_at(support_y0, support_x0, support_slope, i)
+    if not np.isfinite(sup) or sup <= 0:
+        return False
+    return float(close[i]) < float(sup) * (1.0 - float(error_pct) / 100.0)
+
+
+def _shakeout_rebuy_fill(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    l3_i: int,
+    n: int,
+    error_pct: float,
+    slip: float,
+    shakeout_bars: int,
+) -> Optional[Tuple[int, float]]:
+    """After an L3 fill, first from-above reclaim following a close below support.
+
+    Window is ``shakeout_bars`` trading bars after the L3 bar (not including it).
+    Close above resistance cancels (breakout, not a shakeout). Does not emit a
+    fill on the break bar itself. Caller skips the fill if the first trade is
+    still open (rebuy, not hold-through).
+    """
+    max_n = int(shakeout_bars)
+    if max_n <= 0 or l3_i < 0 or l3_i >= n - 1:
+        return None
+    broke = False
+    for i in range(int(l3_i) + 1, min(n, int(l3_i) + 1 + max_n)):
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (
+            1.0 + error_pct / 100.0
+        ):
+            return None
+        if _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            broke = True
+        if _close_broke_support(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            broke = True
+            continue
+        if not broke:
+            continue
+        if not _l3_rail_touch(float(high[i]), float(low[i]), float(close[i]), sup, error_pct):
+            continue
+        fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
+        if fill is None:
+            return None
+        return (int(i), float(fill))
+    return None
+
+
 def _h2_rail_tag_fills(
     high: np.ndarray,
     low: np.ndarray,
@@ -171,7 +252,8 @@ def _h2_rail_tag_fills(
     min_wait: int,
     entry_touch: int = 3,
     leave_width_frac: float = 0.20,
-) -> List[Tuple[int, float, int]]:
+    shakeout_rebuy_bars: int = 0,
+) -> List[Tuple[int, float, int, bool]]:
     """From-above support tags after H2. First tag is L3 (touch_num=3).
 
     ``entry_touch`` 3 fills the first tag; 4 skips L3 and fills L4 after price
@@ -179,16 +261,22 @@ def _h2_rail_tag_fills(
     retarget a later dip). Before L3, a high above H2 cancels (invalidated
     pullback). After L3, a new high is H3 and is allowed. Close through
     support or close above resistance still cancels. No future bars are used.
+
+    ``shakeout_rebuy_bars``: after an L3 fill, if price closes through support
+    and reclaims from above within N bars, emit a second fill (touch_num=3).
+    Off by default. Not mixed with entry_touch=4. Rebuy vs hold-through is
+    enforced by one-position-per-symbol in ``trades_for_symbol``.
     """
     want = max(3, int(entry_touch))
     wait_n = max(1, int(wait))
     min_w = max(1, int(min_wait))
     leave_frac = max(0.0, float(leave_width_frac))
     h2_px = float(high[h2]) if 0 <= h2 < n else float("nan")
-    out: List[Tuple[int, float, int]] = []
+    out: List[Tuple[int, float, int, bool]] = []
     touch_count = 2
     arm_i = int(h2)
     need_leave = False
+    shake_n = max(0, int(shakeout_rebuy_bars))
     for i in range(int(h2) + 1, min(n, int(h2) + 1 + wait_n)):
         sup = _line_at(support_y0, support_x0, support_slope, i)
         resist = float(sup) + float(width or 0.0)
@@ -217,7 +305,24 @@ def _h2_rail_tag_fills(
             fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
             touch_count += 1
             if fill is not None and touch_count >= want:
-                out.append((i, float(fill), int(touch_count)))
+                out.append((i, float(fill), int(touch_count), False))
+                if shake_n > 0 and int(touch_count) == 3:
+                    extra = _shakeout_rebuy_fill(
+                        high,
+                        low,
+                        close,
+                        support_x0=support_x0,
+                        support_y0=support_y0,
+                        support_slope=support_slope,
+                        width=width,
+                        l3_i=int(i),
+                        n=n,
+                        error_pct=error_pct,
+                        slip=slip,
+                        shakeout_bars=shake_n,
+                    )
+                    if extra is not None:
+                        out.append((int(extra[0]), float(extra[1]), 3, True))
                 break
             if fill is None:
                 break
@@ -612,6 +717,7 @@ def trades_for_symbol(
     entry_slip_pct: float = 0.001,
     max_l3_wait_bars: int = 252,
     min_l3_wait_bars: int = 1,
+    shakeout_rebuy_bars: int = 0,
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
     feature_asof_prior_bar: bool = False,
@@ -722,7 +828,7 @@ def trades_for_symbol(
                     h2_high=float(high[h2]) if 0 <= h2 < n else float("nan"),
                 )
                 for j, fill, tnum in tags:
-                    pending.append((ch, j, fill, tnum, j, int(daily_i_map[j])))
+                    pending.append((ch, j, fill, tnum, j, int(daily_i_map[j]), False))
         else:
             for ch in setups:
                 sx0 = int(ch["support_x0"])
@@ -746,9 +852,12 @@ def trades_for_symbol(
                     wait=wait,
                     min_wait=min_wait,
                     entry_touch=want_touch,
+                    shakeout_rebuy_bars=int(shakeout_rebuy_bars),
                 )
-                for i, fill, tnum in tags:
-                    pending.append((ch, i, fill, tnum, i, i))
+                for tag in tags:
+                    i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
+                    is_sh = bool(tag[3]) if len(tag) > 3 else False
+                    pending.append((ch, i, fill, tnum, i, i, is_sh))
     else:
         channels = (
             find_channels_windowed(
@@ -783,7 +892,7 @@ def trades_for_symbol(
                 )
                 if entry_i is None:
                     continue
-                pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx), int(entry_i)))
+                pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx), int(entry_i), False))
 
     pending.sort(key=lambda t: (int(t[1]), int(t[0].get("h2_idx", 0))))
     trades: List[dict] = []
@@ -810,7 +919,9 @@ def trades_for_symbol(
         m15_dates = dates
         daily_i_map = None
 
-    for ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i in pending:
+    for item in pending:
+        ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i = item[:6]
+        is_shakeout = bool(item[6]) if len(item) > 6 else False
         if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
             continue
         sx0 = int(ch["support_x0"])
@@ -931,6 +1042,7 @@ def trades_for_symbol(
                 ),
                 "bars_span": ch.get("bars_span"),
                 "entry_mode": entry_mode,
+                "shakeout_rebuy": bool(is_shakeout),
                 "wait_bars": wait_bars,
                 "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
                 "channel_span_days": span_days,
@@ -974,6 +1086,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         entry_slip_pct=float(payload.get("entry_slip_pct", 0.001)),
         max_l3_wait_bars=int(payload.get("max_l3_wait_bars", 252)),
         min_l3_wait_bars=int(payload.get("min_l3_wait_bars", 1)),
+        shakeout_rebuy_bars=int(payload.get("shakeout_rebuy_bars", 0)),
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
@@ -1537,6 +1650,7 @@ REPORT_COLS = [
     "room_to_resist_pct",
     "bars_span",
     "entry_mode",
+    "shakeout_rebuy",
     "wait_bars",
     "rs_spy_21d",
     "max_beyond_width",
@@ -1809,6 +1923,13 @@ def main() -> int:
         type=int,
         default=1,
         help="l3_touch: abort if support is tagged before N bars after H2 (not a swing L3)",
+    )
+    ap.add_argument(
+        "--shakeout-rebuy-bars",
+        type=int,
+        default=0,
+        help="l3_touch: after L3, if price closes through support and reclaims "
+        "from above within N bars, emit a second fill (rebuy, not hold-through). 0=off.",
     )
     ap.add_argument(
         "--max-rsi",
@@ -2130,6 +2251,7 @@ def main() -> int:
             "entry_slip_pct": float(args.entry_slip_pct),
             "max_l3_wait_bars": int(args.max_l3_wait_bars),
             "min_l3_wait_bars": int(args.min_l3_wait_bars),
+            "shakeout_rebuy_bars": int(args.shakeout_rebuy_bars),
             "df_15m": panels_15m.get(sym) if intraday_fill == "15m" else None,
             "intraday_fill": intraday_fill,
             "feature_asof_prior_bar": bool(use_prior_bar),
@@ -2266,7 +2388,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         f"elapsed_sec={elapsed:.1f}",
         "",

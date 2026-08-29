@@ -17,6 +17,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _l3_rail_touch,
     _limit_fill_at_support,
     _map_15m_to_daily_i,
+    _shakeout_rebuy_fill,
     _support_tagged,
     trades_for_symbol,
 )
@@ -506,4 +507,104 @@ def test_hybrid_tag_bar4_features_from_bar3():
     assert trade["close_loc"] != loc4
     assert trade["feature_asof"] == times[2].strftime("%Y-%m-%d %H:%M")
     assert int(trade["entry_i"]) == i_tag
+
+
+def _below_bar(high, low, close, i, y0, slope):
+    sup = y0 + slope * i
+    close[i] = sup * 0.97
+    high[i] = sup * 0.99
+    low[i] = sup * 0.95
+
+
+def test_shakeout_rebuy_within_10_bars():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    h2 = 12
+    _tag_bar(high, low, close, 22, y0, slope)
+    for i in range(23, 27):
+        _below_bar(high, low, close, i, y0, slope)
+    _tag_bar(high, low, close, 31, y0, slope)
+    kw = dict(
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=h2,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+    )
+    off = _h2_rail_tag_fills(high, low, close, shakeout_rebuy_bars=0, **kw)
+    assert len(off) == 1 and off[0][0] == 22 and off[0][3] is False
+    tight = _h2_rail_tag_fills(high, low, close, shakeout_rebuy_bars=5, **kw)
+    assert len(tight) == 1 and tight[0][0] == 22
+    on = _h2_rail_tag_fills(high, low, close, shakeout_rebuy_bars=10, **kw)
+    assert len(on) == 2
+    assert on[0][0] == 22 and on[0][3] is False
+    assert on[1][0] == 31 and on[1][3] is True
+    extra = _shakeout_rebuy_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        l3_i=22,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        shakeout_bars=10,
+    )
+    assert extra is not None and extra[0] == 31
+
+
+def test_shakeout_rebuy_skips_without_close_below():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _tag_bar(high, low, close, 22, y0, slope)
+    _tag_bar(high, low, close, 31, y0, slope)
+    kw = dict(
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+        shakeout_rebuy_bars=10,
+    )
+    tags = _h2_rail_tag_fills(high, low, close, **kw)
+    assert len(tags) == 1 and tags[0][0] == 22
+
+
+def test_shakeout_rebuy_cancels_if_close_above_resist():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _tag_bar(high, low, close, 22, y0, slope)
+    _below_bar(high, low, close, 23, y0, slope)
+    sup24 = y0 + slope * 24
+    close[24] = sup24 + width + 0.5
+    high[24] = close[24] + 0.2
+    low[24] = close[24] - 0.2
+    _tag_bar(high, low, close, 31, y0, slope)
+    extra = _shakeout_rebuy_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        l3_i=22,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        shakeout_bars=10,
+    )
+    assert extra is None
 
