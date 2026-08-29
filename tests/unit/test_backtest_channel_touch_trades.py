@@ -90,6 +90,15 @@ def test_max_rsi_filter_on_sample():
     assert set(out["stock"]) == {"AAA", "CCC"}
 
 
+def test_min_close_loc_filter():
+    df = _sample().copy()
+    df["close_loc"] = [0.8, 0.2, 0.55]
+    out = filter_trades(df, min_close_loc=0.5)
+    assert set(out["stock"]) == {"AAA", "CCC"}
+    out = filter_trades(_sample(), max_rsi=50)
+    assert set(out["stock"]) == {"AAA", "CCC"}
+
+
 def test_select_same_day_rs_groups_calendar_date_not_time():
     df = pd.DataFrame(
         [

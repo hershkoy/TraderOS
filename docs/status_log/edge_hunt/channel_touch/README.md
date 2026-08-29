@@ -14,6 +14,9 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-26 | [15m scaled hunt](2026-08-26_channel_touch_15m.md) |
 | 2026-08-28 | [Fixed 2% stop vs ATR k=2](2026-08-28_channel_touch_stop2pct.md) |
 | 2026-08-28 | [Entry features + beyond-width sweep](2026-08-28_channel_touch_entry_features.md) |
+| 2026-08-28 | [L3 rail-touch entry](2026-08-28_channel_touch_l3_touch_entry.md) |
+| 2026-08-28 | [L3 opt loops](2026-08-28_channel_touch_l3_opt_loops.md) |
+| 2026-08-29 | [15m l3_touch / L4 / entry-model loops](2026-08-29_channel_touch_15m_opt_loops.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -25,6 +28,7 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 - ATR hard stop k=2.0 clamped 1.5%–6%
 - **Soft promote:** `--require-in-channel` + `--max-channel-span-days 365` (drops above-resist / multi-year channels; lifts E/PF)
 - **Soft promote:** `--max-beyond-width 0.25` (pattern already pierced; lifts E/PF on IB-windowed ATR stack, n=700; `0.0` too strict, `0.5`/`1.0` worse)
+- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 

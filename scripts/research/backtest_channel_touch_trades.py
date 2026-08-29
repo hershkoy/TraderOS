@@ -153,6 +153,81 @@ def _limit_fill_at_support(support: float, bar_low: float, bar_high: float, slip
     return float(fill)
 
 
+def _h2_rail_tag_fills(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    n: int,
+    error_pct: float,
+    slip: float,
+    wait: int,
+    min_wait: int,
+    entry_touch: int = 3,
+    leave_width_frac: float = 0.20,
+) -> List[Tuple[int, float, int]]:
+    """From-above support tags after H2. First tag is L3 (touch_num=3).
+
+    ``entry_touch`` 3 fills the first tag; 4 skips L3 and fills L4 after price
+    leaves the rail and waits ``min_wait`` bars (abort if tagged early; do not
+    retarget a later dip). Before L3, a high above H2 cancels (invalidated
+    pullback). After L3, a new high is H3 and is allowed. Close through
+    support or close above resistance still cancels. No future bars are used.
+    """
+    want = max(3, int(entry_touch))
+    wait_n = max(1, int(wait))
+    min_w = max(1, int(min_wait))
+    leave_frac = max(0.0, float(leave_width_frac))
+    h2_px = float(high[h2]) if 0 <= h2 < n else float("nan")
+    out: List[Tuple[int, float, int]] = []
+    touch_count = 2
+    arm_i = int(h2)
+    need_leave = False
+    for i in range(int(h2) + 1, min(n, int(h2) + 1 + wait_n)):
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if i > 0:
+            sup_prev = _line_at(support_y0, support_x0, support_slope, i - 1)
+            if float(close[i - 1]) < sup_prev * (1.0 - error_pct / 100.0):
+                break
+        if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (1.0 + error_pct / 100.0):
+            break
+        if touch_count < 3 and np.isfinite(h2_px) and float(high[i]) > h2_px:
+            break
+        touched = _l3_rail_touch(float(high[i]), float(low[i]), float(close[i]), sup, error_pct)
+        broke = float(close[i]) < sup * (1.0 - error_pct / 100.0)
+        if need_leave:
+            leave_lvl = float(sup) + leave_frac * max(float(width or 0.0), 0.0)
+            if np.isfinite(float(close[i])) and float(close[i]) > leave_lvl:
+                need_leave = False
+            elif broke:
+                break
+            continue
+        if i < arm_i + min_w:
+            if touched or broke:
+                break
+            continue
+        if touched:
+            fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
+            touch_count += 1
+            if fill is not None and touch_count >= want:
+                out.append((i, float(fill), int(touch_count)))
+                break
+            if fill is None:
+                break
+            need_leave = True
+            arm_i = int(i)
+            continue
+        if broke:
+            break
+    return out
+
+
 def _hard_stop_price(
     entry_px: float,
     *,
@@ -491,6 +566,7 @@ def trades_for_symbol(
         wait = max(1, int(max_l3_wait_bars))
         min_wait = max(1, int(min_l3_wait_bars))
         slip = float(entry_slip_pct)
+        want_touch = max(3, int(entry_touch))
         for ch in setups:
             sx0 = int(ch["support_x0"])
             sy0 = float(ch["support_y0"])
@@ -498,36 +574,24 @@ def trades_for_symbol(
             h2 = int(ch.get("h2_idx", -1))
             if h2 < 0:
                 continue
-            found = None
-            h2_px = float(high[h2]) if h2 < n else float("nan")
-            for i in range(h2 + 1, min(n, h2 + 1 + wait)):
-                if np.isfinite(h2_px) and float(high[i]) > h2_px:
-                    break
-                sup = _line_at(sy0, sx0, sslope, i)
-                resist = sup + float(ch.get("channel_width") or 0.0)
-                if i > 0:
-                    sup_prev = _line_at(sy0, sx0, sslope, i - 1)
-                    if float(close[i - 1]) < sup_prev * (1.0 - error_pct / 100.0):
-                        break
-                if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (1.0 + error_pct / 100.0):
-                    break
-                touched = _l3_rail_touch(
-                    float(high[i]), float(low[i]), float(close[i]), sup, error_pct
-                )
-                broke = float(close[i]) < sup * (1.0 - error_pct / 100.0)
-                if i < h2 + min_wait:
-                    if touched or broke:
-                        break
-                    continue
-                if touched:
-                    fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
-                    if fill is not None:
-                        found = (ch, i, fill, 3, i)
-                    break
-                if broke:
-                    break
-            if found is not None:
-                pending.append(found)
+            tags = _h2_rail_tag_fills(
+                high,
+                low,
+                close,
+                support_x0=sx0,
+                support_y0=sy0,
+                support_slope=sslope,
+                width=float(ch.get("channel_width") or 0.0),
+                h2=h2,
+                n=n,
+                error_pct=error_pct,
+                slip=slip,
+                wait=wait,
+                min_wait=min_wait,
+                entry_touch=want_touch,
+            )
+            for i, fill, tnum in tags:
+                pending.append((ch, i, fill, tnum, i))
     else:
         channels = (
             find_channels_windowed(
@@ -656,6 +720,7 @@ def trades_for_symbol(
                 ),
                 "bars_span": ch.get("bars_span"),
                 "entry_mode": entry_mode,
+                "wait_bars": int(entry_i - int(ch.get("h2_idx", t_idx))),
                 "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
                 "channel_span_days": span_days,
                 "channel_age_at_buy_days": age_days,
@@ -834,6 +899,7 @@ def filter_trades(
     require_in_channel: bool = False,
     max_beyond_width: Optional[float] = None,
     max_rsi: Optional[float] = None,
+    min_close_loc: Optional[float] = None,
 ) -> pd.DataFrame:
     if trades.empty:
         return trades
@@ -876,6 +942,8 @@ def filter_trades(
         m &= out["max_beyond_width"].fillna(999) <= float(max_beyond_width)
     if max_rsi is not None and "rsi_14" in out.columns:
         m &= out["rsi_14"].fillna(999) <= float(max_rsi)
+    if min_close_loc is not None and "close_loc" in out.columns:
+        m &= out["close_loc"].fillna(-1) >= float(min_close_loc)
     return out.loc[m].copy()
 
 
@@ -1249,6 +1317,7 @@ REPORT_COLS = [
     "room_to_resist_pct",
     "bars_span",
     "entry_mode",
+    "wait_bars",
     "rs_spy_21d",
     "max_beyond_width",
     "channel_span_days",
@@ -1341,7 +1410,13 @@ def main() -> int:
         help="Scan full provider/timeframe universe (fast DISTINCT list; skips liquidity HAVING)",
     )
     ap.add_argument("--symbols", default="", help="Comma list override (e.g. GLD,SPY)")
-    ap.add_argument("--entry-touch", type=int, default=3, help="First touch number to buy")
+    ap.add_argument(
+        "--entry-touch",
+        type=int,
+        default=3,
+        help="First bottom-touch number to buy (pivot: detector touches; "
+        "l3_touch: 3=L3 after H2, 4=L4 after L3 leaves the rail)",
+    )
     ap.add_argument("--stop-pct", type=float, default=0.03)
     ap.add_argument("--trail-pct", type=float, default=0.10)
     ap.add_argument(
@@ -1495,7 +1570,7 @@ def main() -> int:
         "--entry-mode",
         choices=("pivot", "reclaim", "l3_touch"),
         default="pivot",
-        help="pivot=buy at touch+pivot_len close; l3_touch=arm at H2 print, buy first support tag (+slip)",
+        help="pivot=buy at touch+pivot_len close; l3_touch=arm at H2, buy Nth support tag via --entry-touch (+slip)",
     )
     ap.add_argument(
         "--entry-slip-pct",
@@ -1520,6 +1595,13 @@ def main() -> int:
         type=float,
         default=None,
         help="Reject entries with rsi_14 above this (filter then RS)",
+    )
+    ap.add_argument(
+        "--min-close-loc",
+        type=float,
+        default=None,
+        help="Keep entries whose tag-bar close_loc >= this (0.5=close in upper half). "
+        "Known at bar close; live fill is close/next bar, not the wick",
     )
     ap.add_argument("--atr-stop-mult", type=float, default=None)
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
@@ -1830,6 +1912,7 @@ def main() -> int:
         require_spy_above_sma=bool(args.spy_regime),
         max_beyond_width=args.max_beyond_width,
         max_rsi=args.max_rsi,
+        min_close_loc=args.min_close_loc,
         **geo_kwargs,
     )
     if args.max_entries_per_day and args.max_entries_per_day > 0:

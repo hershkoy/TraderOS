@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-08-28**
+Last updated: **2026-08-29**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -74,13 +74,13 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 | Interactive report | Latest l3_touch opt: `reports/ascending_channels/channel_touch_tv_report_interactive_rs_top1_default_fric0.25_l3_touch_minwait6_rsi50_beyond025_inchannel_span365_20260828_194359.html`. Pivot+beyond0.25: `..._beyond025_inchannel_span365_ib_fallback_20260828_165613.html` |
 | Live monitor | Nightly: Alpaca multi-symbol 1d refresh → pivot scan → Telegram (`utils/notify/telegram_pinger.py`). **2026-08-25 23:00** run: **KRYS** @ 341.57 (as_of 2026-08-24; stop −6%; RS126 +21.3%; channel pos 0.35) |
 | TV draw caveat | Left-endpoint time-snap can float long rails — verify vs `watchlist_channels_draw.json` ([playbook](../features/tv_channel_trendline_alert.md)) |
-| 15m hunt | **300-name expansion, not live.** IB 15m + native SPY RS, 2018-11-01→2025-12-02: n=1764 E **+0.15%** PF **1.24** median −0.70% (13.1 min). 10-name smoke was E +0.50% PF 1.93 (mega-cap + daily RS). See [15m](edge_hunt/channel_touch/2026-08-26_channel_touch_15m.md) |
+| 15m hunt | **300-name research, not live.** IB 15m + native SPY RS, 2018-11-01→2025-12-02. Pivot: n=1764 E **+0.15%** PF **1.24**. **2026-08-29 l3_touch loops:** L3 + min_wait 12, **no** daily beyond-0.25: **n=1751 E +0.32% PF 1.58** (all year buckets +). Daily `--max-beyond-width 0.25` hurts 15m L3. L4 (`--entry-touch 4`) has **fewer** signals (n=1312 E +0.20 PF 1.36), not more. Entry MLP/logistic and `min_close_loc` wick filter not promoted (same-bar close leak). See [15m opt](edge_hunt/channel_touch/2026-08-29_channel_touch_15m_opt_loops.md) |
 
 ### What is frozen vs in motion
 
 - **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch keepers + in-channel/span + max-beyond-width 0.25 + nightly cron.
-- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; lower-40% geometry; l3_touch max-age/max-wait caps; bb%B 0.2.
-- **Next (optional):** Channel-touch 15m robustness (drop-top-N/bootstrap) before expanding past 300 names; wire quality flags into nightly scanner; portfolio max-open in live sizing; ADV-tiered friction.
+- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; lower-40% geometry; l3_touch max-age/max-wait caps; bb%B 0.2; 15m `min_close_loc` wick filter; 15m entry MLP as a hard gate; copying daily beyond-0.25 onto 15m L3.
+- **Next (optional):** Channel-touch 15m robustness (drop-top-N/bootstrap) on the 2026-08-29 wait12 keeper before expanding past 300 names; wire quality flags into nightly scanner; portfolio max-open in live sizing; ADV-tiered friction.
 - **Ops cadence:** Post-close EOD scan on stored bars — do not stream full universe via IB.
 
 ---
