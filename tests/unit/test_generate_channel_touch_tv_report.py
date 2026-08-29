@@ -165,6 +165,27 @@ def test_trades_to_raw_emits_null_rs_and_ord():
     assert by_sym["BBB"]["ord"] == 1
 
 
+def test_trades_to_raw_resist_break_from_string_false():
+    from scripts.research.generate_channel_touch_tv_report import trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AAA", "BBB"],
+            "buy_date": ["2020-01-02", "2020-01-03"],
+            "sell_date": ["2020-01-10", "2020-01-11"],
+            "buy_price": [10.0, 10.0],
+            "sell_price": [11.0, 11.0],
+            "gain_pct": [1.0, 2.0],
+            "hold_days": [5, 6],
+            "resist_break": ["False", "True"],
+        }
+    )
+    rows = trades_to_raw(df)
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["AAA"]["resist_break"] is False
+    assert by_sym["BBB"]["resist_break"] is True
+
+
 def test_filter_max_per_day_matches_python_rs_when_rs_missing():
     """NaN RS must not scramble same-day picks (old JS -Infinity comparator)."""
     from scripts.research.backtest_channel_touch_trades import select_same_day_rs

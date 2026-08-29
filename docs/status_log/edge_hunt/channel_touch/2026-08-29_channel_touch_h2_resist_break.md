@@ -50,4 +50,10 @@ Breakout-only PF+E beat the L3 keeper on the full window and every year bucket. 
 
 ## Artifacts
 
-- `reports/ascending_channels/channel_touch_h2_resist_break_20260829_204905.csv`
+- Raw breakouts (no span cap): `reports/ascending_channels/channel_touch_h2_resist_break_20260829_204905.csv`
+- Span≤365 sleeve: `reports/ascending_channels/channel_touch_h2_break_span365.csv`
+- Keeper + sleeve (pre RS-cap, 3277 rows): `reports/ascending_channels/channel_touch_h2_break_keeper_plus_span365.csv`
+- Interactive HTML (same tester as L3 current-best):
+  - Sleeve: `reports/ascending_channels/current_best/1d_h2_resist_break.html` (`..._fric0.25_h2_break_span365_20260829_205717.html`) — default max/day=all, n=2253 E +2.80 PF 2.21
+  - Combined: `reports/ascending_channels/current_best/1d_keeper_plus_h2_resist_break.html` (`..._keeper_plus_h2_break_span365_20260829_205726.html`) — default max/day=1, n=1467 E +2.26 PF 1.86
+- Rebuild books: `python scripts\research\export_h2_break_report_books.py`

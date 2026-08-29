@@ -337,6 +337,25 @@ def load_spy_close(
     return close.sort_index()
 
 
+def _cell_bool(val: object) -> bool:
+    """CSV/object-safe bool (string 'False' must not become True)."""
+    if val is None:
+        return False
+    try:
+        if pd.isna(val):
+            return False
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True
+    if s in ("false", "0", "no", "", "nan"):
+        return False
+    return False
+
+
 def trades_to_raw(df: pd.DataFrame) -> List[dict]:
     """Compact trade rows for client-side recalculation.
 
@@ -369,6 +388,8 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
         if has_rs:
             v = row["rs_spy_126d"]
             item["rs"] = None if pd.isna(v) else float(v)
+        if "resist_break" in t.columns:
+            item["resist_break"] = _cell_bool(row["resist_break"])
         out.append(item)
     return out
 
@@ -874,7 +895,7 @@ function simulate(trades, p) {{
     else {{ losses++; gl += -pnl; avgLossSum += pnl; largestLoss = Math.min(largestLoss, pnl); }}
     if (t.hold != null) {{ sumHold += t.hold; nHold++; }}
     rows.push({{
-      n: i + 1, symbol: t.symbol, signal: t.touch != null ? ('Touch ' + t.touch) : 'Long',
+      n: i + 1, symbol: t.symbol, signal: t.resist_break ? 'Resist-break' : (t.touch != null ? ('Touch ' + t.touch) : 'Long'),
       entry_date: t.buy, exit_date: t.sell, entry_price: t.entry, exit_price: t.exit,
       pnl, pnl_pct: gainPct, cum_pnl: cum, hold_days: t.hold, exit_reason: t.reason
     }});
@@ -1487,6 +1508,11 @@ def main() -> int:
     ap.add_argument("--max-per-day", type=int, default=None, help="Default max entries/day (overrides --rs-top1)")
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument("--tag", default="")
+    ap.add_argument(
+        "--title",
+        default="Ascending Channel Touch Long — Strategy Report",
+        help="HTML page title / header",
+    )
     args = ap.parse_args()
 
     trades_path = args.trades or _latest_trades_csv(args.outdir)
@@ -1570,7 +1596,7 @@ def main() -> int:
         spy_closes=spy_closes,
         defaults=defaults,
         run_meta=run_meta,
-        title="Ascending Channel Touch Long — Strategy Report",
+        title=args.title,
         source=str(trades_path.name),
     )
     out_html.write_text(html, encoding="utf-8")
