@@ -80,7 +80,7 @@ OHLCV verify 8 sample fills: 8/8 in-range + rail_ok; 7/8 replay_hit (RIG 2023-02
 
 ## Soft promote (15m research only)
 
-`--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on the 300-name IB panel. **Do not** add `--max-beyond-width 0.25` (daily keeper, 15m drag). **Do not** switch nightly. **Do not** stream IB 15m. **Do not** promote L4, close_loc wick filter, or the entry MLP/logistic.
+`--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on the 300-name IB panel. **Do not** add `--max-beyond-width 0.25` (daily keeper, 15m drag). **Do not** switch nightly to 15m (daily nightly is the wait-6 / RSI-50 l3_touch stack). **Do not** stream IB 15m. **Do not** promote L4, close_loc wick filter, or the entry MLP/logistic.
 
 Fat-tail unchanged (median still negative). Next optional: drop-top-N/bootstrap on `channel_touch_15m_trades_20260829_015527.csv` before expanding past 300 names.
 

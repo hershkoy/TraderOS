@@ -27,7 +27,7 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 - **Live / nightly:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25; RS vs SPY top1; ATR k=2.0 clamped 1.5%–6%; windowed 504/252
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
 - **Soft promote (still on nightly):** `--require-in-channel` + `--max-channel-span-days 365` + `--max-beyond-width 0.25`
-- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3. Features default to **prior completed bar** (`--feature-asof auto`). Daily `--intraday-fill 15m` hybrid did not beat same-universe daily wait-6/RSI-50 (n=260 E +1.31 PF 1.47 vs n=314 E +1.73 PF 1.63) — nightly stays pivot.
+- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3. Features default to **prior completed bar** (`--feature-asof auto`). Daily `--intraday-fill 15m` hybrid did not beat same-universe daily wait-6/RSI-50 (n=260 E +1.31 PF 1.47 vs n=314 E +1.73 PF 1.63) — nightly stays **daily** l3_touch (not 15m hybrid).
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 
