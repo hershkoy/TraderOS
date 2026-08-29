@@ -338,12 +338,21 @@ def load_spy_close(
 
 
 def trades_to_raw(df: pd.DataFrame) -> List[dict]:
-    """Compact trade rows for client-side recalculation."""
+    """Compact trade rows for client-side recalculation.
+
+    ``ord`` is the quality-filtered row order *before* the display sort, matching
+    pandas ``sort_values(..., na_position='last')`` stability for same-day RS.
+    Always emit ``rs`` (JSON null if missing) so the UI does not treat omitted
+    keys as a broken ``-Infinity`` sort (NaN comparators scramble the pick).
+    """
     out: List[dict] = []
     t = df.copy()
     t["buy_date"] = pd.to_datetime(t["buy_date"])
     t["sell_date"] = pd.to_datetime(t["sell_date"])
+    t = t.reset_index(drop=True)
+    t["_ord"] = np.arange(len(t), dtype=int)
     t = t.sort_values(["sell_date", "buy_date", "stock"]).reset_index(drop=True)
+    has_rs = "rs_spy_126d" in t.columns
     for _, row in t.iterrows():
         item = {
             "symbol": str(row["stock"]),
@@ -355,10 +364,44 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
             "hold": int(row["hold_days"]) if "hold_days" in row and pd.notna(row["hold_days"]) else None,
             "reason": str(row.get("exit_reason", "") or ""),
             "touch": int(row["touch_num"]) if "touch_num" in row and pd.notna(row["touch_num"]) else None,
+            "ord": int(row["_ord"]),
         }
-        if "rs_spy_126d" in row and pd.notna(row["rs_spy_126d"]):
-            item["rs"] = float(row["rs_spy_126d"])
+        if has_rs:
+            v = row["rs_spy_126d"]
+            item["rs"] = None if pd.isna(v) else float(v)
         out.append(item)
+    return out
+
+
+def _rs_missing(val: object) -> bool:
+    if val is None:
+        return True
+    try:
+        x = float(val)
+    except (TypeError, ValueError):
+        return True
+    return not np.isfinite(x)
+
+
+def filter_max_per_day_raw(trades: List[dict], max_per_day: int) -> List[dict]:
+    """Same-day RS top-N: missing RS last, higher RS first, then ``ord`` (stable)."""
+    if not max_per_day or max_per_day <= 0:
+        return list(trades)
+    by_day: Dict[str, List[dict]] = {}
+    for t in trades:
+        by_day.setdefault(str(t["buy"]), []).append(t)
+    out: List[dict] = []
+    for day in sorted(by_day):
+        arr = list(by_day[day])
+        arr.sort(
+            key=lambda t: (
+                _rs_missing(t.get("rs")),
+                -(float(t["rs"]) if not _rs_missing(t.get("rs")) else 0.0),
+                int(t["ord"]) if t.get("ord") is not None else 0,
+            )
+        )
+        out.extend(arr[: int(max_per_day)])
+    out.sort(key=lambda t: (str(t["sell"]), str(t["buy"]), str(t["symbol"])))
     return out
 
 
@@ -392,8 +435,12 @@ def render_html(
     # Escape </script> in JSON
     payload = payload.replace("</", "<\\/")
 
-    has_rs = any("rs" in t for t in raw_trades)
-    rs_note = "RS vs SPY (126d) available for same-day ranking." if has_rs else "No RS column in trades CSV; max/day keeps first N by exit order."
+    has_rs = any(t.get("rs") is not None for t in raw_trades)
+    rs_note = (
+        "RS vs SPY (126d) available for same-day ranking (missing RS sorts last, stable)."
+        if has_rs
+        else "No RS column in trades CSV; max/day keeps first N by original row order."
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -715,6 +762,19 @@ function parseExclude(p) {{
   return new Set(p.excludeSym.split(/[,\s]+/).filter(Boolean));
 }}
 
+function rsMissing(t) {{
+  return t.rs === undefined || t.rs === null || (typeof t.rs === 'number' && Number.isNaN(t.rs));
+}}
+function cmpRsThenOrd(a, b) {{
+  const aMiss = rsMissing(a);
+  const bMiss = rsMissing(b);
+  if (aMiss !== bMiss) return aMiss ? 1 : -1;
+  if (!aMiss && a.rs !== b.rs) return b.rs - a.rs;
+  const oa = (a.ord === undefined || a.ord === null) ? 0 : a.ord;
+  const ob = (b.ord === undefined || b.ord === null) ? 0 : b.ord;
+  return oa - ob;
+}}
+
 function filterMaxPerDay(trades, maxPerDay) {{
   if (!maxPerDay || maxPerDay <= 0) return trades.slice();
   const byDay = {{}};
@@ -725,11 +785,7 @@ function filterMaxPerDay(trades, maxPerDay) {{
   const out = [];
   Object.keys(byDay).sort().forEach(day => {{
     const arr = byDay[day].slice();
-    arr.sort((a, b) => {{
-      const ra = (a.rs === undefined || a.rs === null) ? -Infinity : a.rs;
-      const rb = (b.rs === undefined || b.rs === null) ? -Infinity : b.rs;
-      return rb - ra;
-    }});
+    arr.sort(cmpRsThenOrd);
     out.push(...arr.slice(0, maxPerDay));
   }});
   out.sort((a, b) => (a.sell < b.sell ? -1 : a.sell > b.sell ? 1 : a.buy < b.buy ? -1 : a.symbol.localeCompare(b.symbol)));
@@ -745,9 +801,7 @@ function filterMaxOpen(trades, maxOpen) {{
   if (!maxOpen || maxOpen <= 0) return trades.slice();
   const ordered = trades.slice().sort((a, b) => {{
     if (a.buy !== b.buy) return a.buy < b.buy ? -1 : 1;
-    const ra = (a.rs === undefined || a.rs === null) ? -Infinity : a.rs;
-    const rb = (b.rs === undefined || b.rs === null) ? -Infinity : b.rs;
-    return rb - ra;
+    return cmpRsThenOrd(a, b);
   }});
   const kept = [];
   const openExits = [];
