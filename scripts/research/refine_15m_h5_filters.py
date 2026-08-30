@@ -15,6 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
+import json
 
 import numpy as np
 import pandas as pd
@@ -57,6 +58,16 @@ logging.basicConfig(
 logger = logging.getLogger("refine_15m_h5_filters")
 
 MaskFn = Callable[[pd.DataFrame, pd.DataFrame], pd.Series]
+
+# Books shown in the interactive HTML comparison table (user-facing labels).
+REPORT_BOOKS: List[Tuple[str, str]] = [
+    ("H5_only", "H5 only (volume_rel \u2265 1)"),
+    ("H5_over_p50", "H5 + overshoot \u2265 train p50"),
+    ("H5_logistic", "H5 then logistic"),
+    ("H5_over_p80", "H5 + overshoot \u2265 train p80"),
+    ("H5_over_p80_vol2", "H5 + overshoot p80 + vol \u2265 2"),
+]
+WINNER_BOOK = "H5_over_p80_vol2"
 
 
 def _and(a: MaskFn, b: MaskFn) -> MaskFn:
@@ -127,6 +138,51 @@ def stacks() -> List[Tuple[str, str, MaskFn]]:
     ]
 
 
+def comparison_from_summary(summary: pd.DataFrame, *, friction_pct: float) -> dict:
+    """Static comparison rows for the TV report (expanding-year OOS, already net of friction)."""
+    by_name = {str(r["book"]): r for _, r in summary.iterrows()}
+    rows = []
+    for key, label in REPORT_BOOKS:
+        r = by_name.get(key)
+        if r is None:
+            continue
+        rows.append(
+            {
+                "book": label,
+                "key": key,
+                "n": int(pd.to_numeric(r["n_trades"], errors="coerce") or 0),
+                "wr": float(pd.to_numeric(r["win_rate_pct"], errors="coerce") or 0.0),
+                "e": float(pd.to_numeric(r["expectancy_pct"], errors="coerce") or 0.0),
+                "pf": float(pd.to_numeric(r["profit_factor"], errors="coerce") or 0.0),
+                "highlight": key == WINNER_BOOK,
+            }
+        )
+    return {
+        "title": "H5 stack (expanding-year OOS, friction %.2f)" % friction_pct,
+        "note": (
+            "Unique-symbol/day 15m H2 span<=10. Cutoffs fit on prior years only. "
+            "Embedded trades are the highlighted book. Research only; not nightly."
+        ),
+        "highlight": WINNER_BOOK,
+        "friction_pct": float(friction_pct),
+        "rows": rows,
+    }
+
+
+def latest_refine_summary(outdir: Path) -> Path:
+    files = sorted(
+        (
+            p
+            for p in outdir.glob("channel_touch_15m_h5_refine_20*.csv")
+            if "_stress_" not in p.name
+        ),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not files:
+        raise FileNotFoundError("No channel_touch_15m_h5_refine_*.csv in %s" % outdir)
+    return files[-1]
+
+
 def _row(name: str, desc: str, df: pd.DataFrame) -> dict:
     s = _summarize(df, gain_col=GAIN_COL)
     out = {"book": name, "desc": desc, **s}
@@ -157,6 +213,64 @@ def stress(name: str, df: pd.DataFrame) -> List[dict]:
     return rows
 
 
+def _export_report(args: argparse.Namespace) -> int:
+    """Winner OOS trades + comparison JSON for generate_channel_touch_tv_report."""
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    summary_path = latest_refine_summary(args.outdir)
+    summary = pd.read_csv(summary_path)
+    payload = comparison_from_summary(summary, friction_pct=float(args.friction_pct))
+    cmp_path = args.outdir / "channel_touch_15m_h5_refine_comparison.json"
+    cmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("Wrote %s (%d books)", cmp_path, len(payload["rows"]))
+
+    raw = pd.read_csv(args.trades)
+    book = add_derived(apply_friction(keep_one_per_symbol_day(raw), float(args.friction_pct)))
+    mask = dict((name, fn) for name, _desc, fn in stacks())[WINNER_BOOK]
+    oos = expanding_year_apply(book, mask)
+    drop_cols = [c for c in ("_day", "_t", "buy_dt") if c in oos.columns]
+    trades_path = args.outdir / "channel_touch_trades_15m_h5_over_p80_vol2_oos.csv"
+    oos.drop(columns=drop_cols, errors="ignore").to_csv(trades_path, index=False)
+    s = _summarize(oos, gain_col=GAIN_COL)
+    summary_txt = args.outdir / "channel_touch_trades_summary_15m_h5_over_p80_vol2_oos.txt"
+    summary_txt.write_text(
+        "\n".join(
+            [
+                "15m H5 stack expanding-year OOS (research, not nightly)",
+                "preset=15m",
+                "timeframe=15m",
+                "provider=IB",
+                "friction_pct=%.2f" % float(args.friction_pct),
+                "entry_mode=h2_resist_break",
+                "min_l3_wait_bars=12",
+                "max_channel_span_days=10",
+                "max_entries_per_day=0",
+                "filter=H5_over_p80_vol2",
+                "volume_rel_20>=1 then train-year overshoot p80 and volume_rel_20>=2",
+                "feature_asof=prior-bar",
+                "n_trades=%s" % s.get("n_trades"),
+                "win_rate_pct=%s" % s.get("win_rate_pct"),
+                "expectancy_pct=%s" % s.get("expectancy_pct"),
+                "profit_factor=%s" % s.get("profit_factor"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    logger.info(
+        "winner %s n=%s E=%s PF=%s WR=%s -> %s",
+        WINNER_BOOK,
+        s.get("n_trades"),
+        s.get("expectancy_pct"),
+        s.get("profit_factor"),
+        s.get("win_rate_pct"),
+        trades_path,
+    )
+    print("Wrote %s" % cmp_path)
+    print("Wrote %s" % trades_path)
+    print("Wrote %s" % summary_txt)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Refine 15m H5 volume book")
     ap.add_argument("--trades", type=Path, default=DEFAULT_TRADES)
@@ -166,7 +280,14 @@ def main() -> int:
         type=Path,
         default=ROOT / "reports" / "ascending_channels",
     )
+    ap.add_argument(
+        "--export-report",
+        action="store_true",
+        help="Write winner OOS trades + comparison JSON from the latest refine CSV (no logistic re-fit)",
+    )
     args = ap.parse_args()
+    if args.export_report:
+        return _export_report(args)
     raw = pd.read_csv(args.trades)
     book = add_derived(apply_friction(keep_one_per_symbol_day(raw), float(args.friction_pct)))
     logger.info("unique-symbol n=%d", len(book))

@@ -142,6 +142,79 @@ def test_build_run_meta_has_git(tmp_path):
     assert meta["detector"]["script"].endswith("find_ascending_channels.py")
 
 
+def test_trades_to_raw_uses_bar_times_when_present():
+    from scripts.research.generate_channel_touch_tv_report import trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["GILD", "ARGX"],
+            "buy_date": ["2019-01-03", "2019-01-04"],
+            "sell_date": ["2019-01-03", "2019-01-04"],
+            "buy_time": ["2019-01-03 15:15", "2019-01-04 14:30"],
+            "sell_time": ["2019-01-03 18:30", "2019-01-04 14:45"],
+            "buy_price": [66.27, 105.23],
+            "sell_price": [65.64, 105.24],
+            "gain_pct": [-0.95, 0.01],
+            "hold_days": [13, 1],
+        }
+    )
+    rows = trades_to_raw(df)
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["GILD"]["buy"] == "2019-01-03"
+    assert by_sym["GILD"]["sell"] == "2019-01-03"
+    assert by_sym["GILD"]["buy_at"] == "2019-01-03 15:15"
+    assert by_sym["GILD"]["sell_at"] == "2019-01-03 18:30"
+    assert by_sym["ARGX"]["buy_at"] == "2019-01-04 14:30"
+    assert by_sym["ARGX"]["sell_at"] == "2019-01-04 14:45"
+
+
+def test_trades_to_raw_omits_bar_times_on_daily_csv():
+    from scripts.research.generate_channel_touch_tv_report import trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AAA"],
+            "buy_date": ["2020-01-02"],
+            "sell_date": ["2020-01-10"],
+            "buy_price": [10.0],
+            "sell_price": [11.0],
+            "gain_pct": [1.0],
+            "hold_days": [5],
+        }
+    )
+    row = trades_to_raw(df)[0]
+    assert row["buy"] == "2020-01-02"
+    assert "buy_at" not in row
+    assert "sell_at" not in row
+
+
+def test_filter_max_per_day_still_groups_by_calendar_date():
+    """Two 15m fills on the same calendar day still compete for max/day."""
+    from scripts.research.generate_channel_touch_tv_report import (
+        filter_max_per_day_raw,
+        trades_to_raw,
+    )
+
+    df = pd.DataFrame(
+        {
+            "stock": ["LOSE", "WIN"],
+            "buy_date": ["2020-01-02", "2020-01-02"],
+            "sell_date": ["2020-01-02", "2020-01-02"],
+            "buy_time": ["2020-01-02 10:00", "2020-01-02 14:00"],
+            "sell_time": ["2020-01-02 11:00", "2020-01-02 15:00"],
+            "buy_price": [10.0, 10.0],
+            "sell_price": [11.0, 11.0],
+            "gain_pct": [1.0, 9.0],
+            "hold_days": [4, 4],
+            "rs_spy_126d": [1.0, 5.0],
+        }
+    )
+    kept = filter_max_per_day_raw(trades_to_raw(df), 1)
+    assert [t["symbol"] for t in kept] == ["WIN"]
+    assert kept[0]["buy"] == "2020-01-02"
+    assert kept[0]["buy_at"] == "2020-01-02 14:00"
+
+
 def test_trades_to_raw_emits_null_rs_and_ord():
     from scripts.research.generate_channel_touch_tv_report import trades_to_raw
 
@@ -216,3 +289,106 @@ def test_filter_max_per_day_matches_python_rs_when_rs_missing():
     js_keys = set((t["symbol"], t["buy"]) for t in js)
     assert py_keys == js_keys
     assert {t["symbol"] for t in js} == {"WIN", "ONLY", "NA1"}
+
+
+def test_load_comparison_json(tmp_path):
+    from scripts.research.generate_channel_touch_tv_report import load_comparison_json
+
+    path = tmp_path / "cmp.json"
+    path.write_text(
+        '{"title":"H5 stack","rows":[{"book":"H5 only","n":39442,"wr":37.0,"e":0.34,"pf":1.63}]}',
+        encoding="utf-8",
+    )
+    data = load_comparison_json(path)
+    assert data["title"] == "H5 stack"
+    assert data["rows"][0]["n"] == 39442
+    assert load_comparison_json(None) is None
+
+
+def test_render_html_includes_comparison_table():
+    from scripts.research.generate_channel_touch_tv_report import render_html
+
+    html = render_html(
+        raw_trades=[],
+        spy_closes=[],
+        defaults={
+            "capital": 100000,
+            "sizeMode": "fixed",
+            "sizeVal": 10000,
+            "friction": 0.1,
+            "maxPerDay": 0,
+            "maxOpen": 0,
+            "winCap": 0,
+            "excludeSym": "",
+        },
+        run_meta={"git": {"branch": "x", "commit": "abc", "dirty": "no"}},
+        title="H5 stack report",
+        source="test.csv",
+        comparison={
+            "title": "H5 stack (expanding-year OOS)",
+            "note": "Research only",
+            "rows": [
+                {
+                    "book": "H5 only (volume_rel >= 1)",
+                    "n": 39442,
+                    "wr": 37.0,
+                    "e": 0.34,
+                    "pf": 1.63,
+                    "highlight": False,
+                },
+                {
+                    "book": "H5 + overshoot p80 + vol >= 2",
+                    "n": 6306,
+                    "wr": 48.8,
+                    "e": 0.93,
+                    "pf": 3.61,
+                    "highlight": True,
+                },
+            ],
+        },
+    )
+    assert 'id="filterBooks"' in html
+    assert "renderFilterBooks" in html
+    assert "H5 + overshoot p80 + vol >= 2" in html
+    assert '"n":6306' in html or '"n": 6306' in html
+    assert "stampBuy" in html
+    assert "entry/exit are bar times" in html
+
+
+def test_render_html_embeds_bar_timestamps():
+    from scripts.research.generate_channel_touch_tv_report import render_html, trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["GILD"],
+            "buy_date": ["2019-01-03"],
+            "sell_date": ["2019-01-03"],
+            "buy_time": ["2019-01-03 15:15"],
+            "sell_time": ["2019-01-03 18:30"],
+            "buy_price": [66.27],
+            "sell_price": [65.64],
+            "gain_pct": [-0.95],
+            "hold_days": [13],
+        }
+    )
+    html = render_html(
+        raw_trades=trades_to_raw(df),
+        spy_closes=[],
+        defaults={
+            "capital": 100000,
+            "sizeMode": "fixed",
+            "sizeVal": 10000,
+            "friction": 0.1,
+            "maxPerDay": 0,
+            "maxOpen": 0,
+            "winCap": 0,
+            "excludeSym": "",
+        },
+        run_meta={"git": {"branch": "x", "commit": "abc", "dirty": "no"}},
+        title="15m bar times",
+        source="test.csv",
+    )
+    assert "2019-01-03 15:15" in html
+    assert "2019-01-03 18:30" in html
+    assert '"buy":"2019-01-03"' in html
+

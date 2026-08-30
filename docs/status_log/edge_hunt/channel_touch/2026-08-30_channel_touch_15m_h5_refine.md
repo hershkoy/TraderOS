@@ -59,3 +59,7 @@ bootstrap/max-open pass.
 - `scripts/research/refine_15m_h5_filters.py`
 - `reports/ascending_channels/channel_touch_15m_h5_refine_20260830_015525.csv`
 - `reports/ascending_channels/channel_touch_15m_h5_refine_stress_20260830_015525.csv`
+- HTML: `reports/ascending_channels/current_best/15m_h5_overshoot_vol.html`
+  (`channel_touch_tv_report_interactive_fric0.10_15m_h5_over_p80_vol2_20260830_101314.html`;
+  trade list shows 15m bar times from `buy_time`/`sell_time`, not calendar dates only)
+- Winner trades: `reports/ascending_channels/channel_touch_trades_15m_h5_over_p80_vol2_oos.csv`

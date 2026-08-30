@@ -9,7 +9,9 @@ Interactive controls in the HTML (client-side recalc):
   - Max entries per day (0=all; 1+=rank by RS vs SPY when available)
 
 Portfolio model:
-  - Equity marks on trade exit dates
+  - Equity marks on trade exit dates (calendar day; SPY overlay stays daily)
+  - Trade table uses buy_time/sell_time (HH:MM) when the CSV has them (15m bars)
+  - Max entries/day still groups by calendar buy_date
   - SPY buy-and-hold overlay for comparison
 
 Usage (Windows CMD):
@@ -337,6 +339,23 @@ def load_spy_close(
     return close.sort_index()
 
 
+def _series_clock_ts(df: pd.DataFrame, time_col: str, date_col: str) -> Tuple[pd.Series, pd.Series]:
+    """Prefer buy_time/sell_time (15m bar); fall back to the calendar date."""
+    dates = pd.to_datetime(df[date_col])
+    if time_col not in df.columns:
+        return dates, pd.Series(False, index=df.index)
+    times = pd.to_datetime(df[time_col], errors="coerce")
+    has_clock = times.notna()
+    return times.where(has_clock, dates), has_clock
+
+
+def _fmt_stamp(ts: object, has_clock: bool) -> str:
+    stamp = pd.Timestamp(ts)
+    if has_clock:
+        return stamp.strftime("%Y-%m-%d %H:%M")
+    return stamp.strftime("%Y-%m-%d")
+
+
 def _cell_bool(val: object) -> bool:
     """CSV/object-safe bool (string 'False' must not become True)."""
     if val is None:
@@ -370,7 +389,9 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
     t["sell_date"] = pd.to_datetime(t["sell_date"])
     t = t.reset_index(drop=True)
     t["_ord"] = np.arange(len(t), dtype=int)
-    t = t.sort_values(["sell_date", "buy_date", "stock"]).reset_index(drop=True)
+    t["_buy_at"], t["_buy_clock"] = _series_clock_ts(t, "buy_time", "buy_date")
+    t["_sell_at"], t["_sell_clock"] = _series_clock_ts(t, "sell_time", "sell_date")
+    t = t.sort_values(["_sell_at", "_buy_at", "stock"]).reset_index(drop=True)
     has_rs = "rs_spy_126d" in t.columns
     for _, row in t.iterrows():
         item = {
@@ -385,6 +406,10 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
             "touch": int(row["touch_num"]) if "touch_num" in row and pd.notna(row["touch_num"]) else None,
             "ord": int(row["_ord"]),
         }
+        if bool(row["_buy_clock"]):
+            item["buy_at"] = _fmt_stamp(row["_buy_at"], True)
+        if bool(row["_sell_clock"]):
+            item["sell_at"] = _fmt_stamp(row["_sell_at"], True)
         if has_rs:
             v = row["rs_spy_126d"]
             item["rs"] = None if pd.isna(v) else float(v)
@@ -433,6 +458,17 @@ def spy_to_raw(spy_close: pd.Series, start: pd.Timestamp, end: pd.Timestamp) -> 
     return [{"x": d.strftime("%Y-%m-%d"), "c": float(v)} for d, v in hist.items()]
 
 
+def load_comparison_json(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if path is None:
+        return None
+    if not path.exists():
+        raise FileNotFoundError("Comparison JSON not found: %s" % path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not data.get("rows"):
+        raise ValueError("Comparison JSON must be an object with a non-empty rows list")
+    return data
+
+
 def render_html(
     *,
     raw_trades: List[dict],
@@ -441,6 +477,7 @@ def render_html(
     run_meta: Dict[str, Any],
     title: str,
     source: str,
+    comparison: Optional[Dict[str, Any]] = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -450,6 +487,7 @@ def render_html(
             "runMeta": run_meta,
             "source": source,
             "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "comparison": comparison or {},
         },
         separators=(",", ":"),
     )
@@ -518,6 +556,7 @@ def render_html(
   th.sortable:hover {{ color:var(--text); }}
   th.sortable .sort-ind {{ color:var(--accent); margin-left:4px; font-size:10px; }}
   td.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  td.when {{ white-space:nowrap; font-variant-numeric:tabular-nums; }}
   .table-scroll {{ max-height:560px; overflow:auto; border:1px solid var(--border); border-radius:6px; }}
   .trade-filters {{
     display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px 12px;
@@ -539,6 +578,8 @@ def render_html(
   .meta-block .meta-label {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
   .meta-block .meta-value {{ margin-top:4px; color:var(--text); word-break:break-word; }}
   .meta-kv td:first-child {{ color:var(--muted); width:38%; }}
+  tr.book-hl td {{ background:rgba(38,166,154,0.12); }}
+  #filterBooks {{ margin-bottom:16px; }}
 </style>
 </head>
 <body>
@@ -604,6 +645,16 @@ def render_html(
   </div>
 
   <div id="overview" class="panel active">
+    <div id="filterBooks" style="display:none">
+      <h2 id="filterBooksTitle">Filter books</h2>
+      <div class="table-scroll" style="max-height:320px;margin-bottom:8px">
+        <table>
+          <thead><tr><th>Book</th><th>n</th><th>WR</th><th>E</th><th>PF</th></tr></thead>
+          <tbody id="filterBooksBody"></tbody>
+        </table>
+      </div>
+      <p class="muted" id="filterBooksNote"></p>
+    </div>
     <div class="cards" id="overviewCards"></div>
     <h2>Equity curve vs S&amp;P 500</h2>
     <div class="chart-box"><canvas id="eqChart"></canvas></div>
@@ -725,6 +776,15 @@ def render_html(
   </div>
 
   <div id="runinfo" class="panel">
+    <div id="filterBooksRun" style="display:none">
+      <h2 id="filterBooksRunTitle">Filter books</h2>
+      <div class="table-scroll" style="max-height:280px;margin-bottom:12px">
+        <table>
+          <thead><tr><th>Book</th><th>n</th><th>WR</th><th>E</th><th>PF</th></tr></thead>
+          <tbody id="filterBooksRunBody"></tbody>
+        </table>
+      </div>
+    </div>
     <h2>Git branch</h2>
     <div class="metric-grid" id="gitGrid"></div>
     <h2>Detector</h2>
@@ -744,6 +804,10 @@ def render_html(
 
 <script>
 const RAW = {payload};
+
+function stampBuy(t) {{ return t.buy_at || t.buy; }}
+function stampSell(t) {{ return t.sell_at || t.sell; }}
+function dayKey(t) {{ return String(t.buy || '').slice(0, 10); }}
 
 function money(x, signed) {{
   const a = Math.abs(x);
@@ -800,8 +864,9 @@ function filterMaxPerDay(trades, maxPerDay) {{
   if (!maxPerDay || maxPerDay <= 0) return trades.slice();
   const byDay = {{}};
   for (const t of trades) {{
-    if (!byDay[t.buy]) byDay[t.buy] = [];
-    byDay[t.buy].push(t);
+    const day = dayKey(t);
+    if (!byDay[day]) byDay[day] = [];
+    byDay[day].push(t);
   }}
   const out = [];
   Object.keys(byDay).sort().forEach(day => {{
@@ -821,19 +886,27 @@ function filterExclude(trades, excludeSet) {{
 function filterMaxOpen(trades, maxOpen) {{
   if (!maxOpen || maxOpen <= 0) return trades.slice();
   const ordered = trades.slice().sort((a, b) => {{
-    if (a.buy !== b.buy) return a.buy < b.buy ? -1 : 1;
+    const ab = stampBuy(a), bb = stampBuy(b);
+    if (ab !== bb) return ab < bb ? -1 : 1;
     return cmpRsThenOrd(a, b);
   }});
   const kept = [];
   const openExits = [];
   for (const t of ordered) {{
-    while (openExits.length && openExits[0] < t.buy) openExits.shift();
+    const buy = stampBuy(t);
+    while (openExits.length && openExits[0] < buy) openExits.shift();
     if (openExits.length >= maxOpen) continue;
     kept.push(t);
-    openExits.push(t.sell);
+    openExits.push(stampSell(t));
     openExits.sort();
   }}
-  kept.sort((a, b) => (a.sell < b.sell ? -1 : a.sell > b.sell ? 1 : a.buy < b.buy ? -1 : a.symbol.localeCompare(b.symbol)));
+  kept.sort((a, b) => {{
+    const as = stampSell(a), bs = stampSell(b);
+    if (as !== bs) return as < bs ? -1 : 1;
+    const ab = stampBuy(a), bb = stampBuy(b);
+    if (ab !== bb) return ab < bb ? -1 : 1;
+    return a.symbol.localeCompare(b.symbol);
+  }});
   return kept;
 }}
 
@@ -896,7 +969,7 @@ function simulate(trades, p) {{
     if (t.hold != null) {{ sumHold += t.hold; nHold++; }}
     rows.push({{
       n: i + 1, symbol: t.symbol, signal: t.resist_break ? 'Resist-break' : (t.touch != null ? ('Touch ' + t.touch) : 'Long'),
-      entry_date: t.buy, exit_date: t.sell, entry_price: t.entry, exit_price: t.exit,
+      entry_date: stampBuy(t), exit_date: stampSell(t), entry_price: t.entry, exit_price: t.exit,
       pnl, pnl_pct: gainPct, cum_pnl: cum, hold_days: t.hold, exit_reason: t.reason
     }});
   }}
@@ -964,8 +1037,8 @@ function concurrentStats(trades) {{
   if (!trades.length) return {{max:0,p95:0,median:0}};
   const events = [];
   for (const t of trades) {{
-    events.push({{d:t.buy, dn:1}});
-    events.push({{d:t.sell, dn:-1}});
+    events.push({{d:stampBuy(t), dn:1}});
+    events.push({{d:stampSell(t), dn:-1}});
   }}
   events.sort((a,b)=> a.d < b.d ? -1 : a.d > b.d ? 1 : a.dn - b.dn);
   let cur=0, max=0;
@@ -1303,8 +1376,9 @@ function filterTradeRows(rows) {{
     if (f.exit !== 'all' && t.exit_reason !== f.exit) return false;
     if (f.minPnl != null && !Number.isNaN(f.minPnl) && t.pnl_pct < f.minPnl) return false;
     if (f.maxPnl != null && !Number.isNaN(f.maxPnl) && t.pnl_pct > f.maxPnl) return false;
-    if (f.from && t.entry_date < f.from) return false;
-    if (f.to && t.entry_date > f.to) return false;
+    const entryDay = String(t.entry_date || '').slice(0, 10);
+    if (f.from && entryDay < f.from) return false;
+    if (f.to && entryDay > f.to) return false;
     return true;
   }});
 }}
@@ -1348,12 +1422,15 @@ function paintTradesTable() {{
   if (filtered.length !== tradeRowsAll.length) note += ' (filtered)';
   note += ' · sort: ' + tradeSort.key + ' ' + tradeSort.dir;
   if (sorted.length > maxRows) note += ' · showing first ' + maxRows;
+  if ((RAW.trades || []).some(t => t.buy_at || t.sell_at)) {{
+    note += ' · entry/exit are bar times (YYYY-MM-DD HH:MM)';
+  }}
   setHTML('tradesNote', note);
   updateSortHeaders();
   setHTML('tradesBody', slice.map(t => `
     <tr>
       <td>${{t.n}}</td><td>${{t.symbol}}</td><td>${{t.signal}}</td>
-      <td>${{t.entry_date}}</td><td>${{t.exit_date}}</td>
+      <td class="when">${{t.entry_date}}</td><td class="when">${{t.exit_date}}</td>
       <td class="num">${{t.entry_price.toFixed(4)}}</td><td class="num">${{t.exit_price.toFixed(4)}}</td>
       <td class="num ${{cls(t.pnl)}}">${{money(t.pnl,true)}}</td>
       <td class="num ${{cls(t.pnl_pct)}}">${{pct(t.pnl_pct,true)}}</td>
@@ -1385,6 +1462,38 @@ function apply() {{
 function esc(s) {{
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}}
+
+function renderFilterBooks() {{
+  const c = RAW.comparison || {{}};
+  const rows = c.rows || [];
+  const box = document.getElementById('filterBooks');
+  const runBox = document.getElementById('filterBooksRun');
+  if (!rows.length) {{
+    if (box) box.style.display = 'none';
+    if (runBox) runBox.style.display = 'none';
+    return;
+  }}
+  if (box) box.style.display = 'block';
+  if (runBox) runBox.style.display = 'block';
+  const title = c.title || 'Filter books';
+  const tEl = document.getElementById('filterBooksTitle');
+  const tRun = document.getElementById('filterBooksRunTitle');
+  if (tEl) tEl.textContent = title;
+  if (tRun) tRun.textContent = title;
+  const body = rows.map(r => {{
+    const hl = r.highlight ? ' class="book-hl"' : '';
+    const n = (r.n == null) ? '—' : Number(r.n).toLocaleString();
+    const wr = (r.wr == null) ? '—' : Number(r.wr).toFixed(1) + '%';
+    const eNum = Number(r.e);
+    const e = Number.isFinite(eNum) ? ((eNum >= 0 ? '+' : '') + eNum.toFixed(2) + '%') : '—';
+    const pf = (r.pf == null) ? '—' : Number(r.pf).toFixed(2);
+    return `<tr${{hl}}><td>${{esc(r.book || r.key || '')}}</td><td class="num">${{n}}</td><td class="num">${{wr}}</td><td class="num ${{cls(eNum)}}">${{e}}</td><td class="num">${{pf}}</td></tr>`;
+  }}).join('');
+  setHTML('filterBooksBody', body);
+  setHTML('filterBooksRunBody', body);
+  const noteEl = document.getElementById('filterBooksNote');
+  if (noteEl) noteEl.textContent = c.note || '';
 }}
 
 function renderRunInfo() {{
@@ -1487,6 +1596,7 @@ document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
 
 document.getElementById('genAt').textContent = RAW.generated;
+renderFilterBooks();
 renderRunInfo();
 resetDefaults();
 </script>
@@ -1512,6 +1622,12 @@ def main() -> int:
         "--title",
         default="Ascending Channel Touch Long — Strategy Report",
         help="HTML page title / header",
+    )
+    ap.add_argument(
+        "--comparison-json",
+        type=Path,
+        default=None,
+        help="Optional JSON with filter-book comparison rows (title/note/rows)",
     )
     args = ap.parse_args()
 
@@ -1584,11 +1700,13 @@ def main() -> int:
     out_json = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.json"
 
     run_meta = build_run_meta(trades_path)
+    comparison = load_comparison_json(args.comparison_json)
     logger.info(
-        "Run meta: branch=%s commit=%s summary=%s",
+        "Run meta: branch=%s commit=%s summary=%s comparison_rows=%s",
         run_meta["git"]["branch"],
         run_meta["git"]["commit"],
         run_meta.get("summary_file"),
+        0 if not comparison else len(comparison.get("rows") or []),
     )
 
     html = render_html(
@@ -1598,6 +1716,7 @@ def main() -> int:
         run_meta=run_meta,
         title=args.title,
         source=str(trades_path.name),
+        comparison=comparison,
     )
     out_html.write_text(html, encoding="utf-8")
     out_json.write_text(
