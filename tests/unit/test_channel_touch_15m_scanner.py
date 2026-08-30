@@ -23,3 +23,20 @@ def test_15m_cli_defaults_match_h5_stack():
     assert ns.overshoot_min == FROZEN_OVERSHOOT_MIN
     assert ns.proximity_below_pct == 0.0
     assert ns.lookback_sessions == 40
+
+
+def test_15m_cli_proximity_mode():
+    ns = build_arg_parser().parse_args(["--mode", "proximity", "--dry-run"])
+    assert ns.mode == "proximity"
+
+
+def test_crontab_has_disabled_proximity_job():
+    import yaml
+
+    data = yaml.safe_load((ROOT / "crons" / "crontab.yaml").read_text(encoding="utf-8"))
+    names = [j["name"] for j in data["jobs"]]
+    assert "channel_touch_15m_proximity" in names
+    job = next(j for j in data["jobs"] if j["name"] == "channel_touch_15m_proximity")
+    assert job["enabled"] is False
+    assert job["command"] == r"crons\channel_touch_15m_proximity.bat"
+    assert "* 10-15 * * 1-5" in job["schedule"]

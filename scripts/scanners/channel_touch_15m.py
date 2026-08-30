@@ -22,9 +22,9 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -42,9 +42,15 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     fetch_alpaca_last_prices,
     format_15m_message,
     lookback_start,
+    newly_hot_rows,
+    notify_payloads,
     passes_h5_stack,
     rank_hot,
     unique_symbol_day_ok,
+)
+from utils.scanning.channel_touch_candidates_store import (  # noqa: E402
+    ChannelTouchCandidatesStore,
+    DEFAULT_SETTINGS,
 )
 
 RESEARCH = ROOT / "scripts" / "research"
@@ -80,7 +86,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("watchlist", "proximity", "fills", "run"),
         default="run",
-        help="watchlist=build armed JSON; proximity=Alpaca last vs resist; fills=H5 on last bar; run=all",
+        help="watchlist=build armed JSON+DB; proximity=Alpaca last vs resist; fills=H5 on last bar; run=all",
     )
     ap.add_argument("--dry-run", action="store_true", help="Do not send Telegram")
     ap.add_argument("--skip-proximity", action="store_true", help="Skip Alpaca last-price poll")
@@ -128,6 +134,73 @@ def _notify(text: str, *, dry_run: bool) -> None:
         logger.info("[dry-run] would Telegram:\n%s", text)
         return
     send_message(text)
+
+
+def _open_store() -> Optional[ChannelTouchCandidatesStore]:
+    try:
+        store = ChannelTouchCandidatesStore()
+        store.ensure_tables()
+        return store
+    except Exception as exc:
+        logger.warning("TimescaleDB candidates store unavailable: %s", exc)
+        return None
+
+
+def _load_settings(store: Optional[ChannelTouchCandidatesStore]) -> dict:
+    if store is None:
+        return dict(DEFAULT_SETTINGS)
+    try:
+        return store.load_settings()
+    except Exception as exc:
+        logger.warning("Could not load 15m dashboard settings: %s", exc)
+        return dict(DEFAULT_SETTINGS)
+
+
+def _persist_candidates(
+    store: Optional[ChannelTouchCandidatesStore],
+    rows: List[dict],
+    *,
+    meta: dict,
+    below_pct: float,
+) -> List[dict]:
+    if store is None:
+        return rows
+    try:
+        return store.replace_candidates(rows, meta=meta, below_pct=float(below_pct))
+    except Exception as exc:
+        logger.warning("Could not persist candidates: %s", exc)
+        return rows
+
+
+def _load_rows_from_store_or_json(
+    args,
+    store: Optional[ChannelTouchCandidatesStore],
+) -> Tuple[dict, List[dict]]:
+    if store is not None:
+        try:
+            rows = store.load_rows()
+            settings = store.load_settings()
+            if rows:
+                payload = {
+                    "as_of": settings.get("as_of") or "",
+                    "n_universe": int(settings.get("n_universe") or 0),
+                    "n_rows": len(rows),
+                    "stale_warning": settings.get("stale_warning"),
+                    "defaults": {
+                        "proximity_below_pct": settings.get("proximity_below_pct"),
+                    },
+                    "rows": rows,
+                }
+                logger.info("Loaded %d candidates from TimescaleDB as_of=%s", len(rows), payload["as_of"])
+                return payload, rows
+        except Exception as exc:
+            logger.warning("DB watchlist load failed: %s", exc)
+    if args.watchlist.exists():
+        payload = _read_watchlist(args.watchlist)
+        rows = list(payload.get("rows") or [])
+        logger.info("Loaded watchlist %s rows=%d as_of=%s", args.watchlist, len(rows), payload.get("as_of"))
+        return payload, rows
+    raise FileNotFoundError("No candidates in TimescaleDB and watchlist JSON missing: %s" % args.watchlist)
 
 
 def _load_filled_today(path: Path) -> List[str]:
@@ -248,22 +321,61 @@ def fills_from_rows(
     return pd.DataFrame(hits)
 
 
+def _send_gated_telegram(
+    *,
+    store: Optional[ChannelTouchCandidatesStore],
+    settings: dict,
+    rows: List[dict],
+    fills: Optional[pd.DataFrame],
+    as_of: str,
+    n_armed: int,
+    n_hot: int,
+    n_universe: int,
+    stale: Optional[str],
+    dry_run: bool,
+) -> None:
+    today = date.today().isoformat()
+    newly = newly_hot_rows(rows, today=today) if settings.get("telegram_on_hot") else []
+    msgs = notify_payloads(
+        fills=fills,
+        newly_hot=newly,
+        settings=settings,
+        as_of=as_of or "n/a",
+        n_armed=n_armed,
+        n_hot=n_hot,
+        n_universe=n_universe,
+        stale_warning=stale,
+    )
+    for msg in msgs:
+        logger.info("Notify payload:\n%s", msg)
+        _notify(msg, dry_run=dry_run)
+    if newly and not dry_run and store is not None:
+        try:
+            store.mark_hot_notified([r.get("stock") for r in newly], today)
+        except Exception as exc:
+            logger.warning("Could not mark hot_notified_on: %s", exc)
+
+
 def main() -> int:
     load_env_file()
     args = build_arg_parser().parse_args()
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _configure_logging(args.log_dir / f"channel_touch_15m_{stamp}.log")
+    if args.mode == "proximity":
+        log_name = "channel_touch_15m_proximity_%s.log" % datetime.now().strftime("%Y%m%d")
+    else:
+        log_name = "channel_touch_15m_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S")
+    _configure_logging(args.log_dir / log_name)
     t0 = time.perf_counter()
     dry_run = bool(args.dry_run)
+    store = _open_store()
+    settings = _load_settings(store)
+    below_pct = float(settings.get("proximity_below_pct") or args.proximity_below_pct)
 
     try:
-        if args.mode in ("proximity", "fills") and args.watchlist.exists():
-            payload = _read_watchlist(args.watchlist)
-            rows = list(payload.get("rows") or [])
+        if args.mode in ("proximity", "fills"):
+            payload, rows = _load_rows_from_store_or_json(args, store)
             as_of = str(payload.get("as_of") or "")
             n_universe = int(payload.get("n_universe") or 0)
             stale = payload.get("stale_warning")
-            logger.info("Loaded watchlist %s rows=%d as_of=%s", args.watchlist, len(rows), as_of)
         else:
             t_sym = time.perf_counter()
             symbols = list_symbols_fast(args.provider, args.timeframe)
@@ -324,12 +436,19 @@ def main() -> int:
                     "span_days": float(args.max_channel_span_days),
                     "volume_rel_min": float(args.volume_rel_min),
                     "overshoot_min": float(args.overshoot_min),
-                    "proximity_below_pct": float(args.proximity_below_pct),
+                    "proximity_below_pct": below_pct,
                 },
                 "rows": rows,
             }
             _write_watchlist(args.watchlist, payload)
             logger.info("Wrote %s", args.watchlist)
+            meta = {
+                "as_of": as_of or None,
+                "n_universe": n_universe,
+                "stale_warning": stale,
+            }
+            rows = _persist_candidates(store, rows, meta=meta, below_pct=below_pct)
+            payload["rows"] = rows
 
         if args.mode == "watchlist":
             msg = format_15m_message(
@@ -356,12 +475,15 @@ def main() -> int:
                     len(armed_syms),
                     time.perf_counter() - t_px,
                 )
-            rows = attach_last_prices(
-                rows, last_prices, below_pct=float(args.proximity_below_pct)
-            )
-            rows = rank_hot(rows, below_pct=float(args.proximity_below_pct))
+            rows = attach_last_prices(rows, last_prices, below_pct=below_pct)
+            rows = rank_hot(rows, below_pct=below_pct)
             payload["rows"] = rows
             _write_watchlist(args.watchlist, payload)
+            if store is not None:
+                try:
+                    store.update_live_prices(rows, price_ts=datetime.now(timezone.utc))
+                except Exception as exc:
+                    logger.warning("Could not update live prices: %s", exc)
 
         n_hot = sum(1 for r in rows if r.get("hot"))
         n_armed = sum(1 for r in rows if r.get("status") == "armed")
@@ -378,6 +500,19 @@ def main() -> int:
                     r.get("wait_bars"),
                     r.get("volume_rel_20"),
                 )
+            _send_gated_telegram(
+                store=store,
+                settings=settings,
+                rows=rows,
+                fills=pd.DataFrame(),
+                as_of=as_of or "n/a",
+                n_armed=n_armed,
+                n_hot=n_hot,
+                n_universe=n_universe,
+                stale=stale,
+                dry_run=dry_run,
+            )
+            logger.info("proximity elapsed_sec=%.1f", time.perf_counter() - t0)
             return 0
 
         filled_today = _load_filled_today(args.fills_log)
@@ -391,21 +526,24 @@ def main() -> int:
             _append_fills(args.fills_log, fills)
             logger.info("Fills this bar: %d (log %s)", len(fills), args.fills_log)
 
-        msg = format_15m_message(
+        logger.info(
+            "overshoot_min=%s (frozen live floor) elapsed_sec=%.1f watchlist=%s",
+            args.overshoot_min,
+            time.perf_counter() - t0,
+            args.watchlist.name,
+        )
+        _send_gated_telegram(
+            store=store,
+            settings=settings,
+            rows=rows,
+            fills=fills,
             as_of=as_of or "n/a",
             n_armed=n_armed,
             n_hot=n_hot,
-            fills=fills,
             n_universe=n_universe,
-            stale_warning=stale,
+            stale=stale,
+            dry_run=dry_run,
         )
-        msg = (
-            f"{msg}\novershoot_min={args.overshoot_min} (frozen live floor, not expanding p80)\n"
-            f"elapsed_sec={time.perf_counter() - t0:.1f}\n"
-            f"watchlist={args.watchlist.name}"
-        )
-        logger.info("Notify payload:\n%s", msg)
-        _notify(msg, dry_run=dry_run)
         return 0
     except Exception as exc:
         logger.exception("15m channel-touch scan failed: %s", exc)

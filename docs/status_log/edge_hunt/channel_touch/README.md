@@ -28,6 +28,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-29 | [15m unique-symbol filter hypotheses](2026-08-29_channel_touch_15m_unique_filters.md) |
 | 2026-08-30 | [15m H5 stack: WR/PF lift](2026-08-30_channel_touch_15m_h5_refine.md) |
 | 2026-08-30 | [15m live monitor + IB 15m backfill](2026-08-30_channel_touch_15m_live_monitor.md) |
+| 2026-08-30 | [15m hot dashboard (no TV alerts)](2026-08-30_channel_touch_15m_hot_dashboard.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -38,7 +39,7 @@ Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch
 - **Live / nightly:** `--h2-resist-break --h2-resist-break-only --min-l3-wait-bars 6` + span365; **no** RSI / in-channel / beyond-width; **unique-symbol/day** (not RS top1); ATR k=2.0 clamped 1.5%–6%; windowed 504/252. Optional `--max-entries-per-day 1` restores RS top1.
 - **Retired L3 keeper:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25 (`1d_l3_touch.html`)
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
-- **15m research (not nightly):** Unique-symbol H5 + overshoot train p80 + vol>=2 n=6306 WR 48.8% E +0.93 PF 3.61. Live **research** loop (armed watchlist + Alpaca proximity + bar-close H5): `scripts/scanners/channel_touch_15m.py` after IB 15m backfill (`scripts/data/backfill_ib_15m_universe.py`). Playbook: [15m live](../../../features/channel_touch_15m_live.md). Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD.
+- **15m research (not nightly):** Unique-symbol H5 + overshoot train p80 + vol>=2 n=6306 WR 48.8% E +0.93 PF 3.61. Live **research** loop (armed watchlist in TimescaleDB + Alpaca minute proximity + bar-close H5 + `/hot` dashboard): `scripts/scanners/channel_touch_15m.py` after IB 15m backfill (`scripts/data/backfill_ib_15m_universe.py`). Playbook: [15m live](../../../features/channel_touch_15m_live.md). Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD.
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 - Do **not** size from ridge P&L confidence (RS-top1 OOS: 1d E worse; 15m lift dies after RS). Equal-dollar stays the size model.
@@ -57,8 +58,11 @@ python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
 python scripts\data\backfill_ib_15m_universe.py --inventory
 python scripts\scanners\channel_touch_15m.py --mode run --dry-run --max-symbols 50
+python scripts\scanners\channel_touch_15m.py --mode proximity --dry-run
 crons\backfill_ib_15m_universe.bat
 crons\channel_touch_15m.bat
+crons\channel_touch_15m_proximity.bat
+python charting_server.py
 python scripts\research\backtest_channel_touch_h2_break.py --preset 15m
 python scripts\research\backtest_channel_touch_h2_break.py --preset 15m --all-symbols --workers 4 --load-workers 8
 python scripts\research\backtest_channel_touch_confidence_size.py --stack 1d

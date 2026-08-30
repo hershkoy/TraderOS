@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hot candidates - 15m channel-touch</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        .header, .panel, .table-wrap {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        .header h1 {
+            color: #4a5568;
+            font-size: 2em;
+            font-weight: 300;
+            margin-bottom: 8px;
+        }
+        .nav-links { margin-bottom: 12px; font-size: 14px; }
+        .nav-links a {
+            color: #5a67d8;
+            text-decoration: none;
+            font-weight: 600;
+            margin-right: 16px;
+        }
+        .nav-links a:hover { text-decoration: underline; }
+        .meta {
+            color: #4a5568;
+            font-size: 13px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 20px;
+        }
+        .banner {
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 12px;
+            font-size: 13px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            align-items: end;
+        }
+        .control-group { display: flex; flex-direction: column; }
+        .control-group label {
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #4a5568;
+            font-size: 13px;
+        }
+        .control-group select, .control-group input[type="text"],
+        .control-group input[type="number"] {
+            padding: 8px 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .checks { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 12px; }
+        .checks label { font-size: 14px; color: #4a5568; font-weight: 600; cursor: pointer; }
+        .live-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #38a169;
+            margin-right: 6px;
+        }
+        .live-dot.stale { background: #dd6b20; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th {
+            color: #4a5568;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        th:hover { color: #5a67d8; }
+        th.sorted { color: #5a67d8; }
+        tbody tr:hover { background: #edf2f7; }
+        a.sym {
+            color: #5a67d8;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .pill.armed { background: #c6f6d5; color: #276749; }
+        .pill.waiting { background: #feebc8; color: #9c4221; }
+        .pill.filled { background: #bee3f8; color: #2c5282; }
+        .pill.hot { background: #fed7d7; color: #9b2c2c; }
+        .pos { color: #276749; font-weight: 600; }
+        .neg { color: #c53030; font-weight: 600; }
+        .empty { text-align: center; color: #718096; padding: 32px; }
+        .error { background: #fed7d7; color: #9b2c2c; padding: 10px 14px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>15m hot candidates</h1>
+            <div class="nav-links">
+                <a href="/">Charts</a>
+                <a href="/hot">Hot candidates</a>
+            </div>
+            <div class="meta">
+                <span><span id="live-dot" class="live-dot stale"></span><span id="price-ts">prices: --</span></span>
+                <span id="as-of">IB 15m as_of: --</span>
+                <span id="counts">armed=0 hot=0 shown=0</span>
+                <span id="universe">universe=0</span>
+            </div>
+            <div id="banner" class="banner" style="display:none;"></div>
+            <div id="error" class="error" style="display:none;margin-top:12px;"></div>
+        </div>
+
+        <div class="panel">
+            <div class="controls">
+                <div class="control-group">
+                    <label for="status-filter">Status</label>
+                    <select id="status-filter">
+                        <option value="all">All</option>
+                        <option value="armed">Armed</option>
+                        <option value="waiting">Waiting</option>
+                        <option value="filled">Filled (bar)</option>
+                        <option value="hot">Hot (last at/above resist)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="max-dist">Max |dist to resist| %</label>
+                    <input type="number" id="max-dist" min="0" step="0.1" placeholder="all">
+                </div>
+                <div class="control-group">
+                    <label for="search">Symbol</label>
+                    <input type="text" id="search" placeholder="Filter ticker">
+                </div>
+                <div class="control-group">
+                    <label for="below-pct">Hot if within % below resist</label>
+                    <input type="number" id="below-pct" min="0" step="0.1" value="0">
+                </div>
+            </div>
+            <div class="checks">
+                <label><input type="checkbox" id="tg-fill" checked> Telegram on H5 fills</label>
+                <label><input type="checkbox" id="tg-hot"> Telegram when newly hot</label>
+                <span id="save-status" style="color:#718096;font-size:12px;"></span>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th data-key="stock">Symbol</th>
+                        <th data-key="status">Status</th>
+                        <th data-key="hot">Hot</th>
+                        <th data-key="last_price">Last</th>
+                        <th data-key="resist">Resist</th>
+                        <th data-key="abs_dist" class="sorted">Dist %</th>
+                        <th data-key="wait_bars">Wait</th>
+                        <th data-key="volume_rel_20">Vol rel</th>
+                        <th data-key="as_of">As of</th>
+                    </tr>
+                </thead>
+                <tbody id="rows">
+                    <tr><td colspan="9" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        const POLL_MS = 5000;
+        let saveTimer = null;
+        let loading = false;
+        let bootstrapped = false;
+
+        function fmtNum(v, digits) {
+            if (v === null || v === undefined || v === '') return '--';
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '--';
+            return n.toFixed(digits);
+        }
+
+        function distClass(v) {
+            if (v === null || v === undefined) return '';
+            return Number(v) >= 0 ? 'pos' : 'neg';
+        }
+
+        function collectPatch() {
+            const maxDist = document.getElementById('max-dist').value;
+            const below = document.getElementById('below-pct').value;
+            const sorted = document.querySelector('th.sorted');
+            return {
+                telegram_on_fill: document.getElementById('tg-fill').checked,
+                telegram_on_hot: document.getElementById('tg-hot').checked,
+                proximity_below_pct: below === '' ? 0 : Number(below),
+                max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
+                status_filter: document.getElementById('status-filter').value,
+                search: document.getElementById('search').value,
+                sort_key: sorted ? sorted.getAttribute('data-key') : 'abs_dist',
+                sort_dir: sorted && sorted.dataset.dir === 'desc' ? 'desc' : 'asc'
+            };
+        }
+
+        function applySettings(s) {
+            if (!s) return;
+            document.getElementById('tg-fill').checked = !!s.telegram_on_fill;
+            document.getElementById('tg-hot').checked = !!s.telegram_on_hot;
+            document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
+            document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
+            document.getElementById('status-filter').value = s.status_filter || 'all';
+            document.getElementById('search').value = s.search || '';
+            document.querySelectorAll('th[data-key]').forEach(function(th) {
+                if (!th.dataset.label) th.dataset.label = th.textContent.replace(/ [v^]$/, '').trim();
+                th.classList.remove('sorted');
+                th.textContent = th.dataset.label;
+            });
+            const key = s.sort_key || 'abs_dist';
+            const th = document.querySelector('th[data-key="' + key + '"]');
+            if (th) {
+                th.classList.add('sorted');
+                th.dataset.dir = s.sort_dir || 'asc';
+                th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
+            }
+        }
+
+        async function saveSettings() {
+            const patch = collectPatch();
+            document.getElementById('save-status').textContent = 'Saving...';
+            try {
+                const res = await fetch('/api/hot-candidates/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(patch)
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                document.getElementById('save-status').textContent = 'Saved';
+            } catch (err) {
+                document.getElementById('save-status').textContent = 'Save failed';
+            }
+        }
+
+        function scheduleSave() {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(saveSettings, 400);
+        }
+
+        function renderRows(rows) {
+            const tbody = document.getElementById('rows');
+            if (!rows || !rows.length) {
+                tbody.innerHTML = '<tr><td colspan="9" class="empty">No candidates. Run the 15m watchlist scan after IB 15m catch-up.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(function(r) {
+                const hot = r.hot ? '<span class="pill hot">hot</span>' : '';
+                const st = r.status || '';
+                const dist = r.dist_live_pct;
+                return '<tr>' +
+                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(r.stock) + '&timeframe=15m">' + (r.stock || '') + '</a></td>' +
+                    '<td><span class="pill ' + st + '">' + st + '</span></td>' +
+                    '<td>' + hot + '</td>' +
+                    '<td>' + fmtNum(r.last_price, 2) + '</td>' +
+                    '<td>' + fmtNum(r.resist, 2) + '</td>' +
+                    '<td class="' + distClass(dist) + '">' + (dist == null ? '--' : (Number(dist) >= 0 ? '+' : '') + fmtNum(dist, 2)) + '</td>' +
+                    '<td>' + (r.wait_bars == null ? '--' : r.wait_bars) + '</td>' +
+                    '<td>' + fmtNum(r.volume_rel_20, 2) + '</td>' +
+                    '<td>' + (r.as_of || '--') + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+
+        async function poll() {
+            if (loading) return;
+            loading = true;
+            try {
+                const res = await fetch('/api/hot-candidates');
+                const data = await res.json();
+                const errEl = document.getElementById('error');
+                if (!res.ok || data.error) {
+                    errEl.style.display = 'block';
+                    errEl.textContent = data.error || ('HTTP ' + res.status);
+                } else {
+                    errEl.style.display = 'none';
+                }
+                if (data.settings && !bootstrapped) {
+                    applySettings(data.settings);
+                    bootstrapped = true;
+                }
+                document.getElementById('as-of').textContent = 'IB 15m as_of: ' + (data.as_of || '--');
+                document.getElementById('counts').textContent =
+                    'armed=' + (data.n_armed || 0) + ' hot=' + (data.n_hot || 0) + ' shown=' + (data.n_rows || 0);
+                document.getElementById('universe').textContent = 'universe=' + (data.n_universe || 0);
+                const priceTs = data.price_ts || '--';
+                document.getElementById('price-ts').textContent = 'prices: ' + priceTs;
+                const dot = document.getElementById('live-dot');
+                dot.className = 'live-dot' + (data.stale_warning ? ' stale' : '');
+                const banner = document.getElementById('banner');
+                if (data.stale_warning) {
+                    banner.style.display = 'block';
+                    banner.textContent = data.stale_warning;
+                } else {
+                    banner.style.display = 'none';
+                }
+                renderRows(data.rows || []);
+            } catch (err) {
+                const errEl = document.getElementById('error');
+                errEl.style.display = 'block';
+                errEl.textContent = String(err);
+            } finally {
+                loading = false;
+            }
+        }
+
+        document.querySelectorAll('th[data-key]').forEach(function(th) {
+            if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+            th.addEventListener('click', function() {
+                const already = th.classList.contains('sorted');
+                const nextDir = already && th.dataset.dir === 'asc' ? 'desc' : 'asc';
+                document.querySelectorAll('th[data-key]').forEach(function(other) {
+                    other.classList.remove('sorted');
+                    other.textContent = other.dataset.label || other.textContent.replace(/ [v^]$/, '');
+                });
+                th.classList.add('sorted');
+                th.dataset.dir = nextDir;
+                th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
+                saveSettings().then(poll);
+            });
+        });
+
+        ['status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot'].forEach(function(id) {
+            const el = document.getElementById(id);
+            el.addEventListener('change', function() {
+                scheduleSave();
+                setTimeout(poll, 450);
+            });
+            if (el.tagName === 'INPUT' && el.type !== 'checkbox') {
+                el.addEventListener('input', scheduleSave);
+            }
+        });
+
+        poll();
+        setInterval(poll, POLL_MS);
+    </script>
+</body>
+</html>

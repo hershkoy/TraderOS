@@ -9,8 +9,17 @@ import numpy as np
 import json
 from datetime import datetime, timedelta
 import os
+import sys
+from pathlib import Path
 
-from utils.data_aggregator import DataAggregator
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from utils.data.data_aggregator import DataAggregator
+except ImportError:
+    from utils.data_aggregator import DataAggregator
 from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, BollingerBands, ATR
 
 app = Flask(__name__)
@@ -249,6 +258,40 @@ def get_data():
 def get_indicators():
     """Get available indicators"""
     return jsonify(INDICATORS)
+
+
+@app.route('/hot')
+def hot_candidates_page():
+    """15m channel-touch hot candidates dashboard."""
+    return render_template('hot_candidates.html')
+
+
+@app.route('/api/hot-candidates')
+def api_hot_candidates():
+    """Armed 15m setups from TimescaleDB with live Alpaca last (throttled)."""
+    refresh = str(request.args.get('refresh', '1')).lower() not in ('0', 'false', 'no')
+    try:
+        from utils.scanning.channel_touch_hot_api import candidates_payload
+
+        return jsonify(candidates_payload(refresh=refresh))
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'rows': [], 'n_rows': 0, 'n_armed': 0, 'n_hot': 0}), 500
+
+
+@app.route('/api/hot-candidates/settings', methods=['GET', 'POST'])
+def api_hot_settings():
+    """Persisted Telegram + filter settings (cron and UI share this row)."""
+    try:
+        from utils.scanning.channel_touch_hot_api import get_store
+
+        store = get_store()
+        if request.method == 'GET':
+            return jsonify(store.load_settings())
+        patch = request.get_json(silent=True) or {}
+        return jsonify(store.save_settings(patch))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
 
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist

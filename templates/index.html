@@ -43,6 +43,22 @@
             font-weight: 300;
         }
 
+        .nav-links {
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+
+        .nav-links a {
+            color: #5a67d8;
+            text-decoration: none;
+            font-weight: 600;
+            margin-right: 16px;
+        }
+
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+
         .controls {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -224,7 +240,11 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>📈 Backtrader Charting Server</h1>
+            <h1>Backtrader Charting Server</h1>
+            <div class="nav-links">
+                <a href="/">Charts</a>
+                <a href="/hot">Hot candidates</a>
+            </div>
             <div class="controls">
                 <div class="control-group">
                     <label for="symbol">Symbol</label>
@@ -292,6 +312,29 @@
         let selectedIndicators = [];
         let currentChart = null;
 
+        async function loadTimeframes(symbol) {
+            try {
+                const response = await fetch(`/api/timeframes/${symbol}`);
+                const timeframes = await response.json();
+                
+                const timeframeSelect = document.getElementById('timeframe');
+                const previous = timeframeSelect.value;
+                timeframeSelect.innerHTML = '';
+                
+                timeframes.forEach(tf => {
+                    const option = document.createElement('option');
+                    option.value = tf;
+                    option.textContent = tf;
+                    timeframeSelect.appendChild(option);
+                });
+                if (previous && Array.from(timeframeSelect.options).some(o => o.value === previous)) {
+                    timeframeSelect.value = previous;
+                }
+            } catch (error) {
+                console.error('Error loading timeframes:', error);
+            }
+        }
+
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             // Load available timeframes when symbol changes
@@ -301,6 +344,21 @@
                     loadTimeframes(symbol);
                 }
             });
+            const params = new URLSearchParams(window.location.search);
+            const presetSymbol = params.get('symbol');
+            const presetTf = params.get('timeframe');
+            if (presetSymbol) {
+                const sel = document.getElementById('symbol');
+                sel.value = presetSymbol;
+                loadTimeframes(presetSymbol).then(function() {
+                    const tfSel = document.getElementById('timeframe');
+                    const want = presetTf || '15m';
+                    if (Array.from(tfSel.options).some(o => o.value === want)) {
+                        tfSel.value = want;
+                    }
+                    loadChart();
+                });
+            }
         });
 
         function toggleIndicator(indicatorName) {
@@ -329,25 +387,6 @@
                     name: indicatorName,
                     params: params
                 });
-            }
-        }
-
-        async function loadTimeframes(symbol) {
-            try {
-                const response = await fetch(`/api/timeframes/${symbol}`);
-                const timeframes = await response.json();
-                
-                const timeframeSelect = document.getElementById('timeframe');
-                timeframeSelect.innerHTML = '';
-                
-                timeframes.forEach(tf => {
-                    const option = document.createElement('option');
-                    option.value = tf;
-                    option.textContent = tf;
-                    timeframeSelect.appendChild(option);
-                });
-            } catch (error) {
-                console.error('Error loading timeframes:', error);
             }
         }
 

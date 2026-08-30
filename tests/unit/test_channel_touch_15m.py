@@ -10,8 +10,11 @@ from utils.scanning.channel_touch_15m import (
     armed_rows_for_symbol,
     attach_last_prices,
     format_15m_message,
+    format_hot_message,
     is_hot_proximity,
     lookback_start,
+    newly_hot_rows,
+    notify_payloads,
     passes_h5_stack,
     unique_symbol_day_ok,
     walk_h2_resist_asof,
@@ -255,3 +258,56 @@ def test_live_defaults_are_15m_h5_stack():
     assert d["volume_rel_min"] == 2.0
     assert d["overshoot_min"] == FROZEN_OVERSHOOT_MIN
     assert d["proximity_below_pct"] == 0.0
+
+
+def test_newly_hot_once_per_day():
+    rows = [
+        {"stock": "AAA", "hot": True, "hot_notified_on": None},
+        {"stock": "BBB", "hot": True, "hot_notified_on": "2026-08-30"},
+        {"stock": "CCC", "hot": False, "hot_notified_on": None},
+    ]
+    got = newly_hot_rows(rows, today="2026-08-30")
+    assert [r["stock"] for r in got] == ["AAA"]
+    again = newly_hot_rows(
+        [{"stock": "BBB", "hot": True, "hot_notified_on": "2026-08-30"}],
+        today="2026-08-31",
+    )
+    assert [r["stock"] for r in again] == ["BBB"]
+
+
+def test_notify_payloads_gated_by_settings():
+    fills = pd.DataFrame([{"stock": "AAA", "fill_px": 10.0, "resist": 9.9, "wait_bars": 12, "volume_rel_20": 2.2, "overshoot": 0.1}])
+    hot = [{"stock": "BBB", "last_price": 11.0, "resist": 10.8, "dist_live_pct": 1.8, "wait_bars": 14, "volume_rel_20": 2.4}]
+    none = notify_payloads(
+        fills=fills,
+        newly_hot=hot,
+        settings={"telegram_on_fill": False, "telegram_on_hot": False},
+        as_of="2026-08-30 15:45:00",
+        n_armed=4,
+        n_hot=1,
+    )
+    assert none == []
+    fill_only = notify_payloads(
+        fills=fills,
+        newly_hot=hot,
+        settings={"telegram_on_fill": True, "telegram_on_hot": False},
+        as_of="2026-08-30 15:45:00",
+        n_armed=4,
+        n_hot=1,
+    )
+    assert len(fill_only) == 1
+    assert "AAA" in fill_only[0]
+    hot_only = notify_payloads(
+        fills=pd.DataFrame(),
+        newly_hot=hot,
+        settings={"telegram_on_fill": True, "telegram_on_hot": True},
+        as_of="2026-08-30 15:45:00",
+        n_armed=4,
+        n_hot=1,
+    )
+    assert len(hot_only) == 1
+    assert "newly hot" in hot_only[0]
+    assert "not a fill" in hot_only[0]
+    msg = format_hot_message(as_of="t", newly_hot=hot, n_armed=1, n_hot=1)
+    assert "BBB" in msg
+

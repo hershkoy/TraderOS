@@ -82,6 +82,14 @@ Alpaca 15m is **not** a substitute. Research volume is IB. IEX daily volume on t
 
 ## Live loop
 
+TradingView drawing alerts are **not** the live path. CronRunner ticks every minute;
+proximity uses Alpaca last on the armed list; fills still wait for a completed 15m bar.
+
+Dashboard: `http://localhost:5000/hot` (charting_server). Source of truth is TimescaleDB
+(`channel_touch_15m_candidates` + `channel_touch_15m_settings`). JSON watchlist is a debug sidecar.
+
+Telegram on H5 fills vs newly-hot is a persisted UI setting on that page (cron reads the same row).
+
 ```
 overnight / weekend
   backfill_ib_15m_universe.py          # catch IB 15m up to now
@@ -89,11 +97,20 @@ overnight / weekend
 each 15m bar close (RTH)
   load last ~40 sessions IB 15m from TimescaleDB
   find armed H2 setups (wait>=12, span<=10, not cancelled)
-  Alpaca last price on the armed list (~1s)
-  hot = last at or above resist
+  replace TimescaleDB candidates (keep live last if same H2)
   if last completed bar closed above resist:
       unique-symbol/day + prior-bar vol>=2 + fill overshoot>=0.08
-      Telegram
+      Telegram if settings.telegram_on_fill
+
+each RTH minute
+  Alpaca last on the armed list (~1s)
+  update last_price / dist_live_pct / hot in TimescaleDB
+  Telegram newly-hot if settings.telegram_on_hot (once per symbol per day)
+
+dashboard /hot (poll 5s)
+  read candidates from TimescaleDB
+  refresh Alpaca if last_price_ts older than ~5s (process throttle)
+  sort/filter by |dist_live_pct| to resist
 ```
 
 Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. IB hist is for the backfill and any future “refresh last 2D for the hot list” — not a full-universe poll every bar.
@@ -104,23 +121,30 @@ Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookb
 venv\Scripts\activate
 set PYTHONPATH=.
 
-REM Armed watchlist only (no Telegram)
+REM Armed watchlist only (no Telegram); writes JSON + TimescaleDB
 python scripts\scanners\channel_touch_15m.py --mode watchlist --dry-run
 
-REM Full loop, no Telegram
+REM Full 15m loop, no Telegram
 python scripts\scanners\channel_touch_15m.py --mode run --dry-run
 
 REM Debug on 50 names
 python scripts\scanners\channel_touch_15m.py --mode run --dry-run --max-symbols 50
 
-REM After watchlist JSON exists
+REM Minute proximity (DB first, JSON fallback)
 python scripts\scanners\channel_touch_15m.py --mode proximity --dry-run
 python scripts\scanners\channel_touch_15m.py --mode fills --dry-run
+
+REM Dashboard
+python charting_server.py
+REM then open http://localhost:5000/hot
 ```
 
-Cron wrapper (does not replace nightly): `crons\channel_touch_15m.bat`
+Cron wrappers (do not replace nightly). Seeded **disabled** until IB 15m is current:
 
-Optional RTH schedule (every 15 minutes, Mon–Fri 09:45–16:00 local) — install yourself; not the default Task Scheduler job.
+- `crons\channel_touch_15m.bat` — 15m bar-close `--mode run`
+- `crons\channel_touch_15m_proximity.bat` — RTH minute `--mode proximity`
+
+Enable after backfill: `python scripts\pipeline\cron_manager.py enable channel_touch_15m` and `enable channel_touch_15m_proximity`.
 
 If IB 15m is still stale, the scanner **warns** and still builds a watchlist from old bars. It will not produce trustworthy live fills until backfill is done (`--stale-hours 36`).
 
@@ -131,9 +155,13 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Piece | Path |
 |-------|------|
 | Live helpers | `utils/scanning/channel_touch_15m.py` |
+| Candidates store | `utils/scanning/channel_touch_candidates_store.py` |
+| Dashboard API | `utils/scanning/channel_touch_hot_api.py` |
 | Scanner | `scripts/scanners/channel_touch_15m.py` |
+| Dashboard | `charting_server.py` `/hot` + `templates/hot_candidates.html` |
+| Schema | `init-scripts/13-channel-touch-15m-candidates.sql` |
 | IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` |
-| Watchlist JSON | `reports/ascending_channels/channel_touch_15m_watchlist.json` |
+| Watchlist JSON (sidecar) | `reports/ascending_channels/channel_touch_15m_watchlist.json` |
 | Fills log | `reports/ascending_channels/channel_touch_15m_fills_log.csv` |
 | Scanner logs | `logs/scanners/channel_touch_15m_*.log` |
 | Daily nightly (unchanged) | `scripts/scanners/channel_touch_nightly.py` |
@@ -144,9 +172,10 @@ Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_C
 
 ## What not to do
 
+- Do not use TradingView trendline alerts as the 15m live path (dashboard + minute cron instead).
 - Do not copy daily span 365, RSI 50, in-channel, or beyond-width 0.25 onto 15m.
-- Do not treat “price 2% below resist and climbing” as the hot list for this book.
-- Do not fire on last price crossing the rail — wait for the 15m close.
+- Do not treat “price 2% below resist and climbing” as the hot list for this book (dashboard may *show* distance; hot/Telegram default remains at-or-above).
+- Do not fire a fill on last price crossing the rail — wait for the 15m close.
 - Do not use Alpaca IEX 15m `volume_rel` as the H5 gate.
 - Do not promote 15m into the daily nightly cron until bootstrap / max-open stress is done.
 - Do not stream the IB 15m universe.

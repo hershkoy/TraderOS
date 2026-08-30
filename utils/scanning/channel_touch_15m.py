@@ -557,6 +557,96 @@ def format_15m_message(
     return "\n".join(lines)
 
 
+def newly_hot_rows(rows: Sequence[dict], *, today: str) -> List[dict]:
+    """Rows that are hot now and have not been Telegram-notified today."""
+    day = str(today)[:10]
+    out: List[dict] = []
+    for row in rows:
+        if not row.get("hot"):
+            continue
+        notified = row.get("hot_notified_on")
+        notified_s = str(notified)[:10] if notified not in (None, "", "None") else ""
+        if notified_s == day:
+            continue
+        out.append(dict(row))
+    return out
+
+
+def format_hot_message(
+    *,
+    as_of: str,
+    newly_hot: Sequence[dict],
+    n_armed: int = 0,
+    n_hot: int = 0,
+    stale_warning: Optional[str] = None,
+) -> str:
+    lines = [
+        "Channel-touch 15m newly hot",
+        f"as_of={as_of}",
+        "last at/above resist (proximity only; not a fill)",
+        f"armed={n_armed} hot={n_hot} newly_hot={len(newly_hot)}",
+    ]
+    if stale_warning:
+        lines.append(f"WARNING: {stale_warning}")
+    lines.append("")
+    for row in newly_hot:
+        dist = row.get("dist_live_pct")
+        dist_s = f"{float(dist):+.2f}%" if dist is not None and np.isfinite(float(dist)) else "n/a"
+        vol = row.get("volume_rel_20")
+        vol_s = f"{float(vol):.2f}" if vol is not None and np.isfinite(float(vol)) else "n/a"
+        lines.append(
+            "{stock} last={last} resist={resist} dist={dist} wait={wait} vol={vol}".format(
+                stock=row.get("stock"),
+                last=row.get("last_price"),
+                resist=row.get("resist"),
+                dist=dist_s,
+                wait=row.get("wait_bars"),
+                vol=vol_s,
+            )
+        )
+    return "\n".join(lines)
+
+
+def notify_payloads(
+    *,
+    fills: Optional[pd.DataFrame],
+    newly_hot: Sequence[dict],
+    settings: dict,
+    as_of: str,
+    n_armed: int,
+    n_hot: int,
+    n_universe: int = 0,
+    stale_warning: Optional[str] = None,
+) -> List[str]:
+    """Telegram bodies to send. Empty when flags are off or there is nothing new."""
+    msgs: List[str] = []
+    want_fill = bool(settings.get("telegram_on_fill"))
+    want_hot = bool(settings.get("telegram_on_hot"))
+    has_fills = fills is not None and not fills.empty
+    if want_fill and has_fills:
+        msgs.append(
+            format_15m_message(
+                as_of=as_of,
+                n_armed=n_armed,
+                n_hot=n_hot,
+                fills=fills,
+                n_universe=n_universe,
+                stale_warning=stale_warning,
+            )
+        )
+    if want_hot and newly_hot:
+        msgs.append(
+            format_hot_message(
+                as_of=as_of,
+                newly_hot=newly_hot,
+                n_armed=n_armed,
+                n_hot=n_hot,
+                stale_warning=stale_warning,
+            )
+        )
+    return msgs
+
+
 def lookback_start(*, sessions: int = 40, now: Optional[datetime] = None) -> datetime:
     """Calendar start covering ``sessions`` RTH days plus weekend slack."""
     ts = pd.Timestamp(now or datetime.now(timezone.utc))

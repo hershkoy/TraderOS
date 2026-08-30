@@ -29,6 +29,16 @@ jobs:
     command: crons\channel_touch_15m.bat
     description: Research 15m H5 loop at US RTH bar closes. Requires IB 15m catch-up first.
 
+  - name: channel_touch_15m_proximity
+    enabled: false
+    timezone: America/New_York
+    schedule:
+      - "30-59 9 * * 1-5"
+      - "* 10-15 * * 1-5"
+      - "0 16 * * 1-5"
+    command: crons\channel_touch_15m_proximity.bat
+    description: Alpaca last on the armed 15m list every RTH minute. Dashboard source of truth; not a fill.
+
   - name: backfill_ib_15m_universe
     enabled: false
     schedule: "30 2 * * *"
