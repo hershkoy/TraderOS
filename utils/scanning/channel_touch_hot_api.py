@@ -109,6 +109,8 @@ def sort_candidates(rows: Sequence[dict], *, sort_key: str = "abs_dist", sort_di
             return (str(row.get("status") or ""),)
         if key == "stock":
             return (str(row.get("stock") or ""),)
+        if key == "timeframe":
+            return (str(row.get("timeframe") or "15m"),)
         if key == "hot":
             return (0 if row.get("hot") else 1,)
         return (str(row.get(key) or ""),)
@@ -123,6 +125,7 @@ def filter_candidates(
     status_filter: str = "all",
     max_abs_dist_pct: Optional[float] = None,
     search: str = "",
+    timeframe_filter: str = "all",
 ) -> List[dict]:
     status = str(status_filter or "all").lower()
     needle = str(search or "").strip().upper()
@@ -139,6 +142,11 @@ def filter_candidates(
                 continue
         elif status not in ("", "all"):
             if str(row.get("status") or "").lower() != status:
+                continue
+        tf_filter = str(timeframe_filter or "all").lower()
+        if tf_filter in ("15m", "1d"):
+            row_tf = str(row.get("timeframe") or "15m")
+            if row_tf != tf_filter:
                 continue
         if needle and needle not in str(row.get("stock") or "").upper():
             continue
@@ -223,6 +231,7 @@ def candidates_payload(
         status_filter=str(settings.get("status_filter") or "all"),
         max_abs_dist_pct=settings.get("max_abs_dist_pct"),
         search=str(settings.get("search") or ""),
+        timeframe_filter=str(settings.get("timeframe_filter") or "all"),
     )
     ordered = sort_candidates(
         filtered,
@@ -231,6 +240,12 @@ def candidates_payload(
     )
     n_hot = sum(1 for r in rows if r.get("hot"))
     n_armed = sum(1 for r in rows if r.get("status") == "armed")
+    n_armed_15m = sum(
+        1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "15m") == "15m"
+    )
+    n_armed_1d = sum(
+        1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "15m") == "1d"
+    )
     price_ts = None
     for row in rows:
         ts = row.get("last_price_ts")
@@ -241,9 +256,13 @@ def candidates_payload(
         "all_rows": len(rows),
         "n_rows": len(ordered),
         "n_armed": n_armed,
+        "n_armed_15m": n_armed_15m,
+        "n_armed_1d": n_armed_1d,
         "n_hot": n_hot,
         "as_of": settings.get("as_of"),
+        "as_of_1d": settings.get("as_of_1d"),
         "n_universe": settings.get("n_universe") or 0,
+        "n_universe_1d": settings.get("n_universe_1d") or 0,
         "stale_warning": settings.get("stale_warning"),
         "price_ts": price_ts,
         "refreshed": refreshed,

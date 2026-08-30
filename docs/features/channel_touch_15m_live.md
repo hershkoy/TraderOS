@@ -86,7 +86,10 @@ TradingView drawing alerts are **not** the live path. CronRunner ticks every min
 proximity uses Alpaca last on the armed list; fills still wait for a completed 15m bar.
 
 Dashboard: `http://localhost:5000/hot` (charting_server). Source of truth is TimescaleDB
-(`channel_touch_15m_candidates` + `channel_touch_15m_settings`). JSON watchlist is a debug sidecar.
+(`channel_touch_15m_candidates` + `channel_touch_15m_settings`). Rows are keyed by
+`(stock, timeframe)` so **15m** and **1d nightly** share the page (filter All / 15m / 1d).
+JSON watchlist is a debug sidecar. Nightly writes 1d armed/waiting/filled H2 rows unless
+`--skip-hot-dashboard`.
 
 Telegram on H5 fills vs newly-hot is a persisted UI setting on that page (cron reads the same row).
 

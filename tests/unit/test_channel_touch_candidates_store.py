@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from utils.scanning.channel_touch_candidates_store import (
+    CANDIDATE_COLUMNS,
     DEFAULT_SETTINGS,
     apply_settings_patch,
     merge_preserved_live_fields,
@@ -86,7 +87,34 @@ def test_same_setup_requires_stock_and_h2():
 
 def test_row_to_db_tuple_length_matches_columns():
     tup = row_to_db_tuple({"stock": "aaa", "status": "armed", "hot": 1, "wait_bars": "12"})
-    assert len(tup) == 28
+    assert len(tup) == len(CANDIDATE_COLUMNS)
     assert tup[0] == "AAA"
+    assert tup[1] == "15m"
     assert tup[-2] is True  # hot
     assert DEFAULT_SETTINGS["sort_dir"] == "asc"
+    assert DEFAULT_SETTINGS["timeframe_filter"] == "all"
+
+
+def test_merge_keeps_15m_and_1d_separate():
+    existing = {
+        "AAA|15m": {
+            "stock": "AAA",
+            "timeframe": "15m",
+            "h2_time": "t15",
+            "last_price": 10.0,
+            "hot_notified_on": "2026-08-30",
+        },
+        "AAA|1d": {
+            "stock": "AAA",
+            "timeframe": "1d",
+            "h2_time": "t1d",
+            "last_price": 20.0,
+            "hot_notified_on": "2026-08-29",
+        },
+    }
+    new_rows = [
+        {"stock": "AAA", "timeframe": "1d", "h2_time": "t1d", "resist": 19.0, "status": "armed"}
+    ]
+    out = merge_preserved_live_fields(new_rows, existing, below_pct=0.0)
+    assert out[0]["last_price"] == 20.0
+    assert out[0]["hot_notified_on"] == "2026-08-29"

@@ -55,8 +55,8 @@ def test_hot_page_and_api(monkeypatch):
         client = cs.app.test_client()
         page = client.get("/hot")
         assert page.status_code == 200
-        assert b"15m hot candidates" in page.data
-        assert b"Telegram on H5 fills" in page.data
+        assert b"Hot candidates" in page.data
+        assert b"Telegram on 15m H5 fills" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200

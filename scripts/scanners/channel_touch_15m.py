@@ -166,7 +166,9 @@ def _persist_candidates(
     if store is None:
         return rows
     try:
-        return store.replace_candidates(rows, meta=meta, below_pct=float(below_pct))
+        return store.replace_candidates(
+            rows, meta=meta, below_pct=float(below_pct), timeframe="15m"
+        )
     except Exception as exc:
         logger.warning("Could not persist candidates: %s", exc)
         return rows
@@ -351,7 +353,12 @@ def _send_gated_telegram(
         _notify(msg, dry_run=dry_run)
     if newly and not dry_run and store is not None:
         try:
-            store.mark_hot_notified([r.get("stock") for r in newly], today)
+            by_tf: Dict[str, List[str]] = {}
+            for row in newly:
+                tf = str(row.get("timeframe") or "15m")
+                by_tf.setdefault(tf, []).append(str(row.get("stock") or ""))
+            for tf, stocks in by_tf.items():
+                store.mark_hot_notified(stocks, today, timeframe=tf)
         except Exception as exc:
             logger.warning("Could not mark hot_notified_on: %s", exc)
 
@@ -373,6 +380,9 @@ def main() -> int:
     try:
         if args.mode in ("proximity", "fills"):
             payload, rows = _load_rows_from_store_or_json(args, store)
+            if args.mode == "fills":
+                rows = [r for r in rows if str(r.get("timeframe") or "15m") == "15m"]
+                payload["rows"] = rows
             as_of = str(payload.get("as_of") or "")
             n_universe = int(payload.get("n_universe") or 0)
             stale = payload.get("stale_warning")

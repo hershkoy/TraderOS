@@ -46,6 +46,7 @@ class CronJob:
     enabled: bool = True
     description: str = ""
     timezone: Optional[str] = None
+    skip_if_ran_today: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -58,6 +59,8 @@ class CronJob:
             data["description"] = self.description
         if self.timezone:
             data["timezone"] = self.timezone
+        if self.skip_if_ran_today:
+            data["skip_if_ran_today"] = True
         return data
 
     @classmethod
@@ -74,6 +77,7 @@ class CronJob:
         tz_s = str(tz).strip() if tz else None
         desc = str(raw.get("description") or "")
         enabled = bool(raw.get("enabled", True))
+        skip_today = bool(raw.get("skip_if_ran_today", False))
         return cls(
             name=name,
             schedule=schedule,
@@ -81,6 +85,7 @@ class CronJob:
             enabled=enabled,
             description=desc,
             timezone=tz_s or None,
+            skip_if_ran_today=skip_today,
         )
 
 
@@ -201,6 +206,9 @@ class CronManager:
             if self._already_fired(job.name, minute_key):
                 logger.info("skip %s: already fired this minute (%s)", job.name, minute_key)
                 continue
+            if job.skip_if_ran_today and self._succeeded_today(job.name, when):
+                logger.info("skip %s: already succeeded today", job.name)
+                continue
             alive, pid = self.lock_status(job.name)
             if alive:
                 logger.info("skip %s: still running (pid %s)", job.name, pid)
@@ -226,6 +234,10 @@ class CronManager:
         if alive:
             logger.warning("job %s already running (pid %s)", name, pid)
             return 0
+        data = self.load()
+        default_tz = str(data.get("timezone") or "local")
+        when = _aware_now(None, job.timezone or default_tz)
+        self._mark_fired(name, when.strftime("%Y-%m-%dT%H:%M"))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = self.state_dir / ("%s_%s.log" % (name, stamp))
         self._write_lock(name, os.getpid())
@@ -300,6 +312,13 @@ class CronManager:
         state = self._load_state()
         last = (state.get("jobs") or {}).get(name, {}).get("last_fired")
         return last == minute_key
+
+    def _succeeded_today(self, name: str, when: datetime) -> bool:
+        rec = (self._load_state().get("jobs") or {}).get(name) or {}
+        last = str(rec.get("last_fired") or "")
+        if last[:10] != when.strftime("%Y-%m-%d"):
+            return False
+        return rec.get("last_exit_code") == 0
 
     def _mark_fired(self, name: str, minute_key: str) -> None:
         state = self._load_state()

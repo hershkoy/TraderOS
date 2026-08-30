@@ -30,13 +30,13 @@ def test_15m_cli_proximity_mode():
     assert ns.mode == "proximity"
 
 
-def test_crontab_has_disabled_proximity_job():
+def test_crontab_has_proximity_job():
     import yaml
 
     data = yaml.safe_load((ROOT / "crons" / "crontab.yaml").read_text(encoding="utf-8"))
     names = [j["name"] for j in data["jobs"]]
     assert "channel_touch_15m_proximity" in names
     job = next(j for j in data["jobs"] if j["name"] == "channel_touch_15m_proximity")
-    assert job["enabled"] is False
     assert job["command"] == r"crons\channel_touch_15m_proximity.bat"
     assert "* 10-15 * * 1-5" in job["schedule"]
+    assert job.get("timezone") == "America/New_York"

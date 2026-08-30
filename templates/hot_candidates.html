@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hot candidates - 15m channel-touch</title>
+    <title>Hot candidates - channel-touch</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -118,7 +118,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>15m hot candidates</h1>
+            <h1>Hot candidates</h1>
             <div class="nav-links">
                 <a href="/">Charts</a>
                 <a href="/hot">Hot candidates</a>
@@ -126,8 +126,10 @@
             <div class="meta">
                 <span><span id="live-dot" class="live-dot stale"></span><span id="price-ts">prices: --</span></span>
                 <span id="as-of">IB 15m as_of: --</span>
+                <span id="as-of-1d">1d as_of: --</span>
                 <span id="counts">armed=0 hot=0 shown=0</span>
-                <span id="universe">universe=0</span>
+                <span id="universe">15m universe=0</span>
+                <span id="universe-1d">1d universe=0</span>
             </div>
             <div id="banner" class="banner" style="display:none;"></div>
             <div id="error" class="error" style="display:none;margin-top:12px;"></div>
@@ -135,6 +137,14 @@
 
         <div class="panel">
             <div class="controls">
+                <div class="control-group">
+                    <label for="tf-filter">Timeframe</label>
+                    <select id="tf-filter">
+                        <option value="all">All (15m + 1d)</option>
+                        <option value="15m">15m H5</option>
+                        <option value="1d">1d H2 resist-break</option>
+                    </select>
+                </div>
                 <div class="control-group">
                     <label for="status-filter">Status</label>
                     <select id="status-filter">
@@ -159,7 +169,7 @@
                 </div>
             </div>
             <div class="checks">
-                <label><input type="checkbox" id="tg-fill" checked> Telegram on H5 fills</label>
+                <label><input type="checkbox" id="tg-fill" checked> Telegram on 15m H5 fills</label>
                 <label><input type="checkbox" id="tg-hot"> Telegram when newly hot</label>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
@@ -170,6 +180,7 @@
                 <thead>
                     <tr>
                         <th data-key="stock">Symbol</th>
+                        <th data-key="timeframe">TF</th>
                         <th data-key="status">Status</th>
                         <th data-key="hot">Hot</th>
                         <th data-key="last_price">Last</th>
@@ -181,7 +192,7 @@
                     </tr>
                 </thead>
                 <tbody id="rows">
-                    <tr><td colspan="9" class="empty">Loading...</td></tr>
+                    <tr><td colspan="10" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -213,6 +224,7 @@
                 telegram_on_hot: document.getElementById('tg-hot').checked,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
+                timeframe_filter: document.getElementById('tf-filter').value,
                 status_filter: document.getElementById('status-filter').value,
                 search: document.getElementById('search').value,
                 sort_key: sorted ? sorted.getAttribute('data-key') : 'abs_dist',
@@ -226,6 +238,7 @@
             document.getElementById('tg-hot').checked = !!s.telegram_on_hot;
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
+            document.getElementById('tf-filter').value = s.timeframe_filter || 'all';
             document.getElementById('status-filter').value = s.status_filter || 'all';
             document.getElementById('search').value = s.search || '';
             document.querySelectorAll('th[data-key]').forEach(function(th) {
@@ -266,15 +279,18 @@
         function renderRows(rows) {
             const tbody = document.getElementById('rows');
             if (!rows || !rows.length) {
-                tbody.innerHTML = '<tr><td colspan="9" class="empty">No candidates. Run the 15m watchlist scan after IB 15m catch-up.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="10" class="empty">No candidates. Run the 15m watchlist and/or nightly 1d scan.</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(function(r) {
                 const hot = r.hot ? '<span class="pill hot">hot</span>' : '';
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
+                const tf = r.timeframe || '15m';
+                const chartTf = tf === '1d' ? '1d' : '15m';
                 return '<tr>' +
-                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(r.stock) + '&timeframe=15m">' + (r.stock || '') + '</a></td>' +
+                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(r.stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + (r.stock || '') + '</a></td>' +
+                    '<td><span class="pill ' + (tf === '1d' ? 'filled' : 'armed') + '">' + tf + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
                     '<td>' + fmtNum(r.last_price, 2) + '</td>' +
@@ -305,9 +321,14 @@
                     bootstrapped = true;
                 }
                 document.getElementById('as-of').textContent = 'IB 15m as_of: ' + (data.as_of || '--');
+                document.getElementById('as-of-1d').textContent = '1d as_of: ' + (data.as_of_1d || '--');
                 document.getElementById('counts').textContent =
-                    'armed=' + (data.n_armed || 0) + ' hot=' + (data.n_hot || 0) + ' shown=' + (data.n_rows || 0);
-                document.getElementById('universe').textContent = 'universe=' + (data.n_universe || 0);
+                    'armed 15m=' + (data.n_armed_15m || 0) +
+                    ' armed 1d=' + (data.n_armed_1d || 0) +
+                    ' hot=' + (data.n_hot || 0) +
+                    ' shown=' + (data.n_rows || 0);
+                document.getElementById('universe').textContent = '15m universe=' + (data.n_universe || 0);
+                document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
                 const priceTs = data.price_ts || '--';
                 document.getElementById('price-ts').textContent = 'prices: ' + priceTs;
                 const dot = document.getElementById('live-dot');
@@ -345,7 +366,7 @@
             });
         });
 
-        ['status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot'].forEach(function(id) {
+        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
                 scheduleSave();

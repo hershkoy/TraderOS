@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     as_of TEXT,
     n_universe INTEGER NOT NULL DEFAULT 0,
     stale_warning TEXT,
+    timeframe_filter TEXT NOT NULL DEFAULT 'all',
+    as_of_1d TEXT,
+    n_universe_1d INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -22,7 +25,8 @@ VALUES (1)
 ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
-    stock TEXT PRIMARY KEY,
+    stock TEXT NOT NULL,
+    timeframe TEXT NOT NULL DEFAULT '15m',
     status TEXT NOT NULL,
     as_of TEXT,
     h2_time TEXT,
@@ -50,7 +54,8 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
     dist_live_pct DOUBLE PRECISION,
     hot BOOLEAN NOT NULL DEFAULT FALSE,
     hot_notified_on DATE,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (stock, timeframe)
 );
 
 CREATE INDEX IF NOT EXISTS idx_ct15m_cand_hot

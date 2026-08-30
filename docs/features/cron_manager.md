@@ -62,6 +62,7 @@ Seeded jobs in `crontab.yaml` start **disabled**. Enable the ones you want.
 ## Behaviour
 
 - Same-minute re-entry is skipped (state in `logs/cron/state.json`).
+- `skip_if_ran_today: true` skips a later tick if that job already **succeeded** today (used on `channel_touch_nightly` so a manual run does not double-fire at 23:00). Failed runs are retried.
 - If a job is still running, the next due tick skips it (lock in `logs/cron/locks/`).
 - Job stdout/stderr: `logs/cron/{name}_{timestamp}.log`
 - Tick log: `logs/cron/tick_YYYYMMDD.log` (only when something is due, plus errors)

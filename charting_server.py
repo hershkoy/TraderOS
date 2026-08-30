@@ -262,13 +262,13 @@ def get_indicators():
 
 @app.route('/hot')
 def hot_candidates_page():
-    """15m channel-touch hot candidates dashboard."""
+    """15m + 1d channel-touch hot candidates dashboard."""
     return render_template('hot_candidates.html')
 
 
 @app.route('/api/hot-candidates')
 def api_hot_candidates():
-    """Armed 15m setups from TimescaleDB with live Alpaca last (throttled)."""
+    """Armed 15m and 1d setups from TimescaleDB with live Alpaca last (throttled)."""
     refresh = str(request.args.get('refresh', '1')).lower() not in ('0', 'false', 'no')
     try:
         from utils.scanning.channel_touch_hot_api import candidates_payload

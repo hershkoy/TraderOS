@@ -37,6 +37,8 @@ from utils.scanning.channel_touch import (
     resolve_as_of_from_panels,
     scan_live_triggers,
 )
+from utils.scanning.channel_touch_1d import build_1d_watchlist_rows
+from utils.scanning.channel_touch_candidates_store import ChannelTouchCandidatesStore
 
 RESEARCH = ROOT / "scripts" / "research"
 if str(RESEARCH) not in sys.path:
@@ -198,6 +200,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=ROOT / "logs" / "scanners",
     )
+    ap.add_argument(
+        "--skip-hot-dashboard",
+        action="store_true",
+        help="Do not write 1d armed rows to the /hot dashboard store",
+    )
     return ap
 
 
@@ -337,6 +344,35 @@ def main() -> int:
         else:
             pd.DataFrame().to_csv(out_csv, index=False)
         logger.info("Wrote %s", out_csv)
+
+        if not args.skip_hot_dashboard:
+            try:
+                t_hot = time.perf_counter()
+                logger.info("Building 1d /hot watchlist ...")
+                hot_rows = build_1d_watchlist_rows(
+                    panels,
+                    [s for s in symbols if s in panels],
+                    as_of=as_of,
+                    min_wait=int(args.min_l3_wait_bars),
+                    max_wait=int(args.max_l3_wait_bars),
+                    max_span=float(args.max_channel_span_days),
+                    slip=float(args.entry_slip_pct),
+                    window_bars=window_bars if window_bars > 0 else int(LIVE_DEFAULTS["window_bars"]),
+                    window_step_bars=window_step if window_step > 0 else int(LIVE_DEFAULTS["window_step_bars"]),
+                )
+                store = ChannelTouchCandidatesStore()
+                store.replace_candidates(
+                    hot_rows,
+                    meta={"as_of": as_of_s, "n_universe": len(panels)},
+                    timeframe="1d",
+                )
+                logger.info(
+                    "Wrote %d 1d rows to /hot dashboard in %.1fs",
+                    len(hot_rows),
+                    time.perf_counter() - t_hot,
+                )
+            except Exception as hot_exc:
+                logger.exception("1d /hot persist failed (nightly scan still ok): %s", hot_exc)
 
         msg = format_triggers_message(
             triggers if triggers is not None else pd.DataFrame(),

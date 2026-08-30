@@ -27,3 +27,4 @@ def test_nightly_cli_defaults_match_h2_resist_break():
     assert LIVE_DEFAULTS["max_entries_per_day"] == 0
     assert ns.window_bars == 504
     assert ns.window_step_bars == 252
+    assert ns.skip_hot_dashboard is False

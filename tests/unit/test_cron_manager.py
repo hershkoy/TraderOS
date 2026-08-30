@@ -76,6 +76,29 @@ def test_tick_skips_same_minute_and_lock(tmp_path: Path):
     assert "locked" not in started
 
 
+def test_tick_skip_if_ran_today(tmp_path: Path):
+    mgr = _mgr(tmp_path)
+    mgr.add_job(
+        CronJob(
+            name="nightly",
+            schedule=["0 23 * * 1-5"],
+            command="echo nightly",
+            enabled=True,
+            skip_if_ran_today=True,
+        )
+    )
+    monday_2300 = datetime(2026, 8, 31, 23, 0, 0)
+    mgr._mark_fired("nightly", "2026-08-31T10:00")
+    state = mgr._load_state()
+    state["jobs"]["nightly"]["last_exit_code"] = 0
+    mgr._save_state(state)
+    assert mgr.tick(now=monday_2300, dry_run=True) == []
+
+    state["jobs"]["nightly"]["last_exit_code"] = 1
+    mgr._save_state(state)
+    assert mgr.tick(now=monday_2300, dry_run=True) == ["nightly"]
+
+
 def test_crontab_roundtrip_yaml(tmp_path: Path):
     mgr = _mgr(tmp_path)
     mgr.add_job(
@@ -97,5 +120,6 @@ def test_repo_crontab_loads():
     names = {j.name for j in jobs}
     assert "channel_touch_nightly" in names
     nightly = mgr.job("channel_touch_nightly")
-    assert nightly.enabled is False
     assert nightly.schedule == ["0 23 * * 1-5"]
+    assert nightly.skip_if_ran_today is True
+    assert isinstance(nightly.enabled, bool)

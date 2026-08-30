@@ -74,6 +74,12 @@ def test_filter_status_hot_and_max_abs_dist():
     assert [r["stock"] for r in close] == ["A", "B"]
     search = filter_candidates(rows, search="b")
     assert [r["stock"] for r in search] == ["B"]
+    mixed = [
+        {"stock": "A", "timeframe": "15m", "status": "armed", "hot": True, "dist_live_pct": 0.4},
+        {"stock": "D", "timeframe": "1d", "status": "armed", "hot": False, "dist_live_pct": -0.2},
+    ]
+    only_1d = filter_candidates(mixed, timeframe_filter="1d")
+    assert [r["stock"] for r in only_1d] == ["D"]
 
 
 def test_prices_are_stale_without_ts():

@@ -15,7 +15,10 @@ from utils.scanning.channel_touch_15m import is_hot_proximity
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
-INIT_SQL_PATH = ROOT / "init-scripts" / "13-channel-touch-15m-candidates.sql"
+INIT_SQL_PATHS = (
+    ROOT / "init-scripts" / "13-channel-touch-15m-candidates.sql",
+    ROOT / "init-scripts" / "14-channel-touch-candidates-timeframe.sql",
+)
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "telegram_on_fill": True,
@@ -29,10 +32,14 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "as_of": None,
     "n_universe": 0,
     "stale_warning": None,
+    "timeframe_filter": "all",
+    "as_of_1d": None,
+    "n_universe_1d": 0,
 }
 
 CANDIDATE_COLUMNS = (
     "stock",
+    "timeframe",
     "status",
     "as_of",
     "h2_time",
@@ -74,6 +81,9 @@ SETTINGS_COLUMNS = (
     "as_of",
     "n_universe",
     "stale_warning",
+    "timeframe_filter",
+    "as_of_1d",
+    "n_universe_1d",
 )
 
 _BOOL_KEYS = {"telegram_on_fill", "telegram_on_hot", "wait_ok", "hot"}
@@ -172,6 +182,12 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out["n_universe"] = 0 if n_uni is None else int(n_uni)
     stale = src.get("stale_warning")
     out["stale_warning"] = None if stale in (None, "") else str(stale)
+    tf = str(src.get("timeframe_filter") or "all").lower()
+    out["timeframe_filter"] = tf if tf in ("all", "15m", "1d") else "all"
+    as_of_1d = src.get("as_of_1d")
+    out["as_of_1d"] = None if as_of_1d in (None, "") else str(as_of_1d)
+    n_uni_1d = _as_int(src.get("n_universe_1d"))
+    out["n_universe_1d"] = 0 if n_uni_1d is None else int(n_uni_1d)
     return out
 
 
@@ -186,9 +202,17 @@ def apply_settings_patch(current: dict, patch: Optional[dict]) -> Dict[str, Any]
 
 
 def same_setup(prev: dict, new: dict) -> bool:
-    return str(prev.get("h2_time") or "") == str(new.get("h2_time") or "") and str(
-        prev.get("stock") or ""
-    ).upper() == str(new.get("stock") or "").upper()
+    return (
+        str(prev.get("h2_time") or "") == str(new.get("h2_time") or "")
+        and str(prev.get("stock") or "").upper() == str(new.get("stock") or "").upper()
+        and str(prev.get("timeframe") or "15m") == str(new.get("timeframe") or "15m")
+    )
+
+
+def _row_key(row: dict) -> str:
+    stock = str(row.get("stock") or "").upper()
+    tf = str(row.get("timeframe") or "15m")
+    return "%s|%s" % (stock, tf)
 
 
 def merge_preserved_live_fields(
@@ -197,13 +221,14 @@ def merge_preserved_live_fields(
     *,
     below_pct: float = 0.0,
 ) -> List[dict]:
-    """Keep last price + hot_notified_on when the same symbol+h2 is still armed."""
+    """Keep last price + hot_notified_on when the same symbol+timeframe+h2 is still armed."""
     out: List[dict] = []
     for row in new_rows:
         item = dict(row)
         stock = str(item.get("stock", "")).upper()
         item["stock"] = stock
-        prev = existing_by_stock.get(stock)
+        item["timeframe"] = str(item.get("timeframe") or "15m")
+        prev = existing_by_stock.get(_row_key(item)) or existing_by_stock.get(stock)
         if prev and same_setup(prev, item):
             if item.get("last_price") is None:
                 item["last_price"] = prev.get("last_price")
@@ -236,6 +261,7 @@ def merge_preserved_live_fields(
 def row_to_db_tuple(row: dict) -> tuple:
     item = dict(row)
     item["stock"] = str(item.get("stock", "")).upper()
+    item["timeframe"] = str(item.get("timeframe") or "15m")
     item["hot"] = bool(item.get("hot"))
     vals = []
     for col in CANDIDATE_COLUMNS:
@@ -259,6 +285,7 @@ def dict_from_db_row(raw: dict) -> dict:
     for col in CANDIDATE_COLUMNS:
         out[col] = _jsonish(raw.get(col))
     out["stock"] = str(out.get("stock") or "").upper()
+    out["timeframe"] = str(out.get("timeframe") or "15m")
     out["hot"] = _as_bool(out.get("hot"), False)
     out["wait_ok"] = _as_bool(out.get("wait_ok"), False)
     return out
@@ -309,7 +336,11 @@ class ChannelTouchCandidatesStore:
     def ensure_tables(self) -> None:
         if self._ensured:
             return
-        sql_text = INIT_SQL_PATH.read_text(encoding="utf-8") if INIT_SQL_PATH.exists() else _FALLBACK_DDL
+        chunks: List[str] = []
+        for path in INIT_SQL_PATHS:
+            if path.exists():
+                chunks.append(path.read_text(encoding="utf-8"))
+        sql_text = "\n".join(chunks) if chunks else _FALLBACK_DDL
         if self._runner is not None:
             for stmt in _split_sql(sql_text):
                 self._runner(stmt, None, fetch=False)
@@ -320,14 +351,36 @@ class ChannelTouchCandidatesStore:
             conn = client.connection
             cur = conn.cursor()
             try:
-                cur.execute(sql_text)
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+                files = [p for p in INIT_SQL_PATHS if p.exists()]
+                if not files:
+                    cur.execute(_FALLBACK_DDL)
+                    conn.commit()
+                else:
+                    for path in files:
+                        try:
+                            cur.execute(path.read_text(encoding="utf-8"))
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            logger.warning("init sql %s failed", path.name, exc_info=True)
             finally:
                 cur.close()
+        self._migrate_composite_pk()
         self._ensured = True
+
+    def _migrate_composite_pk(self) -> None:
+        """Existing DBs had PRIMARY KEY (stock). Switch to (stock, timeframe)."""
+        try:
+            self._run(
+                "ALTER TABLE channel_touch_15m_candidates "
+                "DROP CONSTRAINT IF EXISTS channel_touch_15m_candidates_pkey"
+            )
+            self._run(
+                "ALTER TABLE channel_touch_15m_candidates "
+                "ADD PRIMARY KEY (stock, timeframe)"
+            )
+        except Exception:
+            logger.debug("composite PK migrate skipped", exc_info=True)
 
     def load_settings(self) -> Dict[str, Any]:
         self.ensure_tables()
@@ -361,6 +414,9 @@ class ChannelTouchCandidatesStore:
                 as_of = %s,
                 n_universe = %s,
                 stale_warning = %s,
+                timeframe_filter = %s,
+                as_of_1d = %s,
+                n_universe_1d = %s,
                 updated_at = now()
             WHERE id = 1
             """,
@@ -376,16 +432,26 @@ class ChannelTouchCandidatesStore:
                 settings["as_of"],
                 settings["n_universe"],
                 settings["stale_warning"],
+                settings["timeframe_filter"],
+                settings["as_of_1d"],
+                settings["n_universe_1d"],
             ),
         )
         return settings
 
-    def load_rows(self) -> List[dict]:
+    def load_rows(self, timeframe: Optional[str] = None) -> List[dict]:
         self.ensure_tables()
-        rows = self._run(
-            "SELECT * FROM channel_touch_15m_candidates ORDER BY stock",
-            fetch=True,
-        )
+        if timeframe:
+            rows = self._run(
+                "SELECT * FROM channel_touch_15m_candidates WHERE timeframe = %s ORDER BY stock",
+                (str(timeframe),),
+                fetch=True,
+            )
+        else:
+            rows = self._run(
+                "SELECT * FROM channel_touch_15m_candidates ORDER BY stock, timeframe",
+                fetch=True,
+            )
         if not rows:
             return []
         return [dict_from_db_row(dict(r)) for r in rows]
@@ -396,35 +462,58 @@ class ChannelTouchCandidatesStore:
         *,
         meta: Optional[dict] = None,
         below_pct: Optional[float] = None,
+        timeframe: str = "15m",
     ) -> List[dict]:
         self.ensure_tables()
+        tf = str(timeframe or "15m")
         settings = self.load_settings()
         if below_pct is None:
             below_pct = float(settings.get("proximity_below_pct") or 0.0)
-        existing = {str(r["stock"]).upper(): r for r in self.load_rows()}
-        merged = merge_preserved_live_fields(rows, existing, below_pct=float(below_pct))
+        tagged: List[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["timeframe"] = tf
+            tagged.append(item)
+        existing = {_row_key(r): r for r in self.load_rows()}
+        merged = merge_preserved_live_fields(tagged, existing, below_pct=float(below_pct))
         new_stocks = [r["stock"] for r in merged]
         if new_stocks:
             placeholders = ",".join(["%s"] * len(new_stocks))
             self._run(
-                "DELETE FROM channel_touch_15m_candidates WHERE stock NOT IN (%s)" % placeholders,
-                tuple(new_stocks),
+                (
+                    "DELETE FROM channel_touch_15m_candidates "
+                    "WHERE timeframe = %s AND stock NOT IN (%s)"
+                )
+                % ("%s", placeholders),
+                tuple([tf] + new_stocks),
             )
         else:
-            self._run("DELETE FROM channel_touch_15m_candidates")
+            self._run(
+                "DELETE FROM channel_touch_15m_candidates WHERE timeframe = %s",
+                (tf,),
+            )
         if merged:
             cols = ", ".join(CANDIDATE_COLUMNS)
             placeholders = ", ".join(["%s"] * len(CANDIDATE_COLUMNS))
-            update_cols = [c for c in CANDIDATE_COLUMNS if c != "stock"]
+            update_cols = [c for c in CANDIDATE_COLUMNS if c not in ("stock", "timeframe")]
             set_clause = ", ".join("%s = EXCLUDED.%s" % (c, c) for c in update_cols)
             sql = (
                 "INSERT INTO channel_touch_15m_candidates (%s) VALUES (%s) "
-                "ON CONFLICT (stock) DO UPDATE SET %s, updated_at = now()"
+                "ON CONFLICT (stock, timeframe) DO UPDATE SET %s, updated_at = now()"
             ) % (cols, placeholders, set_clause)
             for row in merged:
                 self._run(sql, row_to_db_tuple(row))
         if meta:
-            self.save_settings(meta, current=settings)
+            patch = dict(meta)
+            if tf == "1d":
+                mapped = {}
+                if "as_of" in patch:
+                    mapped["as_of_1d"] = patch.pop("as_of")
+                if "n_universe" in patch:
+                    mapped["n_universe_1d"] = patch.pop("n_universe")
+                patch.pop("stale_warning", None)
+                patch.update(mapped)
+            self.save_settings(patch, current=settings)
         return merged
 
     def update_live_prices(self, rows: Sequence[dict], *, price_ts: Optional[datetime] = None) -> None:
@@ -442,7 +531,7 @@ class ChannelTouchCandidatesStore:
                     dist_live_pct = %s,
                     hot = %s,
                     updated_at = now()
-                WHERE stock = %s
+                WHERE stock = %s AND timeframe = %s
                 """,
                 (
                     _as_float(row.get("last_price")),
@@ -450,24 +539,42 @@ class ChannelTouchCandidatesStore:
                     _as_float(row.get("dist_live_pct")),
                     _as_bool(row.get("hot"), False),
                     stock,
+                    str(row.get("timeframe") or "15m"),
                 ),
             )
 
-    def mark_hot_notified(self, stocks: Sequence[str], day: Optional[str] = None) -> None:
+    def mark_hot_notified(
+        self,
+        stocks: Sequence[str],
+        day: Optional[str] = None,
+        *,
+        timeframe: Optional[str] = None,
+    ) -> None:
         self.ensure_tables()
         day_s = str(day or date.today().isoformat())[:10]
+        tf = str(timeframe) if timeframe else None
         for stock in stocks:
             key = str(stock).upper()
             if not key:
                 continue
-            self._run(
-                """
-                UPDATE channel_touch_15m_candidates
-                SET hot_notified_on = %s, updated_at = now()
-                WHERE stock = %s
-                """,
-                (day_s, key),
-            )
+            if tf:
+                self._run(
+                    """
+                    UPDATE channel_touch_15m_candidates
+                    SET hot_notified_on = %s, updated_at = now()
+                    WHERE stock = %s AND timeframe = %s
+                    """,
+                    (day_s, key, tf),
+                )
+            else:
+                self._run(
+                    """
+                    UPDATE channel_touch_15m_candidates
+                    SET hot_notified_on = %s, updated_at = now()
+                    WHERE stock = %s
+                    """,
+                    (day_s, key),
+                )
 
 
 def _split_sql(text: str) -> List[str]:
@@ -497,11 +604,15 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     as_of TEXT,
     n_universe INTEGER NOT NULL DEFAULT 0,
     stale_warning TEXT,
+    timeframe_filter TEXT NOT NULL DEFAULT 'all',
+    as_of_1d TEXT,
+    n_universe_1d INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO channel_touch_15m_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
-    stock TEXT PRIMARY KEY,
+    stock TEXT NOT NULL,
+    timeframe TEXT NOT NULL DEFAULT '15m',
     status TEXT NOT NULL,
     as_of TEXT,
     h2_time TEXT,
@@ -529,6 +640,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
     dist_live_pct DOUBLE PRECISION,
     hot BOOLEAN NOT NULL DEFAULT FALSE,
     hot_notified_on DATE,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (stock, timeframe)
 );
 """
