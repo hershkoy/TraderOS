@@ -2,8 +2,8 @@
 """
 Nightly channel-touch job:
   1) Refresh ALPACA 1d bars for the stored daily universe
-  2) Scan for l3_touch fills on the latest bar (min-wait 6, RSI<=50,
-     in-channel + span365 + beyond 0.25, RS top1, ATR k=2.0)
+  2) Scan for H2 resist-break fills on the latest bar (min-wait 6,
+     span365, unique-symbol/day, ATR k=2.0; skip in-channel / RSI / beyond-width)
   3) Telegram-notify triggers (and a no-signal heartbeat)
 
 Usage (Windows CMD):
@@ -42,7 +42,7 @@ RESEARCH = ROOT / "scripts" / "research"
 if str(RESEARCH) not in sys.path:
     sys.path.insert(0, str(RESEARCH))
 from find_ascending_channels import list_symbols_fast  # noqa: E402
-from backtest_channel_touch_trades import select_same_day_rs  # noqa: E402
+from backtest_channel_touch_trades import keep_one_per_symbol_day, select_same_day_rs  # noqa: E402
 
 logger = logging.getLogger("channel_touch_nightly")
 
@@ -110,20 +110,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--load-workers", type=int, default=8)
     ap.add_argument("--chunk-size", type=int, default=50)
     ap.add_argument("--max-symbols", type=int, default=0, help="Debug: limit universe size")
-    ap.add_argument("--max-entries-per-day", type=int, default=int(LIVE_DEFAULTS["max_entries_per_day"]))
+    ap.add_argument(
+        "--max-entries-per-day",
+        type=int,
+        default=int(LIVE_DEFAULTS["max_entries_per_day"]),
+        help="0=all unique symbols that day; N=RS vs SPY top-N (optional cap)",
+    )
     ap.add_argument("--atr-stop-mult", type=float, default=float(LIVE_DEFAULTS["atr_stop_mult"]))
     ap.add_argument(
         "--entry-mode",
         default=str(LIVE_DEFAULTS["entry_mode"]),
         choices=("l3_touch", "pivot", "reclaim"),
-        help="Live fill mode (default: l3_touch keeper)",
+        help="Live fill mode (default: l3_touch setups; trigger is H2 resist-break)",
     )
     ap.add_argument("--entry-touch", type=int, default=int(LIVE_DEFAULTS["entry_touch"]))
     ap.add_argument("--pivot-len", type=int, default=int(LIVE_DEFAULTS["pivot_len"]))
     ap.add_argument("--min-l3-wait-bars", type=int, default=int(LIVE_DEFAULTS["min_l3_wait_bars"]))
     ap.add_argument("--max-l3-wait-bars", type=int, default=int(LIVE_DEFAULTS["max_l3_wait_bars"]))
     ap.add_argument("--entry-slip-pct", type=float, default=float(LIVE_DEFAULTS["entry_slip_pct"]))
-    ap.add_argument("--max-rsi", type=float, default=float(LIVE_DEFAULTS["max_rsi"]))
+    ap.add_argument(
+        "--h2-resist-break",
+        action=argparse.BooleanOptionalAction,
+        default=bool(LIVE_DEFAULTS["h2_resist_break"]),
+        help="Fill close above resistance after H2 (default on)",
+    )
+    ap.add_argument(
+        "--h2-resist-break-only",
+        action=argparse.BooleanOptionalAction,
+        default=bool(LIVE_DEFAULTS["h2_resist_break_only"]),
+        help="Drop L3 support-tag fills; live trigger is resist-break only (default on)",
+    )
+    ap.add_argument(
+        "--max-rsi",
+        type=float,
+        default=LIVE_DEFAULTS["max_rsi"],
+        help="Reject rsi_14 above this (default: off for resist-break)",
+    )
     ap.add_argument(
         "--require-in-channel",
         action=argparse.BooleanOptionalAction,
@@ -137,7 +159,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--max-beyond-width",
         type=float,
-        default=float(LIVE_DEFAULTS["max_beyond_width"]),
+        default=LIVE_DEFAULTS["max_beyond_width"],
+        help="Reject max (high-resist)/width above this (default: off for resist-break)",
     )
     ap.add_argument("--window-bars", type=int, default=int(LIVE_DEFAULTS["window_bars"]))
     ap.add_argument("--window-step-bars", type=int, default=int(LIVE_DEFAULTS["window_step_bars"]))
@@ -249,15 +272,17 @@ def main() -> int:
         as_of = resolve_as_of_from_panels(panels, spy_df)
         as_of_s = as_of.strftime("%Y-%m-%d")
         logger.info(
-            "Scanning live triggers as_of=%s mode=%s min_wait=%d max_rsi=%.0f "
-            "in_channel=%s span<=%.0f beyond=%.2f window=%d/%d",
+            "Scanning live triggers as_of=%s mode=%s h2_break=%s only=%s min_wait=%d "
+            "max_rsi=%s in_channel=%s span<=%.0f beyond=%s window=%d/%d",
             as_of_s,
             args.entry_mode,
+            bool(args.h2_resist_break),
+            bool(args.h2_resist_break_only),
             int(args.min_l3_wait_bars),
-            float(args.max_rsi),
+            args.max_rsi,
             bool(args.require_in_channel),
             float(args.max_channel_span_days),
-            float(args.max_beyond_width),
+            args.max_beyond_width,
             window_bars,
             window_step,
         )
@@ -281,16 +306,20 @@ def main() -> int:
             window_step_bars=window_step if window_step > 0 else None,
             require_in_channel=bool(args.require_in_channel),
             max_channel_span_days=float(args.max_channel_span_days),
-            max_beyond_width=float(args.max_beyond_width),
-            max_rsi=float(args.max_rsi),
+            max_beyond_width=args.max_beyond_width,
+            max_rsi=args.max_rsi,
+            h2_resist_break=bool(args.h2_resist_break),
+            h2_resist_break_only=bool(args.h2_resist_break_only),
             stats=scan_stats,
         )
         n_raw = int(scan_stats.get("n_raw", 0 if raw.empty else len(raw)))
         n_cand = 0 if raw.empty else len(raw)
         triggers = raw
-        if not raw.empty and int(args.max_entries_per_day) > 0:
+        if not raw.empty:
+            triggers = keep_one_per_symbol_day(raw)
+        if not triggers.empty and int(args.max_entries_per_day) > 0:
             triggers = select_same_day_rs(
-                raw, rs_col="rs_spy_126d", max_per_day=int(args.max_entries_per_day)
+                triggers, rs_col="rs_spy_126d", max_per_day=int(args.max_entries_per_day)
             )
         n_trig = 0 if triggers.empty else len(triggers)
         logger.info(
@@ -317,9 +346,10 @@ def main() -> int:
             n_raw=n_raw,
             entry_mode=str(args.entry_mode),
             min_l3_wait_bars=int(args.min_l3_wait_bars),
-            max_rsi=float(args.max_rsi),
-            max_beyond_width=float(args.max_beyond_width),
+            max_rsi=args.max_rsi,
+            max_beyond_width=args.max_beyond_width,
             max_channel_span_days=float(args.max_channel_span_days),
+            h2_resist_break=bool(args.h2_resist_break),
         )
         msg = f"{msg}\nelapsed_sec={time.perf_counter() - t0:.1f}\ncsv={out_csv.name}"
         logger.info("Notify payload:\n%s", msg)

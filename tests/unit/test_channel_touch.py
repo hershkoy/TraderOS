@@ -86,6 +86,8 @@ def test_live_l3_touch_emits_fill_on_asof_bar():
             entry_mode="l3_touch",
             window_bars=0,
             min_l3_wait_bars=6,
+            h2_resist_break=False,
+            h2_resist_break_only=False,
         )
     assert len(rows) == 1
     assert rows[0]["stock"] == "BBB"
@@ -117,7 +119,79 @@ def test_live_l3_touch_skips_fill_on_other_bar():
         "utils.scanning.channel_touch._h2_rail_tag_fills",
         return_value=[(n - 5, 110.0, 3)],
     ):
-        rows = live_entries_for_symbol("CCC", df, entry_mode="l3_touch", window_bars=0)
+        rows = live_entries_for_symbol(
+            "CCC",
+            df,
+            entry_mode="l3_touch",
+            window_bars=0,
+            h2_resist_break=False,
+            h2_resist_break_only=False,
+        )
+    assert rows == []
+
+
+def test_live_h2_resist_break_emits_fill_on_asof_bar():
+    df = _ohlcv(n=100)
+    n = len(df)
+    h2 = n - 10
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": h2,
+            "h2_date": df.index[h2].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[h2].strftime("%Y-%m-%d"),
+            "slope_pct_per_bar": 0.05,
+            "channel_width_pct": 6.0,
+            "pivot_len": 15,
+        }
+    ]
+    fill_px = 118.25
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=[(n - 1, fill_px, 3, False, True)],
+    ):
+        rows = live_entries_for_symbol(
+            "DDD",
+            df,
+            entry_mode="l3_touch",
+            window_bars=0,
+            min_l3_wait_bars=6,
+        )
+    assert len(rows) == 1
+    assert rows[0]["stock"] == "DDD"
+    assert rows[0]["buy_price"] == round(fill_px, 4)
+    assert rows[0]["resist_break"] is True
+
+
+def test_live_h2_resist_break_only_skips_l3_support_tag():
+    df = _ohlcv(n=100)
+    n = len(df)
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": n - 10,
+            "h2_date": df.index[n - 10].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[n - 10].strftime("%Y-%m-%d"),
+            "pivot_len": 15,
+        }
+    ]
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=[(n - 1, 110.0, 3, False, False)],
+    ):
+        rows = live_entries_for_symbol("EEE", df, entry_mode="l3_touch", window_bars=0)
     assert rows == []
 
 
@@ -174,6 +248,7 @@ def test_scan_quality_drops_high_rsi_before_rs():
             spy_df=spy,
             workers=1,
             max_entries_per_day=1,
+            max_rsi=50.0,
             stats=stats,
         )
     assert stats["n_raw"] == 2
@@ -182,10 +257,47 @@ def test_scan_quality_drops_high_rsi_before_rs():
     assert out.iloc[0]["stock"] == "BBB"
 
 
+def test_scan_live_keeps_all_symbols_without_rs_cap():
+    n = 140
+    idx = pd.bdate_range("2024-01-02", periods=n)
+    close = np.linspace(100.0, 110.0, n)
+    spy = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": np.full(n, 1e6),
+        },
+        index=idx,
+    )
+    aaa = spy.copy()
+    bbb = spy.copy()
+    bbb["close"] = close * 1.2
+    panels = {"AAA": aaa, "BBB": bbb, "SPY": spy}
+
+    def fake_live(symbol, df, **kwargs):
+        if symbol == "AAA":
+            return [_trigger_row("AAA", rsi=40.0, idx=idx)]
+        if symbol == "BBB":
+            return [_trigger_row("BBB", rsi=41.0, idx=idx)]
+        return []
+
+    with mock.patch("utils.scanning.channel_touch.live_entries_for_symbol", side_effect=fake_live):
+        out = scan_live_triggers(
+            panels,
+            symbols=["AAA", "BBB", "SPY"],
+            spy_df=spy,
+            workers=1,
+            max_entries_per_day=0,
+        )
+    assert set(out["stock"]) == {"AAA", "BBB"}
+
+
 def test_format_triggers_message_no_signal():
     msg = format_triggers_message(pd.DataFrame(), as_of="2026-08-25", n_candidates=0)
     assert "No new triggers" in msg
     assert "as_of=2026-08-25" in msg
-    assert "mode=l3_touch" in msg
+    assert "mode=h2_resist_break" in msg
     assert "min_wait=6" in msg
-    assert "max_rsi=50" in msg
+    assert "max_rsi=off" in msg

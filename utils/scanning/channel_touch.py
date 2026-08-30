@@ -1,15 +1,18 @@
 """
-Live ascending-channel bottom-touch triggers (EOD).
+Live ascending-channel triggers (EOD).
 
-Detects l3_touch fills on the as-of bar (last bar by default): arm at H2,
-fill the first from-above support tag after min-wait, then quality-filter
-and RS-rank. Detector v1 find_channels is unchanged; live setups use
-find_h2_l3_setups.
+Detects H2 resistance-break fills on the as-of bar (last bar by default):
+arm at H2, fill the first close above resistance after min-wait, then
+span<=365, one fill per symbol per day (all names). Support-tag L3 is not the live trigger.
+Detector v1 find_channels is unchanged; live setups use find_h2_l3_setups.
 
-Production defaults match the 2026-08-28 l3_touch opt keeper:
-  entry_mode=l3_touch, min_l3_wait_bars=6, max_rsi=50,
-  require_in_channel, max_channel_span_days=365, max_beyond_width=0.25,
-  RS top1/day, ATR hard-stop k=2.0 clamped, windowed 504/252.
+Production defaults match the 2026-08-29 H2 resist-break span365 sleeve:
+  entry_mode=l3_touch, h2_resist_break, min_l3_wait_bars=6,
+  no max_rsi / in-channel / beyond-width, max_channel_span_days=365,
+  unique-symbol/day (no RS top1 cap), ATR hard-stop k=2.0 clamped, windowed 504/252.
+
+Rollback to the L3 support-tag keeper:
+  --no-h2-resist-break --require-in-channel --max-rsi 50 --max-beyond-width 0.25
 """
 from __future__ import annotations
 
@@ -45,6 +48,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _resolve_entry_i,
     enrich_rs,
     filter_trades,
+    keep_one_per_symbol_day,
     select_same_day_rs,
 )
 from utils.research.channel_touch_entry_features import (  # noqa: E402
@@ -58,7 +62,7 @@ from utils.research.channel_touch_scale import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# Daily l3_touch keeper (report 20260829_105855 / trades 20260828_194314).
+# Daily H2 resist-break span365 sleeve (report 1d_h2_resist_break.html).
 LIVE_DEFAULTS: Dict[str, Any] = {
     "entry_mode": "l3_touch",
     "entry_touch": 3,
@@ -66,15 +70,17 @@ LIVE_DEFAULTS: Dict[str, Any] = {
     "min_l3_wait_bars": 6,
     "max_l3_wait_bars": 252,
     "entry_slip_pct": 0.001,
-    "max_rsi": 50.0,
-    "require_in_channel": True,
+    "h2_resist_break": True,
+    "h2_resist_break_only": True,
+    "max_rsi": None,
+    "require_in_channel": False,
     "max_channel_span_days": 365.0,
-    "max_beyond_width": 0.25,
+    "max_beyond_width": None,
     "atr_stop_mult": 2.0,
     "stop_pct": 0.03,
     "stop_pct_floor": 0.015,
     "stop_pct_ceil": 0.06,
-    "max_entries_per_day": 1,
+    "max_entries_per_day": 0,
     "window_bars": DAILY_WINDOW_BARS,
     "window_step_bars": DAILY_WINDOW_STEP_BARS,
     "error_pct": 1.2,
@@ -145,6 +151,7 @@ def _build_trigger(
     stop_pct_floor: float,
     stop_pct_ceil: float,
     adv_lookback: int,
+    resist_break: bool = False,
 ) -> Optional[dict]:
     if not np.isfinite(entry_px) or entry_px <= 0:
         return None
@@ -210,6 +217,7 @@ def _build_trigger(
         "channel_span_days": span_days,
         "channel_age_at_buy_days": age_days,
         "rsi_14": round(rsi_i, 4) if np.isfinite(rsi_i) else None,
+        "resist_break": bool(resist_break),
     }
 
 
@@ -232,6 +240,8 @@ def live_entries_for_symbol(
     entry_slip_pct: float = 0.001,
     window_bars: Optional[int] = None,
     window_step_bars: Optional[int] = None,
+    h2_resist_break: bool = True,
+    h2_resist_break_only: bool = True,
     **channel_kwargs,
 ) -> List[dict]:
     """
@@ -305,8 +315,13 @@ def live_entries_for_symbol(
                 wait=wait,
                 min_wait=min_wait,
                 entry_touch=want_touch,
+                h2_resist_break=bool(h2_resist_break),
             )
-            for i, fill, tnum in tags:
+            for tag in tags:
+                i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
+                is_brk = bool(tag[4]) if len(tag) > 4 else False
+                if bool(h2_resist_break_only) and not is_brk:
+                    continue
                 if int(i) != int(target_i):
                     continue
                 row = _build_trigger(
@@ -329,6 +344,7 @@ def live_entries_for_symbol(
                     stop_pct_floor=stop_pct_floor,
                     stop_pct_ceil=stop_pct_ceil,
                     adv_lookback=adv_lookback,
+                    resist_break=is_brk,
                 )
                 if row is not None:
                     triggers.append(row)
@@ -411,6 +427,10 @@ def _worker_live_entries(payload: dict) -> List[dict]:
         entry_slip_pct=float(payload.get("entry_slip_pct", LIVE_DEFAULTS["entry_slip_pct"])),
         window_bars=payload.get("window_bars"),
         window_step_bars=payload.get("window_step_bars"),
+        h2_resist_break=bool(payload.get("h2_resist_break", LIVE_DEFAULTS["h2_resist_break"])),
+        h2_resist_break_only=bool(
+            payload.get("h2_resist_break_only", LIVE_DEFAULTS["h2_resist_break_only"])
+        ),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -422,7 +442,7 @@ def scan_live_triggers(
     spy_df: pd.DataFrame,
     as_of: Optional[pd.Timestamp] = None,
     workers: int = 4,
-    max_entries_per_day: int = 1,
+    max_entries_per_day: int = 0,
     entry_touch: int = 3,
     pivot_len: int = 15,
     atr_stop_mult: float = 2.0,
@@ -435,10 +455,12 @@ def scan_live_triggers(
     entry_slip_pct: float = 0.001,
     window_bars: Optional[int] = DAILY_WINDOW_BARS,
     window_step_bars: Optional[int] = DAILY_WINDOW_STEP_BARS,
-    require_in_channel: bool = True,
+    require_in_channel: bool = False,
     max_channel_span_days: Optional[float] = 365.0,
-    max_beyond_width: Optional[float] = 0.25,
-    max_rsi: Optional[float] = 50.0,
+    max_beyond_width: Optional[float] = None,
+    max_rsi: Optional[float] = None,
+    h2_resist_break: bool = True,
+    h2_resist_break_only: bool = True,
     stats: Optional[dict] = None,
     **channel_kwargs,
 ) -> pd.DataFrame:
@@ -472,6 +494,8 @@ def scan_live_triggers(
         "entry_slip_pct": entry_slip_pct,
         "window_bars": window_bars,
         "window_step_bars": window_step_bars,
+        "h2_resist_break": bool(h2_resist_break),
+        "h2_resist_break_only": bool(h2_resist_break_only),
         "channel_kwargs": ck,
     }
     payloads = [
@@ -512,6 +536,7 @@ def scan_live_triggers(
         return trades.reset_index(drop=True)
 
     trades = enrich_rs(trades, panels, spy_df)
+    trades = keep_one_per_symbol_day(trades)
     if max_entries_per_day and max_entries_per_day > 0:
         trades = select_same_day_rs(
             trades, rs_col="rs_spy_126d", max_per_day=int(max_entries_per_day)
@@ -528,17 +553,21 @@ def format_triggers_message(
     n_raw: Optional[int] = None,
     entry_mode: str = "l3_touch",
     min_l3_wait_bars: int = 6,
-    max_rsi: float = 50.0,
-    max_beyond_width: float = 0.25,
+    max_rsi: Optional[float] = None,
+    max_beyond_width: Optional[float] = None,
     max_channel_span_days: float = 365.0,
+    h2_resist_break: bool = True,
 ) -> str:
     """Plain-text Telegram / log summary."""
+    rsi_s = "off" if max_rsi is None else str(max_rsi)
+    beyond_s = "off" if max_beyond_width is None else str(max_beyond_width)
+    mode_s = "h2_resist_break" if h2_resist_break else entry_mode
     lines = [
         "Channel-touch nightly",
         f"as_of={as_of}",
         (
-            f"mode={entry_mode} min_wait={min_l3_wait_bars} max_rsi={max_rsi} "
-            f"in_channel span<={max_channel_span_days} beyond<={max_beyond_width}"
+            f"mode={mode_s} min_wait={min_l3_wait_bars} max_rsi={rsi_s} "
+            f"span<={max_channel_span_days} beyond={beyond_s}"
         ),
     ]
     if n_raw is not None:

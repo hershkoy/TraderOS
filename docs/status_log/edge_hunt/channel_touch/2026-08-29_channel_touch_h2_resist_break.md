@@ -40,7 +40,7 @@ Breakouts skip in-channel / RSI<=50 (they are defined as above the rail, often o
 
 Breakout-only PF+E beat the L3 keeper on the full window and every year bucket. Adding the span365 sleeve to the frozen keeper and re-ranking RS also lifts E and PF.
 
-**Soft-promote as a second book, not a nightly replacement.** L3 nightly stays support-tag. `--h2-resist-break` is research/optional. Do not apply `--require-in-channel` or `--max-rsi 50` to breakouts. Do not treat MGNI Oct-13 as a moonshot example.
+**Soft-promote as live nightly (2026-08-29).** L3 support-tag is retired as the default (`1d_l3_touch.html`). `--h2-resist-break` + `--h2-resist-break-only`. Do not apply `--require-in-channel` or `--max-rsi 50` to breakouts.
 
 ## Code
 

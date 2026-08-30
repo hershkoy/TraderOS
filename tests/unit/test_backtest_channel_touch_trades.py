@@ -9,7 +9,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
-from backtest_channel_touch_trades import enrich_rs, filter_trades, select_same_day_rs
+from backtest_channel_touch_trades import enrich_rs, filter_trades, keep_one_per_symbol_day, select_same_day_rs
 
 
 def _sample() -> pd.DataFrame:
@@ -109,6 +109,22 @@ def test_select_same_day_rs_groups_calendar_date_not_time():
     )
     kept = select_same_day_rs(df, max_per_day=1)
     assert set(kept["stock"]) == {"BBB", "CCC"}
+
+
+def test_keep_one_per_symbol_day_allows_many_names_drops_same_symbol():
+    df = pd.DataFrame(
+        [
+            {"stock": "AAA", "buy_date": "2024-06-03", "buy_time": "2024-06-03 10:00", "gain_pct": 1.0},
+            {"stock": "AAA", "buy_date": "2024-06-03", "buy_time": "2024-06-03 14:00", "gain_pct": 9.0},
+            {"stock": "BBB", "buy_date": "2024-06-03", "buy_time": "2024-06-03 11:00", "gain_pct": 2.0},
+            {"stock": "CCC", "buy_date": "2024-06-04", "buy_time": "2024-06-04 10:00", "gain_pct": 3.0},
+        ]
+    )
+    kept = keep_one_per_symbol_day(df)
+    assert len(kept) == 3
+    assert set(kept["stock"]) == {"AAA", "BBB", "CCC"}
+    aaa = kept.loc[kept["stock"] == "AAA"].iloc[0]
+    assert str(aaa["buy_time"]).startswith("2024-06-03 10:00")
 
 
 def test_enrich_rs_session_bars():

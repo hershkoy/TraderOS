@@ -1318,6 +1318,33 @@ def select_same_day_rs(
     return kept.reset_index(drop=True)
 
 
+def keep_one_per_symbol_day(
+    trades: pd.DataFrame,
+    *,
+    symbol_col: str = "stock",
+    date_col: str = "buy_date",
+    time_col: str = "buy_time",
+) -> pd.DataFrame:
+    """Keep the earliest fill per symbol per calendar day.
+
+    Does not cap how many *names* fire that day. Use ``select_same_day_rs``
+    only when you want a cross-symbol capacity cap.
+    """
+    if trades.empty or symbol_col not in trades.columns or date_col not in trades.columns:
+        return trades
+    out = trades.copy()
+    out["_day"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    sort_cols = ["_day", symbol_col]
+    extra = ["_day"]
+    if time_col in out.columns:
+        out["_t"] = pd.to_datetime(out[time_col], errors="coerce")
+        sort_cols.append("_t")
+        extra.append("_t")
+    out = out.sort_values(sort_cols, kind="mergesort")
+    kept = out.groupby(["_day", symbol_col], sort=False, as_index=False).head(1)
+    return kept.drop(columns=extra).reset_index(drop=True)
+
+
 def apply_friction(trades: pd.DataFrame, round_trip_pct: float) -> pd.DataFrame:
     """Deduct round-trip friction (slippage + commission) from gross gain_pct."""
     out = trades.copy()

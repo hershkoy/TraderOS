@@ -22,18 +22,22 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-29 | [Ridge P&L confidence sizing](2026-08-29_channel_touch_confidence_size.md) |
 | 2026-08-29 | [Shakeout rebuy](2026-08-29_channel_touch_shakeout_rebuy.md) |
 | 2026-08-29 | [H2 resistance-break](2026-08-29_channel_touch_h2_resist_break.md) |
+| 2026-08-29 | [Nightly switched to H2 resist-break](2026-08-29_channel_touch_nightly_h2_break.md) |
+| 2026-08-29 | [15m full-universe H2 resist-break](2026-08-29_channel_touch_15m_full_h2_break.md) |
+| 2026-08-29 | [Drop RS top1 cap: unique-symbol/day](2026-08-29_channel_touch_unique_symbol_day.md) |
+| 2026-08-29 | [15m unique-symbol filter hypotheses](2026-08-29_channel_touch_15m_unique_filters.md) |
+| 2026-08-30 | [15m H5 stack: WR/PF lift](2026-08-30_channel_touch_15m_h5_refine.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
 ## Keepers (live / research)
 
-Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch.html`, `15m_channel_touch.html`; research second book: `1d_h2_resist_break.html`, `1d_keeper_plus_h2_resist_break.html`). Write-up: `reports/ascending_channels/current_best/README.md`.
+Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch.html` live H2, `1d_l3_touch.html` retired L3, `15m_channel_touch.html` / `15m_h2_resist_break.html` 300-name research, `15m_full_h2_resist_break.html` full IB 15m). Write-up: `reports/ascending_channels/current_best/README.md`.
 
-- **Live / nightly:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25; RS vs SPY top1; ATR k=2.0 clamped 1.5%–6%; windowed 504/252
-- **H2 resist-break (research second book, not nightly):** span365 sleeve n=2253 E +2.80 PF 2.21; keeper+sleeve re-RS n=1467 E +2.26 PF 1.86. Skip in-channel / RSI 50 on breakouts.
+- **Live / nightly:** `--h2-resist-break --h2-resist-break-only --min-l3-wait-bars 6` + span365; **no** RSI / in-channel / beyond-width; **unique-symbol/day** (not RS top1); ATR k=2.0 clamped 1.5%–6%; windowed 504/252. Optional `--max-entries-per-day 1` restores RS top1.
+- **Retired L3 keeper:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25 (`1d_l3_touch.html`)
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
-- **Soft promote (still on nightly):** `--require-in-channel` + `--max-channel-span-days 365` + `--max-beyond-width 0.25`
-- **15m research (not live):** `--preset 15m --entry-mode l3_touch --min-l3-wait-bars 12` on 300 IB names; do **not** copy daily beyond-0.25 onto 15m L3. Features default to **prior completed bar** (`--feature-asof auto`). Daily `--intraday-fill 15m` hybrid did not beat same-universe daily wait-6/RSI-50 (n=260 E +1.31 PF 1.47 vs n=314 E +1.73 PF 1.63) — nightly stays **daily** l3_touch (not 15m hybrid).
+- **15m research (not live):** 300-name H2 span10 + RS n=1664 E +0.46 PF 1.87 beats L3 wait-12. **Full IB 15m reverses that** — L3 RS n=1775 E +0.34 PF 1.61 vs H2 span10 + RS n=1766 E +0.30 PF 1.48. Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD (not 15m).
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 - Do **not** size from ridge P&L confidence (RS-top1 OOS: 1d E worse; 15m lift dies after RS). Equal-dollar stays the size model.
@@ -50,7 +54,8 @@ python scripts\research\channel_touch_robustness.py --trades reports\ascending_c
 python scripts\research\generate_channel_touch_tv_report.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv --friction-pct 0.25 --rs-top1 --tag atr_k2_inchannel_span365_robust
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
-python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --entry-mode l3_touch --min-l3-wait-bars 12 --workers 4 --load-workers 8
+python scripts\research\backtest_channel_touch_h2_break.py --preset 15m
+python scripts\research\backtest_channel_touch_h2_break.py --preset 15m --all-symbols --workers 4 --load-workers 8
 python scripts\research\backtest_channel_touch_confidence_size.py --stack 1d
 python scripts\research\backtest_channel_touch_confidence_size.py --stack 15m
 ```
