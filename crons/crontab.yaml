@@ -1,0 +1,36 @@
+# backTraderTest crontab. The Windows CronRunner task ticks every minute
+# (pythonw, no console) and runs enabled jobs whose cron matches now.
+#
+#   python scripts\pipeline\cron_manager.py list
+#   python scripts\pipeline\cron_manager.py add NAME --schedule "0 23 * * 1-5" --command "crons\foo.bat"
+#   python scripts\pipeline\cron_manager.py enable NAME
+#   python scripts\pipeline\cron_manager.py install-task
+#
+# Cron is 5 fields: minute hour day-of-month month day-of-week (0=Sun).
+# timezone: local (machine) unless a job sets its own IANA zone.
+# Seeded jobs start disabled so they do not double-fire with older Task Scheduler entries.
+
+timezone: local
+
+jobs:
+  - name: channel_touch_nightly
+    enabled: false
+    schedule: "0 23 * * 1-5"
+    command: crons\channel_touch_nightly.bat
+    description: Daily H2 resist-break after US cash close (default 23:00 local). Disable the old ChannelTouchNightly task before enabling this.
+
+  - name: channel_touch_15m
+    enabled: false
+    timezone: America/New_York
+    schedule:
+      - "45 9 * * 1-5"
+      - "0,15,30,45 10-15 * * 1-5"
+      - "0 16 * * 1-5"
+    command: crons\channel_touch_15m.bat
+    description: Research 15m H5 loop at US RTH bar closes. Requires IB 15m catch-up first.
+
+  - name: backfill_ib_15m_universe
+    enabled: false
+    schedule: "30 2 * * *"
+    command: crons\backfill_ib_15m_universe.bat
+    description: Overnight IB 15m incremental catch-up (client id 8822).
