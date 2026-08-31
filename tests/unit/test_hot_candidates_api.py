@@ -59,6 +59,10 @@ def test_hot_page_and_api(monkeypatch):
         assert b"Detector" in page.data
         assert b'id="tf-filter"' in page.data
         assert b"Desktop + sound" in page.data
+        assert b'id="live-badge"' in page.data
+        assert b"Connecting" in page.data
+        assert b"HOT_SEEN_KEY" in page.data
+        assert b"data.refreshed" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200
@@ -66,6 +70,8 @@ def test_hot_page_and_api(monkeypatch):
         assert body["n_hot"] == 1
         assert body["rows"][0]["stock"] == "AAA"
         assert body["as_of"] == "2026-08-30 15:45:00"
+        assert body["hot_keys"] == ["AAA|15m"]
+        assert body["refreshed"] is False
 
         posted = client.post(
             "/api/hot-candidates/settings",

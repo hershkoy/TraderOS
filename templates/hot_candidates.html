@@ -21,12 +21,35 @@
             margin-bottom: 16px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
         }
+        .title-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
         .header h1 {
             color: #4a5568;
             font-size: 2em;
             font-weight: 300;
-            margin-bottom: 8px;
+            margin-bottom: 0;
         }
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 12px 5px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            user-select: none;
+        }
+        .live-badge.connecting { background: #e2e8f0; color: #4a5568; }
+        .live-badge.live { background: #c6f6d5; color: #276749; }
+        .live-badge.stale { background: #feebc8; color: #9c4221; }
+        .live-badge.offline { background: #fed7d7; color: #9b2c2c; }
         .nav-links { margin-bottom: 12px; font-size: 14px; }
         .nav-links a {
             color: #5a67d8;
@@ -74,13 +97,24 @@
         .checks label { font-size: 14px; color: #4a5568; font-weight: 600; cursor: pointer; }
         .live-dot {
             display: inline-block;
-            width: 8px;
-            height: 8px;
+            width: 9px;
+            height: 9px;
             border-radius: 50%;
-            background: #38a169;
-            margin-right: 6px;
+            background: #a0aec0;
+            flex-shrink: 0;
         }
-        .live-dot.stale { background: #dd6b20; }
+        .live-badge.live .live-dot {
+            background: #38a169;
+            box-shadow: 0 0 0 0 rgba(56, 161, 105, 0.55);
+            animation: live-pulse 1.6s ease-out infinite;
+        }
+        .live-badge.stale .live-dot { background: #dd6b20; }
+        .live-badge.offline .live-dot { background: #e53e3e; }
+        @keyframes live-pulse {
+            0% { box-shadow: 0 0 0 0 rgba(56, 161, 105, 0.55); }
+            70% { box-shadow: 0 0 0 8px rgba(56, 161, 105, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(56, 161, 105, 0); }
+        }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
         th {
@@ -120,13 +154,19 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Hot candidates</h1>
+            <div class="title-row">
+                <h1>Hot candidates</h1>
+                <span id="live-badge" class="live-badge connecting" title="Waiting for first poll">
+                    <span class="live-dot"></span>
+                    <span id="live-label">Connecting</span>
+                </span>
+            </div>
             <div class="nav-links">
                 <a href="/">Charts</a>
                 <a href="/hot">Hot candidates</a>
             </div>
             <div class="meta">
-                <span><span id="live-dot" class="live-dot stale"></span><span id="price-ts">prices: --</span></span>
+                <span id="price-ts">prices: --</span>
                 <span id="as-of">IB 15m as_of: --</span>
                 <span id="as-of-1d">1d as_of: --</span>
                 <span id="counts">armed=0 hot=0 shown=0</span>
@@ -202,11 +242,32 @@
     </div>
     <script>
         const POLL_MS = 5000;
+        const HOT_SEEN_KEY = 'hotCandidates.seenHot';
+        const FETCH_OPTS = { cache: 'no-store' };
         let saveTimer = null;
         let loading = false;
         let bootstrapped = false;
-        let primedHot = false;
-        let seenHot = new Set();
+
+        function loadSeenHot() {
+            try {
+                const raw = sessionStorage.getItem(HOT_SEEN_KEY);
+                if (!raw) return new Set();
+                const arr = JSON.parse(raw);
+                if (!Array.isArray(arr)) return new Set();
+                return new Set(arr);
+            } catch (err) {
+                return new Set();
+            }
+        }
+
+        function saveSeenHot(set) {
+            try {
+                sessionStorage.setItem(HOT_SEEN_KEY, JSON.stringify(Array.from(set)));
+            } catch (err) {}
+        }
+
+        let seenHot = loadSeenHot();
+        let primedHot = seenHot.size > 0;
 
         function fmtNum(v, digits) {
             if (v === null || v === undefined || v === '') return '--';
@@ -263,7 +324,7 @@
         }
 
         function rowKey(r) {
-            return (r.stock || '') + '|' + (r.timeframe || '15m');
+            return String(r.stock || '').toUpperCase() + '|' + (r.timeframe || '15m');
         }
 
         function snapshotHot(rows) {
@@ -306,22 +367,56 @@
             } catch (err) {}
         }
 
-        function maybeDesktopAlerts(rows) {
-            const next = snapshotHot(rows);
+        const LIVE_LABELS = {
+            connecting: 'Connecting',
+            live: 'Live',
+            stale: 'Stale',
+            offline: 'Offline'
+        };
+
+        function setLiveStatus(state, title) {
+            const badge = document.getElementById('live-badge');
+            const label = document.getElementById('live-label');
+            const key = LIVE_LABELS[state] ? state : 'connecting';
+            badge.className = 'live-badge ' + key;
+            label.textContent = LIVE_LABELS[key];
+            badge.title = title || '';
+        }
+
+        function hotKeySet(data) {
+            if (data && Array.isArray(data.hot_keys)) {
+                return new Set(data.hot_keys);
+            }
+            return snapshotHot(data && data.rows);
+        }
+
+        function rememberHot(next) {
+            seenHot = next;
+            saveSeenHot(seenHot);
+        }
+
+        function maybeDesktopAlerts(data) {
+            // Seed on first good snapshot (and after refresh via sessionStorage).
+            // Toast only when Alpaca actually refreshed and a name newly became hot.
+            if (!data || data.error) return;
+            const next = hotKeySet(data);
+            const hasBook = next.size > 0 || (data.n_hot || 0) > 0 || (data.rows && data.rows.length);
             if (!primedHot) {
-                seenHot = next;
+                if (!hasBook) return;
+                rememberHot(next);
                 primedHot = true;
                 return;
             }
-            if (!document.getElementById('desk-notify').checked) {
-                seenHot = next;
+            const deskOn = document.getElementById('desk-notify').checked;
+            if (!deskOn || !data.refreshed) {
+                if (hasBook) rememberHot(next);
                 return;
             }
             const news = [];
             next.forEach(function(k) {
-                if (!seenHot.has(k)) news.push(k.split('|')[0]);
+                if (!seenHot.has(k)) news.push(String(k).split('|')[0]);
             });
-            seenHot = next;
+            rememberHot(next);
             if (!news.length) return;
             const unique = news.filter(function(s, i) { return news.indexOf(s) === i; });
             desktopAlert(
@@ -383,14 +478,20 @@
             if (loading) return;
             loading = true;
             try {
-                const res = await fetch('/api/hot-candidates');
+                const res = await fetch('/api/hot-candidates', FETCH_OPTS);
                 const data = await res.json();
                 const errEl = document.getElementById('error');
                 if (!res.ok || data.error) {
                     errEl.style.display = 'block';
                     errEl.textContent = data.error || ('HTTP ' + res.status);
+                    setLiveStatus('offline', data.error || ('HTTP ' + res.status));
+                    return;
+                }
+                errEl.style.display = 'none';
+                if (data.prices_stale) {
+                    setLiveStatus('stale', 'Alpaca last quotes older than 2 minutes');
                 } else {
-                    errEl.style.display = 'none';
+                    setLiveStatus('live', 'Connected to Alpaca last quotes');
                 }
                 if (data.settings && !bootstrapped) {
                     applySettings(data.settings);
@@ -408,8 +509,6 @@
                 document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
                 const priceTs = data.price_ts || '--';
                 document.getElementById('price-ts').textContent = 'prices: ' + priceTs;
-                const dot = document.getElementById('live-dot');
-                dot.className = 'live-dot' + (data.stale_warning ? ' stale' : '');
                 const banner = document.getElementById('banner');
                 if (data.stale_warning) {
                     banner.style.display = 'block';
@@ -418,8 +517,9 @@
                     banner.style.display = 'none';
                 }
                 renderRows(data.rows || []);
-                maybeDesktopAlerts(data.rows || []);
+                maybeDesktopAlerts(data);
             } catch (err) {
+                setLiveStatus('offline', String(err));
                 const errEl = document.getElementById('error');
                 errEl.style.display = 'block';
                 errEl.textContent = String(err);

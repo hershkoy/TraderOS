@@ -16,6 +16,8 @@ from utils.scanning.channel_touch_candidates_store import (
 logger = logging.getLogger(__name__)
 
 PRICE_STALE_SEC = 5.0
+# UI "quotes stale" window: Alpaca snapshot of the full book can take tens of seconds.
+PRICE_UI_STALE_SEC = 120.0
 
 _store: Optional[ChannelTouchCandidatesStore] = None
 _refresh_lock = threading.Lock()
@@ -117,6 +119,20 @@ def sort_candidates(rows: Sequence[dict], *, sort_key: str = "abs_dist", sort_di
 
     ordered = sorted(rows, key=key_fn, reverse=desc)
     return [dict(r) for r in ordered]
+
+
+def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
+    """Unfiltered ``STOCK|timeframe`` keys for rows that are hot now."""
+    keys: List[str] = []
+    for row in rows:
+        if not row.get("hot"):
+            continue
+        stock = str(row.get("stock") or "").upper()
+        tf = str(row.get("timeframe") or "15m")
+        if not stock:
+            continue
+        keys.append("%s|%s" % (stock, tf))
+    return keys
 
 
 def filter_candidates(
@@ -251,6 +267,16 @@ def candidates_payload(
         ts = row.get("last_price_ts")
         if ts and (price_ts is None or str(ts) > str(price_ts)):
             price_ts = ts
+    now_ts = now or datetime.now(timezone.utc)
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.replace(tzinfo=timezone.utc)
+    parsed_price_ts = _parse_ts(price_ts)
+    price_age_sec = None
+    if parsed_price_ts is not None:
+        price_age_sec = (now_ts - parsed_price_ts).total_seconds()
+    prices_stale = bool(rows) and (
+        parsed_price_ts is None or float(price_age_sec or 0) > PRICE_UI_STALE_SEC
+    )
     return {
         "rows": ordered,
         "all_rows": len(rows),
@@ -259,12 +285,15 @@ def candidates_payload(
         "n_armed_15m": n_armed_15m,
         "n_armed_1d": n_armed_1d,
         "n_hot": n_hot,
+        "hot_keys": hot_keys_from_rows(rows),
         "as_of": settings.get("as_of"),
         "as_of_1d": settings.get("as_of_1d"),
         "n_universe": settings.get("n_universe") or 0,
         "n_universe_1d": settings.get("n_universe_1d") or 0,
         "stale_warning": settings.get("stale_warning"),
         "price_ts": price_ts,
+        "price_age_sec": price_age_sec,
+        "prices_stale": prices_stale,
         "refreshed": refreshed,
         "settings": settings,
     }

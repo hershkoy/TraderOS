@@ -7,6 +7,7 @@ from utils.scanning.channel_touch_candidates_store import DEFAULT_SETTINGS, appl
 from utils.scanning.channel_touch_hot_api import (
     candidates_payload,
     filter_candidates,
+    hot_keys_from_rows,
     maybe_refresh_live_prices,
     prices_are_stale,
     reset_refresh_throttle,
@@ -148,5 +149,95 @@ def test_candidates_payload_uses_saved_filter():
         assert [r["stock"] for r in payload["rows"]] == ["AAA"]
         assert payload["as_of"] == "2026-08-30 13:45:00"
         assert payload["refreshed"] is False
+        assert payload["price_ts"] == "2026-08-30 14:00:00"
+        assert payload["prices_stale"] is True
+        assert payload["price_age_sec"] is not None
+        assert payload["hot_keys"] == ["AAA|15m"]
     finally:
         set_store(None)
+
+
+def test_candidates_payload_prices_stale_uses_latest_quote_age():
+    reset_refresh_throttle()
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    fresh = MemoryStore(
+        rows=[
+            {
+                "stock": "AAA",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.1,
+                "last_price_ts": "2026-08-31 11:59:00",
+            }
+        ]
+    )
+    payload = candidates_payload(fresh, refresh=False, now=now)
+    assert payload["prices_stale"] is False
+    assert payload["price_age_sec"] == 60.0
+
+    old = MemoryStore(
+        rows=[
+            {
+                "stock": "AAA",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.1,
+                "last_price_ts": "2026-08-31 11:50:00",
+            }
+        ]
+    )
+    stale = candidates_payload(old, refresh=False, now=now)
+    assert stale["prices_stale"] is True
+    assert stale["price_age_sec"] == 600.0
+
+    empty = candidates_payload(MemoryStore(rows=[]), refresh=False, now=now)
+    assert empty["prices_stale"] is False
+    assert empty["price_ts"] is None
+
+
+def test_hot_keys_from_rows_skips_cold_and_blank():
+    assert hot_keys_from_rows(
+        [
+            {"stock": "aaa", "timeframe": "15m", "hot": True},
+            {"stock": "BBB", "hot": True},
+            {"stock": "CCC", "timeframe": "1d", "hot": False},
+            {"stock": "", "hot": True},
+        ]
+    ) == ["AAA|15m", "BBB|15m"]
+
+
+def test_payload_hot_keys_ignore_ui_filter():
+    reset_refresh_throttle()
+    store = MemoryStore(
+        rows=[
+            {
+                "stock": "AAA",
+                "timeframe": "15m",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.1,
+                "last_price_ts": "2026-08-30 14:00:00",
+            },
+            {
+                "stock": "BBB",
+                "timeframe": "15m",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.2,
+                "last_price_ts": "2026-08-30 14:00:00",
+            },
+            {
+                "stock": "CCC",
+                "timeframe": "1d",
+                "status": "waiting",
+                "hot": False,
+                "dist_live_pct": -4.0,
+                "last_price_ts": "2026-08-30 14:00:00",
+            },
+        ],
+        settings={"timeframe_filter": "1d"},
+    )
+    payload = candidates_payload(store, refresh=False)
+    assert [r["stock"] for r in payload["rows"]] == ["CCC"]
+    assert payload["n_hot"] == 2
+    assert payload["hot_keys"] == ["AAA|15m", "BBB|15m"]
