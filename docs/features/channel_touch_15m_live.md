@@ -91,7 +91,8 @@ Dashboard: `http://localhost:5000/hot` (charting_server). Source of truth is Tim
 JSON watchlist is a debug sidecar. Nightly writes 1d armed/waiting/filled H2 rows unless
 `--skip-hot-dashboard`.
 
-Telegram on H5 fills vs newly-hot is a persisted UI setting on that page (cron reads the same row).
+Telegram on H5 fills is a persisted UI setting on that page (cron reads the same row).
+Newly-hot (Alpaca last at/above resist) is **not** notified. Last price is proximity only.
 
 ```
 overnight / weekend
@@ -103,16 +104,17 @@ each 15m bar close (RTH)
   replace TimescaleDB candidates (keep live last if same H2)
   if last completed bar closed above resist:
       unique-symbol/day + prior-bar vol>=2 + fill overshoot>=0.08
-      Telegram if settings.telegram_on_fill
+      Telegram if settings.telegram_on_fill (BUY NOW)
 
 each RTH minute
   Alpaca last on the armed list (~1s)
   update last_price / dist_live_pct / hot in TimescaleDB
-  Telegram newly-hot if settings.telegram_on_hot (once per symbol per day)
+  no Telegram (hot is not a fill)
 
-dashboard /hot (poll 5s)
-  read candidates from TimescaleDB
-  refresh Alpaca if last_price_ts older than ~5s (process throttle)
+dashboard /hot (WebSocket /ws/hot-candidates)
+  page opens a socket; HTTP poll is fallback only if the socket fails
+  one server hub refreshes Alpaca if last_price_ts older than ~5s
+  pushes a snapshot when rows/quotes change; settings POST kicks an immediate push
   sort/filter by |dist_live_pct| to resist
 ```
 
@@ -161,7 +163,7 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Candidates store | `utils/scanning/channel_touch_candidates_store.py` |
 | Dashboard API | `utils/scanning/channel_touch_hot_api.py` |
 | Scanner | `scripts/scanners/channel_touch_15m.py` |
-| Dashboard | `charting_server.py` `/hot` + `templates/hot_candidates.html` |
+| Dashboard | `charting_server.py` `/hot` + `/ws/hot-candidates` + `templates/hot_candidates.html` |
 | Schema | `init-scripts/13-channel-touch-15m-candidates.sql` |
 | IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` |
 | Watchlist JSON (sidecar) | `reports/ascending_channels/channel_touch_15m_watchlist.json` |
@@ -170,8 +172,9 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Daily nightly (unchanged) | `scripts/scanners/channel_touch_nightly.py` |
 
 Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-Fills and newly-hot also raise a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
-**Desktop + sound** is unchecked on `/hot`. With `/hot` open, newly-hot names also beep in the browser.
+H5 fills raise Telegram plus a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
+**Browser + sound on fills** is unchecked on `/hot`. With `/hot` open, a new H5 fill also beeps
+in the browser. Hot (last at/above resist) never notifies.
 
 ---
 

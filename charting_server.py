@@ -2,8 +2,9 @@
 Charting Server for Backtrader Data
 A Flask-based web server that provides charting capabilities for symbols in the data folder.
 """
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, current_app
 from flask_cors import CORS
+from flask_sock import Sock
 import pandas as pd
 import numpy as np
 import json
@@ -24,6 +25,8 @@ from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, 
 
 app = Flask(__name__)
 CORS(app)
+app.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 20}
+sock = Sock(app)
 
 # Available indicators
 INDICATORS = {
@@ -282,15 +285,43 @@ def api_hot_candidates():
 def api_hot_settings():
     """Persisted Telegram + filter settings (cron and UI share this row)."""
     try:
-        from utils.scanning.channel_touch_hot_api import get_store
+        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
 
         store = get_store()
         if request.method == 'GET':
             return jsonify(store.load_settings())
         patch = request.get_json(silent=True) or {}
-        return jsonify(store.save_settings(patch))
+        saved = store.save_settings(patch)
+        get_hot_hub().kick()
+        return jsonify(saved)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@sock.route('/ws/hot-candidates')
+def ws_hot_candidates(ws):
+    """Push filtered hot-candidate snapshots; one Alpaca refresh loop for all tabs."""
+    import time as _time
+
+    from utils.scanning.channel_touch_hot_api import get_hot_hub
+
+    hub = get_hot_hub()
+    hub.register()
+    last_seq = 0
+    last_send = _time.monotonic()
+    try:
+        while True:
+            last_seq, payload = hub.wait_next(last_seq, timeout=1.0)
+            if payload is not None:
+                ws.send(current_app.json.dumps(payload))
+                last_send = _time.monotonic()
+            elif (_time.monotonic() - last_send) >= 25.0:
+                ws.send(current_app.json.dumps({'event': 'ping'}))
+                last_send = _time.monotonic()
+            if not getattr(ws, 'connected', True):
+                break
+    finally:
+        hub.unregister()
 
 
 if __name__ == '__main__':

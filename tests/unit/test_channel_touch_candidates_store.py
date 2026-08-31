@@ -17,6 +17,7 @@ def test_normalize_settings_defaults_and_patch():
     assert s["telegram_on_fill"] is True
     assert s["telegram_on_hot"] is False
     assert s["desktop_notify"] is True
+    assert s["display_timezone"] == "exchange"
     assert s["proximity_below_pct"] == 0.0
     assert s["max_abs_dist_pct"] is None
     assert s["sort_key"] == "abs_dist"
@@ -27,12 +28,16 @@ def test_normalize_settings_defaults_and_patch():
             "max_abs_dist_pct": 3,
             "status_filter": "armed",
             "search": "nvda",
+            "display_timezone": "utc",
         },
     )
     assert patched["telegram_on_hot"] is True
     assert patched["telegram_on_fill"] is True
     assert patched["max_abs_dist_pct"] == 3.0
     assert patched["search"] == "nvda"
+    assert patched["display_timezone"] == "utc"
+    bad_tz = apply_settings_patch(patched, {"display_timezone": "mars"})
+    assert bad_tz["display_timezone"] == "exchange"
 
 
 def test_merge_keeps_live_price_and_hot_notified_for_same_h2():

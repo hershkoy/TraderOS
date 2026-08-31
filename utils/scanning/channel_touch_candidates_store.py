@@ -19,6 +19,7 @@ INIT_SQL_PATHS = (
     ROOT / "init-scripts" / "13-channel-touch-15m-candidates.sql",
     ROOT / "init-scripts" / "14-channel-touch-candidates-timeframe.sql",
     ROOT / "init-scripts" / "15-channel-touch-desktop-notify.sql",
+    ROOT / "init-scripts" / "16-channel-touch-display-timezone.sql",
 )
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -37,6 +38,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "timeframe_filter": "all",
     "as_of_1d": None,
     "n_universe_1d": 0,
+    "display_timezone": "exchange",
 }
 
 CANDIDATE_COLUMNS = (
@@ -87,9 +89,11 @@ SETTINGS_COLUMNS = (
     "timeframe_filter",
     "as_of_1d",
     "n_universe_1d",
+    "display_timezone",
 )
 
 _BOOL_KEYS = {"telegram_on_fill", "telegram_on_hot", "desktop_notify", "wait_ok", "hot"}
+_TZ_MODES = ("exchange", "utc", "local")
 _INT_KEYS = {"wait_bars", "support_x0", "h2_idx", "as_of_i", "n_universe"}
 _FLOAT_KEYS = {
     "proximity_below_pct",
@@ -192,6 +196,8 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out["as_of_1d"] = None if as_of_1d in (None, "") else str(as_of_1d)
     n_uni_1d = _as_int(src.get("n_universe_1d"))
     out["n_universe_1d"] = 0 if n_uni_1d is None else int(n_uni_1d)
+    tz = str(src.get("display_timezone") or "exchange").lower()
+    out["display_timezone"] = tz if tz in _TZ_MODES else "exchange"
     return out
 
 
@@ -422,6 +428,7 @@ class ChannelTouchCandidatesStore:
                 timeframe_filter = %s,
                 as_of_1d = %s,
                 n_universe_1d = %s,
+                display_timezone = %s,
                 updated_at = now()
             WHERE id = 1
             """,
@@ -441,6 +448,7 @@ class ChannelTouchCandidatesStore:
                 settings["timeframe_filter"],
                 settings["as_of_1d"],
                 settings["n_universe_1d"],
+                settings["display_timezone"],
             ),
         )
         return settings
@@ -614,6 +622,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     timeframe_filter TEXT NOT NULL DEFAULT 'all',
     as_of_1d TEXT,
     n_universe_1d INTEGER NOT NULL DEFAULT 0,
+    display_timezone TEXT NOT NULL DEFAULT 'exchange',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO channel_touch_15m_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;

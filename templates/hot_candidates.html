@@ -143,6 +143,7 @@
         .pill.waiting { background: #feebc8; color: #9c4221; }
         .pill.filled { background: #bee3f8; color: #2c5282; }
         .pill.hot { background: #fed7d7; color: #9b2c2c; }
+        .pill.buy { background: #9b2c2c; color: #fff; }
         .pill.tf-15m { background: #e9d8fd; color: #553c9a; }
         .pill.tf-1d { background: #bee3f8; color: #2c5282; }
         .pos { color: #276749; font-weight: 600; }
@@ -156,7 +157,7 @@
         <div class="header">
             <div class="title-row">
                 <h1>Hot candidates</h1>
-                <span id="live-badge" class="live-badge connecting" title="Waiting for first poll">
+                <span id="live-badge" class="live-badge connecting" title="Waiting for websocket">
                     <span class="live-dot"></span>
                     <span id="live-label">Connecting</span>
                 </span>
@@ -179,6 +180,14 @@
 
         <div class="panel">
             <div class="controls">
+                <div class="control-group">
+                    <label for="tz-filter">Timezone</label>
+                    <select id="tz-filter">
+                        <option value="exchange" selected>Exchange (ET)</option>
+                        <option value="utc">UTC</option>
+                        <option value="local">Local</option>
+                    </select>
+                </div>
                 <div class="control-group">
                     <label for="tf-filter">Detector</label>
                     <select id="tf-filter">
@@ -212,8 +221,7 @@
             </div>
             <div class="checks">
                 <label><input type="checkbox" id="tg-fill" checked> Telegram on 15m H5 fills</label>
-                <label><input type="checkbox" id="tg-hot"> Telegram when newly hot</label>
-                <label><input type="checkbox" id="desk-notify" checked> Desktop + sound</label>
+                <label><input type="checkbox" id="desk-notify" checked> Browser + sound on fills</label>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
         </div>
@@ -231,7 +239,7 @@
                         <th data-key="abs_dist" class="sorted">Dist %</th>
                         <th data-key="wait_bars">Wait</th>
                         <th data-key="volume_rel_20">Vol rel</th>
-                        <th data-key="as_of">As of</th>
+                        <th data-key="as_of" data-label="As of">As of</th>
                     </tr>
                 </thead>
                 <tbody id="rows">
@@ -242,15 +250,21 @@
     </div>
     <script>
         const POLL_MS = 5000;
-        const HOT_SEEN_KEY = 'hotCandidates.seenHot';
+        const WS_PATH = '/ws/hot-candidates';
+        const FILL_SEEN_KEY = 'hotCandidates.seenFills';
         const FETCH_OPTS = { cache: 'no-store' };
         let saveTimer = null;
         let loading = false;
         let bootstrapped = false;
+        let socket = null;
+        let pollTimer = null;
+        let reconnectTimer = null;
+        let reconnectAttempt = 0;
+        let socketReady = false;
 
-        function loadSeenHot() {
+        function loadSeenFills() {
             try {
-                const raw = sessionStorage.getItem(HOT_SEEN_KEY);
+                const raw = sessionStorage.getItem(FILL_SEEN_KEY);
                 if (!raw) return new Set();
                 const arr = JSON.parse(raw);
                 if (!Array.isArray(arr)) return new Set();
@@ -260,14 +274,106 @@
             }
         }
 
-        function saveSeenHot(set) {
+        function saveSeenFills(set) {
             try {
-                sessionStorage.setItem(HOT_SEEN_KEY, JSON.stringify(Array.from(set)));
+                sessionStorage.setItem(FILL_SEEN_KEY, JSON.stringify(Array.from(set)));
             } catch (err) {}
         }
 
-        let seenHot = loadSeenHot();
-        let primedHot = seenHot.size > 0;
+        let seenFills = loadSeenFills();
+        let primedFill = seenFills.size > 0;
+        let lastData = null;
+        const EXCHANGE_TZ = 'America/New_York';
+
+        function tzMode() {
+            const el = document.getElementById('tz-filter');
+            const v = el ? el.value : 'exchange';
+            return (v === 'utc' || v === 'local') ? v : 'exchange';
+        }
+
+        function tzIana() {
+            const mode = tzMode();
+            if (mode === 'utc') return 'UTC';
+            if (mode === 'local') {
+                try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+                catch (err) { return 'UTC'; }
+            }
+            return EXCHANGE_TZ;
+        }
+
+        function tzShort(at) {
+            const when = at || new Date();
+            try {
+                const parts = new Intl.DateTimeFormat('en-US', {
+                    timeZone: tzIana(),
+                    timeZoneName: 'short'
+                }).formatToParts(when);
+                const name = parts.find(function(p) { return p.type === 'timeZoneName'; });
+                return (name && name.value) ? name.value : (tzMode() === 'exchange' ? 'ET' : tzMode().toUpperCase());
+            } catch (err) {
+                return tzMode() === 'exchange' ? 'ET' : 'UTC';
+            }
+        }
+
+        function parseStoredTs(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const text = String(value).trim();
+            if (!text || text === '--') return null;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return { dateOnly: true, text: text };
+            if (/^\d{4}-\d{2}-\d{2}[ T]00:00:00/.test(text) && !/[zZ]|[+-]\d{2}/.test(text.slice(10))) {
+                return { dateOnly: true, text: text.slice(0, 10) };
+            }
+            let iso = text.replace(' ', 'T');
+            if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso)) iso = iso + 'Z';
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return null;
+            return { date: d };
+        }
+
+        function fmtTs(value) {
+            const parsed = parseStoredTs(value);
+            if (!parsed) return value ? String(value) : '--';
+            if (parsed.dateOnly) return parsed.text;
+            try {
+                const parts = {};
+                new Intl.DateTimeFormat('en-US', {
+                    timeZone: tzIana(),
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                    timeZoneName: 'short'
+                }).formatToParts(parsed.date).forEach(function(p) { parts[p.type] = p.value; });
+                const hour = parts.hour === '24' ? '00' : parts.hour;
+                return parts.year + '-' + parts.month + '-' + parts.day + ' '
+                    + hour + ':' + parts.minute + ':' + parts.second + ' ' + (parts.timeZoneName || '');
+            } catch (err) {
+                return String(value);
+            }
+        }
+
+        function syncAsOfHeader() {
+            const th = document.querySelector('th[data-key="as_of"]');
+            if (!th) return;
+            const label = 'As of (' + tzShort() + ')';
+            th.dataset.label = label;
+            const arrow = th.classList.contains('sorted')
+                ? (th.dataset.dir === 'desc' ? ' v' : ' ^')
+                : '';
+            th.textContent = label + arrow;
+        }
+
+        function labelLocalTzOption() {
+            const opt = document.querySelector('#tz-filter option[value="local"]');
+            if (!opt) return;
+            try {
+                const id = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                if (id) opt.textContent = 'Local (' + id + ')';
+            } catch (err) {}
+        }
 
         function fmtNum(v, digits) {
             if (v === null || v === undefined || v === '') return '--';
@@ -287,13 +393,14 @@
             const sorted = document.querySelector('th.sorted');
             return {
                 telegram_on_fill: document.getElementById('tg-fill').checked,
-                telegram_on_hot: document.getElementById('tg-hot').checked,
+                telegram_on_hot: false,
                 desktop_notify: document.getElementById('desk-notify').checked,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
                 timeframe_filter: document.getElementById('tf-filter').value,
                 status_filter: document.getElementById('status-filter').value,
                 search: document.getElementById('search').value,
+                display_timezone: tzMode(),
                 sort_key: sorted ? sorted.getAttribute('data-key') : 'abs_dist',
                 sort_dir: sorted && sorted.dataset.dir === 'desc' ? 'desc' : 'asc'
             };
@@ -302,11 +409,12 @@
         function applySettings(s) {
             if (!s) return;
             document.getElementById('tg-fill').checked = !!s.telegram_on_fill;
-            document.getElementById('tg-hot').checked = !!s.telegram_on_hot;
             document.getElementById('desk-notify').checked = s.desktop_notify !== false;
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
             document.getElementById('tf-filter').value = s.timeframe_filter || 'all';
+            document.getElementById('tz-filter').value = (s.display_timezone === 'utc' || s.display_timezone === 'local')
+                ? s.display_timezone : 'exchange';
             document.getElementById('status-filter').value = s.status_filter || 'all';
             document.getElementById('search').value = s.search || '';
             document.querySelectorAll('th[data-key]').forEach(function(th) {
@@ -321,18 +429,19 @@
                 th.dataset.dir = s.sort_dir || 'asc';
                 th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
             }
+            syncAsOfHeader();
         }
 
-        function rowKey(r) {
-            return String(r.stock || '').toUpperCase() + '|' + (r.timeframe || '15m');
+        function fillKeySet(data) {
+            if (data && Array.isArray(data.fill_keys)) {
+                return new Set(data.fill_keys);
+            }
+            return new Set();
         }
 
-        function snapshotHot(rows) {
-            const s = new Set();
-            (rows || []).forEach(function(r) {
-                if (r.hot) s.add(rowKey(r));
-            });
-            return s;
+        function rememberFills(next) {
+            seenFills = next;
+            saveSeenFills(seenFills);
         }
 
         function playBeep() {
@@ -383,45 +492,35 @@
             badge.title = title || '';
         }
 
-        function hotKeySet(data) {
-            if (data && Array.isArray(data.hot_keys)) {
-                return new Set(data.hot_keys);
-            }
-            return snapshotHot(data && data.rows);
-        }
-
-        function rememberHot(next) {
-            seenHot = next;
-            saveSeenHot(seenHot);
-        }
-
         function maybeDesktopAlerts(data) {
-            // Seed on first good snapshot (and after refresh via sessionStorage).
-            // Toast only when Alpaca actually refreshed and a name newly became hot.
             if (!data || data.error) return;
-            const next = hotKeySet(data);
-            const hasBook = next.size > 0 || (data.n_hot || 0) > 0 || (data.rows && data.rows.length);
-            if (!primedHot) {
-                if (!hasBook) return;
-                rememberHot(next);
-                primedHot = true;
+            const next = fillKeySet(data);
+            if (!primedFill) {
+                rememberFills(next);
+                primedFill = true;
                 return;
             }
-            const deskOn = document.getElementById('desk-notify').checked;
-            if (!deskOn || !data.refreshed) {
-                if (hasBook) rememberHot(next);
-                return;
-            }
-            const news = [];
+            const newsKeys = [];
             next.forEach(function(k) {
-                if (!seenHot.has(k)) news.push(String(k).split('|')[0]);
+                if (!seenFills.has(k)) newsKeys.push(k);
             });
-            rememberHot(next);
-            if (!news.length) return;
-            const unique = news.filter(function(s, i) { return news.indexOf(s) === i; });
+            rememberFills(next);
+            const deskOn = document.getElementById('desk-notify').checked;
+            if (!deskOn || !newsKeys.length) return;
+            const alerts = (data.fill_alerts || []).filter(function(a) {
+                return newsKeys.indexOf(a.key) >= 0;
+            });
+            const names = (alerts.length ? alerts : newsKeys.map(function(k) {
+                return { stock: String(k).split('|')[0] };
+            })).map(function(a) { return a.stock; });
+            const unique = names.filter(function(s, i) { return names.indexOf(s) === i; });
+            const detail = alerts.slice(0, 4).map(function(a) {
+                const px = a.fill_px == null || a.fill_px === '' ? '--' : Number(a.fill_px).toFixed(2);
+                return a.stock + ' @ ' + px;
+            }).join(', ');
             desktopAlert(
-                'Hot ' + unique.length,
-                unique.slice(0, 8).join(', ') + (unique.length > 8 ? ' ...' : '')
+                unique.length === 1 ? ('BUY ' + unique[0]) : ('BUY ' + unique.length),
+                (detail || unique.join(', ')) + ' — 15m H5 fill, buy now'
             );
         }
 
@@ -453,7 +552,9 @@
                 return;
             }
             tbody.innerHTML = rows.map(function(r) {
-                const hot = r.hot ? '<span class="pill hot">hot</span>' : '';
+                const hot = r.h5_fill
+                    ? '<span class="pill buy">buy</span>'
+                    : (r.hot ? '<span class="pill hot">hot</span>' : '');
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
@@ -469,9 +570,55 @@
                     '<td class="' + distClass(dist) + '">' + (dist == null ? '--' : (Number(dist) >= 0 ? '+' : '') + fmtNum(dist, 2)) + '</td>' +
                     '<td>' + (r.wait_bars == null ? '--' : r.wait_bars) + '</td>' +
                     '<td>' + fmtNum(r.volume_rel_20, 2) + '</td>' +
-                    '<td>' + (r.as_of || '--') + '</td>' +
+                    '<td>' + fmtTs(r.as_of) + '</td>' +
                     '</tr>';
             }).join('');
+        }
+
+        function applyPayload(data, source) {
+            const errEl = document.getElementById('error');
+            if (!data || data.error) {
+                errEl.style.display = 'block';
+                errEl.textContent = (data && data.error) ? data.error : 'Empty payload';
+                if (source !== 'ws') {
+                    setLiveStatus('offline', (data && data.error) || 'Empty payload');
+                }
+                if (!data || !data.rows) return;
+            } else {
+                errEl.style.display = 'none';
+            }
+            if (data.prices_stale) {
+                setLiveStatus('stale', 'Alpaca last quotes older than 2 minutes');
+            } else {
+                const via = source === 'ws' ? 'WebSocket; Alpaca last quotes' : 'HTTP poll; Alpaca last quotes';
+                setLiveStatus('live', via);
+            }
+            if (data.settings && !bootstrapped) {
+                applySettings(data.settings);
+                bootstrapped = true;
+                if (document.getElementById('desk-notify').checked) ensureNotifyPermission();
+            }
+            lastData = data;
+            syncAsOfHeader();
+            document.getElementById('as-of').textContent = 'IB 15m as_of: ' + fmtTs(data.as_of);
+            document.getElementById('as-of-1d').textContent = '1d as_of: ' + fmtTs(data.as_of_1d);
+            document.getElementById('counts').textContent =
+                'armed 15m=' + (data.n_armed_15m || 0) +
+                ' armed 1d=' + (data.n_armed_1d || 0) +
+                ' hot=' + (data.n_hot || 0) +
+                ' shown=' + (data.n_rows || 0);
+            document.getElementById('universe').textContent = '15m universe=' + (data.n_universe || 0);
+            document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
+            document.getElementById('price-ts').textContent = 'prices: ' + fmtTs(data.price_ts);
+            const banner = document.getElementById('banner');
+            if (data.stale_warning) {
+                banner.style.display = 'block';
+                banner.textContent = data.stale_warning;
+            } else {
+                banner.style.display = 'none';
+            }
+            renderRows(data.rows || []);
+            maybeDesktopAlerts(data);
         }
 
         async function poll() {
@@ -480,44 +627,14 @@
             try {
                 const res = await fetch('/api/hot-candidates', FETCH_OPTS);
                 const data = await res.json();
-                const errEl = document.getElementById('error');
-                if (!res.ok || data.error) {
+                if (!res.ok) {
+                    const errEl = document.getElementById('error');
                     errEl.style.display = 'block';
-                    errEl.textContent = data.error || ('HTTP ' + res.status);
-                    setLiveStatus('offline', data.error || ('HTTP ' + res.status));
+                    errEl.textContent = (data && data.error) || ('HTTP ' + res.status);
+                    setLiveStatus('offline', (data && data.error) || ('HTTP ' + res.status));
                     return;
                 }
-                errEl.style.display = 'none';
-                if (data.prices_stale) {
-                    setLiveStatus('stale', 'Alpaca last quotes older than 2 minutes');
-                } else {
-                    setLiveStatus('live', 'Connected to Alpaca last quotes');
-                }
-                if (data.settings && !bootstrapped) {
-                    applySettings(data.settings);
-                    bootstrapped = true;
-                    if (document.getElementById('desk-notify').checked) ensureNotifyPermission();
-                }
-                document.getElementById('as-of').textContent = 'IB 15m as_of: ' + (data.as_of || '--');
-                document.getElementById('as-of-1d').textContent = '1d as_of: ' + (data.as_of_1d || '--');
-                document.getElementById('counts').textContent =
-                    'armed 15m=' + (data.n_armed_15m || 0) +
-                    ' armed 1d=' + (data.n_armed_1d || 0) +
-                    ' hot=' + (data.n_hot || 0) +
-                    ' shown=' + (data.n_rows || 0);
-                document.getElementById('universe').textContent = '15m universe=' + (data.n_universe || 0);
-                document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
-                const priceTs = data.price_ts || '--';
-                document.getElementById('price-ts').textContent = 'prices: ' + priceTs;
-                const banner = document.getElementById('banner');
-                if (data.stale_warning) {
-                    banner.style.display = 'block';
-                    banner.textContent = data.stale_warning;
-                } else {
-                    banner.style.display = 'none';
-                }
-                renderRows(data.rows || []);
-                maybeDesktopAlerts(data);
+                applyPayload(data, 'http');
             } catch (err) {
                 setLiveStatus('offline', String(err));
                 const errEl = document.getElementById('error');
@@ -526,6 +643,78 @@
             } finally {
                 loading = false;
             }
+        }
+
+        function stopPollingFallback() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        function startPollingFallback() {
+            if (pollTimer || socketReady) return;
+            poll();
+            pollTimer = setInterval(poll, POLL_MS);
+        }
+
+        function wsUrl() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return proto + '//' + location.host + WS_PATH;
+        }
+
+        function handleSocketMessage(data) {
+            if (!data || data.event === 'ping') return;
+            socketReady = true;
+            reconnectAttempt = 0;
+            stopPollingFallback();
+            applyPayload(data, 'ws');
+        }
+
+        function connectWs() {
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+            setLiveStatus('connecting', 'Opening websocket');
+            try {
+                socket = new WebSocket(wsUrl());
+            } catch (err) {
+                setLiveStatus('offline', String(err));
+                startPollingFallback();
+                scheduleReconnect();
+                return;
+            }
+            socket.onmessage = function(ev) {
+                try {
+                    handleSocketMessage(JSON.parse(ev.data));
+                } catch (err) {
+                    setLiveStatus('offline', String(err));
+                }
+            };
+            socket.onclose = function() {
+                socketReady = false;
+                setLiveStatus('offline', 'WebSocket closed');
+                scheduleReconnect();
+            };
+            socket.onerror = function() {
+                setLiveStatus('offline', 'WebSocket error');
+            };
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            reconnectAttempt += 1;
+            if (reconnectAttempt >= 3) startPollingFallback();
+            const delay = Math.min(8000, 400 * Math.pow(2, reconnectAttempt - 1));
+            reconnectTimer = setTimeout(function() {
+                reconnectTimer = null;
+                connectWs();
+            }, delay);
+        }
+
+        function afterSettingsSaved() {
+            if (socket && socket.readyState === WebSocket.OPEN) return;
+            poll();
         }
 
         document.querySelectorAll('th[data-key]').forEach(function(th) {
@@ -540,24 +729,35 @@
                 th.classList.add('sorted');
                 th.dataset.dir = nextDir;
                 th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
-                saveSettings().then(poll);
+                saveSettings().then(afterSettingsSaved);
             });
         });
 
-        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot', 'desk-notify'].forEach(function(id) {
+        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'desk-notify', 'tz-filter'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
                 if (id === 'desk-notify' && el.checked) ensureNotifyPermission();
                 scheduleSave();
-                setTimeout(poll, 450);
+                if (id === 'tz-filter') {
+                    syncAsOfHeader();
+                    if (lastData) {
+                        document.getElementById('as-of').textContent = 'IB 15m as_of: ' + fmtTs(lastData.as_of);
+                        document.getElementById('as-of-1d').textContent = '1d as_of: ' + fmtTs(lastData.as_of_1d);
+                        document.getElementById('price-ts').textContent = 'prices: ' + fmtTs(lastData.price_ts);
+                        renderRows(lastData.rows || []);
+                    }
+                    return;
+                }
+                setTimeout(afterSettingsSaved, 450);
             });
             if (el.tagName === 'INPUT' && el.type !== 'checkbox') {
                 el.addEventListener('input', scheduleSave);
             }
         });
 
-        poll();
-        setInterval(poll, POLL_MS);
+        labelLocalTzOption();
+        syncAsOfHeader();
+        connectWs();
     </script>
 </body>
 </html>

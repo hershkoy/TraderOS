@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     timeframe_filter TEXT NOT NULL DEFAULT 'all',
     as_of_1d TEXT,
     n_universe_1d INTEGER NOT NULL DEFAULT 0,
+    display_timezone TEXT NOT NULL DEFAULT 'exchange',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

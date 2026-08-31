@@ -524,8 +524,14 @@ def format_15m_message(
     n_universe: int = 0,
     stale_warning: Optional[str] = None,
 ) -> str:
+    has_fills = fills is not None and not fills.empty
+    title = (
+        "BUY NOW — Channel-touch 15m H5 fill"
+        if has_fills
+        else "Channel-touch 15m (research H5 stack)"
+    )
     lines = [
-        "Channel-touch 15m (research H5 stack)",
+        title,
         f"as_of={as_of}",
         (
             "mode=h2_resist_break min_wait=12 span<=10 "
@@ -618,10 +624,13 @@ def notify_payloads(
     n_universe: int = 0,
     stale_warning: Optional[str] = None,
 ) -> List[str]:
-    """Telegram bodies to send. Empty when flags are off or there is nothing new."""
+    """Telegram bodies to send. Empty when fill alerts are off or there is no fill.
+
+    Newly-hot (Alpaca last at/above resist) is never notified. Last price is
+    proximity only; a buy is a completed 15m H5 fill.
+    """
     msgs: List[str] = []
     want_fill = bool(settings.get("telegram_on_fill"))
-    want_hot = bool(settings.get("telegram_on_hot"))
     has_fills = fills is not None and not fills.empty
     if want_fill and has_fills:
         msgs.append(
@@ -631,16 +640,6 @@ def notify_payloads(
                 n_hot=n_hot,
                 fills=fills,
                 n_universe=n_universe,
-                stale_warning=stale_warning,
-            )
-        )
-    if want_hot and newly_hot:
-        msgs.append(
-            format_hot_message(
-                as_of=as_of,
-                newly_hot=newly_hot,
-                n_armed=n_armed,
-                n_hot=n_hot,
                 stale_warning=stale_warning,
             )
         )

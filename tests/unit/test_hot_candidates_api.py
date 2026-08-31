@@ -10,7 +10,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.scanning.channel_touch_candidates_store import DEFAULT_SETTINGS, apply_settings_patch
-from utils.scanning.channel_touch_hot_api import reset_refresh_throttle, set_store
+from utils.scanning.channel_touch_hot_api import reset_refresh_throttle, set_hot_hub, set_store
+
+
+class _FakeHub:
+    def __init__(self):
+        self.kicked = 0
+
+    def kick(self):
+        self.kicked += 1
 
 
 class MemoryStore:
@@ -58,11 +66,21 @@ def test_hot_page_and_api(monkeypatch):
         assert b"Hot candidates" in page.data
         assert b"Detector" in page.data
         assert b'id="tf-filter"' in page.data
-        assert b"Desktop + sound" in page.data
+        assert b"Browser + sound on fills" in page.data
+        assert b"Telegram when newly hot" not in page.data
         assert b'id="live-badge"' in page.data
         assert b"Connecting" in page.data
-        assert b"HOT_SEEN_KEY" in page.data
-        assert b"data.refreshed" in page.data
+        assert b"FILL_SEEN_KEY" in page.data
+        assert b"15m H5 fill, buy now" in page.data
+        assert b'id="tz-filter"' in page.data
+        assert b"Exchange (ET)" in page.data
+        assert b"America/New_York" in page.data
+        assert b"fmtTs" in page.data
+        assert b"WS_PATH" in page.data
+        assert b"/ws/hot-candidates" in page.data
+        assert b"connectWs();" in page.data
+        assert b"startPollingFallback" in page.data
+        assert b"new WebSocket" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200
@@ -71,11 +89,16 @@ def test_hot_page_and_api(monkeypatch):
         assert body["rows"][0]["stock"] == "AAA"
         assert body["as_of"] == "2026-08-30 15:45:00"
         assert body["hot_keys"] == ["AAA|15m"]
+        assert body["fill_keys"] == []
+        assert body["fill_alerts"] == []
         assert body["refreshed"] is False
+        assert body["settings"]["display_timezone"] == "exchange"
 
+        hub = _FakeHub()
+        set_hot_hub(hub)
         posted = client.post(
             "/api/hot-candidates/settings",
-            data=json.dumps({"telegram_on_hot": True, "status_filter": "armed"}),
+            data=json.dumps({"telegram_on_hot": True, "status_filter": "armed", "display_timezone": "local"}),
             content_type="application/json",
         )
         assert posted.status_code == 200
@@ -83,8 +106,12 @@ def test_hot_page_and_api(monkeypatch):
         assert saved["telegram_on_hot"] is True
         assert saved["telegram_on_fill"] is True
         assert saved["status_filter"] == "armed"
+        assert saved["display_timezone"] == "local"
 
         listed = client.get("/api/hot-candidates/settings")
         assert listed.get_json()["telegram_on_hot"] is True
+        assert listed.get_json()["display_timezone"] == "local"
+        assert hub.kicked >= 1
     finally:
         set_store(None)
+        set_hot_hub(None)

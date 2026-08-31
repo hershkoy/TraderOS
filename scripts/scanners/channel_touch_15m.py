@@ -6,7 +6,7 @@
   2) Build armed H2 resist-break watchlist (span<=10, wait-12)
   3) Alpaca last-price proximity (at-or-above resist; not a fill)
   4) On completed bars: unique-symbol/day + prior-bar vol>=2 + overshoot>=0.08
-  5) Optional Telegram
+  5) Telegram + browser/desktop only on H5 fills (not on hot last-price)
 
 Prerequisite: IB 15m must be current. If last bar is still 2025-12, run:
   python scripts\\data\\backfill_ib_15m_universe.py
@@ -22,7 +22,7 @@ import json
 import logging
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -42,7 +42,6 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     fetch_alpaca_last_prices,
     format_15m_message,
     lookback_start,
-    newly_hot_rows,
     notify_payloads,
     passes_h5_stack,
     rank_hot,
@@ -333,11 +332,9 @@ def _send_gated_telegram(
     stale: Optional[str],
     dry_run: bool,
 ) -> None:
-    today = date.today().isoformat()
-    newly = newly_hot_rows(rows, today=today) if settings.get("telegram_on_hot") else []
     msgs = notify_payloads(
         fills=fills,
-        newly_hot=newly,
+        newly_hot=[],
         settings=settings,
         as_of=as_of or "n/a",
         n_armed=n_armed,
@@ -348,16 +345,6 @@ def _send_gated_telegram(
     for msg in msgs:
         logger.info("Notify payload:\n%s", msg)
         _notify(msg, dry_run=dry_run, desktop=bool(settings.get("desktop_notify", True)))
-    if newly and not dry_run and store is not None:
-        try:
-            by_tf: Dict[str, List[str]] = {}
-            for row in newly:
-                tf = str(row.get("timeframe") or "15m")
-                by_tf.setdefault(tf, []).append(str(row.get("stock") or ""))
-            for tf, stocks in by_tf.items():
-                store.mark_hot_notified(stocks, today, timeframe=tf)
-        except Exception as exc:
-            logger.warning("Could not mark hot_notified_on: %s", exc)
 
 
 def main() -> int:

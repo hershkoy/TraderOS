@@ -7,7 +7,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from utils.scanning.channel_touch_15m import attach_last_prices, fetch_alpaca_last_prices
+from utils.scanning.channel_touch_15m import (
+    attach_last_prices,
+    fetch_alpaca_last_prices,
+    passes_h5_stack,
+)
 from utils.scanning.channel_touch_candidates_store import (
     ChannelTouchCandidatesStore,
     normalize_settings,
@@ -135,6 +139,59 @@ def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     return keys
 
 
+def is_strategy_fill(row: dict) -> bool:
+    """True when a 15m row is a completed-bar H5 fill (buy-now)."""
+    if str(row.get("timeframe") or "15m") != "15m":
+        return False
+    if str(row.get("status") or "").lower() != "filled":
+        return False
+    return bool(passes_h5_stack(row))
+
+
+def fill_key(row: dict) -> str:
+    stock = str(row.get("stock") or "").upper()
+    as_of = str(row.get("as_of") or "")
+    return "%s|15m|%s" % (stock, as_of)
+
+
+def fill_keys_from_rows(rows: Sequence[dict]) -> List[str]:
+    """Unfiltered keys for 15m H5 fills (status=filled + vol/overshoot/wait)."""
+    keys: List[str] = []
+    for row in rows:
+        if not is_strategy_fill(row):
+            continue
+        stock = str(row.get("stock") or "").upper()
+        if not stock:
+            continue
+        keys.append(fill_key(row))
+    return keys
+
+
+def fill_alerts_from_rows(rows: Sequence[dict]) -> List[dict]:
+    """Unfiltered buy-now payloads for browser/Telegram-adjacent UI."""
+    out: List[dict] = []
+    for row in rows:
+        if not is_strategy_fill(row):
+            continue
+        stock = str(row.get("stock") or "").upper()
+        if not stock:
+            continue
+        out.append(
+            {
+                "stock": stock,
+                "timeframe": "15m",
+                "as_of": row.get("as_of"),
+                "fill_px": row.get("fill_px") or row.get("buy_price"),
+                "resist": row.get("resist"),
+                "volume_rel_20": row.get("volume_rel_20"),
+                "overshoot": row.get("overshoot"),
+                "wait_bars": row.get("wait_bars"),
+                "key": fill_key(row),
+            }
+        )
+    return out
+
+
 def filter_candidates(
     rows: Sequence[dict],
     *,
@@ -256,6 +313,8 @@ def candidates_payload(
     )
     n_hot = sum(1 for r in rows if r.get("hot"))
     n_armed = sum(1 for r in rows if r.get("status") == "armed")
+    for item in ordered:
+        item["h5_fill"] = is_strategy_fill(item)
     n_armed_15m = sum(
         1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "15m") == "15m"
     )
@@ -286,6 +345,8 @@ def candidates_payload(
         "n_armed_1d": n_armed_1d,
         "n_hot": n_hot,
         "hot_keys": hot_keys_from_rows(rows),
+        "fill_keys": fill_keys_from_rows(rows),
+        "fill_alerts": fill_alerts_from_rows(rows),
         "as_of": settings.get("as_of"),
         "as_of_1d": settings.get("as_of_1d"),
         "n_universe": settings.get("n_universe") or 0,
@@ -297,3 +358,178 @@ def candidates_payload(
         "refreshed": refreshed,
         "settings": settings,
     }
+
+
+HUB_INTERVAL_SEC = 5.0
+
+_hub: Optional["HotCandidatesHub"] = None
+_hub_lock = threading.Lock()
+
+
+def payload_fingerprint(payload: Dict[str, Any]) -> str:
+    """Stable id for push-skip; ignores clock fields that change every call."""
+    rows = payload.get("rows") or []
+    slim = []
+    for row in rows:
+        slim.append(
+            (
+                row.get("stock"),
+                row.get("timeframe"),
+                row.get("status"),
+                bool(row.get("hot")),
+                bool(row.get("h5_fill")),
+                row.get("last_price"),
+                row.get("dist_live_pct"),
+                row.get("wait_bars"),
+                row.get("volume_rel_20"),
+                row.get("as_of"),
+                row.get("resist"),
+            )
+        )
+    settings = payload.get("settings") or {}
+    key = (
+        payload.get("error"),
+        payload.get("price_ts"),
+        payload.get("as_of"),
+        payload.get("as_of_1d"),
+        payload.get("n_hot"),
+        payload.get("n_armed"),
+        payload.get("n_armed_15m"),
+        payload.get("n_armed_1d"),
+        payload.get("n_rows"),
+        payload.get("n_universe"),
+        payload.get("n_universe_1d"),
+        payload.get("stale_warning"),
+        payload.get("prices_stale"),
+        tuple(payload.get("fill_keys") or []),
+        tuple(payload.get("hot_keys") or []),
+        settings.get("status_filter"),
+        settings.get("timeframe_filter"),
+        settings.get("search"),
+        settings.get("max_abs_dist_pct"),
+        settings.get("sort_key"),
+        settings.get("sort_dir"),
+        settings.get("proximity_below_pct"),
+        tuple(slim),
+    )
+    return repr(key)
+
+
+class HotCandidatesHub:
+    """One Alpaca/DB refresh loop; WebSocket clients wait on updates."""
+
+    def __init__(
+        self,
+        *,
+        interval: float = HUB_INTERVAL_SEC,
+        payload_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        self.interval = float(interval)
+        self._payload_fn = payload_fn
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._kick = threading.Event()
+        self._stop = threading.Event()
+        self._payload: Optional[Dict[str, Any]] = None
+        self._seq = 0
+        self._fp: Optional[str] = None
+        self._clients = 0
+        self._thread: Optional[threading.Thread] = None
+
+    def _call_payload(self) -> Dict[str, Any]:
+        fn = self._payload_fn
+        if fn is None:
+            return candidates_payload(refresh=True)
+        return fn()
+
+    def _client_count(self) -> int:
+        with self._lock:
+            return self._clients
+
+    def _ensure_thread(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, name="hot-candidates-hub", daemon=True
+        )
+        self._thread.start()
+
+    def register(self) -> None:
+        with self._lock:
+            self._clients += 1
+            self._ensure_thread()
+        self.kick()
+
+    def unregister(self) -> None:
+        with self._lock:
+            self._clients = max(0, self._clients - 1)
+
+    def kick(self) -> None:
+        self._kick.set()
+
+    def wait_next(
+        self, after_seq: int, timeout: float = 30.0
+    ) -> Tuple[int, Optional[Dict[str, Any]]]:
+        deadline = time.monotonic() + float(timeout)
+        with self._cond:
+            while self._seq <= after_seq:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return after_seq, None
+                self._cond.wait(timeout=remaining)
+            return self._seq, self._payload
+
+    def stop(self, join_timeout: float = 2.0) -> None:
+        self._stop.set()
+        self.kick()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=join_timeout)
+        self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            if self._client_count() <= 0:
+                self._kick.wait(timeout=1.0)
+                self._kick.clear()
+                continue
+            try:
+                payload = self._call_payload()
+            except Exception as exc:
+                logger.exception("hot-candidates hub payload failed")
+                payload = {
+                    "error": str(exc),
+                    "rows": [],
+                    "n_rows": 0,
+                    "n_armed": 0,
+                    "n_hot": 0,
+                    "fill_keys": [],
+                    "hot_keys": [],
+                }
+            fp = payload_fingerprint(payload)
+            if fp != self._fp:
+                with self._cond:
+                    self._payload = payload
+                    self._seq += 1
+                    self._fp = fp
+                    self._cond.notify_all()
+            self._kick.wait(timeout=self.interval)
+            self._kick.clear()
+
+
+def get_hot_hub() -> HotCandidatesHub:
+    global _hub
+    with _hub_lock:
+        if _hub is None:
+            _hub = HotCandidatesHub()
+        return _hub
+
+
+def set_hot_hub(hub: Optional[HotCandidatesHub]) -> None:
+    global _hub
+    with _hub_lock:
+        old = _hub
+        _hub = hub
+    if old is not None and old is not hub and hasattr(old, "stop"):
+        old.stop()

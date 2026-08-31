@@ -5,10 +5,13 @@ from datetime import datetime, timedelta, timezone
 
 from utils.scanning.channel_touch_candidates_store import DEFAULT_SETTINGS, apply_settings_patch
 from utils.scanning.channel_touch_hot_api import (
+    HotCandidatesHub,
     candidates_payload,
+    fill_keys_from_rows,
     filter_candidates,
     hot_keys_from_rows,
     maybe_refresh_live_prices,
+    payload_fingerprint,
     prices_are_stale,
     reset_refresh_throttle,
     set_store,
@@ -241,3 +244,145 @@ def test_payload_hot_keys_ignore_ui_filter():
     assert [r["stock"] for r in payload["rows"]] == ["CCC"]
     assert payload["n_hot"] == 2
     assert payload["hot_keys"] == ["AAA|15m", "BBB|15m"]
+    assert payload["fill_keys"] == []
+
+
+def test_fill_keys_only_h5_stack():
+    rows = [
+        {
+            "stock": "AAA",
+            "timeframe": "15m",
+            "status": "filled",
+            "wait_ok": True,
+            "volume_rel_20": 2.5,
+            "overshoot": 0.10,
+            "as_of": "2026-08-31 15:45:00",
+            "fill_px": 10.2,
+            "resist": 10.0,
+        },
+        {
+            "stock": "BBB",
+            "timeframe": "15m",
+            "status": "filled",
+            "wait_ok": True,
+            "volume_rel_20": 1.1,
+            "overshoot": 0.10,
+            "as_of": "2026-08-31 15:45:00",
+        },
+        {
+            "stock": "CCC",
+            "timeframe": "15m",
+            "status": "armed",
+            "wait_ok": True,
+            "volume_rel_20": 3.0,
+            "overshoot": 0.10,
+            "as_of": "2026-08-31 15:45:00",
+        },
+        {
+            "stock": "DDD",
+            "timeframe": "15m",
+            "status": "filled",
+            "wait_ok": True,
+            "volume_rel_20": 2.5,
+            "overshoot": 0.01,
+            "as_of": "2026-08-31 15:45:00",
+        },
+        {
+            "stock": "EEE",
+            "timeframe": "1d",
+            "status": "filled",
+            "wait_ok": True,
+            "volume_rel_20": 3.0,
+            "overshoot": 0.20,
+            "as_of": "2026-08-31",
+        },
+    ]
+    assert fill_keys_from_rows(rows) == ["AAA|15m|2026-08-31 15:45:00"]
+
+    reset_refresh_throttle()
+    store = MemoryStore(rows=rows)
+    payload = candidates_payload(store, refresh=False)
+    assert payload["fill_keys"] == ["AAA|15m|2026-08-31 15:45:00"]
+    assert payload["fill_alerts"][0]["stock"] == "AAA"
+    assert payload["fill_alerts"][0]["fill_px"] == 10.2
+    by_stock = {r["stock"]: r for r in payload["rows"]}
+    assert by_stock["AAA"]["h5_fill"] is True
+    assert by_stock["BBB"]["h5_fill"] is False
+    assert by_stock["CCC"]["h5_fill"] is False
+    assert by_stock["EEE"]["h5_fill"] is False
+
+
+def _hub_payload(last_price=1.0, **extra):
+    body = {
+        "rows": [{"stock": "A", "last_price": last_price, "dist_live_pct": 0.1, "hot": True}],
+        "n_rows": 1,
+        "n_hot": 1,
+        "n_armed": 1,
+        "n_armed_15m": 1,
+        "n_armed_1d": 0,
+        "price_ts": "t-%s" % last_price,
+        "prices_stale": False,
+        "fill_keys": [],
+        "hot_keys": ["A|15m"],
+        "settings": {},
+        "price_age_sec": 1.0,
+        "refreshed": True,
+    }
+    body.update(extra)
+    return body
+
+
+def test_payload_fingerprint_ignores_age_and_refreshed():
+    base = _hub_payload()
+    other = _hub_payload()
+    other["price_age_sec"] = 9.0
+    other["refreshed"] = False
+    assert payload_fingerprint(base) == payload_fingerprint(other)
+    changed = _hub_payload(last_price=2.0)
+    assert payload_fingerprint(base) != payload_fingerprint(changed)
+
+
+def test_hub_skips_identical_payload():
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        return _hub_payload()
+
+    hub = HotCandidatesHub(interval=0.05, payload_fn=fn)
+    hub.register()
+    try:
+        seq, payload = hub.wait_next(0, timeout=2.0)
+        assert payload is not None
+        assert payload["n_hot"] == 1
+        seq2, payload2 = hub.wait_next(seq, timeout=0.35)
+        assert payload2 is None
+        assert seq2 == seq
+        assert calls["n"] >= 2
+    finally:
+        hub.unregister()
+        hub.stop()
+
+
+def test_hub_kick_pushes_new_payload():
+    box = {"px": 1.0}
+
+    def fn():
+        return _hub_payload(last_price=box["px"])
+
+    hub = HotCandidatesHub(interval=30.0, payload_fn=fn)
+    hub.register()
+    try:
+        seq, first = hub.wait_next(0, timeout=2.0)
+        assert first is not None
+        assert first["rows"][0]["last_price"] == 1.0
+        box["px"] = 2.0
+        hub.kick()
+        seq2, second = hub.wait_next(seq, timeout=2.0)
+        assert second is not None
+        assert second["rows"][0]["last_price"] == 2.0
+        assert seq2 > seq
+    finally:
+        hub.unregister()
+        hub.stop()
+

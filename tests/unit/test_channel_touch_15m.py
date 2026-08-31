@@ -297,7 +297,8 @@ def test_notify_payloads_gated_by_settings():
     )
     assert len(fill_only) == 1
     assert "AAA" in fill_only[0]
-    hot_only = notify_payloads(
+    assert "BUY NOW" in fill_only[0]
+    hot_ignored = notify_payloads(
         fills=pd.DataFrame(),
         newly_hot=hot,
         settings={"telegram_on_fill": True, "telegram_on_hot": True},
@@ -305,9 +306,7 @@ def test_notify_payloads_gated_by_settings():
         n_armed=4,
         n_hot=1,
     )
-    assert len(hot_only) == 1
-    assert "newly hot" in hot_only[0]
-    assert "not a fill" in hot_only[0]
+    assert hot_ignored == []
     msg = format_hot_message(as_of="t", newly_hot=hot, n_armed=1, n_hot=1)
     assert "BBB" in msg
 
