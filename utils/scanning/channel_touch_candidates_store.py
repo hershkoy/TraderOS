@@ -18,11 +18,13 @@ ROOT = Path(__file__).resolve().parents[2]
 INIT_SQL_PATHS = (
     ROOT / "init-scripts" / "13-channel-touch-15m-candidates.sql",
     ROOT / "init-scripts" / "14-channel-touch-candidates-timeframe.sql",
+    ROOT / "init-scripts" / "15-channel-touch-desktop-notify.sql",
 )
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "telegram_on_fill": True,
     "telegram_on_hot": False,
+    "desktop_notify": True,
     "proximity_below_pct": 0.0,
     "max_abs_dist_pct": None,
     "sort_key": "abs_dist",
@@ -72,6 +74,7 @@ CANDIDATE_COLUMNS = (
 SETTINGS_COLUMNS = (
     "telegram_on_fill",
     "telegram_on_hot",
+    "desktop_notify",
     "proximity_below_pct",
     "max_abs_dist_pct",
     "sort_key",
@@ -86,7 +89,7 @@ SETTINGS_COLUMNS = (
     "n_universe_1d",
 )
 
-_BOOL_KEYS = {"telegram_on_fill", "telegram_on_hot", "wait_ok", "hot"}
+_BOOL_KEYS = {"telegram_on_fill", "telegram_on_hot", "desktop_notify", "wait_ok", "hot"}
 _INT_KEYS = {"wait_bars", "support_x0", "h2_idx", "as_of_i", "n_universe"}
 _FLOAT_KEYS = {
     "proximity_below_pct",
@@ -166,6 +169,7 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out = dict(DEFAULT_SETTINGS)
     out["telegram_on_fill"] = _as_bool(src.get("telegram_on_fill"), True)
     out["telegram_on_hot"] = _as_bool(src.get("telegram_on_hot"), False)
+    out["desktop_notify"] = _as_bool(src.get("desktop_notify"), True)
     below = _as_float(src.get("proximity_below_pct"))
     out["proximity_below_pct"] = 0.0 if below is None else float(below)
     out["max_abs_dist_pct"] = _as_float(src.get("max_abs_dist_pct"))
@@ -405,6 +409,7 @@ class ChannelTouchCandidatesStore:
             UPDATE channel_touch_15m_settings
             SET telegram_on_fill = %s,
                 telegram_on_hot = %s,
+                desktop_notify = %s,
                 proximity_below_pct = %s,
                 max_abs_dist_pct = %s,
                 sort_key = %s,
@@ -423,6 +428,7 @@ class ChannelTouchCandidatesStore:
             (
                 settings["telegram_on_fill"],
                 settings["telegram_on_hot"],
+                settings["desktop_notify"],
                 settings["proximity_below_pct"],
                 settings["max_abs_dist_pct"],
                 settings["sort_key"],
@@ -595,6 +601,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     telegram_on_fill BOOLEAN NOT NULL DEFAULT TRUE,
     telegram_on_hot BOOLEAN NOT NULL DEFAULT FALSE,
+    desktop_notify BOOLEAN NOT NULL DEFAULT TRUE,
     proximity_below_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
     max_abs_dist_pct DOUBLE PRECISION,
     sort_key TEXT NOT NULL DEFAULT 'abs_dist',

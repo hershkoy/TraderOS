@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 
 from utils.config.env_loader import load_env_file  # noqa: E402
 from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
-from utils.notify.telegram_pinger import send_message  # noqa: E402
+from utils.notify.alerts import send_alert  # noqa: E402
 from utils.scanning.channel_touch_15m import (  # noqa: E402
     LIVE_15M_DEFAULTS,
     armed_rows_for_symbol,
@@ -129,11 +129,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _notify(text: str, *, dry_run: bool) -> None:
-    if dry_run:
-        logger.info("[dry-run] would Telegram:\n%s", text)
-        return
-    send_message(text)
+def _notify(text: str, *, dry_run: bool, desktop: bool = True) -> None:
+    send_alert(text, dry_run=dry_run, desktop=desktop)
 
 
 def _open_store() -> Optional[ChannelTouchCandidatesStore]:
@@ -350,7 +347,7 @@ def _send_gated_telegram(
     )
     for msg in msgs:
         logger.info("Notify payload:\n%s", msg)
-        _notify(msg, dry_run=dry_run)
+        _notify(msg, dry_run=dry_run, desktop=bool(settings.get("desktop_notify", True)))
     if newly and not dry_run and store is not None:
         try:
             by_tf: Dict[str, List[str]] = {}

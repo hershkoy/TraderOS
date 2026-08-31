@@ -109,6 +109,8 @@
         .pill.waiting { background: #feebc8; color: #9c4221; }
         .pill.filled { background: #bee3f8; color: #2c5282; }
         .pill.hot { background: #fed7d7; color: #9b2c2c; }
+        .pill.tf-15m { background: #e9d8fd; color: #553c9a; }
+        .pill.tf-1d { background: #bee3f8; color: #2c5282; }
         .pos { color: #276749; font-weight: 600; }
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
@@ -138,11 +140,11 @@
         <div class="panel">
             <div class="controls">
                 <div class="control-group">
-                    <label for="tf-filter">Timeframe</label>
+                    <label for="tf-filter">Detector</label>
                     <select id="tf-filter">
-                        <option value="all">All (15m + 1d)</option>
-                        <option value="15m">15m H5</option>
-                        <option value="1d">1d H2 resist-break</option>
+                        <option value="all">All</option>
+                        <option value="15m">15m</option>
+                        <option value="1d">1d</option>
                     </select>
                 </div>
                 <div class="control-group">
@@ -171,6 +173,7 @@
             <div class="checks">
                 <label><input type="checkbox" id="tg-fill" checked> Telegram on 15m H5 fills</label>
                 <label><input type="checkbox" id="tg-hot"> Telegram when newly hot</label>
+                <label><input type="checkbox" id="desk-notify" checked> Desktop + sound</label>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
         </div>
@@ -180,7 +183,7 @@
                 <thead>
                     <tr>
                         <th data-key="stock">Symbol</th>
-                        <th data-key="timeframe">TF</th>
+                        <th data-key="timeframe">Detector</th>
                         <th data-key="status">Status</th>
                         <th data-key="hot">Hot</th>
                         <th data-key="last_price">Last</th>
@@ -202,6 +205,8 @@
         let saveTimer = null;
         let loading = false;
         let bootstrapped = false;
+        let primedHot = false;
+        let seenHot = new Set();
 
         function fmtNum(v, digits) {
             if (v === null || v === undefined || v === '') return '--';
@@ -222,6 +227,7 @@
             return {
                 telegram_on_fill: document.getElementById('tg-fill').checked,
                 telegram_on_hot: document.getElementById('tg-hot').checked,
+                desktop_notify: document.getElementById('desk-notify').checked,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
                 timeframe_filter: document.getElementById('tf-filter').value,
@@ -236,6 +242,7 @@
             if (!s) return;
             document.getElementById('tg-fill').checked = !!s.telegram_on_fill;
             document.getElementById('tg-hot').checked = !!s.telegram_on_hot;
+            document.getElementById('desk-notify').checked = s.desktop_notify !== false;
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
             document.getElementById('tf-filter').value = s.timeframe_filter || 'all';
@@ -253,6 +260,74 @@
                 th.dataset.dir = s.sort_dir || 'asc';
                 th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
             }
+        }
+
+        function rowKey(r) {
+            return (r.stock || '') + '|' + (r.timeframe || '15m');
+        }
+
+        function snapshotHot(rows) {
+            const s = new Set();
+            (rows || []).forEach(function(r) {
+                if (r.hot) s.add(rowKey(r));
+            });
+            return s;
+        }
+
+        function playBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 880;
+                gain.gain.setValueAtTime(0.12, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.35);
+            } catch (err) { /* autoplay may block until a click */ }
+        }
+
+        function ensureNotifyPermission() {
+            if (!('Notification' in window)) return;
+            if (Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+        }
+
+        function desktopAlert(title, body) {
+            playBeep();
+            if (!('Notification' in window)) return;
+            if (Notification.permission !== 'granted') return;
+            try {
+                new Notification(title, { body: body, silent: true });
+            } catch (err) {}
+        }
+
+        function maybeDesktopAlerts(rows) {
+            const next = snapshotHot(rows);
+            if (!primedHot) {
+                seenHot = next;
+                primedHot = true;
+                return;
+            }
+            if (!document.getElementById('desk-notify').checked) {
+                seenHot = next;
+                return;
+            }
+            const news = [];
+            next.forEach(function(k) {
+                if (!seenHot.has(k)) news.push(k.split('|')[0]);
+            });
+            seenHot = next;
+            if (!news.length) return;
+            const unique = news.filter(function(s, i) { return news.indexOf(s) === i; });
+            desktopAlert(
+                'Hot ' + unique.length,
+                unique.slice(0, 8).join(', ') + (unique.length > 8 ? ' ...' : '')
+            );
         }
 
         async function saveSettings() {
@@ -288,9 +363,10 @@
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
                 const chartTf = tf === '1d' ? '1d' : '15m';
+                const tfClass = tf === '1d' ? 'tf-1d' : 'tf-15m';
                 return '<tr>' +
                     '<td><a class="sym" href="/?symbol=' + encodeURIComponent(r.stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + (r.stock || '') + '</a></td>' +
-                    '<td><span class="pill ' + (tf === '1d' ? 'filled' : 'armed') + '">' + tf + '</span></td>' +
+                    '<td><span class="pill ' + tfClass + '">' + tf + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
                     '<td>' + fmtNum(r.last_price, 2) + '</td>' +
@@ -319,6 +395,7 @@
                 if (data.settings && !bootstrapped) {
                     applySettings(data.settings);
                     bootstrapped = true;
+                    if (document.getElementById('desk-notify').checked) ensureNotifyPermission();
                 }
                 document.getElementById('as-of').textContent = 'IB 15m as_of: ' + (data.as_of || '--');
                 document.getElementById('as-of-1d').textContent = '1d as_of: ' + (data.as_of_1d || '--');
@@ -341,6 +418,7 @@
                     banner.style.display = 'none';
                 }
                 renderRows(data.rows || []);
+                maybeDesktopAlerts(data.rows || []);
             } catch (err) {
                 const errEl = document.getElementById('error');
                 errEl.style.display = 'block';
@@ -366,9 +444,10 @@
             });
         });
 
-        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot'].forEach(function(id) {
+        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-hot', 'desk-notify'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
+                if (id === 'desk-notify' && el.checked) ensureNotifyPermission();
                 scheduleSave();
                 setTimeout(poll, 450);
             });

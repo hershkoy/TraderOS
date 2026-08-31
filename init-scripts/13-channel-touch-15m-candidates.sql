@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     telegram_on_fill BOOLEAN NOT NULL DEFAULT TRUE,
     telegram_on_hot BOOLEAN NOT NULL DEFAULT FALSE,
+    desktop_notify BOOLEAN NOT NULL DEFAULT TRUE,
     proximity_below_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
     max_abs_dist_pct DOUBLE PRECISION,
     sort_key TEXT NOT NULL DEFAULT 'abs_dist',

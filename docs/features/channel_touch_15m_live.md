@@ -170,6 +170,8 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Daily nightly (unchanged) | `scripts/scanners/channel_touch_nightly.py` |
 
 Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+Fills and newly-hot also raise a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
+**Desktop + sound** is unchecked on `/hot`. With `/hot` open, newly-hot names also beep in the browser.
 
 ---
 

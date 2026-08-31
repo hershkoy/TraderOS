@@ -16,6 +16,7 @@ def test_normalize_settings_defaults_and_patch():
     s = normalize_settings(None)
     assert s["telegram_on_fill"] is True
     assert s["telegram_on_hot"] is False
+    assert s["desktop_notify"] is True
     assert s["proximity_below_pct"] == 0.0
     assert s["max_abs_dist_pct"] is None
     assert s["sort_key"] == "abs_dist"

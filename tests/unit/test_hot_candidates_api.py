@@ -56,7 +56,9 @@ def test_hot_page_and_api(monkeypatch):
         page = client.get("/hot")
         assert page.status_code == 200
         assert b"Hot candidates" in page.data
-        assert b"Telegram on 15m H5 fills" in page.data
+        assert b"Detector" in page.data
+        assert b'id="tf-filter"' in page.data
+        assert b"Desktop + sound" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200

@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 from utils.config.env_loader import load_env_file
 from utils.data.ohlcv_loader import load_ohlcv_many
 from utils.data.update_universe_data import UniverseDataUpdater
-from utils.notify.telegram_pinger import send_message
+from utils.notify.alerts import send_alert
 from utils.scanning.channel_touch import (
     LIVE_DEFAULTS,
     format_triggers_message,
@@ -91,11 +91,8 @@ def _run_data_update(
     return stats or {}
 
 
-def _notify(text: str, *, dry_run: bool) -> None:
-    if dry_run:
-        logger.info("[dry-run] would Telegram:\n%s", text)
-        return
-    send_message(text)
+def _notify(text: str, *, dry_run: bool, desktop: bool = True) -> None:
+    send_alert(text, dry_run=dry_run, desktop=desktop)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -389,7 +386,14 @@ def main() -> int:
         )
         msg = f"{msg}\nelapsed_sec={time.perf_counter() - t0:.1f}\ncsv={out_csv.name}"
         logger.info("Notify payload:\n%s", msg)
-        _notify(msg, dry_run=dry_run)
+        desktop = True
+        try:
+            desktop = bool(
+                ChannelTouchCandidatesStore().load_settings().get("desktop_notify", True)
+            )
+        except Exception:
+            desktop = True
+        _notify(msg, dry_run=dry_run, desktop=desktop)
         return 0
     except Exception as exc:
         logger.exception("Nightly channel-touch failed: %s", exc)
