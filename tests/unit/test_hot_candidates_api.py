@@ -81,6 +81,9 @@ def test_hot_page_and_api(monkeypatch):
         assert b"connectWs();" in page.data
         assert b"startPollingFallback" in page.data
         assert b"new WebSocket" in page.data
+        assert b"Fill data insufficient" in page.data
+        assert b"fill_data_warning" in page.data
+        assert b"banner fill-data" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200
@@ -92,6 +95,7 @@ def test_hot_page_and_api(monkeypatch):
         assert body["fill_keys"] == []
         assert body["fill_alerts"] == []
         assert body["refreshed"] is False
+        assert "fill_data_ok" in body
         assert body["settings"]["display_timezone"] == "exchange"
 
         hub = _FakeHub()

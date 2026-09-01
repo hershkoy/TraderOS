@@ -73,6 +73,14 @@
             margin-top: 12px;
             font-size: 13px;
         }
+        .banner.fill-data {
+            background: #fed7d7;
+            color: #9b2c2c;
+            border: 1px solid #fc8181;
+            font-weight: 600;
+        }
+        .banner.fill-data strong { display: block; margin-bottom: 4px; font-size: 13px; }
+        .meta span.warn { color: #c53030; font-weight: 700; }
         .controls {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -610,12 +618,25 @@
             document.getElementById('universe').textContent = '15m universe=' + (data.n_universe || 0);
             document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
             document.getElementById('price-ts').textContent = 'prices: ' + fmtTs(data.price_ts);
+            const asOfEl = document.getElementById('as-of');
+            asOfEl.classList.toggle('warn', data.fill_data_ok === false);
             const banner = document.getElementById('banner');
-            if (data.stale_warning) {
+            const fillWarn = data.fill_data_warning || data.stale_warning;
+            banner.replaceChildren();
+            if (fillWarn) {
                 banner.style.display = 'block';
-                banner.textContent = data.stale_warning;
+                banner.className = data.fill_data_ok === false ? 'banner fill-data' : 'banner';
+                if (data.fill_data_ok === false) {
+                    const title = document.createElement('strong');
+                    title.textContent = 'Fill data insufficient';
+                    banner.appendChild(title);
+                    banner.appendChild(document.createTextNode(fillWarn));
+                } else {
+                    banner.textContent = fillWarn;
+                }
             } else {
                 banner.style.display = 'none';
+                banner.className = 'banner';
             }
             renderRows(data.rows || []);
             maybeDesktopAlerts(data);

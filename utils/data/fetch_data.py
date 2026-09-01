@@ -1099,6 +1099,21 @@ def _estimate_days_from_bars(bars: int, timeframe: str) -> int:
     return max(1, calendar_days)
 
 
+def _ib_end_datetime_utc(dt) -> str:
+    """Format IB endDateTime with an explicit UTC zone.
+
+    TWS treats a naive yyyymmdd hh:mm:ss as the Gateway local timezone.
+    Passing UTC clock fields without a suffix (this machine is Israel UTC+3)
+    truncates RTH hist about three hours early (last bar ~13:30 ET).
+    """
+    ts = pd.Timestamp(dt)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.strftime("%Y%m%d %H:%M:%S UTC")
+
+
 def _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt):
     """Fetch intraday data in multiple IB-friendly batches to avoid timeouts."""
     max_days = IB_INTRADAY_BATCH_DAYS.get(timeframe, 180)
@@ -1111,7 +1126,7 @@ def _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt
         batch_start = max(start_dt, current_end - timedelta(days=max_days))
         duration_days = max(1, (current_end - batch_start).days)
         dur_unit = _prepare_ib_duration_from_days(duration_days)
-        end_str = current_end.strftime("%Y%m%d %H:%M:%S")
+        end_str = _ib_end_datetime_utc(current_end)
         
         logger.info(
             f"Requesting IBKR {timeframe} data for {symbol}: "

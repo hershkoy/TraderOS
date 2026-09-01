@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 PRICE_STALE_SEC = 5.0
 # UI "quotes stale" window: Alpaca snapshot of the full book can take tens of seconds.
 PRICE_UI_STALE_SEC = 120.0
+# Match channel_touch_15m.py --stale-hours: H5 fills need completed IB 15m bars.
+FILL_BARS_STALE_HOURS = 36.0
 
 _store: Optional[ChannelTouchCandidatesStore] = None
 _refresh_lock = threading.Lock()
@@ -62,6 +64,65 @@ def _parse_ts(value: Any) -> Optional[datetime]:
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
+
+
+def _has_15m_watchlist(rows: Sequence[dict], n_universe: Any = 0) -> bool:
+    try:
+        if int(n_universe or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    for row in rows:
+        if str(row.get("timeframe") or "15m") == "15m":
+            return True
+    return False
+
+
+def resolve_15m_as_of(settings: dict, rows: Sequence[dict]) -> Optional[str]:
+    """Scan as_of, else latest 15m row as_of (UTC naive/aware strings)."""
+    as_of = settings.get("as_of")
+    if as_of not in (None, ""):
+        return str(as_of)
+    times = [
+        str(row.get("as_of"))
+        for row in rows
+        if str(row.get("timeframe") or "15m") == "15m" and row.get("as_of") not in (None, "")
+    ]
+    return max(times) if times else None
+
+
+def fill_bars_warning(
+    as_of: Optional[str],
+    *,
+    now: Optional[datetime] = None,
+    stale_hours: float = FILL_BARS_STALE_HOURS,
+    n_universe: int = 0,
+    has_15m_rows: bool = False,
+) -> Optional[str]:
+    """Warn when IB 15m bars are too old (or missing) to evaluate H5 fills.
+
+    Alpaca last can still mark names hot. Fills need a completed IB 15m bar.
+    """
+    if not has_15m_rows and int(n_universe or 0) <= 0:
+        return None
+    parsed = _parse_ts(as_of)
+    if parsed is None:
+        return (
+            "15m fills cannot be evaluated: no IB 15m as_of. "
+            "Hot names are Alpaca last-price proximity only, not fills. "
+            "Run channel_touch_15m watchlist after backfill_ib_15m_universe.py"
+        )
+    now_ts = now or datetime.now(timezone.utc)
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.replace(tzinfo=timezone.utc)
+    age_h = (now_ts - parsed).total_seconds() / 3600.0
+    if age_h <= float(stale_hours):
+        return None
+    return (
+        "15m fills cannot be evaluated: IB 15m last bar is %s (%.1fh stale). "
+        "Hot names are Alpaca last-price proximity only, not fills. "
+        "If overnight backfill skipped via resume, run backfill_ib_15m_universe.py --reset-resume"
+    ) % (parsed.strftime("%Y-%m-%d %H:%M:%S UTC"), age_h)
 
 
 def prices_are_stale(rows: Sequence[dict], *, now: Optional[datetime] = None, max_age_sec: float = PRICE_STALE_SEC) -> bool:
@@ -336,6 +397,20 @@ def candidates_payload(
     prices_stale = bool(rows) and (
         parsed_price_ts is None or float(price_age_sec or 0) > PRICE_UI_STALE_SEC
     )
+    n_universe = settings.get("n_universe") or 0
+    as_of_15m = resolve_15m_as_of(settings, rows)
+    has_15m = _has_15m_watchlist(rows, n_universe)
+    fill_warning = fill_bars_warning(
+        as_of_15m,
+        now=now_ts,
+        n_universe=int(n_universe or 0),
+        has_15m_rows=has_15m,
+    )
+    fill_data_ok = fill_warning is None
+    parsed_as_of = _parse_ts(as_of_15m)
+    fill_data_age_hours = None
+    if parsed_as_of is not None:
+        fill_data_age_hours = (now_ts - parsed_as_of).total_seconds() / 3600.0
     return {
         "rows": ordered,
         "all_rows": len(rows),
@@ -349,9 +424,12 @@ def candidates_payload(
         "fill_alerts": fill_alerts_from_rows(rows),
         "as_of": settings.get("as_of"),
         "as_of_1d": settings.get("as_of_1d"),
-        "n_universe": settings.get("n_universe") or 0,
+        "n_universe": n_universe,
         "n_universe_1d": settings.get("n_universe_1d") or 0,
-        "stale_warning": settings.get("stale_warning"),
+        "stale_warning": fill_warning,
+        "fill_data_ok": fill_data_ok,
+        "fill_data_warning": fill_warning,
+        "fill_data_age_hours": fill_data_age_hours,
         "price_ts": price_ts,
         "price_age_sec": price_age_sec,
         "prices_stale": prices_stale,
@@ -400,6 +478,7 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
         payload.get("n_universe"),
         payload.get("n_universe_1d"),
         payload.get("stale_warning"),
+        payload.get("fill_data_ok"),
         payload.get("prices_stale"),
         tuple(payload.get("fill_keys") or []),
         tuple(payload.get("hot_keys") or []),

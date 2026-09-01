@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 from utils.data.fetch_data import (
+    _ib_end_datetime_utc,
     _parse_alpaca_start_date,
     _split_alpaca_multi_symbol_df,
     fetch_many_from_alpaca,
@@ -115,3 +116,18 @@ class TestFetchManyFromAlpaca:
 
     def test_empty_symbols(self):
         assert fetch_many_from_alpaca([], "1d", start_date="2026-08-10") == {}
+
+
+class TestIbEndDatetimeUtc:
+    def test_utc_aware_gets_utc_suffix(self):
+        dt = datetime(2026, 9, 1, 20, 42, tzinfo=timezone.utc)
+        assert _ib_end_datetime_utc(dt) == "20260901 20:42:00 UTC"
+
+    def test_israel_offset_converts_to_utc_clock(self):
+        israel = timezone(timedelta(hours=3))
+        dt = datetime(2026, 9, 1, 23, 42, tzinfo=israel)
+        assert _ib_end_datetime_utc(dt) == "20260901 20:42:00 UTC"
+
+    def test_naive_is_treated_as_utc(self):
+        dt = datetime(2026, 9, 1, 20, 42)
+        assert _ib_end_datetime_utc(dt) == "20260901 20:42:00 UTC"

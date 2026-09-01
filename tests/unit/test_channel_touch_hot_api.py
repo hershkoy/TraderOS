@@ -7,6 +7,7 @@ from utils.scanning.channel_touch_candidates_store import DEFAULT_SETTINGS, appl
 from utils.scanning.channel_touch_hot_api import (
     HotCandidatesHub,
     candidates_payload,
+    fill_bars_warning,
     fill_keys_from_rows,
     filter_candidates,
     hot_keys_from_rows,
@@ -245,6 +246,83 @@ def test_payload_hot_keys_ignore_ui_filter():
     assert payload["n_hot"] == 2
     assert payload["hot_keys"] == ["AAA|15m", "BBB|15m"]
     assert payload["fill_keys"] == []
+
+
+def test_fill_bars_warning_stale_and_fresh():
+    now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
+    stale = fill_bars_warning("2026-08-28 19:45:00", now=now, n_universe=1478)
+    assert stale is not None
+    assert "15m fills cannot be evaluated" in stale
+    assert "proximity" in stale
+    assert "reset-resume" in stale
+    assert "2026-08-28" in stale
+    fresh = fill_bars_warning("2026-08-31 19:45:00", now=now, n_universe=1478)
+    assert fresh is None
+    missing = fill_bars_warning(None, now=now, n_universe=10)
+    assert missing is not None
+    assert "no IB 15m as_of" in missing
+    assert fill_bars_warning(None, now=now, n_universe=0, has_15m_rows=False) is None
+
+
+def test_candidates_payload_fill_data_insufficient():
+    reset_refresh_throttle()
+    now = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc)
+    stale_store = MemoryStore(
+        rows=[
+            {
+                "stock": "AAA",
+                "timeframe": "15m",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.1,
+                "as_of": "2026-08-28 19:45:00",
+                "last_price_ts": "2026-09-01 19:59:00",
+            }
+        ],
+        settings={"as_of": "2026-08-28 19:45:00", "n_universe": 1478, "stale_warning": "old leftover"},
+    )
+    stale = candidates_payload(stale_store, refresh=False, now=now)
+    assert stale["fill_data_ok"] is False
+    assert stale["fill_data_warning"]
+    assert "15m fills cannot be evaluated" in stale["fill_data_warning"]
+    assert stale["stale_warning"] == stale["fill_data_warning"]
+    assert stale["fill_data_age_hours"] > 36
+
+    fresh_store = MemoryStore(
+        rows=[
+            {
+                "stock": "AAA",
+                "timeframe": "15m",
+                "status": "armed",
+                "hot": True,
+                "dist_live_pct": 0.1,
+                "as_of": "2026-08-31 19:45:00",
+                "last_price_ts": "2026-09-01 19:59:00",
+            }
+        ],
+        settings={"as_of": "2026-08-31 19:45:00", "n_universe": 10, "stale_warning": "old leftover"},
+    )
+    fresh = candidates_payload(fresh_store, refresh=False, now=now)
+    assert fresh["fill_data_ok"] is True
+    assert fresh["fill_data_warning"] is None
+    assert fresh["stale_warning"] is None
+
+    daily_only = MemoryStore(
+        rows=[
+            {
+                "stock": "SHG",
+                "timeframe": "1d",
+                "status": "filled",
+                "hot": False,
+                "as_of": "2026-08-31",
+                "last_price_ts": "2026-09-01 19:59:00",
+            }
+        ],
+        settings={"as_of": None, "as_of_1d": "2026-08-31", "n_universe": 0},
+    )
+    daily = candidates_payload(daily_only, refresh=False, now=now)
+    assert daily["fill_data_ok"] is True
+    assert daily["fill_data_warning"] is None
 
 
 def test_fill_keys_only_h5_stack():
