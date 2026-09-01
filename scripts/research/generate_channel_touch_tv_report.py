@@ -7,6 +7,7 @@ Interactive controls in the HTML (client-side recalc):
   - Position sizing: fixed $, %% of initial, or %% of equity
   - Round-trip friction %%
   - Max entries per day (0=all; 1+=rank by RS vs SPY when available)
+  - Distributions tab: orders/day, P&L histogram, hold, weekday/hour, concurrent, exits
 
 Portfolio model:
   - Equity marks on trade exit dates (calendar day; SPY overlay stays daily)
@@ -537,7 +538,9 @@ def render_html(
   .btn.secondary {{ background:#2a2e39; color:var(--text); }}
   .btn:hover {{ filter:brightness(1.08); }}
   .hint {{ grid-column:1/-1; color:var(--muted); font-size:12px; }}
-  .tabs {{ display:flex; gap:4px; margin:12px 0; border-bottom:1px solid var(--border); }}
+  .tabs {{ display:flex; flex-wrap:wrap; gap:4px; margin:12px 0; border-bottom:1px solid var(--border); }}
+  .chart-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; margin-bottom:8px; }}
+  .chart-box.dist {{ height:280px; }}
   .tab {{ background:transparent; border:none; color:var(--muted); padding:10px 14px; cursor:pointer; font-size:13px; font-weight:500; border-bottom:2px solid transparent; margin-bottom:-1px; }}
   .tab.active {{ color:#fff; border-bottom-color:var(--accent); }}
   .panel {{ display:none; background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; }}
@@ -639,6 +642,7 @@ def render_html(
     <button class="tab" data-tab="compare">Compare to S&amp;P 500</button>
     <button class="tab" data-tab="performance">Performance</button>
     <button class="tab" data-tab="robustness">Robustness</button>
+    <button class="tab" data-tab="distributions">Distributions</button>
     <button class="tab" data-tab="trades">List of trades</button>
     <button class="tab" data-tab="monthly">Monthly</button>
     <button class="tab" data-tab="runinfo">Run info</button>
@@ -699,6 +703,64 @@ def render_html(
       </table>
     </div>
     <p class="note">Criterion: if drop-top-1 or winsorized E flips negative / PF &lt; 1, treat edge as tail-fragile. Tail dependency = top-3 wins / gross profit of winners. Bootstrap uses trade P&amp;L %% (not path-dependent equity).</p>
+  </div>
+
+  <div id="distributions" class="panel">
+    <h2>Activity</h2>
+    <div class="cards" id="distActivityCards"></div>
+    <div class="chart-grid">
+      <div>
+        <h2>Orders initiated per calendar day</h2>
+        <div class="chart-box dist"><canvas id="distDayHistChart"></canvas></div>
+      </div>
+      <div>
+        <h2>Daily fill count over time</h2>
+        <div class="chart-box dist"><canvas id="distDayTsChart"></canvas></div>
+      </div>
+    </div>
+    <h2>Trade P&amp;L % (after friction / win cap)</h2>
+    <div class="cards" id="distPnlCards"></div>
+    <div class="chart-grid">
+      <div>
+        <h2>Histogram of trade P&amp;L %</h2>
+        <div class="chart-box dist"><canvas id="distPnlHistChart"></canvas></div>
+      </div>
+      <div>
+        <h2>Hold bars</h2>
+        <div class="chart-box dist"><canvas id="distHoldChart"></canvas></div>
+      </div>
+    </div>
+    <div class="chart-grid">
+      <div>
+        <h2>Entries by weekday</h2>
+        <div class="chart-box dist"><canvas id="distDowChart"></canvas></div>
+      </div>
+      <div id="distHourWrap">
+        <h2>Entries by hour (bar clock)</h2>
+        <div class="chart-box dist"><canvas id="distHourChart"></canvas></div>
+      </div>
+    </div>
+    <div class="chart-grid">
+      <div>
+        <h2>Concurrent opens at entry</h2>
+        <div class="chart-box dist"><canvas id="distConcChart"></canvas></div>
+      </div>
+      <div>
+        <h2>Mean P&amp;L % by exit reason</h2>
+        <div class="chart-box dist"><canvas id="distExitChart"></canvas></div>
+      </div>
+    </div>
+    <h2>Trade P&amp;L quantiles</h2>
+    <div class="metric-grid" id="distQuantGrid"></div>
+    <h2>Trades per symbol (top 20 by count)</h2>
+    <div class="cards" id="distSymCards"></div>
+    <div class="table-scroll" style="max-height:320px;margin-bottom:12px">
+      <table>
+        <thead><tr><th>Symbol</th><th>n</th><th>WR</th><th>E%</th><th>PF</th></tr></thead>
+        <tbody id="distSymBody"></tbody>
+      </table>
+    </div>
+    <p class="note">Distributions use the current Apply filters (sizing does not change counts; friction / win cap change P&amp;L %). Orders/day is calendar buy_date. Histogram x-range is p01–p99 with overflow bars. Hour uses buy_time when present (CSV clock, not converted). Zero-fill days use SPY trading dates when available.</p>
   </div>
 
   <div id="trades" class="panel">
@@ -844,7 +906,7 @@ function syncSizeLabel() {{
 
 function parseExclude(p) {{
   if (!p.excludeSym) return new Set();
-  return new Set(p.excludeSym.split(/[,\s]+/).filter(Boolean));
+  return new Set(p.excludeSym.split(/[,\\s]+/).filter(Boolean));
 }}
 
 function rsMissing(t) {{
@@ -1143,6 +1205,300 @@ function renderRobustness(sim) {{
     <td class="num">${{Number.isFinite(r.pf)?r.pf.toFixed(3):'inf'}}</td></tr>`).join(''));
 }}
 
+function quantile(arr, p) {{
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a,b)=>a-b);
+  const i = (s.length - 1) * p;
+  const lo = Math.floor(i), hi = Math.ceil(i);
+  if (lo === hi) return s[lo];
+  return s[lo] + (s[hi] - s[lo]) * (i - lo);
+}}
+function stdev(arr) {{
+  if (arr.length < 2) return 0;
+  const m = mean(arr);
+  return Math.sqrt(arr.reduce((s,x)=>s+(x-m)*(x-m),0) / (arr.length - 1));
+}}
+function parseYmd(s) {{
+  const p = String(s || '').slice(0, 10).split('-');
+  if (p.length < 3) return null;
+  const y = Number(p[0]), mo = Number(p[1]), d = Number(p[2]);
+  if (!y || !mo || !d) return null;
+  return new Date(y, mo - 1, d);
+}}
+function buyHour(t) {{
+  const s = String(stampBuy(t) || '');
+  const sp = s.indexOf(' ');
+  if (sp < 0) return null;
+  const rest = s.slice(sp + 1);
+  const colon = rest.indexOf(':');
+  if (colon < 0) return null;
+  const h = Number(rest.slice(0, colon));
+  return Number.isFinite(h) ? h : null;
+}}
+function intCounts(values, minV, maxV) {{
+  const labels = [], counts = [];
+  const bag = {{}};
+  for (const v of values) bag[v] = (bag[v] || 0) + 1;
+  for (let k = minV; k <= maxV; k++) {{
+    labels.push(String(k));
+    counts.push(bag[k] || 0);
+  }}
+  return {{ labels, counts }};
+}}
+function autoHist(values, maxBins) {{
+  const s = values.filter(x => Number.isFinite(x)).slice().sort((a,b)=>a-b);
+  if (!s.length) return {{ labels: [], counts: [], colors: [], nLo: 0, nHi: 0, lo: 0, hi: 0 }};
+  const lo = quantile(s, 0.01), hi = quantile(s, 0.99);
+  const span = hi - lo;
+  const q1 = quantile(s, 0.25), q3 = quantile(s, 0.75);
+  const iqr = q3 - q1;
+  let h = iqr > 0 ? 2 * iqr / Math.cbrt(s.length) : 0;
+  if (!(h > 0) || !(span > 0)) h = span > 0 ? span / 30 : 0.1;
+  let nBins = span > 0 ? Math.ceil(span / h) : 12;
+  nBins = Math.max(12, Math.min(maxBins || 40, nBins));
+  const edges = [];
+  for (let i = 0; i <= nBins; i++) edges.push(lo + (span || 1) * i / nBins);
+  const counts = new Array(nBins).fill(0);
+  let nLo = 0, nHi = 0;
+  for (const v of s) {{
+    if (v < lo) {{ nLo++; continue; }}
+    if (v > hi) {{ nHi++; continue; }}
+    let b = Math.floor((v - lo) / (span || 1) * nBins);
+    if (b >= nBins) b = nBins - 1;
+    if (b < 0) b = 0;
+    counts[b]++;
+  }}
+  const labels = [], colors = [];
+  for (let i = 0; i < nBins; i++) {{
+    const mid = (edges[i] + edges[i+1]) / 2;
+    labels.push(edges[i].toFixed(1) + ' to ' + edges[i+1].toFixed(1));
+    colors.push(mid >= 0 ? 'rgba(38,166,154,0.75)' : 'rgba(239,83,80,0.75)');
+  }}
+  if (nLo) {{ labels.unshift('< p01'); counts.unshift(nLo); colors.unshift('rgba(239,83,80,0.45)'); }}
+  if (nHi) {{ labels.push('> p99'); counts.push(nHi); colors.push('rgba(38,166,154,0.45)'); }}
+  return {{ labels, counts, colors, nLo, nHi, lo, hi }};
+}}
+function dayFillCounts(trades, spy) {{
+  const byDay = {{}};
+  for (const t of trades) {{
+    const d = dayKey(t);
+    if (!d) continue;
+    byDay[d] = (byDay[d] || 0) + 1;
+  }}
+  const fillDays = Object.keys(byDay).sort();
+  const fillCounts = fillDays.map(d => byDay[d]);
+  let calendar = [];
+  if (spy && spy.length) {{
+    const from = fillDays[0], to = fillDays[fillDays.length - 1];
+    calendar = spy.map(p => p.x).filter(x => (!from || x >= from) && (!to || x <= to));
+  }}
+  const calCounts = calendar.length
+    ? calendar.map(d => byDay[d] || 0)
+    : fillCounts.slice();
+  return {{ byDay, fillDays, fillCounts, calendar, calCounts }};
+}}
+function concurrentAtEntry(trades) {{
+  if (!trades.length) return [];
+  const events = [];
+  for (const t of trades) {{
+    events.push({{ d: stampBuy(t), dn: 1 }});
+    events.push({{ d: stampSell(t), dn: -1 }});
+  }}
+  events.sort((a,b)=> a.d < b.d ? -1 : a.d > b.d ? 1 : a.dn - b.dn);
+  let cur = 0;
+  const samples = [];
+  for (const e of events) {{
+    cur += e.dn;
+    if (e.dn > 0) samples.push(cur);
+  }}
+  return samples;
+}}
+function symbolStats(trades, gains) {{
+  const bag = {{}};
+  trades.forEach((t, i) => {{
+    const s = t.symbol;
+    if (!bag[s]) bag[s] = [];
+    bag[s].push(gains[i]);
+  }});
+  return Object.keys(bag).map(sym => {{
+    const arr = bag[sym];
+    return {{ symbol: sym, n: arr.length, e: mean(arr), pf: pfOf(arr), wr: 100 * arr.filter(x=>x>0).length / arr.length }};
+  }}).sort((a,b)=> b.n - a.n || b.e - a.e);
+}}
+
+const distChartObjs = {{}};
+const distChartOpts = {{
+  responsive: true, maintainAspectRatio: false,
+  plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{
+    title: (items) => items.length ? items[0].label : '',
+    label: (item) => ' n = ' + item.raw
+  }} }} }},
+  scales: {{
+    x: {{ ticks: {{ color:'#787b86', maxRotation: 45, minRotation: 0, autoSkip: true, maxTicksLimit: 16 }}, grid: {{ color:'#2a2e39' }} }},
+    y: {{ ticks: {{ color:'#787b86' }}, grid: {{ color:'#2a2e39' }}, beginAtZero: true }}
+  }}
+}};
+function upsertBarChart(key, canvasId, labels, data, colors, extra) {{
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  if (distChartObjs[key]) {{ distChartObjs[key].destroy(); distChartObjs[key] = null; }}
+  distChartObjs[key] = new Chart(el, {{
+    type: 'bar',
+    data: {{ labels, datasets: [{{ label: extra && extra.seriesLabel ? extra.seriesLabel : 'count', data, backgroundColor: colors, borderWidth: 0 }}] }},
+    options: extra && extra.options ? extra.options : distChartOpts
+  }});
+}}
+function upsertLineChart(key, canvasId, labels, data, color) {{
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  if (distChartObjs[key]) {{ distChartObjs[key].destroy(); distChartObjs[key] = null; }}
+  distChartObjs[key] = new Chart(el, {{
+    type: 'line',
+    data: {{ labels, datasets: [{{ label: 'Fills / day', data, borderColor: color, pointRadius: 0, borderWidth: 1.2, tension: 0.05 }}] }},
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        x: {{ ticks: {{ color:'#787b86', maxTicksLimit: 10 }}, grid: {{ color:'#2a2e39' }} }},
+        y: {{ ticks: {{ color:'#787b86' }}, grid: {{ color:'#2a2e39' }}, beginAtZero: true }}
+      }}
+    }}
+  }});
+}}
+function resizeDistCharts() {{
+  Object.keys(distChartObjs).forEach(k => {{ try {{ distChartObjs[k].resize(); }} catch (e) {{}} }});
+}}
+
+function renderDistributions(sim) {{
+  const trades = sim.trades || [];
+  const gains = sim.metrics.gainPcts || [];
+  const day = dayFillCounts(trades, RAW.spy);
+  const fillN = day.fillCounts;
+  const calN = day.calCounts;
+  const maxDay = fillN.length ? Math.max.apply(null, fillN) : 0;
+  const dayHist = intCounts(fillN, 1, Math.max(1, maxDay));
+  const conc = concurrentAtEntry(trades);
+  const maxConc = conc.length ? Math.max.apply(null, conc) : 0;
+  const concHist = intCounts(conc, 1, Math.max(1, maxConc));
+  const holds = trades.map(t => t.hold).filter(x => x != null && Number.isFinite(x));
+  const holdCap = holds.length ? Math.max(1, Math.round(quantile(holds, 0.99))) : 1;
+  const holdClipped = holds.map(h => h > holdCap ? holdCap : h);
+  const holdHist = intCounts(holdClipped, 0, holdCap);
+  if (holds.some(h => h > holdCap)) {{
+    holdHist.labels[holdHist.labels.length - 1] = holdCap + '+';
+  }}
+  const dowNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const dowCounts = [0,0,0,0,0,0,0];
+  const hourBag = {{}};
+  let nHour = 0;
+  for (const t of trades) {{
+    const dt = parseYmd(t.buy);
+    if (dt) dowCounts[dt.getDay()]++;
+    const hr = buyHour(t);
+    if (hr != null) {{ hourBag[hr] = (hourBag[hr] || 0) + 1; nHour++; }}
+  }}
+  const hourKeys = Object.keys(hourBag).map(Number).sort((a,b)=>a-b);
+  const hourLabels = hourKeys.map(h => String(h).padStart(2,'0') + ':00');
+  const hourCounts = hourKeys.map(h => hourBag[h]);
+  const hourWrap = document.getElementById('distHourWrap');
+  if (hourWrap) hourWrap.style.display = nHour ? '' : 'none';
+
+  const byReason = {{}};
+  trades.forEach((t, i) => {{
+    const r = t.reason || 'unknown';
+    if (!byReason[r]) byReason[r] = [];
+    byReason[r].push(gains[i]);
+  }});
+  const reasonKeys = Object.keys(byReason).sort((a,b)=> byReason[b].length - byReason[a].length);
+  const reasonMeans = reasonKeys.map(k => mean(byReason[k]));
+  const reasonColors = reasonMeans.map(v => v >= 0 ? 'rgba(38,166,154,0.8)' : 'rgba(239,83,80,0.8)');
+  const pnlH = autoHist(gains, 40);
+  const sd = stdev(gains);
+  const med = median(gains);
+  const mn = mean(gains);
+  const skew = sd > 1e-12 ? (mn - med) / sd : 0;
+  const p05 = quantile(gains, 0.05), p95 = quantile(gains, 0.95);
+  const spyDays = day.calendar.length;
+  const zeroDays = spyDays ? calN.filter(x => x === 0).length : null;
+  const meanFillDay = mean(fillN);
+  const meanCalDay = spyDays ? mean(calN) : meanFillDay;
+  const syms = symbolStats(trades, gains);
+
+  setHTML('distActivityCards', `
+    <div class="card"><div class="label">Days with a fill</div><div class="value">${{fillN.length}}</div></div>
+    <div class="card"><div class="label">Mean orders / fill-day</div><div class="value">${{meanFillDay.toFixed(2)}}</div></div>
+    <div class="card"><div class="label">Median / max / day</div><div class="value">${{median(fillN).toFixed(0)}} / ${{maxDay}}</div></div>
+    <div class="card"><div class="label">Mean orders / session</div><div class="value">${{meanCalDay.toFixed(2)}}</div></div>
+    ${{spyDays ? `<div class="card"><div class="label">Sessions with 0 fills</div><div class="value">${{zeroDays}} / ${{spyDays}}</div></div>
+    <div class="card"><div class="label">% sessions with a fill</div><div class="value">${{(100*(spyDays-zeroDays)/spyDays).toFixed(1)}}%</div></div>` : ''}}
+  `);
+  setHTML('distPnlCards', `
+    <div class="card"><div class="label">Mean / median %</div><div class="value ${{cls(mn)}}">${{pct(mn,true)}} / ${{pct(med,true)}}</div></div>
+    <div class="card"><div class="label">p05 / p95 %</div><div class="value">${{pct(p05,true)}} / ${{pct(p95,true)}}</div></div>
+    <div class="card"><div class="label">Stdev %</div><div class="value">${{sd.toFixed(2)}}</div></div>
+    <div class="card"><div class="label">Skew (mean-med)/sd</div><div class="value">${{skew.toFixed(2)}}</div></div>
+    <div class="card"><div class="label">Min / max %</div><div class="value">${{gains.length ? pct(Math.min.apply(null,gains),true) : '—'}} / ${{gains.length ? pct(Math.max.apply(null,gains),true) : '—'}}</div></div>
+    <div class="card"><div class="label">% trades &gt; +5%</div><div class="value">${{gains.length ? (100*gains.filter(x=>x>5).length/gains.length).toFixed(1) : '0'}}%</div></div>
+    <div class="card"><div class="label">% trades &lt; -3%</div><div class="value">${{gains.length ? (100*gains.filter(x=>x<-3).length/gains.length).toFixed(1) : '0'}}%</div></div>
+  `);
+
+  const qps = [
+    ['p01', 0.01], ['p05', 0.05], ['p10', 0.10], ['p25', 0.25],
+    ['p50', 0.50], ['p75', 0.75], ['p90', 0.90], ['p95', 0.95],
+    ['p99', 0.99]
+  ];
+  const qExtra = [
+    ['Min', gains.length ? Math.min.apply(null, gains) : 0],
+    ['Max', gains.length ? Math.max.apply(null, gains) : 0],
+    ['IQR', quantile(gains, 0.75) - quantile(gains, 0.25)]
+  ];
+  setHTML('distQuantGrid',
+    '<div class="mh">Metric</div><div class="mh">Value</div><div class="mh">Metric</div><div class="mh">Value</div>' +
+    qps.map(pair => {{
+      const v = quantile(gains, pair[1]);
+      return `<div class="mc">${{pair[0]}}</div><div class="mc ${{cls(v)}}">${{pct(v,true)}}</div>`;
+    }}).join('') +
+    qExtra.map(pair => `<div class="mc">${{pair[0]}}</div><div class="mc ${{cls(pair[1])}}">${{pct(pair[1],true)}}</div>`).join('')
+  );
+
+  setHTML('distSymCards', `
+    <div class="card"><div class="label">Symbols</div><div class="value">${{syms.length}}</div></div>
+    <div class="card"><div class="label">Median trades / symbol</div><div class="value">${{median(syms.map(s=>s.n)).toFixed(0)}}</div></div>
+    <div class="card"><div class="label">Max trades / symbol</div><div class="value">${{syms.length ? syms[0].n : 0}}</div></div>
+    <div class="card"><div class="label">Symbols with 1 trade</div><div class="value">${{syms.filter(s=>s.n===1).length}}</div></div>
+  `);
+  setHTML('distSymBody', syms.slice(0, 20).map(s => `
+    <tr>
+      <td>${{s.symbol}}</td><td class="num">${{s.n}}</td>
+      <td class="num">${{pct(s.wr,false)}}</td>
+      <td class="num ${{cls(s.e)}}">${{pct(s.e,true)}}</td>
+      <td class="num">${{Number.isFinite(s.pf)?s.pf.toFixed(2):'inf'}}</td>
+    </tr>`).join(''));
+
+  const accent = 'rgba(41,98,255,0.85)';
+  upsertBarChart('dayHist', 'distDayHistChart', dayHist.labels, dayHist.counts, accent, {{ seriesLabel: 'days' }});
+  const tsLabels = spyDays ? day.calendar : day.fillDays;
+  const tsData = spyDays ? day.calCounts : day.fillCounts;
+  upsertLineChart('dayTs', 'distDayTsChart', tsLabels, tsData, '#2962ff');
+  upsertBarChart('pnlHist', 'distPnlHistChart', pnlH.labels, pnlH.counts, pnlH.colors, {{ seriesLabel: 'trades' }});
+  upsertBarChart('hold', 'distHoldChart', holdHist.labels, holdHist.counts, 'rgba(41,98,255,0.8)', {{ seriesLabel: 'trades' }});
+  upsertBarChart('dow', 'distDowChart', dowNames, dowCounts, 'rgba(41,98,255,0.8)', {{ seriesLabel: 'fills' }});
+  if (nHour) upsertBarChart('hour', 'distHourChart', hourLabels, hourCounts, 'rgba(247,147,26,0.85)', {{ seriesLabel: 'fills' }});
+  upsertBarChart('conc', 'distConcChart', concHist.labels, concHist.counts, 'rgba(41,98,255,0.8)', {{ seriesLabel: 'entries' }});
+  upsertBarChart('exit', 'distExitChart', reasonKeys, reasonMeans, reasonColors, {{
+    seriesLabel: 'mean %',
+    options: Object.assign({{}}, distChartOpts, {{
+      plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{
+        label: (item) => {{
+          const k = reasonKeys[item.dataIndex];
+          const arr = byReason[k] || [];
+          return ' mean ' + (item.raw>=0?'+':'') + Number(item.raw).toFixed(2) + '%  (n=' + arr.length + ')';
+        }}
+      }} }} }}
+    }})
+  }});
+}}
+
 function simulateSpy(spy, capital, from, to) {{
   if (!spy || !spy.length || !from || !to) return null;
   const bars = spy.filter(p => p.x >= from && p.x <= to);
@@ -1269,6 +1625,7 @@ function render(sim, spy) {{
   );
 
   renderRobustness(sim);
+  renderDistributions(sim);
 
   // Compare
   if (spy) {{
@@ -1368,7 +1725,7 @@ function filterTradeRows(rows) {{
   const f = readTradeFilters();
   return rows.filter(t => {{
     if (f.symbol) {{
-      const toks = f.symbol.split(/[,\s]+/).filter(Boolean);
+      const toks = f.symbol.split(/[,\\s]+/).filter(Boolean);
       if (toks.length && !toks.some(s => t.symbol.includes(s))) return false;
     }}
     if (f.outcome === 'win' && !(t.pnl > 0)) return false;
@@ -1569,6 +1926,7 @@ document.querySelectorAll('.tab').forEach(btn => {{
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'distributions') resizeDistCharts();
   }});
 }});
 document.getElementById('sizeMode').addEventListener('change', syncSizeLabel);

@@ -392,3 +392,41 @@ def test_render_html_embeds_bar_timestamps():
     assert "2019-01-03 18:30" in html
     assert '"buy":"2019-01-03"' in html
 
+
+def test_render_html_includes_distributions_tab():
+    from scripts.research.generate_channel_touch_tv_report import render_html, trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AAA"],
+            "buy_date": ["2020-01-02"],
+            "sell_date": ["2020-01-10"],
+            "buy_price": [10.0],
+            "sell_price": [11.0],
+            "gain_pct": [1.0],
+            "hold_days": [5],
+        }
+    )
+    html = render_html(
+        raw_trades=trades_to_raw(df),
+        spy_closes=[{"x": "2020-01-02", "c": 100.0}],
+        defaults={
+            "capital": 100000,
+            "sizeMode": "fixed",
+            "sizeVal": 10000,
+            "friction": 0.1,
+            "maxPerDay": 0,
+            "maxOpen": 0,
+            "winCap": 0,
+            "excludeSym": "",
+        },
+        run_meta={"git": {"branch": "x", "commit": "abc", "dirty": "no"}},
+        title="Dist tab",
+        source="test.csv",
+    )
+    assert 'data-tab="distributions"' in html
+    assert 'id="distPnlHistChart"' in html
+    assert 'id="distDayHistChart"' in html
+    assert 'id="distDayTsChart"' in html
+    assert "function renderDistributions" in html
+
