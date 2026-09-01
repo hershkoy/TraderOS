@@ -9,7 +9,7 @@
 // 15m scaled: --preset 15m / live scanner (pivot 8, error 0.24%, rally 0.78%,
 // pullback 0.59%, rise 0.59%, slope 0.0015%/bar, 24 lows, span 10d).
 // Intervening rally/pullback use stored bar OHLC (not only pivot extrema).
-indicator("Channel Touch Detector", "CTD", overlay = true, max_lines_count = 100, max_labels_count = 200)
+indicator("Channel Touch Detector", "CTD", overlay = true, max_lines_count = 100, max_labels_count = 200, max_bars_back = 5000)
 
 gDet = "Detector"
 gVis = "Display"
@@ -239,10 +239,16 @@ f_copy_float(array<float> src, array<float> dst) =>
         for i = 0 to n - 1
             array.push(dst, array.get(src, i))
 
+f_bar_time(int x) =>
+    n = array.size(barTime)
+    x >= 0 and x < n ? array.get(barTime, x) : time
+
 f_draw(int x1, float y1, int xn, float yn, float width, array<int> tBars, array<float> tPx, array<int> uBars, float slope, bool asLatest, string tag) =>
     ext = extendLatest and asLatest ? extend.right : extend.none
-    lnBot = line.new(x1, y1, xn, yn, xloc = xloc.bar_index, extend = ext, color = supportColor, width = 2)
-    lnTop = line.new(x1, y1 + width, xn, yn + width, xloc = xloc.bar_index, extend = ext, color = resistColor, width = 2)
+    t1 = f_bar_time(x1)
+    tn = f_bar_time(xn)
+    lnBot = line.new(t1, y1, tn, yn, xloc = xloc.bar_time, extend = ext, color = supportColor, width = 2)
+    lnTop = line.new(t1, y1 + width, tn, yn + width, xloc = xloc.bar_time, extend = ext, color = resistColor, width = 2)
     array.push(drawnLines, lnBot)
     array.push(drawnLines, lnTop)
     if showFill
@@ -251,16 +257,16 @@ f_draw(int x1, float y1, int xn, float yn, float width, array<int> tBars, array<
     nHtouch = array.size(uBars)
     if asLatest
         yLab = yn + width
-        array.push(drawnLabs, label.new(xn, yLab, tag + str.tostring(nLtouch) + "L / " + str.tostring(nHtouch) + "H", style = label.style_label_down, color = color.new(supportColor, 15), textcolor = color.white, size = size.small))
+        array.push(drawnLabs, label.new(tn, yLab, tag + str.tostring(nLtouch) + "L / " + str.tostring(nHtouch) + "H", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(supportColor, 15), textcolor = color.white, size = size.small))
         if showTouches
             if nLtouch > 0
                 for ti = 0 to nLtouch - 1
-                    array.push(drawnLabs, label.new(array.get(tBars, ti), array.get(tPx, ti), "L" + str.tostring(ti + 1), style = label.style_label_up, color = supportColor, textcolor = color.white, size = size.tiny))
+                    array.push(drawnLabs, label.new(f_bar_time(array.get(tBars, ti)), array.get(tPx, ti), "L" + str.tostring(ti + 1), xloc = xloc.bar_time, style = label.style_label_up, color = supportColor, textcolor = color.white, size = size.tiny))
             if nHtouch > 0
                 for ui = 0 to nHtouch - 1
                     xb = array.get(uBars, ui)
                     yb = f_line_at(y1, x1, slope, xb) + width
-                    array.push(drawnLabs, label.new(xb, yb, "H" + str.tostring(ui + 1), style = label.style_label_down, color = resistColor, textcolor = color.white, size = size.tiny))
+                    array.push(drawnLabs, label.new(f_bar_time(xb), yb, "H" + str.tostring(ui + 1), xloc = xloc.bar_time, style = label.style_label_down, color = resistColor, textcolor = color.white, size = size.tiny))
     [lnBot, lnTop]
 
 ph = ta.pivothigh(high, effPivot, effPivot)
@@ -425,11 +431,14 @@ if not useH2 and not na(pl) and array.size(lowBars) >= effMinBottom
             channelCount += 1
             alert("Channel Touch: ascending channel confirmed", alert.freq_once_per_bar)
 
-// H2 arm = find_h2_l3_setups. As-of the chart head so survival matches /hot.
-// Replay: barstate.islast can stay on the live last bar that the playhead never
-// reaches, so line.new never redraws. islastconfirmedhistory is the playhead.
+// H2 arm = find_h2_l3_setups.
+// Do not draw only on barstate.islast: replay Select-bar sets islast once, then
+// Step rolls that bar back (table.cell / line.new vanish) and the next bar is
+// historical, so the overlay never returns. Scan on new pivots (historical
+// line.new survives) and on the chart head; refresh table/rails every bar.
 h2Head = barstate.islast or barstate.islastconfirmedhistory
-if useH2 and h2Head and array.size(lowBars) >= 2
+h2Scan = useH2 and array.size(lowBars) >= 2 and (not na(pl) or not na(ph) or h2Head)
+if h2Scan
     f_clear()
     lastBot := na
     lastTop := na
@@ -672,61 +681,67 @@ if useH2 and h2Head and array.size(lowBars) >= 2
         lastH2x := anyH2
         channelCount := 1
 
-if h2Head
-    if showInfo
-        resistNow = not na(lastX0) ? f_line_at(lastY0, lastX0, lastSlope, bar_index) + lastWidth : float(na)
-        modeTxt = (useH2 ? "H2" : "3L") + (use15m ? " 15m" : " 1d")
-        warn15m = is15mChart and not use15m
-        waitBars = not na(lastH2x) ? bar_index - lastH2x : int(na)
-        waitLeft = not na(waitBars) ? math.max(0, effMinWait - waitBars) : int(na)
-        fillLvl = not na(resistNow) ? resistNow * (1.0 + effError / 100.0) : float(na)
-        fillTxt = "switch to H2 arm"
-        gateTxt = na(fillLvl) ? "C>resist*(1+" + str.tostring(effError / 100.0, "#.000") + ") wait>=" + str.tostring(effMinWait) : "C>" + str.tostring(fillLvl, "#.00") + " wait>=" + str.tostring(effMinWait)
-        if use15m
-            gateTxt := gateTxt + " vol>=2"
-        detBit = str.tostring(lastNAlive) + "a/" + str.tostring(lastNDet) + "d"
-        if useH2
-            if channelCount == 0
-                fillTxt := lastNDet == 0 ? "no H2 found" : detBit + " " + gateTxt
-            else if lastStatus == "filled"
-                fillTxt := "filled " + detBit
-            else if lastStatus == "cancelled" or lastStatus == "expired" or lastStatus == "filled_earlier"
-                fillTxt := lastStatus + " " + detBit + " " + gateTxt
-            else if not na(waitLeft) and waitLeft > 0
-                fillTxt := "wait " + str.tostring(waitLeft) + " more; " + gateTxt
-            else if not na(fillLvl)
-                closeBit = close > fillLvl ? "C ok" : "need C>" + str.tostring(fillLvl, "#.00")
-                if use15m
-                    volBit = na(volRelPrior) ? " vol?" : volRelPrior >= 2.0 ? " vol ok" : " vol" + str.tostring(volRelPrior, "#.00") + "<2"
-                    fillTxt := closeBit + volBit
-                else
-                    fillTxt := closeBit
+if useH2 and not na(lastH2x) and not na(lastX0)
+    lastStatus := f_h2_status(lastX0, lastY0, lastSlope, lastWidth, lastH2x, bar_index, effError, effMinWait, effMaxWait)
+    if extendLatest and not na(lastBot) and not na(lastTop)
+        yNow = f_line_at(lastY0, lastX0, lastSlope, bar_index)
+        line.set_xy2(lastBot, time, yNow)
+        line.set_xy2(lastTop, time, yNow + lastWidth)
+
+if showInfo
+    resistNow = not na(lastX0) ? f_line_at(lastY0, lastX0, lastSlope, bar_index) + lastWidth : float(na)
+    modeTxt = (useH2 ? "H2" : "3L") + (use15m ? " 15m" : " 1d")
+    warn15m = is15mChart and not use15m
+    waitBars = not na(lastH2x) ? bar_index - lastH2x : int(na)
+    waitLeft = not na(waitBars) ? math.max(0, effMinWait - waitBars) : int(na)
+    fillLvl = not na(resistNow) ? resistNow * (1.0 + effError / 100.0) : float(na)
+    fillTxt = "switch to H2 arm"
+    gateTxt = na(fillLvl) ? "C>resist*(1+" + str.tostring(effError / 100.0, "#.000") + ") wait>=" + str.tostring(effMinWait) : "C>" + str.tostring(fillLvl, "#.00") + " wait>=" + str.tostring(effMinWait)
+    if use15m
+        gateTxt := gateTxt + " vol>=2"
+    detBit = str.tostring(lastNAlive) + "a/" + str.tostring(lastNDet) + "d"
+    if useH2
+        if channelCount == 0
+            fillTxt := lastNDet == 0 ? "no H2 found" : detBit + " " + gateTxt
+        else if lastStatus == "filled"
+            fillTxt := "filled " + detBit
+        else if lastStatus == "cancelled" or lastStatus == "expired" or lastStatus == "filled_earlier"
+            fillTxt := lastStatus + " " + detBit + " " + gateTxt
+        else if not na(waitLeft) and waitLeft > 0
+            fillTxt := "wait " + str.tostring(waitLeft) + " more; " + gateTxt
+        else if not na(fillLvl)
+            closeBit = close > fillLvl ? "C ok" : "need C>" + str.tostring(fillLvl, "#.00")
+            if use15m
+                volBit = na(volRelPrior) ? " vol?" : volRelPrior >= 2.0 ? " vol ok" : " vol" + str.tostring(volRelPrior, "#.00") + "<2"
+                fillTxt := closeBit + volBit
             else
-                fillTxt := lastStatus == "" ? "-" : lastStatus
-        waitTxt = na(waitBars) ? "-" : str.tostring(waitBars) + "/" + str.tostring(effMinWait)
-        lab = #ffffff
-        sz = size.small
-        table.cell(info, 0, 0, "CTD", text_color = lab, text_size = sz)
-        table.cell(info, 1, 0, warn15m ? "set 15m scaled" : modeTxt + " " + detBit, text_color = warn15m ? color.yellow : lab, text_size = sz)
-        table.cell(info, 0, 1, "Lows", text_color = lab, text_size = sz)
-        table.cell(info, 1, 1, str.tostring(lastLowTouches), text_color = supportColor, text_size = sz)
-        table.cell(info, 0, 2, "Highs", text_color = lab, text_size = sz)
-        table.cell(info, 1, 2, str.tostring(lastHighTouches), text_color = resistColor, text_size = sz)
-        table.cell(info, 0, 3, "Width %", text_color = lab, text_size = sz)
-        table.cell(info, 1, 3, str.tostring(lastWidthPct, "#.00"), text_color = lab, text_size = sz)
-        table.cell(info, 0, 4, "Viol frac", text_color = lab, text_size = sz)
-        table.cell(info, 1, 4, str.tostring(lastViolFrac, "#.000"), text_color = lab, text_size = sz)
-        table.cell(info, 0, 5, "Span bars", text_color = lab, text_size = sz)
-        table.cell(info, 1, 5, str.tostring(lastSpan), text_color = lab, text_size = sz)
-        table.cell(info, 0, 6, "Resist now", text_color = lab, text_size = sz)
-        table.cell(info, 1, 6, na(resistNow) ? "-" : str.tostring(resistNow, "#.00"), text_color = resistColor, text_size = sz)
-        table.cell(info, 0, 7, "Wait", text_color = lab, text_size = sz)
-        table.cell(info, 1, 7, waitTxt, text_color = lab, text_size = sz)
-        table.cell(info, 0, 8, "H2 status", text_color = lab, text_size = sz)
-        table.cell(info, 1, 8, lastStatus == "" ? "-" : lastStatus, text_color = lastStatus == "armed" ? supportColor : lastStatus == "waiting" ? color.yellow : lab, text_size = sz)
-        table.cell(info, 0, 9, "Fill", text_color = lab, text_size = sz)
-        table.cell(info, 1, 9, fillTxt, text_color = lastStatus == "armed" or lastStatus == "waiting" ? color.yellow : lab, text_size = sz)
-        table.cell(info, 0, 10, "Pivot", text_color = lab, text_size = sz)
-        table.cell(info, 1, 10, str.tostring(effPivot) + " err" + str.tostring(effError, "#.00"), text_color = lab, text_size = sz)
-    else
-        table.clear(info, 0, 0)
+                fillTxt := closeBit
+        else
+            fillTxt := lastStatus == "" ? "-" : lastStatus
+    waitTxt = na(waitBars) ? "-" : str.tostring(waitBars) + "/" + str.tostring(effMinWait)
+    lab = #ffffff
+    sz = size.small
+    table.cell(info, 0, 0, "CTD", text_color = lab, text_size = sz)
+    table.cell(info, 1, 0, warn15m ? "set 15m scaled" : modeTxt + " " + detBit, text_color = warn15m ? color.yellow : lab, text_size = sz)
+    table.cell(info, 0, 1, "Lows", text_color = lab, text_size = sz)
+    table.cell(info, 1, 1, str.tostring(lastLowTouches), text_color = supportColor, text_size = sz)
+    table.cell(info, 0, 2, "Highs", text_color = lab, text_size = sz)
+    table.cell(info, 1, 2, str.tostring(lastHighTouches), text_color = resistColor, text_size = sz)
+    table.cell(info, 0, 3, "Width %", text_color = lab, text_size = sz)
+    table.cell(info, 1, 3, str.tostring(lastWidthPct, "#.00"), text_color = lab, text_size = sz)
+    table.cell(info, 0, 4, "Viol frac", text_color = lab, text_size = sz)
+    table.cell(info, 1, 4, str.tostring(lastViolFrac, "#.000"), text_color = lab, text_size = sz)
+    table.cell(info, 0, 5, "Span bars", text_color = lab, text_size = sz)
+    table.cell(info, 1, 5, str.tostring(lastSpan), text_color = lab, text_size = sz)
+    table.cell(info, 0, 6, "Resist now", text_color = lab, text_size = sz)
+    table.cell(info, 1, 6, na(resistNow) ? "-" : str.tostring(resistNow, "#.00"), text_color = resistColor, text_size = sz)
+    table.cell(info, 0, 7, "Wait", text_color = lab, text_size = sz)
+    table.cell(info, 1, 7, waitTxt, text_color = lab, text_size = sz)
+    table.cell(info, 0, 8, "H2 status", text_color = lab, text_size = sz)
+    table.cell(info, 1, 8, lastStatus == "" ? "-" : lastStatus, text_color = lastStatus == "armed" ? supportColor : lastStatus == "waiting" ? color.yellow : lab, text_size = sz)
+    table.cell(info, 0, 9, "Fill", text_color = lab, text_size = sz)
+    table.cell(info, 1, 9, fillTxt, text_color = lastStatus == "armed" or lastStatus == "waiting" ? color.yellow : lab, text_size = sz)
+    table.cell(info, 0, 10, "Pivot", text_color = lab, text_size = sz)
+    table.cell(info, 1, 10, str.tostring(effPivot) + " err" + str.tostring(effError, "#.00"), text_color = lab, text_size = sz)
+else
+    table.clear(info, 0, 0)
