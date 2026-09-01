@@ -109,6 +109,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--entry-slip-pct", type=float, default=float(d["entry_slip_pct"]))
     ap.add_argument("--stale-hours", type=float, default=36.0)
+    ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Skip parquet OHLCV cache (use after IB 15m backfill on the same calendar day)",
+    )
     ap.add_argument("--alpaca-batch", type=int, default=200)
     ap.add_argument(
         "--watchlist",
@@ -388,7 +393,7 @@ def main() -> int:
                 provider=args.provider,
                 start=start,
                 end=end,
-                use_cache=True,
+                use_cache=not bool(args.no_cache),
                 chunk_size=int(args.chunk_size),
                 workers=max(1, int(args.load_workers)),
             )
