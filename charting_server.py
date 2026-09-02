@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import json
 from datetime import datetime, timedelta
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -324,12 +325,48 @@ def ws_hot_candidates(ws):
         hub.unregister()
 
 
-if __name__ == '__main__':
-    # Create templates directory if it doesn't exist
-    os.makedirs('templates', exist_ok=True)
-    
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Charting server for Backtrader data")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Flask debug + reloader (ignored with --service)",
+    )
+    parser.add_argument(
+        "--service",
+        action="store_true",
+        help="Background Windows service: no debug, log to logs/charting_server/",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    os.chdir(ROOT)
+    os.makedirs("templates", exist_ok=True)
+    debug = False if args.service else True
+    if args.debug:
+        debug = not args.service
+    if args.service:
+        from utils.charting_server_service import attach_service_stdio, default_log_dir, write_pid
+
+        log_dir = default_log_dir(ROOT)
+        attach_service_stdio(log_dir)
+        write_pid(log_dir)
     print("Starting Charting Server...")
-    print("Available symbols:", DataAggregator.get_available_symbols())
-    print("Server will be available at: http://localhost:5000")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    if not args.service:
+        print("Available symbols:", DataAggregator.get_available_symbols())
+    print("Server will be available at: http://localhost:%s" % args.port)
+    app.run(
+        debug=debug,
+        host=args.host,
+        port=args.port,
+        use_reloader=debug,
+        threaded=True,
+    )
+
+
+if __name__ == "__main__":
+    main()

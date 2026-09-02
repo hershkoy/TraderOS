@@ -56,6 +56,31 @@ backTraderTest/
 4. **Open in Browser**:
    Navigate to `http://localhost:5000`
 
+## Windows service (always-on)
+
+Do not put `charting_server.py` in `crons/crontab.yaml`. CronRunner is a one-minute tick; the dashboard needs a process that stays up.
+
+Same pattern as CronRunner: a logon Task Scheduler task (`pythonw`, no console) under `backTraderTest\ChartingServer`. It starts when you log on, has no execution time limit, and restarts on failure.
+
+```bat
+venv\Scripts\activate
+set PYTHONPATH=.
+python scripts\pipeline\charting_server_service.py install-task
+```
+
+Or: `crons\install_charting_server_task.bat`
+
+Then open `http://localhost:5000` (dashboard: `/hot`). Logs: `logs\charting_server\charting_server.log`.
+
+```bat
+python scripts\pipeline\charting_server_service.py task-status
+python scripts\pipeline\charting_server_service.py start
+python scripts\pipeline\charting_server_service.py stop
+python scripts\pipeline\charting_server_service.py uninstall-task
+```
+
+The task runs `charting_server.py --service` (debug off, stdout to the log). Do not also run `python charting_server.py` in a terminal while the task is up -- port 5000 will conflict.
+
 ## 📊 Available Indicators
 
 ### Moving Averages
@@ -163,7 +188,7 @@ This will test:
 
 1. **No symbols found**: Ensure your data is in `data/ALPACA/SYMBOL/TIMEFRAME/` structure
 2. **Import errors**: Make sure all dependencies are installed
-3. **Port already in use**: Change the port in `charting_server.py`
+3. **Port already in use**: Pass `--port` (or `--port` on `charting_server_service.py install-task`). Stop a leftover copy with `python scripts\pipeline\charting_server_service.py stop`.
 
 ### Data Format
 

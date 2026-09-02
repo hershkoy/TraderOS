@@ -139,7 +139,9 @@ REM Minute proximity (DB first, JSON fallback)
 python scripts\scanners\channel_touch_15m.py --mode proximity --dry-run
 python scripts\scanners\channel_touch_15m.py --mode fills --dry-run
 
-REM Dashboard
+REM Dashboard (always-on Windows task, not crontab.yaml)
+python scripts\pipeline\charting_server_service.py install-task
+REM or, one-shot in a terminal:
 python charting_server.py
 REM then open http://localhost:5000/hot
 ```

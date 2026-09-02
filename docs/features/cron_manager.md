@@ -59,6 +59,8 @@ python scripts\pipeline\cron_manager.py tick --at 2026-08-31T23:00
 
 Seeded jobs in `crontab.yaml` start **disabled**. Enable the ones you want.
 
+The charting dashboard is **not** a crontab job. Install the always-on logon task with `python scripts\pipeline\charting_server_service.py install-task` (task name `backTraderTest\ChartingServer`).
+
 ## Behaviour
 
 - Same-minute re-entry is skipped (state in `logs/cron/state.json`).

@@ -236,6 +236,8 @@ python scanner_runner.py --scanner hl_after_ll squeeze
 python charting_server.py
 ```
 
+Always-on (Windows logon task, pythonw, no console): `python scripts\pipeline\charting_server_service.py install-task`
+
 ### Updating Data
 ```bash
 python update_and_scan.py --scanner hl_after_ll --provider ALPACA
