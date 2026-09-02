@@ -12,6 +12,7 @@ from utils.scanning.channel_touch_15m import (
     fetch_alpaca_last_prices,
     passes_h5_stack,
 )
+from utils.scanning.channel_touch_feed_status import build_feeds, feeds_fingerprint
 from utils.scanning.channel_touch_candidates_store import (
     ChannelTouchCandidatesStore,
     normalize_settings,
@@ -354,6 +355,7 @@ def candidates_payload(
     refresh: bool = True,
     fetch_fn: Callable[..., Dict[str, float]] = fetch_alpaca_last_prices,
     now: Optional[datetime] = None,
+    jobs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     st = store if store is not None else get_store()
     settings = normalize_settings(st.load_settings())
@@ -411,6 +413,13 @@ def candidates_payload(
     fill_data_age_hours = None
     if parsed_as_of is not None:
         fill_data_age_hours = (now_ts - parsed_as_of).total_seconds() / 3600.0
+    feeds = build_feeds(
+        price_ts=price_ts,
+        as_of_15m=as_of_15m,
+        as_of_1d=settings.get("as_of_1d"),
+        now=now_ts,
+        jobs=jobs,
+    )
     return {
         "rows": ordered,
         "all_rows": len(rows),
@@ -434,6 +443,7 @@ def candidates_payload(
         "price_age_sec": price_age_sec,
         "prices_stale": prices_stale,
         "refreshed": refreshed,
+        "feeds": feeds,
         "settings": settings,
     }
 
@@ -480,6 +490,7 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
         payload.get("stale_warning"),
         payload.get("fill_data_ok"),
         payload.get("prices_stale"),
+        feeds_fingerprint(payload.get("feeds") or []),
         tuple(payload.get("fill_keys") or []),
         tuple(payload.get("hot_keys") or []),
         settings.get("status_filter"),

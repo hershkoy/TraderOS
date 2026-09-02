@@ -194,9 +194,10 @@ def test_candidates_payload_prices_stale_uses_latest_quote_age():
     assert stale["prices_stale"] is True
     assert stale["price_age_sec"] == 600.0
 
-    empty = candidates_payload(MemoryStore(rows=[]), refresh=False, now=now)
+    empty = candidates_payload(MemoryStore(rows=[]), refresh=False, now=now, jobs={})
     assert empty["prices_stale"] is False
     assert empty["price_ts"] is None
+    assert [row["id"] for row in empty["feeds"]] == ["alpaca_last", "ib_15m", "alpaca_1d"]
 
 
 def test_hot_keys_from_rows_skips_cold_and_blank():

@@ -158,6 +158,19 @@
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
         .error { background: #fed7d7; color: #9b2c2c; padding: 10px 14px; border-radius: 8px; }
+        .feeds-wrap { margin-top: 14px; overflow-x: auto; }
+        table.feeds { width: 100%; font-size: 12px; }
+        table.feeds th { cursor: default; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+        table.feeds th:hover { color: #4a5568; }
+        table.feeds td { vertical-align: top; }
+        table.feeds td:first-child { white-space: nowrap; }
+        .feed-role { color: #718096; font-weight: 400; font-size: 11px; margin-top: 2px; max-width: 280px; white-space: normal; }
+        .feed-detail { color: #4a5568; font-size: 12px; max-width: 720px; white-space: normal; line-height: 1.4; }
+        .pill.feed-up_to_date { background: #c6f6d5; color: #276749; }
+        .pill.feed-updating { background: #e9d8fd; color: #553c9a; }
+        .pill.feed-waiting { background: #e2e8f0; color: #4a5568; }
+        .pill.feed-stale { background: #feebc8; color: #9c4221; }
+        .pill.feed-failed, .pill.feed-missing { background: #fed7d7; color: #9b2c2c; }
     </style>
 </head>
 <body>
@@ -175,12 +188,25 @@
                 <a href="/hot">Hot candidates</a>
             </div>
             <div class="meta">
-                <span id="price-ts">prices: --</span>
-                <span id="as-of">IB 15m as_of: --</span>
-                <span id="as-of-1d">1d as_of: --</span>
                 <span id="counts">armed=0 hot=0 shown=0</span>
                 <span id="universe">15m universe=0</span>
                 <span id="universe-1d">1d universe=0</span>
+            </div>
+            <div class="feeds-wrap">
+                <table class="feeds">
+                    <thead>
+                        <tr>
+                            <th>Feed</th>
+                            <th>As of</th>
+                            <th>Expected</th>
+                            <th>Status</th>
+                            <th>Note</th>
+                        </tr>
+                    </thead>
+                    <tbody id="feeds-body">
+                        <tr><td colspan="5" class="empty">Loading feeds...</td></tr>
+                    </tbody>
+                </table>
             </div>
             <div id="banner" class="banner" style="display:none;"></div>
             <div id="error" class="error" style="display:none;margin-top:12px;"></div>
@@ -553,6 +579,29 @@
             saveTimer = setTimeout(saveSettings, 400);
         }
 
+        function renderFeeds(data) {
+            const tbody = document.getElementById('feeds-body');
+            if (!tbody) return;
+            const feeds = (data && data.feeds) || [];
+            if (!feeds.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty">No feed status</td></tr>';
+                return;
+            }
+            tbody.innerHTML = feeds.map(function(f) {
+                const st = f.status || '';
+                const label = f.status_label || st || '--';
+                const expected = f.expected_as_of ? fmtTs(f.expected_as_of) : '--';
+                return '<tr>' +
+                    '<td><strong>' + (f.name || '') + '</strong>' +
+                    '<div class="feed-role">' + (f.role || '') + '</div></td>' +
+                    '<td>' + fmtTs(f.as_of) + '</td>' +
+                    '<td>' + expected + '</td>' +
+                    '<td><span class="pill feed-' + st + '">' + label + '</span></td>' +
+                    '<td class="feed-detail">' + (f.detail || '') + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+
         function renderRows(rows) {
             const tbody = document.getElementById('rows');
             if (!rows || !rows.length) {
@@ -608,8 +657,7 @@
             }
             lastData = data;
             syncAsOfHeader();
-            document.getElementById('as-of').textContent = 'IB 15m as_of: ' + fmtTs(data.as_of);
-            document.getElementById('as-of-1d').textContent = '1d as_of: ' + fmtTs(data.as_of_1d);
+            renderFeeds(data);
             document.getElementById('counts').textContent =
                 'armed 15m=' + (data.n_armed_15m || 0) +
                 ' armed 1d=' + (data.n_armed_1d || 0) +
@@ -617,9 +665,6 @@
                 ' shown=' + (data.n_rows || 0);
             document.getElementById('universe').textContent = '15m universe=' + (data.n_universe || 0);
             document.getElementById('universe-1d').textContent = '1d universe=' + (data.n_universe_1d || 0);
-            document.getElementById('price-ts').textContent = 'prices: ' + fmtTs(data.price_ts);
-            const asOfEl = document.getElementById('as-of');
-            asOfEl.classList.toggle('warn', data.fill_data_ok === false);
             const banner = document.getElementById('banner');
             const fillWarn = data.fill_data_warning || data.stale_warning;
             banner.replaceChildren();
@@ -762,9 +807,7 @@
                 if (id === 'tz-filter') {
                     syncAsOfHeader();
                     if (lastData) {
-                        document.getElementById('as-of').textContent = 'IB 15m as_of: ' + fmtTs(lastData.as_of);
-                        document.getElementById('as-of-1d').textContent = '1d as_of: ' + fmtTs(lastData.as_of_1d);
-                        document.getElementById('price-ts').textContent = 'prices: ' + fmtTs(lastData.price_ts);
+                        renderFeeds(lastData);
                         renderRows(lastData.rows || []);
                     }
                     return;

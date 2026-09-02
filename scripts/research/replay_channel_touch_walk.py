@@ -83,6 +83,7 @@ def _scan_kwargs(is_15m: bool, args: argparse.Namespace) -> dict:
             "min_pullback_pct": float(p["min_pullback_pct"]),
             "min_total_rise_pct": float(p["min_total_rise_pct"]),
             "max_low_pivots": int(p["max_low_pivots"]),
+            "causal_h2": not bool(getattr(args, "no_causal_h2", False)),
         }
     else:
         kw = {
@@ -113,6 +114,7 @@ def _scan_kwargs(is_15m: bool, args: argparse.Namespace) -> dict:
             "min_pullback_pct": float(live["min_pullback_pct"]),
             "min_total_rise_pct": float(live["min_total_rise_pct"]),
             "max_low_pivots": int(live["max_low_pivots"]),
+            "causal_h2": not bool(getattr(args, "no_causal_h2", False)),
         }
         if not args.no_window_scan:
             kw["window_bars"] = int(DAILY_WINDOW_BARS)
@@ -172,6 +174,11 @@ def main() -> int:
     )
     ap.set_defaults(h2_resist_break_only=True)
     ap.add_argument("--no-window-scan", action="store_true")
+    ap.add_argument(
+        "--no-causal-h2",
+        action="store_true",
+        help="Allow highs after the first H2 to refit width (old look-ahead batch)",
+    )
     ap.add_argument("--friction-pct", type=float, default=None)
     ap.add_argument("--progress-every", type=int, default=250)
     ap.add_argument(

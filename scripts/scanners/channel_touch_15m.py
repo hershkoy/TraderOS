@@ -56,6 +56,7 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     unique_symbol_day_ok,
 )
 from utils.scanning.channel_touch_15m_refresh import (  # noqa: E402
+    last_ts_map_from_rows,
     refresh_ib_15m_symbols,
 )
 from utils.scanning.channel_touch_candidates_store import (  # noqa: E402
@@ -358,6 +359,7 @@ def _refresh_and_rescan(
     if not symbols:
         return rows, []
     logger.info("IB 15m live refresh n=%d client=%s", len(symbols), args.ib_client_id)
+    ts_map = last_ts_map_from_rows(rows, symbols)
     saved = refresh_ib_15m_symbols(
         symbols,
         client_id=int(args.ib_client_id),
@@ -365,6 +367,7 @@ def _refresh_and_rescan(
         overlap_bars=int(args.ib_overlap_bars),
         max_days=float(args.ib_fetch_max_days),
         close_lag_sec=float(close_lag_sec if close_lag_sec is not None else args.ib_close_lag_sec),
+        last_ts_map=ts_map,
         dry_run=False,
     )
     # Always rescan the requested list: even 0 new bars may still have

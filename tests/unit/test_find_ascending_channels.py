@@ -11,7 +11,11 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
-from find_ascending_channels import find_channels, find_channels_windowed  # noqa: E402
+from find_ascending_channels import (  # noqa: E402
+    _arm_h2,
+    find_channels,
+    find_channels_windowed,
+)
 
 
 def test_min_total_rise_pct_default_is_daily():
@@ -72,3 +76,35 @@ def test_windowed_remaps_slice_indices():
     offsets = {c["support_x0"] for c in out}
     assert 21 in offsets
     assert all(c["touch_indices"][0] == c["support_x0"] for c in out)
+
+
+def test_causal_h2_ignores_later_after_highs():
+    import numpy as np
+
+    n = 90
+    high = np.full(n, 11.0)
+    low = np.full(n, 9.0)
+    i1, l2 = 10, 40
+    y1 = 10.0
+    slope = 0.05
+    high[25] = 12.75
+    high[55] = 14.25
+    high[80] = 13.55
+    fit_kw = dict(
+        y1=y1,
+        i1=i1,
+        slope=slope,
+        l2=l2,
+        inside_highs=[25],
+        error_pct=1.2,
+        min_bars_apart=8,
+        min_intervening_pullback_pct=0.5,
+        min_top_touches=2,
+    )
+    first = _arm_h2(high, low, after_highs=[55], causal_h2=True, **fit_kw)
+    causal = _arm_h2(high, low, after_highs=[55, 80], causal_h2=True, **fit_kw)
+    leaky = _arm_h2(high, low, after_highs=[55, 80], causal_h2=False, **fit_kw)
+    assert first is not None and causal is not None
+    assert causal[2] == first[2] == 55
+    assert abs(causal[0] - first[0]) < 1e-9
+    assert leaky is not None

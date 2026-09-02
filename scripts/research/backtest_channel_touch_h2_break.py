@@ -113,6 +113,7 @@ def _daily_base() -> dict:
         "max_l3_wait_bars": 252,
         "min_l3_wait_bars": 6,
         "h2_resist_break": True,
+        "h2_resist_break_only": True,
         "channel_kwargs": {
             "error_pct": 1.2,
             "flat_pct": 0.04,
@@ -150,6 +151,7 @@ def _preset_15m_base() -> dict:
         "max_l3_wait_bars": 252 * BARS_PER_RTH_SESSION,
         "min_l3_wait_bars": 12,
         "h2_resist_break": True,
+        "h2_resist_break_only": True,
         "channel_kwargs": {
             "error_pct": float(p["error_pct"]),
             "flat_pct": float(p["flat_pct"]),

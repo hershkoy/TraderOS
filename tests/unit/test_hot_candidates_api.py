@@ -83,7 +83,10 @@ def test_hot_page_and_api(monkeypatch):
         assert b"new WebSocket" in page.data
         assert b"Fill data insufficient" in page.data
         assert b"fill_data_warning" in page.data
-        assert b"banner fill-data" in page.data
+        assert b"id=\"feeds-body\"" in page.data
+        assert b"renderFeeds" in page.data
+        assert b"Expected" in page.data
+        assert b"feed-up_to_date" in page.data
 
         got = client.get("/api/hot-candidates?refresh=0")
         assert got.status_code == 200
@@ -91,6 +94,8 @@ def test_hot_page_and_api(monkeypatch):
         assert body["n_hot"] == 1
         assert body["rows"][0]["stock"] == "AAA"
         assert body["as_of"] == "2026-08-30 15:45:00"
+        assert "feeds" in body
+        assert {row["id"] for row in body["feeds"]} == {"alpaca_last", "ib_15m", "alpaca_1d"}
         assert body["hot_keys"] == ["AAA|15m"]
         assert body["fill_keys"] == []
         assert body["fill_alerts"] == []

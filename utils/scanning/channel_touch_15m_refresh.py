@@ -68,6 +68,30 @@ def probe_ib_connected(*, client_id: int = LIVE_IB_CLIENT_ID) -> bool:
     return True
 
 
+def last_ts_map_from_rows(
+    rows: Sequence[dict], symbols: Sequence[str]
+) -> Dict[str, pd.Timestamp]:
+    """Watchlist as_of per symbol (naive timestamps treated as UTC)."""
+    want = {str(s).upper() for s in symbols if str(s).strip()}
+    out: Dict[str, pd.Timestamp] = {}
+    for row in rows:
+        stock = str(row.get("stock") or "").upper()
+        if stock not in want or stock in out:
+            continue
+        if str(row.get("timeframe") or "15m") != "15m":
+            continue
+        raw = row.get("as_of")
+        if raw in (None, ""):
+            continue
+        ts = pd.Timestamp(raw)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        out[stock] = ts
+    return out
+
+
 def last_ts_by_symbol(symbols: Sequence[str]) -> Dict[str, pd.Timestamp]:
     """MAX(ts) for a small IB 15m list (not a full-universe GROUP BY)."""
     clean = [str(s).upper() for s in symbols if str(s).strip()]
@@ -201,7 +225,16 @@ def refresh_ib_15m_symbols(
     now_ts = now or datetime.now(timezone.utc)
     if now_ts.tzinfo is None:
         now_ts = now_ts.replace(tzinfo=timezone.utc)
-    ts_map = last_ts_map if last_ts_map is not None else last_ts_by_symbol(wanted)
+    ts_map: Dict[str, pd.Timestamp] = dict(last_ts_map) if last_ts_map is not None else {}
+    missing = [s for s in wanted if s not in ts_map]
+    if missing:
+        try:
+            ts_map.update(last_ts_by_symbol(missing))
+        except Exception:
+            logger.exception(
+                "last_ts_by_symbol failed for %d symbols; using max_days window",
+                len(missing),
+            )
     saved: List[str] = []
     if not probe_ib_connected(client_id=int(client_id)):
         return []

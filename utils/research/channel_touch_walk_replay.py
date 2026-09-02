@@ -1,12 +1,10 @@
 """Causal walk-replay of channel-touch: detector sees bars 0..t only.
 
-The batch backtest (`trades_for_symbol`) runs `find_h2_l3_setups` on the full
-series, so later confirmed pivots can change width / H2 / which L1-L2 pair is
-used when scoring a fill in the middle of history. This module feeds completed
-bars in chronological order and records a fill only if it appears on the last
-bar of that prefix.
-
-Detector v1 is unchanged; this is a scan wrapper + comparison helper.
+Default ``causal_h2`` freezes rails at the first completing H2. Live
+``h2_resist_break_only`` drops L3 support-tag fills *before* occupancy so
+they cannot block a later resist-break (post-filter after occupancy was a
+silent miss). ``walk_replay_trades`` is the as-of-t check; detector v1
+``find_channels`` is unchanged.
 """
 from __future__ import annotations
 
@@ -60,6 +58,7 @@ DETECTOR_KEYS = {
     "min_top_touches",
     "min_rally_pct",
     "min_pullback_pct",
+    "causal_h2",
 }
 
 
@@ -612,6 +611,7 @@ def batch_trades_for_symbol(
         "min_l3_wait_bars",
         "shakeout_rebuy_bars",
         "h2_resist_break",
+        "h2_resist_break_only",
         "window_bars",
         "window_step_bars",
         "pivot_len",
@@ -622,6 +622,7 @@ def batch_trades_for_symbol(
     scan = {k: kwargs[k] for k in occ_keys if k in kwargs}
     scan.setdefault("entry_mode", "l3_touch")
     scan.setdefault("entry_features", False)
+    scan["h2_resist_break_only"] = bool(h2_resist_break_only)
     channel_kwargs = _channel_kwargs({k: v for k, v in kwargs.items() if k not in occ_keys})
     rows = trades_for_symbol(symbol, df, **scan, **channel_kwargs)
     if h2_resist_break_only:

@@ -733,6 +733,7 @@ def trades_for_symbol(
     min_l3_wait_bars: int = 1,
     shakeout_rebuy_bars: int = 0,
     h2_resist_break: bool = False,
+    h2_resist_break_only: bool = False,
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
     feature_asof_prior_bar: bool = False,
@@ -874,6 +875,8 @@ def trades_for_symbol(
                     i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
                     is_sh = bool(tag[3]) if len(tag) > 3 else False
                     is_brk = bool(tag[4]) if len(tag) > 4 else False
+                    if bool(h2_resist_break_only) and not is_brk:
+                        continue
                     pending.append((ch, i, fill, tnum, i, i, is_sh, is_brk))
     else:
         channels = (
@@ -1107,6 +1110,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         min_l3_wait_bars=int(payload.get("min_l3_wait_bars", 1)),
         shakeout_rebuy_bars=int(payload.get("shakeout_rebuy_bars", 0)),
         h2_resist_break=bool(payload.get("h2_resist_break", False)),
+        h2_resist_break_only=bool(payload.get("h2_resist_break_only", False)),
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
@@ -1985,6 +1989,16 @@ def main() -> int:
         help="l3_touch: fill a close above resistance after H2 (breakout) instead of cancelling",
     )
     ap.add_argument(
+        "--h2-resist-break-only",
+        action="store_true",
+        help="l3_touch: drop L3 support-tag fills before occupancy (live H2 resist-break book)",
+    )
+    ap.add_argument(
+        "--no-causal-h2",
+        action="store_true",
+        help="l3_touch: allow highs after the first H2 to refit width (full-series look-ahead; old batch)",
+    )
+    ap.add_argument(
         "--max-rsi",
         type=float,
         default=None,
@@ -2273,6 +2287,7 @@ def main() -> int:
         "min_intervening_pullback_pct": float(args.min_pullback_pct),
         "min_total_rise_pct": float(args.min_total_rise_pct),
         "max_low_pivots": int(args.max_low_pivots),
+        "causal_h2": not bool(args.no_causal_h2),
     }
     window_bars = int(args.window_bars) if int(args.window_bars) > 0 else None
     window_step = int(args.window_step_bars) if int(args.window_step_bars) > 0 else window_bars
@@ -2306,6 +2321,7 @@ def main() -> int:
             "min_l3_wait_bars": int(args.min_l3_wait_bars),
             "shakeout_rebuy_bars": int(args.shakeout_rebuy_bars),
             "h2_resist_break": bool(args.h2_resist_break),
+            "h2_resist_break_only": bool(args.h2_resist_break_only),
             "df_15m": panels_15m.get(sym) if intraday_fill == "15m" else None,
             "intraday_fill": intraday_fill,
             "feature_asof_prior_bar": bool(use_prior_bar),
@@ -2442,7 +2458,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         f"elapsed_sec={elapsed:.1f}",
         "",

@@ -383,6 +383,105 @@ def find_channels(
     return results
 
 
+def _fit_parallel_h2(
+    high: np.ndarray,
+    low: np.ndarray,
+    *,
+    y1: float,
+    i1: int,
+    slope: float,
+    l2: int,
+    window_highs: Sequence[int],
+    error_pct: float,
+    min_bars_apart: int,
+    min_intervening_pullback_pct: float,
+    min_top_touches: int,
+) -> Optional[Tuple[float, List[int], int]]:
+    """Tightest parallel that gets >=2 distinct high touches, H2 = first post-L2 completer."""
+    if len(window_highs) < min_top_touches:
+        return None
+    dists = sorted(float(high[h]) - _line_at(y1, i1, slope, h) for h in window_highs)
+    dists = [d for d in dists if d > 0]
+    if len(dists) < min_top_touches:
+        return None
+    for width in sorted(dists):
+        upper_idxs = []
+        for h in window_highs:
+            y_top = _line_at(y1, i1, slope, h) + width
+            if _touch_ok(y_top, float(high[h]), error_pct * 1.25):
+                upper_idxs.append(h)
+        has_after = any(h > l2 for h in upper_idxs)
+        if not has_after or len(upper_idxs) < min_top_touches:
+            continue
+        filtered = [upper_idxs[0]]
+        for h in upper_idxs[1:]:
+            prev_h = filtered[-1]
+            if h - prev_h < min_bars_apart:
+                continue
+            resist_prev = _line_at(y1, i1, slope, prev_h) + width
+            if _intervening_pullback_ok(
+                low, prev_h, h, resist_prev, min_intervening_pullback_pct
+            ):
+                filtered.append(h)
+        if len(filtered) < min_top_touches:
+            continue
+        h2_cand = None
+        for h in filtered:
+            if h <= l2:
+                continue
+            if sum(1 for x in filtered if x <= h) >= min_top_touches:
+                h2_cand = int(h)
+                break
+        if h2_cand is None:
+            continue
+        return float(width), [int(x) for x in filtered], int(h2_cand)
+    return None
+
+
+def _arm_h2(
+    high: np.ndarray,
+    low: np.ndarray,
+    *,
+    y1: float,
+    i1: int,
+    slope: float,
+    l2: int,
+    inside_highs: Sequence[int],
+    after_highs: Sequence[int],
+    error_pct: float,
+    min_bars_apart: int,
+    min_intervening_pullback_pct: float,
+    min_top_touches: int,
+    causal_h2: bool,
+) -> Optional[Tuple[float, List[int], int]]:
+    """Fit H2. ``causal_h2`` uses post-L2 highs in time order and freezes at the first H2."""
+    if len(inside_highs) < 1 or len(after_highs) < 1:
+        return None
+    fit_kw = dict(
+        y1=y1,
+        i1=i1,
+        slope=slope,
+        l2=l2,
+        error_pct=error_pct,
+        min_bars_apart=min_bars_apart,
+        min_intervening_pullback_pct=min_intervening_pullback_pct,
+        min_top_touches=min_top_touches,
+    )
+    if not causal_h2:
+        return _fit_parallel_h2(
+            high, low, window_highs=list(inside_highs) + list(after_highs), **fit_kw
+        )
+    seen_after: List[int] = []
+    for h in after_highs:
+        seen_after.append(int(h))
+        fitted = _fit_parallel_h2(
+            high, low, window_highs=list(inside_highs) + seen_after, **fit_kw
+        )
+        if fitted is not None:
+            return fitted
+    return None
+
+
 def find_h2_l3_setups(
     df: pd.DataFrame,
     *,
@@ -396,6 +495,7 @@ def find_h2_l3_setups(
     max_support_violation_frac: float = 0.08,
     max_low_pivots: int = 16,
     min_top_touches: int = 2,
+    causal_h2: bool = True,
 ) -> List[dict]:
     """Arm an ascending channel at H2 (L1-H1-L2-H2), before L3 exists.
 
@@ -404,7 +504,12 @@ def find_h2_l3_setups(
     parallel (EYE 2024-25: Nov peak sits inside a tighter width than Feb/Mar).
     Resistance needs >=2 swing-high touches after L1, at least one after L2.
     H2 is the first post-L2 high that completes those two touches.
-    ``find_channels`` v1 is unchanged; this is a separate live-style setup.
+
+    ``causal_h2`` (default True): freeze rails at that first H2, and pick L1
+    from the last ``max_low_pivots`` lows *before L2* (later window lows must
+    not evict the pair). Later confirmed highs must not refit width / retarget
+    H2 (full-series look-ahead). Set False to reproduce the old batch.
+    ``find_channels`` v1 is unchanged.
     """
     if df is None or df.empty or len(df) < pivot_len * 4 + 40:
         return []
@@ -430,12 +535,15 @@ def find_h2_l3_setups(
     high_piv, low_piv = _pivots(high, low, pivot_len)
     if len(low_piv) < 2 or len(high_piv) < min_top_touches:
         return []
-    low_piv = low_piv[-max_low_pivots:]
+    cap = max(2, int(max_low_pivots))
+    if not causal_h2:
+        low_piv = low_piv[-cap:]
     results: List[dict] = []
     nL = len(low_piv)
 
-    for a in range(0, nL - 1):
-        for c in range(a + 1, nL):
+    for c in range(1, nL):
+        a_lo = max(0, c - cap + 1) if causal_h2 else 0
+        for a in range(a_lo, c):
             i1 = low_piv[a]
             in_ = low_piv[c]
             if in_ - i1 < min_bars_apart:
@@ -457,53 +565,24 @@ def find_h2_l3_setups(
 
             inside_highs = [h for h in high_piv if i1 < h < in_]
             after_highs = [h for h in high_piv if h > in_]
-            if len(inside_highs) < 1 or len(after_highs) < 1:
+            fitted = _arm_h2(
+                high,
+                low,
+                y1=y1,
+                i1=i1,
+                slope=slope,
+                l2=in_,
+                inside_highs=inside_highs,
+                after_highs=after_highs,
+                error_pct=error_pct,
+                min_bars_apart=min_bars_apart,
+                min_intervening_pullback_pct=min_intervening_pullback_pct,
+                min_top_touches=min_top_touches,
+                causal_h2=bool(causal_h2),
+            )
+            if fitted is None:
                 continue
-            window_highs = inside_highs + after_highs
-            dists = sorted(float(high[h]) - _line_at(y1, i1, slope, h) for h in window_highs)
-            dists = [d for d in dists if d > 0]
-            if len(dists) < min_top_touches:
-                continue
-
-            best_width = None
-            best_upper: List[int] = []
-            h2_idx = None
-            for width in sorted(dists):
-                upper_idxs = []
-                for h in window_highs:
-                    y_top = _line_at(y1, i1, slope, h) + width
-                    if _touch_ok(y_top, float(high[h]), error_pct * 1.25):
-                        upper_idxs.append(h)
-                has_after = any(h > in_ for h in upper_idxs)
-                if not has_after or len(upper_idxs) < min_top_touches:
-                    continue
-                filtered = [upper_idxs[0]]
-                for h in upper_idxs[1:]:
-                    prev_h = filtered[-1]
-                    if h - prev_h < min_bars_apart:
-                        continue
-                    resist_prev = _line_at(y1, i1, slope, prev_h) + width
-                    if _intervening_pullback_ok(
-                        low, prev_h, h, resist_prev, min_intervening_pullback_pct
-                    ):
-                        filtered.append(h)
-                if len(filtered) < min_top_touches:
-                    continue
-                h2_cand = None
-                for h in filtered:
-                    if h <= in_:
-                        continue
-                    if sum(1 for x in filtered if x <= h) >= min_top_touches:
-                        h2_cand = int(h)
-                        break
-                if h2_cand is None:
-                    continue
-                best_width = width
-                best_upper = filtered
-                h2_idx = h2_cand
-                break
-            if best_width is None or h2_idx is None:
-                continue
+            best_width, best_upper, h2_idx = fitted
 
             viol = 0
             total = 0
