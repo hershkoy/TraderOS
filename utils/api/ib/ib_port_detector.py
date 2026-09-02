@@ -12,6 +12,9 @@ from ib_insync import IB
 LOGGER = logging.getLogger(__name__)
 DEFAULT_PORTS = (4001, 4002, 7496, 4697)
 PROBE_CLIENT_ID = 98
+# Match tests/utils/ib_conn.py. A 2s handshake timeout false-fails when
+# Gateway accepts TCP but is slow to send the API version.
+CONNECT_TIMEOUT = 10.0
 
 
 def _probe_port(host: str, port: int, timeout: float) -> bool:
@@ -34,7 +37,7 @@ def _probe_port(host: str, port: int, timeout: float) -> bool:
 def detect_ib_port(
     candidate_ports: Optional[Iterable[int]] = None,
     host: str = "127.0.0.1",
-    timeout: float = 2.0,
+    timeout: float = CONNECT_TIMEOUT,
 ) -> Optional[int]:
     """
     Find the first IB port that is currently listening.
@@ -64,5 +67,5 @@ def detect_ib_port(
     return None
 
 
-__all__ = ["detect_ib_port", "DEFAULT_PORTS"]
+__all__ = ["detect_ib_port", "DEFAULT_PORTS", "CONNECT_TIMEOUT", "PROBE_CLIENT_ID"]
 

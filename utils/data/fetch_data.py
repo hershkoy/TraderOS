@@ -13,11 +13,11 @@ from ib_insync import IB, util
 
 try:
     from ..db.timescaledb_client import get_timescaledb_client
-    from ..api.ib.ib_port_detector import DEFAULT_PORTS, detect_ib_port
+    from ..api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, detect_ib_port
 except ImportError:
     # Fallback for when running from utils directory
     from utils.db.timescaledb_client import get_timescaledb_client
-    from utils.api.ib.ib_port_detector import DEFAULT_PORTS, detect_ib_port
+    from utils.api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, detect_ib_port
 
 # ─────────────────────────────
 # CONFIG
@@ -161,7 +161,7 @@ def get_ib_connection(port=None, client_id=None):
                     HOST,
                     candidate,
                     clientId=effective_client_id,
-                    timeout=2,
+                    timeout=CONNECT_TIMEOUT,
                 )
                 logger.info(
                     "IBKR connection established on port %s with client ID %s",

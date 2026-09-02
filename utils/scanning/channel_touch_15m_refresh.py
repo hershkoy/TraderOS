@@ -61,7 +61,8 @@ def probe_ib_connected(*, client_id: int = LIVE_IB_CLIENT_ID) -> bool:
         return False
     set_ib_client_id(int(client_id))
     try:
-        ib = get_ib_connection()
+        # Pass 4001 so get_ib_connection skips detect_ib_port (extra client 98 handshake).
+        ib = get_ib_connection(port=GATEWAY_PORT, client_id=int(client_id))
     except Exception:
         logger.exception("IB Gateway listen ok but connect failed (client %s)", client_id)
         cleanup_ib_connection()
@@ -171,7 +172,7 @@ def fetch_and_store_symbol_gap(
 
     Returns (n_completed_bars_saved, last_completed_ts_iso).
     """
-    ib = get_ib_connection()
+    ib = get_ib_connection(port=GATEWAY_PORT)
     if ib is None or not ib.isConnected():
         raise RuntimeError("IB not connected")
     contract = create_ib_contract_with_primary_exchange(symbol)
