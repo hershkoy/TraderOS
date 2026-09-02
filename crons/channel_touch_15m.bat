@@ -1,8 +1,9 @@
 @echo off
 REM 15m channel-touch research loop (H5 + overshoot 0.08 + vol>=2).
 REM Does NOT replace daily nightly H2 resist-break.
-REM Prerequisite: IB 15m must be current (crons\backfill_ib_15m_universe.bat).
-REM Schedule every 15m in RTH only after backfill is done.
+REM Prerequisite: IB Gateway on 127.0.0.1:4001. Overnight universe backfill
+REM (8822) seeds the watchlist; this job pulls IB 15m on the armed/hot list
+REM (client 8823) at each RTH bar close so H5 BUY NOW can fire same bar.
 
 cd /d %~dp0..
 if not exist logs\scanners mkdir logs\scanners

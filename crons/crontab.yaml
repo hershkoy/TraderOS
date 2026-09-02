@@ -22,8 +22,8 @@ jobs:
   - 0,15,30,45 10-15 * * 1-5
   - 0 16 * * 1-5
   command: crons\channel_touch_15m.bat
-  description: Research 15m H5 loop at US RTH bar closes. Requires IB 15m catch-up
-    first.
+  description: Research 15m H5 loop at US RTH bar closes. IB 15m hist on the
+    armed/hot list (client 8823); overnight universe catch-up remains 8822.
   timezone: America/New_York
 - name: channel_touch_15m_proximity
   enabled: true

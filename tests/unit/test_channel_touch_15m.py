@@ -1,6 +1,8 @@
 """Unit tests for 15m channel-touch live helpers."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
 
@@ -9,10 +11,14 @@ from utils.scanning.channel_touch_15m import (
     LIVE_15M_DEFAULTS,
     armed_rows_for_symbol,
     attach_last_prices,
+    drop_incomplete_15m_bars,
     format_15m_message,
     format_hot_message,
     is_hot_proximity,
+    is_prior_et_session,
+    live_refresh_symbols,
     lookback_start,
+    merge_rescanned_15m_rows,
     newly_hot_rows,
     notify_payloads,
     passes_h5_stack,
@@ -309,4 +315,62 @@ def test_notify_payloads_gated_by_settings():
     assert hot_ignored == []
     msg = format_hot_message(as_of="t", newly_hot=hot, n_armed=1, n_hot=1)
     assert "BBB" in msg
+
+
+def test_drop_incomplete_15m_bar_keeps_closed_period():
+    now = datetime(2026, 9, 2, 18, 30, 5, tzinfo=timezone.utc)
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-09-02 18:00:00Z", "2026-09-02 18:15:00Z", "2026-09-02 18:30:00Z"]
+            ),
+            "close": [1.0, 2.0, 3.0],
+        }
+    )
+    got = drop_incomplete_15m_bars(df, now=now)
+    stamps = list(pd.to_datetime(got["timestamp"], utc=True))
+    assert stamps == [
+        pd.Timestamp("2026-09-02 18:00:00Z"),
+        pd.Timestamp("2026-09-02 18:15:00Z"),
+    ]
+
+
+def test_live_refresh_symbols_hot_first():
+    rows = [
+        {"stock": "WAIT", "timeframe": "15m", "status": "waiting", "hot": False, "resist": 10, "last_price": 9.0, "dist_live_pct": -10},
+        {"stock": "ARM", "timeframe": "15m", "status": "armed", "hot": False, "resist": 10, "last_price": 9.4, "dist_live_pct": -6},
+        {"stock": "NEAR", "timeframe": "15m", "status": "armed", "hot": False, "resist": 10, "last_price": 9.96, "dist_live_pct": -0.4},
+        {"stock": "HOT", "timeframe": "15m", "status": "armed", "hot": True, "resist": 10, "last_price": 10.1, "dist_live_pct": 1.0},
+        {"stock": "DAILY", "timeframe": "1d", "status": "armed", "hot": True, "resist": 10, "last_price": 11.0},
+    ]
+    got = live_refresh_symbols(rows, below_pct=0.5)
+    assert got[:2] == ["NEAR", "HOT"]
+    assert "ARM" in got and "WAIT" in got
+    assert "DAILY" not in got
+
+
+def test_merge_rescanned_replaces_only_scanned_15m():
+    existing = [
+        {"stock": "AAA", "timeframe": "15m", "status": "armed", "wait_bars": 12},
+        {"stock": "BBB", "timeframe": "15m", "status": "waiting", "wait_bars": 4},
+        {"stock": "AAA", "timeframe": "1d", "status": "armed", "wait_bars": 8},
+    ]
+    new_rows = [{"stock": "AAA", "status": "filled", "wait_bars": 16, "as_of": "2026-09-02 18:15:00"}]
+    got = merge_rescanned_15m_rows(existing, new_rows, scanned=["AAA"])
+    tf_status = {(r["stock"], r.get("timeframe", "15m")): r["status"] for r in got}
+    assert tf_status[("AAA", "15m")] == "filled"
+    assert tf_status[("BBB", "15m")] == "waiting"
+    assert tf_status[("AAA", "1d")] == "armed"
+
+
+def test_prior_et_session_uses_new_york_date():
+    # 2026-09-01 19:45 UTC = 15:45 EDT Sep 1
+    assert is_prior_et_session(
+        "2026-09-01 19:45:00",
+        now=datetime(2026, 9, 2, 18, 30, tzinfo=timezone.utc),
+    )
+    assert not is_prior_et_session(
+        "2026-09-02 18:15:00",
+        now=datetime(2026, 9, 2, 18, 30, tzinfo=timezone.utc),
+    )
 

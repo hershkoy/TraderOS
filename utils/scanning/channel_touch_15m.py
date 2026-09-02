@@ -7,16 +7,18 @@ proximity, then a completed-bar fill check:
   wait >= 12 after H2, close above resistance, unique-symbol/day,
   prior-bar volume_rel_20 >= 2, fill overshoot >= frozen p80 (~0.08).
 
-Do not stream the IB 15m universe. Do not use Alpaca IEX 15m volume for the
-H5 gate (research volume is IB). Last price is a proximity screen, not a fill.
+Do not stream the IB 15m universe. At each RTH 15m close, pull IB hist
+only on the armed/hot list, drop the in-progress bar, then fill-check.
+Do not use Alpaca IEX 15m volume for the H5 gate. Last price is proximity
+only, not a fill.
 """
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -67,6 +69,12 @@ LIVE_15M_DEFAULTS: Dict[str, Any] = {
     "friction_pct": float(PRESET_15M["friction_pct"]),
     "proximity_below_pct": 0.0,
     "lookback_sessions": 40,
+    "ib_client_id": 8823,
+    "ib_sleep": 0.35,
+    "ib_close_lag_sec": 8.0,
+    "ib_overlap_bars": 2,
+    "ib_fetch_max_days": 5.0,
+    "refresh_below_pct": 0.5,
 }
 
 
@@ -653,3 +661,129 @@ def lookback_start(*, sessions: int = 40, now: Optional[datetime] = None) -> dat
         ts = ts.tz_convert(None)
     days = int(max(1, sessions) * 7 / 5) + 10
     return (ts - pd.Timedelta(days=days)).to_pydatetime()
+
+
+def _as_utc_ts(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
+def et_session_date(value) -> Optional[date]:
+    """US/Eastern calendar date for an as_of / bar timestamp (naive = UTC)."""
+    if value in (None, ""):
+        return None
+    try:
+        ts = _as_utc_ts(value)
+    except Exception:
+        return None
+    return ts.tz_convert("America/New_York").date()
+
+
+def is_prior_et_session(as_of, *, now: Optional[datetime] = None) -> bool:
+    """True when stored as_of is a previous New York session vs ``now``."""
+    got = et_session_date(as_of)
+    if got is None:
+        return True
+    today = et_session_date(now or datetime.now(timezone.utc))
+    return bool(today is not None and got < today)
+
+
+def drop_incomplete_15m_bars(
+    df: pd.DataFrame,
+    *,
+    now: Optional[datetime] = None,
+    bar_minutes: int = 15,
+) -> pd.DataFrame:
+    """Keep bars whose 15m period has fully closed (start + 15m <= now).
+
+    IB timestamps 15m bars at period start. A bar labeled 14:30 covers
+    14:30-14:45; at 14:30:05 that bar is still forming and must not fill.
+    """
+    if df is None or df.empty:
+        return df
+    now_ts = _as_utc_ts(now or datetime.now(timezone.utc))
+    if "timestamp" in df.columns:
+        idx = pd.DatetimeIndex(pd.to_datetime(df["timestamp"], utc=True))
+        closed = idx + pd.Timedelta(minutes=int(bar_minutes))
+        keep = closed <= now_ts
+        if bool(keep.all()):
+            return df
+        return df.loc[keep].copy()
+    out = df
+    if not isinstance(out.index, pd.DatetimeIndex):
+        return df
+    idx = out.index
+    idx_utc = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+    closed = idx_utc + pd.Timedelta(minutes=int(bar_minutes))
+    keep = closed <= now_ts
+    if bool(keep.all()):
+        return df
+    return out.loc[keep]
+
+
+def filter_15m_rows(rows: Sequence[dict]) -> List[dict]:
+    return [r for r in rows if str(r.get("timeframe") or "15m") == "15m"]
+
+
+def live_refresh_symbols(
+    rows: Sequence[dict],
+    *,
+    below_pct: float = 0.5,
+    statuses: Sequence[str] = ("armed", "waiting", "filled"),
+) -> List[str]:
+    """IB hist targets: 15m armed/waiting, hot and near-resist first.
+
+    Waiting names must refresh so wait clocks advance. Near-resist armed
+    names can close through the rail even if last is still a tick below.
+    """
+    want = {str(s).lower() for s in statuses}
+    scored: List[Tuple[int, float, str]] = []
+    seen = set()
+    for row in filter_15m_rows(rows):
+        status = str(row.get("status") or "").lower()
+        if status not in want:
+            continue
+        stock = str(row.get("stock") or "").upper()
+        if not stock or stock in seen:
+            continue
+        seen.add(stock)
+        last = row.get("last_price")
+        resist = row.get("resist")
+        hot = bool(row.get("hot")) or is_hot_proximity(
+            last, resist, below_pct=float(below_pct)
+        )
+        dist = row.get("dist_live_pct")
+        try:
+            dist_f = abs(float(dist)) if dist is not None else 99.0
+        except (TypeError, ValueError):
+            dist_f = 99.0
+        # 0 = hot/near, 1 = other armed, 2 = waiting
+        bucket = 0 if hot else (1 if status == "armed" else 2)
+        scored.append((bucket, dist_f, stock))
+    scored.sort()
+    return [s for _, _, s in scored]
+
+
+def merge_rescanned_15m_rows(
+    existing: Sequence[dict],
+    new_rows: Sequence[dict],
+    *,
+    scanned: Sequence[str],
+) -> List[dict]:
+    """Replace 15m rows for scanned symbols; keep other 15m + non-15m rows."""
+    scanned_set = {str(s).upper() for s in scanned}
+    kept: List[dict] = []
+    for row in existing:
+        tf = str(row.get("timeframe") or "15m")
+        stock = str(row.get("stock") or "").upper()
+        if tf == "15m" and stock in scanned_set:
+            continue
+        kept.append(dict(row))
+    for row in new_rows:
+        item = dict(row)
+        item["stock"] = str(item.get("stock") or "").upper()
+        item["timeframe"] = "15m"
+        kept.append(item)
+    return kept
