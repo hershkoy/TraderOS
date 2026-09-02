@@ -15,6 +15,7 @@ PRICE_FRESH_SEC = 120.0
 
 JOB_ALPACA_LAST = "channel_touch_15m_proximity"
 JOB_IB_15M = "channel_touch_15m"
+JOB_IB_UNIVERSE = "backfill_ib_15m_universe"
 JOB_ALPACA_1D = "channel_touch_nightly"
 
 STATUS_UP_TO_DATE = "up_to_date"
@@ -290,15 +291,15 @@ def _ib_15m_feed(
     now: datetime,
     job: dict,
 ) -> Dict[str, Any]:
-    role = "Completed IB 15m bars for H5 fills (not Alpaca last)."
-    cadence = "Every US RTH 15m close (CronRunner channel_touch_15m)"
+    role = "LIVE IB hist on the armed/hot list only (job channel_touch_15m, client 8823). Not overnight universe backfill."
+    cadence = "Every US RTH 15m close"
     expected = last_completed_rth_15m(now)
     expected_s = _fmt_utc_naive(expected)
     parsed = _parse_ts(as_of)
     if job.get("running"):
         return _feed(
             feed_id="ib_15m",
-            name="IB 15m",
+            name="IB 15m hot list",
             role=role,
             cadence=cadence,
             as_of=as_of,
@@ -310,7 +311,7 @@ def _ib_15m_feed(
     if parsed is None:
         return _feed(
             feed_id="ib_15m",
-            name="IB 15m",
+            name="IB 15m hot list",
             role=role,
             cadence=cadence,
             as_of=as_of,
@@ -324,14 +325,15 @@ def _ib_15m_feed(
     behind = got_et < exp_et
     if behind and _job_failed(job):
         detail = (
-            "Expected last closed bar %s. Last scan exit %s (as_of did not advance). "
-            "Hot names can still use Alpaca last; fills wait on this feed."
+            "Expected last closed bar %s. Job channel_touch_15m last exit %s "
+            "(as_of did not advance). This job fires every RTH 15m close; "
+            "overnight backfill_ib_15m_universe is a different full-universe job."
         ) % (exp_et.strftime("%Y-%m-%d %H:%M ET"), job.get("last_exit_code"))
         status = STATUS_FAILED
     elif behind:
         detail = (
-            "Expected last closed bar %s. Stored IB 15m is behind; "
-            "the 15m job should catch up at each RTH close."
+            "Expected last closed bar %s. Hot-list IB hist is channel_touch_15m "
+            "at each RTH close, not the 02:30 universe backfill."
         ) % exp_et.strftime("%Y-%m-%d %H:%M ET")
         status = STATUS_STALE
     elif not is_rth(now):
@@ -342,11 +344,59 @@ def _ib_15m_feed(
         detail = "Last closed 15m bar matches the expected RTH slot."
     return _feed(
         feed_id="ib_15m",
-        name="IB 15m",
+        name="IB 15m hot list",
         role=role,
         cadence=cadence,
         as_of=as_of,
         expected_as_of=expected_s,
+        status=status,
+        detail=detail,
+        job=job,
+    )
+
+
+def _ib_universe_feed(
+    as_of: Any,
+    *,
+    now: datetime,
+    job: dict,
+) -> Dict[str, Any]:
+    role = "Overnight catch-up of ALL ~1478 IB 15m names (job backfill_ib_15m_universe, client 8822). Not the hot list."
+    cadence = "02:30 local daily"
+    if job.get("running"):
+        return _feed(
+            feed_id="ib_15m_universe",
+            name="IB 15m universe",
+            role=role,
+            cadence=cadence,
+            as_of=as_of,
+            expected_as_of=None,
+            status=STATUS_UPDATING,
+            detail="Overnight full-universe backfill is running.",
+            job=job,
+        )
+    nxt = job.get("next_run") or "02:30 local"
+    last = job.get("last_fired") or "never"
+    rc = job.get("last_exit_code")
+    if _job_failed(job):
+        status = STATUS_FAILED
+        detail = (
+            "Last overnight run %s exit %s. This job does not run during RTH. "
+            "Hot-list IB hist is channel_touch_15m every 15m. Next %s."
+        ) % (last, rc, nxt)
+    else:
+        status = STATUS_WAITING
+        detail = (
+            "Idle until 02:30 local (full universe, not hot list). "
+            "Last run %s exit %s. In-session bars come from channel_touch_15m."
+        ) % (last, rc if rc is not None else "-")
+    return _feed(
+        feed_id="ib_15m_universe",
+        name="IB 15m universe",
+        role=role,
+        cadence=cadence,
+        as_of=as_of,
+        expected_as_of=None,
         status=status,
         detail=detail,
         job=job,
@@ -439,7 +489,7 @@ def build_feeds(
     if now_ts.tzinfo is None:
         now_ts = now_ts.replace(tzinfo=timezone.utc)
     snaps = dict(jobs or {})
-    needed = (JOB_ALPACA_LAST, JOB_IB_15M, JOB_ALPACA_1D)
+    needed = (JOB_ALPACA_LAST, JOB_IB_15M, JOB_IB_UNIVERSE, JOB_ALPACA_1D)
     if jobs is None:
         for name in needed:
             snaps[name] = cron_job_snapshot(name, manager=manager)
@@ -449,6 +499,7 @@ def build_feeds(
     return [
         _alpaca_last_feed(price_ts, now=now_ts, job=snaps[JOB_ALPACA_LAST]),
         _ib_15m_feed(as_of_15m, now=now_ts, job=snaps[JOB_IB_15M]),
+        _ib_universe_feed(as_of_15m, now=now_ts, job=snaps[JOB_IB_UNIVERSE]),
         _alpaca_1d_feed(as_of_1d, now=now_ts, job=snaps[JOB_ALPACA_1D]),
     ]
 

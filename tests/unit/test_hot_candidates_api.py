@@ -95,7 +95,7 @@ def test_hot_page_and_api(monkeypatch):
         assert body["rows"][0]["stock"] == "AAA"
         assert body["as_of"] == "2026-08-30 15:45:00"
         assert "feeds" in body
-        assert {row["id"] for row in body["feeds"]} == {"alpaca_last", "ib_15m", "alpaca_1d"}
+        assert {row["id"] for row in body["feeds"]} == {"alpaca_last", "ib_15m", "ib_15m_universe", "alpaca_1d"}
         assert body["hot_keys"] == ["AAA|15m"]
         assert body["fill_keys"] == []
         assert body["fill_alerts"] == []

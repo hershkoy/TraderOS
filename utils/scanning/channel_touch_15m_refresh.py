@@ -60,7 +60,12 @@ def probe_ib_connected(*, client_id: int = LIVE_IB_CLIENT_ID) -> bool:
         logger.warning("IB Gateway not listening on %s:%s", GATEWAY_HOST, GATEWAY_PORT)
         return False
     set_ib_client_id(int(client_id))
-    ib = get_ib_connection()
+    try:
+        ib = get_ib_connection()
+    except Exception:
+        logger.exception("IB Gateway listen ok but connect failed (client %s)", client_id)
+        cleanup_ib_connection()
+        return False
     if ib is None or not ib.isConnected():
         logger.warning("IB Gateway listen ok but isConnected() is false (client %s)", client_id)
         cleanup_ib_connection()

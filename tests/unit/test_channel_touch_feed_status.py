@@ -8,6 +8,7 @@ from utils.scanning.channel_touch_feed_status import (
     JOB_ALPACA_1D,
     JOB_ALPACA_LAST,
     JOB_IB_15M,
+    JOB_IB_UNIVERSE,
     STATUS_FAILED,
     STATUS_STALE,
     STATUS_UP_TO_DATE,
@@ -37,6 +38,7 @@ def _jobs(**overrides):
     base = {
         JOB_ALPACA_LAST: _job(JOB_ALPACA_LAST, last_fired="2026-09-02T15:08"),
         JOB_IB_15M: _job(JOB_IB_15M, last_fired="2026-09-02T15:00", exit_code=1),
+        JOB_IB_UNIVERSE: _job(JOB_IB_UNIVERSE, last_fired="2026-09-02T02:30", exit_code=0),
         JOB_ALPACA_1D: _job(
             JOB_ALPACA_1D,
             last_fired="2026-09-01T23:00",
@@ -84,8 +86,12 @@ def test_feeds_match_hot_dashboard_staleness():
     by_id = {row["id"]: row for row in feeds}
     assert by_id["alpaca_last"]["status"] == STATUS_UP_TO_DATE
     assert by_id["ib_15m"]["status"] == STATUS_FAILED
+    assert by_id["ib_15m"]["name"] == "IB 15m hot list"
+    assert "channel_touch_15m" in by_id["ib_15m"]["detail"]
     assert "14:45" in by_id["ib_15m"]["detail"]
     assert by_id["ib_15m"]["expected_as_of"] == "2026-09-02 18:45:00"
+    assert by_id["ib_15m_universe"]["status"] == STATUS_WAITING
+    assert "02:30" in by_id["ib_15m_universe"]["cadence"]
     assert by_id["alpaca_1d"]["status"] == STATUS_STALE
     assert by_id["alpaca_1d"]["expected_as_of"] == "2026-09-01"
     assert "EOD" in by_id["alpaca_1d"]["role"] or "EOD" in by_id["alpaca_1d"]["detail"]
