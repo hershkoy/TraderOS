@@ -122,6 +122,7 @@ def _daily_base() -> dict:
             "min_intervening_pullback_pct": 3.0,
             "min_total_rise_pct": 3.0,
             "max_low_pivots": 16,
+            "causal_h2": True,
         },
     }
 
@@ -160,6 +161,7 @@ def _preset_15m_base() -> dict:
             "min_intervening_pullback_pct": float(p["min_pullback_pct"]),
             "min_total_rise_pct": float(p["min_total_rise_pct"]),
             "max_low_pivots": int(p["max_low_pivots"]),
+            "causal_h2": True,
         },
     }
 
