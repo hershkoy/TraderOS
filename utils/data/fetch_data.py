@@ -109,13 +109,16 @@ def set_ib_client_id(client_id):
     _ib_client_id = int(client_id)
     logger.info(f"IBKR client ID set to {_ib_client_id}")
 
-def get_ib_connection(port=None, client_id=None):
+def get_ib_connection(port=None, client_id=None, start_loop=False):
     """
     Get or create a shared IBKR connection
     
     Args:
         port: Optional port number (default: from IB_PORT env var or 4001)
         client_id: Optional client ID (default: from global _ib_client_id or 2)
+        start_loop: If True, call util.startLoop() before connect (notebook style).
+            CLI jobs should leave this False to match tests/utils/ib_conn.py.
+            startLoop plus connect() can accept TCP then time out waiting for apiStart.
     
     Returns:
         IB connection object
@@ -131,7 +134,8 @@ def get_ib_connection(port=None, client_id=None):
             return _ib_connection
         
         # Need to create new connection
-        _ensure_ib_loop()
+        if start_loop:
+            _ensure_ib_loop()
         
         # Clean up previous connection if it exists but is not connected
         if _ib_connection is not None:

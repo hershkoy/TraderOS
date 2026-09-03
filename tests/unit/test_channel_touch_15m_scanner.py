@@ -29,7 +29,7 @@ def test_15m_cli_defaults_match_h5_stack():
     assert ns.overshoot_min == FROZEN_OVERSHOOT_MIN
     assert ns.proximity_below_pct == 0.0
     assert ns.lookback_sessions == 40
-    assert ns.ib_client_id == 8823
+    assert ns.ib_client_id == 8826
     assert ns.skip_ib_refresh is False
     assert ns.refresh_below_pct == 0.5
 
@@ -64,6 +64,25 @@ def test_rebuild_watchlist_on_prior_session():
     assert _should_rebuild_watchlist(args, rows, today) is False
     force = build_arg_parser().parse_args(["--mode", "run", "--rebuild-watchlist"])
     assert _should_rebuild_watchlist(force, rows, today) is True
+
+
+def test_rebuild_watchlist_only_once_per_et_day():
+    args = build_arg_parser().parse_args(["--mode", "run"])
+    rows = [{"stock": "AAA", "timeframe": "15m", "status": "armed"}]
+    now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+    already = {"watchlist_built_et": "2026-09-03"}
+    assert (
+        _should_rebuild_watchlist(
+            args, rows, "2026-09-02 19:45:00", payload=already, now=now
+        )
+        is False
+    )
+    assert (
+        _should_rebuild_watchlist(
+            args, rows, "2026-09-02 19:45:00", payload={}, now=now
+        )
+        is True
+    )
 
 
 def test_split_refresh_batches_hot_first():

@@ -4,7 +4,8 @@ Pulls completed 15m bars from Gateway for a small symbol list (not the
 ~1478 universe), upserts TimescaleDB, then the scanner re-runs the H5
 fill check on that last closed bar.
 
-Client id 8823 (8821 = single-symbol backfill, 8822 = overnight universe).
+Client id 8826 (8821 = single-symbol backfill, 8822 = overnight universe,
+8823 was the previous live id; Gateway can wedge a timed-out client).
 """
 from __future__ import annotations
 
@@ -55,20 +56,23 @@ def gateway_tcp_open(host: str = GATEWAY_HOST, port: int = GATEWAY_PORT, timeout
 
 
 def probe_ib_connected(*, client_id: int = LIVE_IB_CLIENT_ID) -> bool:
-    """TCP 4001, then a real IB connect. Caller must cleanup_ib_connection()."""
-    if not gateway_tcp_open():
-        logger.warning("IB Gateway not listening on %s:%s", GATEWAY_HOST, GATEWAY_PORT)
-        return False
+    """Real IB connect only. Do not raw-TCP 4001 first (Gateway handshake hang).
+
+    Caller must cleanup_ib_connection().
+    """
     set_ib_client_id(int(client_id))
     try:
         # Pass 4001 so get_ib_connection skips detect_ib_port (extra client 98 handshake).
-        ib = get_ib_connection(port=GATEWAY_PORT, client_id=int(client_id))
+        # start_loop=False matches tests/utils/ib_conn.py (startLoop + connect times out).
+        ib = get_ib_connection(
+            port=GATEWAY_PORT, client_id=int(client_id), start_loop=False
+        )
     except Exception:
-        logger.exception("IB Gateway listen ok but connect failed (client %s)", client_id)
+        logger.exception("IB connect failed (client %s)", client_id)
         cleanup_ib_connection()
         return False
     if ib is None or not ib.isConnected():
-        logger.warning("IB Gateway listen ok but isConnected() is false (client %s)", client_id)
+        logger.warning("IB isConnected() is false (client %s)", client_id)
         cleanup_ib_connection()
         return False
     return True
@@ -172,7 +176,7 @@ def fetch_and_store_symbol_gap(
 
     Returns (n_completed_bars_saved, last_completed_ts_iso).
     """
-    ib = get_ib_connection(port=GATEWAY_PORT)
+    ib = get_ib_connection(port=GATEWAY_PORT, start_loop=False)
     if ib is None or not ib.isConnected():
         raise RuntimeError("IB not connected")
     contract = create_ib_contract_with_primary_exchange(symbol)
@@ -218,10 +222,12 @@ def refresh_ib_15m_symbols(
     last_ts_map: Optional[Dict[str, pd.Timestamp]] = None,
     now: Optional[datetime] = None,
     dry_run: bool = False,
+    disconnect: bool = True,
 ) -> List[str]:
     """Fetch+store completed 15m bars. Returns symbols that saved at least one bar.
 
-    Probes Gateway first. Cleans up the IB connection when finished.
+    Probes Gateway first. Cleans up the IB connection when finished unless
+    ``disconnect`` is False (keep the session for a following batch).
     """
     wanted = [str(s).upper() for s in symbols if str(s).strip()]
     if not wanted:
@@ -243,7 +249,9 @@ def refresh_ib_15m_symbols(
             )
     saved: List[str] = []
     if not probe_ib_connected(client_id=int(client_id)):
-        return []
+        raise RuntimeError(
+            "IB API handshake failed (client %s)" % client_id
+        )
     try:
         for i, sym in enumerate(wanted, start=1):
             start_dt = _fetch_window_start(
@@ -272,6 +280,7 @@ def refresh_ib_15m_symbols(
             if i < len(wanted) and float(sleep_s) > 0:
                 time.sleep(float(sleep_s))
     finally:
-        cleanup_ib_connection()
+        if disconnect:
+            cleanup_ib_connection()
     logger.info("IB 15m live refresh saved=%d / %d", len(saved), len(wanted))
     return saved

@@ -102,7 +102,7 @@ each 15m bar close (RTH)
   reuse stored armed list if as_of is the same NY session; else rebuild from TimescaleDB
   Alpaca last on armed/waiting (proximity / hot)
   wait ~8s for IB to finalize the bar that just closed
-  IB hist on hot/near-resist first (client 8823; not 1478 names), drop the in-progress bar, upsert
+  IB hist on hot/near-resist first (client 8826; not 1478 names), drop the in-progress bar, upsert
   re-scan those names on completed bars; Telegram BUY NOW if H5 stack hits
   then IB hist on the rest of armed/waiting so wait/rails stay current
 
@@ -118,7 +118,7 @@ dashboard /hot (WebSocket /ws/hot-candidates)
   sort/filter by |dist_live_pct| to resist
 ```
 
-Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8823**), drops the still-forming bar, and fill-checks that completed close. Overnight `backfill_ib_15m_universe.py` (client **8822**) still seeds the next session's watchlist. Use `--skip-ib-refresh` to disable the live pull.
+Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8826**), drops the still-forming bar, and fill-checks that completed close. Overnight `backfill_ib_15m_universe.py` (client **8822**) still seeds the next session's watchlist. Use `--skip-ib-refresh` to disable the live pull.
 
 ### Commands
 

@@ -69,7 +69,7 @@ LIVE_15M_DEFAULTS: Dict[str, Any] = {
     "friction_pct": float(PRESET_15M["friction_pct"]),
     "proximity_below_pct": 0.0,
     "lookback_sessions": 40,
-    "ib_client_id": 8823,
+    "ib_client_id": 8826,
     "ib_sleep": 0.35,
     "ib_close_lag_sec": 8.0,
     "ib_overlap_bars": 2,

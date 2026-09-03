@@ -23,7 +23,7 @@ jobs:
   - 0 16 * * 1-5
   command: crons\channel_touch_15m.bat
   description: LIVE IB 15m on the armed/hot list only, every US RTH 15m close
-    (client 8823). This is the /hot IB 15m fill feed. Do not confuse with
+    (client 8826). This is the /hot IB 15m fill feed. Do not confuse with
     overnight backfill_ib_15m_universe (full ~1478 names, client 8822).
   timezone: America/New_York
 - name: channel_touch_15m_proximity
@@ -42,4 +42,4 @@ jobs:
   command: crons\backfill_ib_15m_universe.bat
   description: Overnight catch-up of the FULL IB 15m universe (~1478 names,
     client 8822). Does not run during RTH and does not refresh the hot list.
-    In-session IB hist is channel_touch_15m every 15m (client 8823).
+    In-session IB hist is channel_touch_15m every 15m (client 8826).

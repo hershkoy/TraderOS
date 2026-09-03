@@ -46,6 +46,7 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     filter_15m_rows,
     format_15m_message,
     is_hot_proximity,
+    et_session_date,
     is_prior_et_session,
     live_refresh_symbols,
     lookback_start,
@@ -141,7 +142,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--ib-client-id",
         type=int,
         default=int(d["ib_client_id"]),
-        help="Gateway client ID for live 15m refresh (default 8823; 8821/8822 are backfill)",
+        help="Gateway client ID for live 15m refresh (default 8826; 8821/8822 are backfill)",
     )
     ap.add_argument("--ib-sleep", type=float, default=float(d["ib_sleep"]))
     ap.add_argument(
@@ -237,6 +238,14 @@ def _load_rows_from_store_or_json(
                     },
                     "rows": rows,
                 }
+                if args.watchlist.exists():
+                    try:
+                        sidecar = _read_watchlist(args.watchlist)
+                        built = sidecar.get("watchlist_built_et")
+                        if built:
+                            payload["watchlist_built_et"] = built
+                    except Exception:
+                        pass
                 logger.info("Loaded %d candidates from TimescaleDB as_of=%s", len(rows), payload["as_of"])
                 return payload, rows
         except Exception as exc:
@@ -295,6 +304,8 @@ def _should_rebuild_watchlist(
     args,
     rows: List[dict],
     as_of: str,
+    payload: Optional[dict] = None,
+    now: Optional[datetime] = None,
 ) -> bool:
     if args.mode == "watchlist" or bool(args.rebuild_watchlist):
         return True
@@ -302,7 +313,16 @@ def _should_rebuild_watchlist(
         return True
     if not filter_15m_rows(rows):
         return True
-    return is_prior_et_session(as_of)
+    today = et_session_date(now or datetime.now(timezone.utc))
+    built_raw = str((payload or {}).get("watchlist_built_et") or "").strip()
+    if built_raw[:10] and today is not None:
+        try:
+            built_d = datetime.strptime(built_raw[:10], "%Y-%m-%d").date()
+        except ValueError:
+            built_d = None
+        if built_d is not None and built_d >= today:
+            return False
+    return is_prior_et_session(as_of, now=now)
 
 
 def _rescan_symbols(
@@ -354,6 +374,7 @@ def _refresh_and_rescan(
     args,
     below_pct: float,
     close_lag_sec: Optional[float] = None,
+    disconnect: bool = True,
 ) -> Tuple[List[dict], List[str]]:
     """IB-refresh ``symbols``, rescan them, merge back into ``rows``."""
     if not symbols:
@@ -369,6 +390,7 @@ def _refresh_and_rescan(
         close_lag_sec=float(close_lag_sec if close_lag_sec is not None else args.ib_close_lag_sec),
         last_ts_map=ts_map,
         dry_run=False,
+        disconnect=bool(disconnect),
     )
     # Always rescan the requested list: even 0 new bars may still have
     # completed the previous slot already in the DB.
@@ -476,8 +498,10 @@ def _rebuild_full_watchlist(args, *, below_pct: float, store) -> Tuple[dict, Lis
         len(rows),
         as_of,
     )
+    built_et = et_session_date(datetime.now(timezone.utc))
     payload = {
         "as_of": as_of,
+        "watchlist_built_et": built_et.isoformat() if built_et else None,
         "n_universe": n_universe,
         "n_rows": len(rows),
         "stale_warning": stale,
@@ -717,7 +741,7 @@ def main() -> int:
                 stale = payload.get("stale_warning")
             except FileNotFoundError:
                 payload, rows, as_of, n_universe, stale = {}, [], "", 0, None
-            if _should_rebuild_watchlist(args, rows, as_of):
+            if _should_rebuild_watchlist(args, rows, as_of, payload=payload):
                 logger.info("Rebuilding 15m watchlist from TimescaleDB as_of=%s", as_of or "empty")
                 payload, rows, as_of, n_universe, stale = _rebuild_full_watchlist(
                     args, below_pct=below_pct, store=store
@@ -808,7 +832,11 @@ def main() -> int:
             logger.info("IB refresh batches hot/near=%d rest=%d", len(first), len(rest))
             if first:
                 rows, _ = _refresh_and_rescan(
-                    rows, first, args=args, below_pct=below_pct
+                    rows,
+                    first,
+                    args=args,
+                    below_pct=below_pct,
+                    disconnect=not bool(rest),
                 )
                 as_of = _max_as_of(filter_15m_rows(rows)) or as_of
                 stale = None

@@ -291,7 +291,7 @@ def _ib_15m_feed(
     now: datetime,
     job: dict,
 ) -> Dict[str, Any]:
-    role = "LIVE IB hist on the armed/hot list only (job channel_touch_15m, client 8823). Not overnight universe backfill."
+    role = "LIVE IB hist on the armed/hot list only (job channel_touch_15m, client 8826). Not overnight universe backfill."
     cadence = "Every US RTH 15m close"
     expected = last_completed_rth_15m(now)
     expected_s = _fmt_utc_naive(expected)
