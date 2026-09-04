@@ -1,0 +1,59 @@
+# Build / dependency folders
+node_modules/
+dist/
+build/
+out/
+vendor/
+.next/
+.nuxt/
+.turbo/
+.cache/
+coverage/
+
+# Virtualenvs
+venv/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# Large / auto-generated data & artifacts
+data/
+reports/
+exports/
+temp/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.eggs/
+htmlcov/
+.coverage
+*.parquet
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+# Large lockfiles (keep package.json / pyproject for context)
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lockb
+Pipfile.lock
+poetry.lock
+uv.lock
+
+# IDE / OS / secrets (not useful as code context)
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+
+# Cursor hook runtime state
+.cursor/hooks/state/
