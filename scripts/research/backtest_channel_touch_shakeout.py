@@ -45,6 +45,7 @@ from utils.research.channel_touch_entry_features import (  # noqa: E402
     snapshot_stock_features,
     stock_entry_feature_series,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,12 +54,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("channel_touch_shakeout")
 
-DEFAULT_TRADES = (
-    ROOT
-    / "reports"
-    / "ascending_channels"
-    / "channel_touch_trades_20260828_194314.csv"
-)
+DEFAULT_TRADES = resolve_artifact("channel_touch_trades_20260828_194314.csv")
 KEEPER_FILTERS = dict(
     require_in_channel=True,
     max_channel_span_days=365.0,
@@ -326,8 +322,7 @@ def main() -> int:
     print(_fmt_summary(_summarize(base, gain_col=base_col)))
     print(summarize_by_year(base, gain_col=base_col, buckets=YEAR_BUCKETS).to_string(index=False))
 
-    outdir = ROOT / "reports" / "ascending_channels"
-    outdir.mkdir(parents=True, exist_ok=True)
+    outdir = dated_outdir()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     for n in sweep:

@@ -16,8 +16,9 @@ from backtest_channel_touch_trades import (  # noqa: E402
     select_same_day_rs,
     _summarize,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact
 
-RAW = ROOT / "reports" / "ascending_channels" / "channel_touch_trades_raw_20260828_192557.csv"
+RAW = resolve_artifact("channel_touch_trades_raw_20260828_192557.csv")
 FRIC = 0.25
 
 
@@ -99,7 +100,7 @@ def main() -> None:
     ]
     cols = [c for c in keep if c in out.columns]
     print(out[cols].to_string(index=False))
-    dest = ROOT / "reports" / "ascending_channels" / "channel_touch_l3_opt_filter_ab_20260828.csv"
+    dest = dated_outdir() / "channel_touch_l3_opt_filter_ab_20260828.csv"
     out.to_csv(dest, index=False)
     print("wrote", dest)
 

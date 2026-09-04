@@ -39,6 +39,7 @@ from utils.scanning.channel_touch import (
 )
 from utils.scanning.channel_touch_1d import build_1d_watchlist_rows
 from utils.scanning.channel_touch_candidates_store import ChannelTouchCandidatesStore
+from utils.research.report_paths import dated_outdir
 
 RESEARCH = ROOT / "scripts" / "research"
 if str(RESEARCH) not in sys.path:
@@ -209,6 +210,7 @@ def main() -> int:
     load_env_file()
     ap = build_arg_parser()
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     dry_run = bool(args.dry_run or args.no_notify)
     window_bars = 0 if args.no_window_scan else int(args.window_bars)
     window_step = int(args.window_step_bars) if window_bars else 0

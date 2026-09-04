@@ -2,6 +2,8 @@
 
 Historical **5-minute** OHLCV from Interactive Brokers for the same names that already have IB **15m** in TimescaleDB. Used later for more realistic strategy fills. Not a live 15m substitute.
 
+Fill order is **newest year first, all symbols**, then the next older year: default **2025-01-01 through now** (includes 2026 YTD) for the whole 15m universe, then calendar **2024 … 2020**. That way a whole-universe 2025+ simulation can start before 2018–2019 history exists. `--no-year-slice` restores per-symbol full history (first 15m bar → now). `--no-through-now` caps 2025 at 2026-01-01.
+
 Client IDs (keep distinct; overlapping `ib.connect()` wedges Gateway):
 
 | Role | Client | When |
@@ -26,11 +28,11 @@ The 5m process also self-exits at next 09:15 ET (`--until`) and refuses to start
 
 ## Resume
 
-TimescaleDB `MAX(ts)` per symbol is the cursor. Each IB window (default **7 days**, official 5m max) is upserted before the next request. Ctrl+C, stop file, `--until`, or the RTH guard stop after the current window. Re-run continues.
+TimescaleDB `MIN/MAX(ts)` **inside the current year window** is the cursor (not global `MAX(ts)` — a 2026 last bar must not skip 2024). Each IB window (default **7 days**, official 5m max) is upserted before the next request. Ctrl+C, stop file, `--until`, or the RTH guard stop after the current window. Re-run continues the same year-first queue.
 
-Failed qualify / no 5m: `logs/data/ib_5m_universe_failed.txt` (skip until `--reset-failed`). Progress: `logs/data/ib_5m_universe_progress.json`. Coverage CSV: `reports/ascending_channels/ib_5m_coverage.csv`.
+Failed qualify / insert: `logs/data/ib_5m_universe_failed.txt` (skip until `--reset-failed`). Empty 5m in an older year is not a global fail. Progress: `logs/data/ib_5m_universe_progress.json`. Coverage CSV: `reports/ascending_channels/ib_5m_coverage.csv`.
 
-Do **not** copy the 15m skip-forever resume file pattern. `--fresh-hours` still skips names that are caught up to 15m and fresh.
+Do **not** copy the 15m skip-forever resume file pattern. `--fresh-hours` still skips names that are caught up on the newest (through-now) slice.
 
 ## Commands
 
@@ -41,6 +43,7 @@ set PYTHONPATH=.
 python scripts\data\backfill_ib_5m_universe.py --inventory
 python scripts\data\backfill_ib_5m_universe.py --dry-run --limit 2
 python scripts\data\backfill_ib_5m_universe.py --sleep 1 --ib-client-id 8823 --ib-port 4001
+python scripts\data\backfill_ib_5m_universe.py --no-year-slice
 
 crons\after_rth_ib_backfill.bat
 crons\backfill_ib_5m_universe.bat

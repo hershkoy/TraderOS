@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from utils.research.report_paths import dated_outdir
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -424,6 +426,7 @@ def main() -> int:
         default=ROOT / "docs/status_log/edge_hunt/channel_touch/2026-08-25_channel_touch_robustness.md",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     df = pd.read_csv(args.trades)
     df["stock"] = df["stock"].astype(str).str.strip().str.upper()

@@ -58,11 +58,15 @@ from utils.research.channel_touch_entry_features import (
     stock_entry_feature_series,
 )
 from utils.research.realistic_purchaser import (
+    DEFAULT_FILL_MODE,
     DEFAULT_MAX_LOW_TO_MID_PCT,
+    FILL_MODE_SIGNAL_CLOSE,
     exec_fill_15m_after_signal,
     exec_fill_daily_with_15m,
+    normalize_fill_mode,
 )
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
+from utils.research.report_paths import dated_outdir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -223,16 +227,134 @@ def _l3_rail_touch(
 
 
 def _limit_fill_at_support(support: float, bar_low: float, bar_high: float, slip_pct: float) -> Optional[float]:
-    """Limit buy at support plus slippage, clipped to the bar's range."""
+    """Limit buy at support plus slippage, clipped to the bar's range.
+
+    Never fills below the rail: if the bar never trades at/above support, skip.
+    """
     if not np.isfinite(support) or support <= 0:
         return None
     if not np.isfinite(bar_low) or not np.isfinite(bar_high) or bar_high < bar_low:
+        return None
+    if float(bar_high) + 1e-12 < float(support):
         return None
     raw = support * (1.0 + max(0.0, float(slip_pct)))
     fill = min(float(bar_high), max(float(bar_low), raw))
     if not np.isfinite(fill) or fill <= 0:
         return None
+    if fill + 1e-12 < float(support):
+        return None
     return float(fill)
+
+
+def _line_index_at(i: int, daily_i: Optional[np.ndarray]) -> int:
+    if daily_i is None:
+        return int(i)
+    if i < 0 or i >= len(daily_i):
+        return int(i)
+    di = int(daily_i[i])
+    return di if di >= 0 else int(i)
+
+
+def _reentry_or_breakout_fill(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    start_i: int,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    n: int,
+    error_pct: float,
+    slip: float,
+    wait: int,
+    daily_i: Optional[np.ndarray] = None,
+) -> Optional[Tuple[int, float, bool]]:
+    """First fill at/above support after ``start_i``: reclaim through support or resist-break.
+
+    Returns ``(i, fill, is_breakout)``. Never fills below the rail.
+    """
+    tol = float(error_pct) / 100.0
+    wait_n = max(1, int(wait))
+    h2_i = int(h2)
+    begin = max(int(start_i), 0)
+    for i in range(begin, int(n)):
+        line_i = _line_index_at(i, daily_i)
+        if daily_i is None:
+            if i > h2_i + wait_n:
+                break
+        else:
+            if line_i > h2_i + wait_n:
+                break
+        if line_i < 0:
+            continue
+        sup = _line_at(support_y0, support_x0, support_slope, line_i)
+        if not np.isfinite(sup) or sup <= 0:
+            continue
+        resist = float(sup) + float(width or 0.0)
+        if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (1.0 + tol):
+            fill = _limit_fill_at_support(resist, float(low[i]), float(high[i]), slip)
+            if fill is not None:
+                return (int(i), float(fill), True)
+        prev_below = False
+        if i > 0:
+            prev_line = _line_index_at(i - 1, daily_i)
+            sup_prev = _line_at(support_y0, support_x0, support_slope, prev_line)
+            if np.isfinite(sup_prev) and sup_prev > 0:
+                prev_below = float(close[i - 1]) < float(sup_prev) * (1.0 - tol)
+        this_below = float(close[i]) < float(sup) * (1.0 - tol)
+        if prev_below and (not this_below) and float(high[i]) + 1e-12 >= float(sup) * (1.0 - tol):
+            fill = _limit_fill_at_support(sup, float(low[i]), float(high[i]), slip)
+            if fill is not None:
+                return (int(i), float(fill), False)
+    return None
+
+
+def _ensure_fill_not_below_support(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    fill_i: int,
+    fill_px: Optional[float],
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    n: int,
+    error_pct: float,
+    slip: float,
+    wait: int,
+    daily_i: Optional[np.ndarray] = None,
+) -> Optional[Tuple[int, float, bool]]:
+    """Keep a fill at/above support; if it is below, defer to re-entry or resist-break."""
+    if fill_px is None or not np.isfinite(float(fill_px)) or float(fill_px) <= 0:
+        return None
+    line_i = _line_index_at(int(fill_i), daily_i)
+    sup = _line_at(support_y0, support_x0, support_slope, line_i)
+    if not np.isfinite(sup) or sup <= 0:
+        return (int(fill_i), float(fill_px), False)
+    if float(fill_px) + 1e-12 >= float(sup):
+        return (int(fill_i), float(fill_px), False)
+    return _reentry_or_breakout_fill(
+        high,
+        low,
+        close,
+        start_i=int(fill_i),
+        support_x0=support_x0,
+        support_y0=support_y0,
+        support_slope=support_slope,
+        width=width,
+        h2=h2,
+        n=n,
+        error_pct=error_pct,
+        slip=slip,
+        wait=wait,
+        daily_i=daily_i,
+    )
 
 
 def _close_broke_support(
@@ -824,6 +946,7 @@ def trades_for_symbol(
     intraday_fill: str = "",
     feature_asof_prior_bar: bool = False,
     realistic_fill: bool = False,
+    realistic_fill_mode: str = DEFAULT_FILL_MODE,
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     **channel_kwargs,
@@ -880,6 +1003,7 @@ def trades_for_symbol(
         )
     error_pct = float(channel_kwargs.get("error_pct", 1.2))
     use_realistic = bool(realistic_fill)
+    fill_mode = normalize_fill_mode(realistic_fill_mode)
     is_15m_bars = bool(hybrid or include_time)
 
     pending: List[tuple] = []
@@ -943,6 +1067,7 @@ def trades_for_symbol(
                             signal_j,
                             max_low_to_mid_pct=max_low_to_mid_pct,
                             max_chase_pct=max_chase_pct,
+                            fill_mode=fill_mode,
                         )
                         if adj is None:
                             continue
@@ -1000,6 +1125,7 @@ def trades_for_symbol(
                                 signal_i,
                                 max_low_to_mid_pct=max_low_to_mid_pct,
                                 max_chase_pct=max_chase_pct,
+                                fill_mode=fill_mode,
                             )
                             if adj is None:
                                 continue
@@ -1011,6 +1137,7 @@ def trades_for_symbol(
                                 dates[signal_i],
                                 max_low_to_mid_pct=max_low_to_mid_pct,
                                 max_chase_pct=max_chase_pct,
+                                fill_mode=fill_mode,
                             )
                             if adj_px is None:
                                 continue
@@ -1087,7 +1214,38 @@ def trades_for_symbol(
         sy0 = float(ch["support_y0"])
         sslope = float(ch["support_slope"])
         width = float(ch["channel_width"])
-        line_i = int(daily_entry_i) if hybrid else int(entry_i)
+        orig_entry_i = int(entry_i)
+        if fill_px is not None:
+            lifted = _ensure_fill_not_below_support(
+                sim_high,
+                sim_low,
+                sim_close,
+                fill_i=int(entry_i),
+                fill_px=float(fill_px),
+                support_x0=sx0,
+                support_y0=sy0,
+                support_slope=sslope,
+                width=width,
+                h2=int(ch.get("h2_idx", -1)),
+                n=sim_n,
+                error_pct=error_pct,
+                slip=float(entry_slip_pct),
+                wait=max(1, int(max_l3_wait_bars)),
+                daily_i=daily_i_map if hybrid else None,
+            )
+            if lifted is None:
+                continue
+            entry_i, fill_px, lifted_brk = lifted
+            if lifted_brk:
+                is_resist_break = True
+            if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
+                continue
+        deferred_channel = int(entry_i) != orig_entry_i
+        if hybrid and daily_i_map is not None and 0 <= int(entry_i) < len(daily_i_map):
+            mapped = int(daily_i_map[int(entry_i)])
+            line_i = mapped if mapped >= 0 else int(daily_entry_i)
+        else:
+            line_i = int(entry_i)
         feat_src = int(t_idx) if use_realistic else int(entry_i)
         atr_i_idx = max(0, feat_src - 1) if (hybrid or feature_asof_prior_bar or use_realistic) else feat_src
         if hybrid:
@@ -1123,7 +1281,11 @@ def trades_for_symbol(
             max_hold_days=hold_max,
             include_time=include_time,
             entry_px=fill_px,
-            skip_entry_bar_stop=bool(use_realistic and not is_15m_bars),
+            skip_entry_bar_stop=bool(
+                (use_realistic and not is_15m_bars)
+                or deferred_channel
+                or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
+            ),
         )
         if sim is None:
             continue
@@ -1260,6 +1422,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         intraday_fill=str(payload.get("intraday_fill") or ""),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
         realistic_fill=bool(payload.get("realistic_fill", False)),
+        realistic_fill_mode=str(payload.get("realistic_fill_mode") or DEFAULT_FILL_MODE),
         max_low_to_mid_pct=payload.get("max_low_to_mid_pct", DEFAULT_MAX_LOW_TO_MID_PCT),
         max_chase_pct=payload.get("max_chase_pct"),
         **(payload.get("channel_kwargs") or {}),
@@ -1426,7 +1589,16 @@ def filter_trades(
     if max_channel_pos is not None and "channel_pos" in out.columns:
         m &= out["channel_pos"].fillna(999) <= float(max_channel_pos)
     if require_in_channel and "channel_pos" in out.columns:
-        m &= out["channel_pos"].fillna(999) <= 1.0
+        pos = out["channel_pos"]
+        in_ch = (pos.fillna(999) <= 1.0) & (pos.fillna(-999) >= 0.0)
+        if "resist_break" in out.columns:
+            brk = out["resist_break"].fillna(False)
+            if brk.dtype == object:
+                brk = brk.astype(str).str.lower().isin(("true", "1", "yes"))
+            else:
+                brk = brk.astype(bool)
+            in_ch = in_ch | brk
+        m &= in_ch
     if min_width_pct is not None and "channel_width_pct" in out.columns:
         m &= out["channel_width_pct"].fillna(-1) >= float(min_width_pct)
     if max_width_pct is not None and "channel_width_pct" in out.columns:
@@ -2069,7 +2241,7 @@ def main() -> int:
     ap.add_argument(
         "--require-in-channel",
         action="store_true",
-        help="Reject entries with channel_pos > 1 (buy already above resistance)",
+        help="Reject entries outside the rails (channel_pos < 0 or > 1)",
     )
     ap.add_argument(
         "--max-beyond-width",
@@ -2158,7 +2330,16 @@ def main() -> int:
     ap.add_argument(
         "--realistic-fill",
         action="store_true",
-        help="15m: fill next-bar mid after close-confirm. 1d: blend daily X with next 15m mid after first print of X. Cancel if next-bar low-to-mid exceeds --max-low-to-mid-pct.",
+        help="Use realistic purchase prices. 15m default is signal-bar close; "
+        "pass --realistic-fill-mode next-mid for the old next-bar mid. "
+        "1d default is the 15m close that printed X; next-mid blends X with the following 15m mid.",
+    )
+    ap.add_argument(
+        "--realistic-fill-mode",
+        choices=("signal-close", "next-mid"),
+        default=DEFAULT_FILL_MODE,
+        help="When --realistic-fill: signal-close (default) fills at the touch bar close; "
+        "next-mid keeps the previous next-bar mid purchaser.",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",
@@ -2215,8 +2396,10 @@ def main() -> int:
         "--outdir",
         type=Path,
         default=ROOT / "reports" / "ascending_channels",
+        help="Base report folder; a YYYY-MM-DD subfolder is created automatically",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     intraday_fill = (args.intraday_fill or "").strip().lower()
     feat_asof_mode = (args.feature_asof or "auto").strip().lower()
     use_prior_bar = feat_asof_mode == "prior-bar" or (
@@ -2508,6 +2691,7 @@ def main() -> int:
             "intraday_fill": intraday_fill,
             "feature_asof_prior_bar": bool(use_prior_bar),
             "realistic_fill": bool(args.realistic_fill),
+            "realistic_fill_mode": str(args.realistic_fill_mode),
             "max_low_to_mid_pct": args.max_low_to_mid_pct,
             "max_chase_pct": args.max_chase_pct,
             "channel_kwargs": channel_kwargs,
@@ -2646,6 +2830,8 @@ def main() -> int:
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
         f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
+        "no_buy_below_channel=True (re-entry through support or resist-break)",
+        f"realistic_fill={bool(args.realistic_fill)} realistic_fill_mode={args.realistic_fill_mode}",
         f"elapsed_sec={elapsed:.1f}",
         "",
         *[f"{k}={v}" for k, v in summary.items()],

@@ -9,6 +9,8 @@ import pytest
 
 from utils.research.realistic_purchaser import (
     DEFAULT_MAX_LOW_TO_MID_PCT,
+    FILL_MODE_NEXT_MID,
+    FILL_MODE_SIGNAL_CLOSE,
     REASON_BAD_OHLC,
     REASON_BAD_SIGNAL,
     REASON_CHASE,
@@ -25,6 +27,7 @@ from utils.research.realistic_purchaser import (
     low_to_mid_pct,
     purchase_after_close_signal,
     purchase_after_daily_signal,
+    purchase_at_signal_close,
     purchase_at_signal_index,
     signal_time_from_bar,
 )
@@ -311,10 +314,10 @@ def test_purchase_at_signal_index_uses_next_row():
         },
         index=idx,
     )
-    got = purchase_at_signal_index(df, 0)
+    got = purchase_at_signal_index(df, 0, fill_mode=FILL_MODE_NEXT_MID)
     assert got.filled
     assert got.fill_px == pytest.approx(bar_mid(39.55, 39.30))
-    last = purchase_at_signal_index(df, 2)
+    last = purchase_at_signal_index(df, 2, fill_mode=FILL_MODE_NEXT_MID)
     assert not last.filled
     assert last.reason == REASON_NO_NEXT_BAR
 
@@ -513,7 +516,7 @@ def test_exec_fill_15m_after_signal_returns_next_index():
         },
         index=idx,
     )
-    got = exec_fill_15m_after_signal(df, 0)
+    got = exec_fill_15m_after_signal(df, 0, fill_mode=FILL_MODE_NEXT_MID)
     assert got is not None
     assert got[0] == 1
     assert got[1] == pytest.approx(bar_mid(20.12, 20.04))
@@ -532,5 +535,59 @@ def test_exec_fill_daily_with_15m_blends():
         ],
     )
     df = pd.DataFrame(bars).set_index("ts")
-    got = exec_fill_daily_with_15m(x, df, "2025-06-10")
+    got = exec_fill_daily_with_15m(x, df, "2025-06-10", fill_mode=FILL_MODE_NEXT_MID)
     assert got == pytest.approx((x + bar_mid(20.16, 20.04)) / 2.0)
+
+
+def test_purchase_at_signal_close_uses_signal_close():
+    sig = _bar(_et(2025, 11, 18, 10, 0), 280.0, 282.0, 279.46, 281.20)
+    got = purchase_at_signal_close(sig)
+    assert got.filled
+    assert got.fill_px == pytest.approx(281.20)
+    assert got.exec_bar_ts == _et(2025, 11, 18, 10, 0)
+
+
+def test_signal_close_allows_last_rth_bar():
+    last = _bar(_et(2025, 6, 10, 15, 45), 20.0, 20.2, 19.9, 20.1)
+    nxt = _bar(_et(2025, 6, 10, 16, 0), 20.1, 20.2, 20.0, 20.15)
+    assert not purchase_after_close_signal(last, nxt).filled
+    got = purchase_at_signal_close(last)
+    assert got.filled
+    assert got.fill_px == pytest.approx(20.1)
+
+
+def test_exec_fill_15m_default_stays_on_signal_bar():
+    from utils.research.realistic_purchaser import exec_fill_15m_after_signal
+
+    idx = pd.DatetimeIndex([_et(2025, 6, 10, 10, 0), _et(2025, 6, 10, 10, 15)])
+    df = pd.DataFrame(
+        {
+            "open": [20.00, 20.06],
+            "high": [20.10, 20.12],
+            "low": [19.95, 20.04],
+            "close": [20.05, 20.10],
+            "volume": [1e5, 1e5],
+        },
+        index=idx,
+    )
+    got = exec_fill_15m_after_signal(df, 0)
+    assert got is not None
+    assert got[0] == 0
+    assert got[1] == pytest.approx(20.05)
+
+
+def test_exec_fill_daily_signal_close_uses_print_close():
+    from utils.research.realistic_purchaser import exec_fill_daily_with_15m
+
+    x = 20.05
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 19.80, 19.90, 19.70, 19.85),
+            (9, 45, 19.90, 20.10, 19.88, 20.06),
+            (10, 0, 20.08, 20.16, 20.04, 20.12),
+        ],
+    )
+    df = pd.DataFrame(bars).set_index("ts")
+    got = exec_fill_daily_with_15m(x, df, "2025-06-10")
+    assert got == pytest.approx(20.06)

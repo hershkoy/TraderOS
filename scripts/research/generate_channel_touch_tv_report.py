@@ -18,7 +18,7 @@ Portfolio model:
 
 Usage (Windows CMD):
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\generate_channel_touch_tv_report.py
-  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\generate_channel_touch_tv_report.py --trades reports\\ascending_channels\\channel_touch_trades_XXXX.csv --rs-top1
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\generate_channel_touch_tv_report.py --trades reports\\ascending_channels\\YYYY-MM-DD\\channel_touch_trades_XXXX.csv --rs-top1
 """
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.research.backtest_channel_touch_trades import filter_trades
 from utils.data.ohlcv_loader import load_ohlcv_many
+from utils.research.report_paths import dated_outdir, latest_matching
 
 logging.basicConfig(
     level=logging.INFO,
@@ -296,13 +297,14 @@ def build_run_meta(trades_path: Path) -> Dict[str, Any]:
 
 
 def _latest_trades_csv(outdir: Path) -> Path:
-    files = sorted(
-        (p for p in outdir.glob("channel_touch_trades_*.csv") if "_trades_raw_" not in p.name),
-        key=lambda p: p.stat().st_mtime,
+    found = latest_matching(
+        outdir,
+        "channel_touch_trades_*.csv",
+        exclude_substr=("_trades_raw_",),
     )
-    if not files:
+    if found is None:
         raise FileNotFoundError(f"No channel_touch_trades_*.csv in {outdir}")
-    return files[-1]
+    return found
 
 
 def _apply_rs_topn(df: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -2280,7 +2282,12 @@ resetDefaults();
 def main() -> int:
     ap = argparse.ArgumentParser(description="TradingView-style strategy report for channel-touch trades")
     ap.add_argument("--trades", type=Path, default=None, help="Trades CSV path")
-    ap.add_argument("--outdir", type=Path, default=ROOT / "reports" / "ascending_channels")
+    ap.add_argument(
+        "--outdir",
+        type=Path,
+        default=ROOT / "reports" / "ascending_channels",
+        help="Base report folder; a YYYY-MM-DD subfolder is created automatically",
+    )
     ap.add_argument("--initial-capital", type=float, default=100_000.0)
     ap.add_argument("--notional", type=float, default=10_000.0, help="Default fixed $ per trade")
     ap.add_argument("--size-mode", choices=("fixed", "pct_initial", "pct_equity"), default="fixed")
@@ -2367,7 +2374,7 @@ def main() -> int:
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = "_".join(label_bits)
-    args.outdir.mkdir(parents=True, exist_ok=True)
+    args.outdir = dated_outdir(args.outdir)
     out_html = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.html"
     out_json = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.json"
 

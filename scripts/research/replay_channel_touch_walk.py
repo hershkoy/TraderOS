@@ -33,6 +33,7 @@ from utils.research.channel_touch_scale import (  # noqa: E402
     DAILY_WINDOW_STEP_BARS,
     PRESET_15M,
 )
+from utils.research.report_paths import dated_outdir  # noqa: E402
 from utils.research.channel_touch_walk_replay import (  # noqa: E402
     apply_quality_filters,
     batch_trades_for_symbol,
@@ -187,6 +188,7 @@ def main() -> int:
         default=ROOT / "reports" / "ascending_channels",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     is_15m = (args.preset or "").strip() == "15m" or (args.timeframe or "").strip() == "15m"
     symbol = str(args.symbol).strip().upper()

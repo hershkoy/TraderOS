@@ -12,11 +12,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from backtest_channel_touch_trades import (  # noqa: E402
+    _ensure_fill_not_below_support,
     _h2_rail_tag_fills,
     _h2_rail_tag_fills_on_15m,
     _l3_rail_touch,
     _limit_fill_at_support,
     _map_15m_to_daily_i,
+    _reentry_or_breakout_fill,
     _shakeout_rebuy_fill,
     _support_tagged,
     trades_for_symbol,
@@ -29,6 +31,7 @@ def test_support_tag_and_limit_fill():
     fill = _limit_fill_at_support(10.5, 10.0, 12.0, 0.001)
     assert fill is not None
     assert abs(fill - 10.5 * 1.001) < 1e-9
+    assert _limit_fill_at_support(10.5, 9.0, 10.2, 0.001) is None
 
 
 def test_gap_through_is_not_l3_rail_touch():
@@ -658,4 +661,117 @@ def test_h2_resist_break_skips_if_support_already_broken():
         h2_resist_break=True,
     )
     assert _h2_rail_tag_fills(high, low, close, **kw) == []
+
+
+def test_reentry_or_breakout_fill_reclaims_support():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    for i in range(20, 24):
+        _below_bar(high, low, close, i, y0, slope)
+    i = 24
+    sup = y0 + slope * i
+    low[i] = sup - 0.08
+    high[i] = sup + 0.55
+    close[i] = sup + 0.20
+    got = _reentry_or_breakout_fill(
+        high,
+        low,
+        close,
+        start_i=20,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+    )
+    assert got is not None
+    assert got[0] == 24
+    assert got[2] is False
+    assert got[1] + 1e-12 >= sup
+
+
+def test_reentry_or_breakout_fill_resist_break():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    for i in range(20, 23):
+        _below_bar(high, low, close, i, y0, slope)
+    i = 23
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.02
+    high[i] = close[i] + 0.1
+    low[i] = resist - 0.2
+    got = _reentry_or_breakout_fill(
+        high,
+        low,
+        close,
+        start_i=20,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+    )
+    assert got is not None
+    assert got[0] == 23 and got[2] is True
+
+
+def test_ensure_fill_not_below_support_keeps_in_channel():
+    y0, slope, width, high, low, close = _rail_series(n=40, h2=12)
+    i = 20
+    sup = y0 + slope * i
+    got = _ensure_fill_not_below_support(
+        high,
+        low,
+        close,
+        fill_i=i,
+        fill_px=sup + 0.4,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+    )
+    assert got == (20, sup + 0.4, False)
+
+
+def test_ensure_fill_below_support_defers_to_reentry():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    for i in range(20, 24):
+        _below_bar(high, low, close, i, y0, slope)
+    i = 24
+    sup = y0 + slope * i
+    low[i] = sup - 0.08
+    high[i] = sup + 0.55
+    close[i] = sup + 0.20
+    crash_px = (y0 + slope * 20) * 0.97
+    got = _ensure_fill_not_below_support(
+        high,
+        low,
+        close,
+        fill_i=20,
+        fill_px=crash_px,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+    )
+    assert got is not None
+    assert got[0] == 24
+    assert got[1] + 1e-12 >= sup
+    assert got[2] is False
 

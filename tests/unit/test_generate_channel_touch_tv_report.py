@@ -4,11 +4,24 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.research.generate_channel_touch_tv_report import (
+    _latest_trades_csv,
     _parse_summary_txt,
     _split_param_rows,
     _summary_path_for_trades,
     build_run_meta,
 )
+
+
+def test_latest_trades_csv_searches_date_subfolders(tmp_path):
+    dated = tmp_path / "2026-09-04"
+    dated.mkdir()
+    older = tmp_path / "2026-08-28"
+    older.mkdir()
+    (older / "channel_touch_trades_20260828_194314.csv").write_text("a\n", encoding="utf-8")
+    newest = dated / "channel_touch_trades_20260904_113653.csv"
+    newest.write_text("b\n", encoding="utf-8")
+    (dated / "channel_touch_trades_raw_20260904_113653.csv").write_text("c\n", encoding="utf-8")
+    assert _latest_trades_csv(tmp_path) == newest
 
 
 def test_summary_path_for_trades(tmp_path):

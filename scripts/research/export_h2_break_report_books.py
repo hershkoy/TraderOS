@@ -24,10 +24,10 @@ from backtest_channel_touch_trades import (  # noqa: E402
     filter_trades,
     select_same_day_rs,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
-OUTDIR = ROOT / "reports" / "ascending_channels"
-BRK = OUTDIR / "channel_touch_h2_resist_break_20260829_204905.csv"
-KEEPER = OUTDIR / "channel_touch_trades_20260828_194314.csv"
+BRK = resolve_artifact("channel_touch_h2_resist_break_20260829_204905.csv")
+KEEPER = resolve_artifact("channel_touch_trades_20260828_194314.csv")
 FRICTION = 0.25
 
 
@@ -73,8 +73,9 @@ def main() -> int:
     print("=== keeper + span365 re-RS ===", _summarize(combo_rs_n, gain_col="gain_pct_net"))
     print("resist-break kept after RS=%d / span365=%d / union=%d" % (n_brk_kept, len(brk_span), len(combo)))
 
-    span_path = OUTDIR / "channel_touch_h2_break_span365.csv"
-    union_path = OUTDIR / "channel_touch_h2_break_keeper_plus_span365.csv"
+    outdir = dated_outdir()
+    span_path = outdir / "channel_touch_h2_break_span365.csv"
+    union_path = outdir / "channel_touch_h2_break_keeper_plus_span365.csv"
     _write_csv(span_path, brk_span)
     _write_csv(union_path, combo)
     return 0

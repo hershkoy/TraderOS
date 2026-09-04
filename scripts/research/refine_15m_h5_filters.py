@@ -49,6 +49,7 @@ from utils.research.channel_touch_entry_model import (  # noqa: E402
     LogisticScorer,
     feature_matrix,
 )
+from utils.research.report_paths import dated_outdir, latest_matching  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -170,17 +171,14 @@ def comparison_from_summary(summary: pd.DataFrame, *, friction_pct: float) -> di
 
 
 def latest_refine_summary(outdir: Path) -> Path:
-    files = sorted(
-        (
-            p
-            for p in outdir.glob("channel_touch_15m_h5_refine_20*.csv")
-            if "_stress_" not in p.name
-        ),
-        key=lambda p: p.stat().st_mtime,
+    found = latest_matching(
+        outdir,
+        "channel_touch_15m_h5_refine_20*.csv",
+        exclude_substr=("_stress_",),
     )
-    if not files:
+    if found is None:
         raise FileNotFoundError("No channel_touch_15m_h5_refine_*.csv in %s" % outdir)
-    return files[-1]
+    return found
 
 
 def _row(name: str, desc: str, df: pd.DataFrame) -> dict:
@@ -286,6 +284,7 @@ def main() -> int:
         help="Write winner OOS trades + comparison JSON from the latest refine CSV (no logistic re-fit)",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     if args.export_report:
         return _export_report(args)
     raw = pd.read_csv(args.trades)

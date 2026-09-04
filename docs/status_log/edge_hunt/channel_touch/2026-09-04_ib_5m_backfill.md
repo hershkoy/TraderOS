@@ -5,7 +5,7 @@
 ## Ops
 
 - Universe = TimescaleDB IB `15m` symbols.
-- Forward-fill, upsert each 7-day IB window; resume from `MAX(ts)`.
+- Year-first: **2025-01-01 through now** for all symbols, then calendar 2024 … 2020. Resume is `MIN/MAX(ts)` inside that year window (global `MAX(ts)` would skip older years). Stopped 2026-09-04 after A/AAL full-history to switch.
 - **Mon–Fri 09:15 ET:** stop 5m (`stop_ib_5m_backfill`) so live 15m (client **8826**) owns Gateway.
 - **16:30 ET Mon–Fri:** `after_rth_ib_backfill` — IB 15m catch-up (8822) then 5m (8823) until next 09:15 ET. Friday continues through the weekend.
 - **1d** stays Alpaca `channel_touch_nightly` (local 23:00 ≈ 16:00 ET). Does not use IB.

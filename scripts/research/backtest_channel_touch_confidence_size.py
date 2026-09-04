@@ -40,6 +40,7 @@ from utils.research.channel_touch_entry_model import (  # noqa: E402
     purged_kfold_ridge,
     stitched_oos_metrics,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +51,7 @@ logger = logging.getLogger("backtest_channel_touch_confidence_size")
 
 STACKS: Dict[str, Dict[str, Any]] = {
     "1d": {
-        "raw": ROOT / "reports" / "ascending_channels" / "channel_touch_trades_raw_20260828_194314.csv",
+        "raw": resolve_artifact("channel_touch_trades_raw_20260828_194314.csv"),
         "friction_pct": 0.25,
         "feature_cols": RIDGE_FEATURES_1D,
         "min_wait_bars": 6,
@@ -62,10 +63,7 @@ STACKS: Dict[str, Dict[str, Any]] = {
         },
     },
     "15m": {
-        "raw": ROOT
-        / "reports"
-        / "ascending_channels"
-        / "channel_touch_15m_trades_raw_20260829_105511.csv",
+        "raw": resolve_artifact("channel_touch_15m_trades_raw_20260829_105511.csv"),
         "friction_pct": 0.10,
         "feature_cols": RIDGE_FEATURES_15M,
         "min_wait_bars": 12,
@@ -227,6 +225,7 @@ def main() -> int:
     ap.add_argument("--l2", type=float, default=DEFAULT_RIDGE_L2)
     ap.add_argument("--kfold", type=int, default=5)
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     stacks = ("1d", "15m") if args.stack == "both" else (args.stack,)
     if args.trades is not None and len(stacks) != 1:
         logger.error("--trades requires a single --stack (1d or 15m)")

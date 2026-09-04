@@ -1,18 +1,22 @@
 """Realistic fills for 15m close-confirm and daily signals that use 15m prints.
 
-15m: signal exists at the close of bar T (IB labels bars at period start, so
-that clock is T+15m = the open of bar T+1). Fill is the next bar's mid.
-The last RTH bar (15:45-16:00 ET) is a valid window; a confirming close at
-16:00 has no following RTH 15m and is cancelled.
+Default 15m fill (``signal-close``): buy at the close of the signal bar — the
+bar that tagged the rail. That close is known when the bar completes, so the
+BUY sits on the touch candle instead of the next bar's mid (which can be
+mid-channel and never tagged support).
 
-1d: given daily signal buy price X, take the first RTH 15m bar that day whose
-range contains X, then the next same-session 15m bar. Fill is
-(X + next_mid) / 2. If X never prints, or it only prints on the 15:45 bar,
-cancel. Same wild-bar gate on the next 15m.
+Kept 15m fill (``next-mid``): signal exists at the close of bar T (IB labels
+bars at period start, so that clock is T+15m = the open of bar T+1). Fill is
+the next bar's mid. The last RTH bar (15:45-16:00 ET) has no following RTH 15m
+and is cancelled. Wild-bar gate: cancel when (mid-low)/mid exceeds
+``max_low_to_mid_pct`` (default 0.5%).
 
-Cancel when (mid-low)/mid exceeds ``max_low_to_mid_pct`` (default 0.5%).
-Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill`` in
-``backtest_channel_touch_trades.py`` / ``backtest_channel_touch_h2_break.py``.
+1d default (``signal-close``): first RTH 15m that prints X, fill at that bar's
+close. ``next-mid`` blends X with the next 15m mid (cancels on 15:45 prints).
+
+Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
+and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
+``backtest_channel_touch_h2_break.py``.
 """
 from __future__ import annotations
 
@@ -28,6 +32,18 @@ RTH_OPEN = time(9, 30)
 LAST_RTH_15M = time(15, 45)
 BAR_MINUTES = 15
 DEFAULT_MAX_LOW_TO_MID_PCT = 0.005
+FILL_MODE_SIGNAL_CLOSE = "signal-close"
+FILL_MODE_NEXT_MID = "next-mid"
+DEFAULT_FILL_MODE = FILL_MODE_SIGNAL_CLOSE
+
+
+def normalize_fill_mode(raw: Optional[str]) -> str:
+    text = str(raw or DEFAULT_FILL_MODE).strip().lower().replace("_", "-")
+    if text in (FILL_MODE_NEXT_MID, "mid", "next-bar-mid", "nextmid"):
+        return FILL_MODE_NEXT_MID
+    if text in (FILL_MODE_SIGNAL_CLOSE, "close", "signalclose", "bar-close", "current-close"):
+        return FILL_MODE_SIGNAL_CLOSE
+    raise ValueError("unknown realistic fill mode: %s" % raw)
 
 REASON_FILLED = "filled"
 REASON_NO_NEXT_BAR = "no_next_bar"
@@ -291,6 +307,41 @@ def purchase_after_close_signal(
     )
 
 
+def purchase_at_signal_close(
+    signal_bar: BarLike,
+    *,
+    naive_tz: str = "UTC",
+) -> PurchaseResult:
+    """Fill at the close of the signal bar (known when that 15m bar completes).
+
+    Last RTH bar is allowed — there is no next-bar requirement.
+    """
+    sig_ts = _bar_ts(signal_bar, naive_tz=naive_tz)
+    sig_h = _px(signal_bar, "high")
+    sig_l = _px(signal_bar, "low")
+    sig_c = _px(signal_bar, "close")
+    if sig_ts is None or sig_c is None or not _hl_ok(sig_h, sig_l):
+        return _result(REASON_BAD_SIGNAL)
+    if not is_rth_15m_bar_start(sig_ts, naive_tz=naive_tz):
+        return _result(REASON_BAD_SIGNAL, signal_px=sig_c)
+    sig_clock = signal_time_from_bar(sig_ts, naive_tz=naive_tz)
+    start = _floor_15m(as_et(sig_ts, naive_tz=naive_tz))
+    mid = bar_mid(sig_h, sig_l)
+    l2m = low_to_mid_pct(sig_h, sig_l)
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=float(sig_c),
+        signal_time=sig_clock,
+        signal_px=sig_c,
+        exec_bar_ts=start,
+        mid=mid,
+        low_to_mid=l2m,
+        chase=0.0,
+        hit_bar_ts=start,
+    )
+
+
 def _row_bar(df: pd.DataFrame, i: int, *, naive_tz: str) -> dict:
     row = df.iloc[i]
     ts = df.index[i]
@@ -313,11 +364,15 @@ def purchase_at_signal_index(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
+    fill_mode: str = DEFAULT_FILL_MODE,
 ) -> PurchaseResult:
-    """Same fill rule using a 15m OHLCV frame (DatetimeIndex or timestamp column)."""
+    """Fill using a 15m OHLCV frame (DatetimeIndex or timestamp column)."""
     if df is None or df.empty or signal_i < 0 or signal_i >= len(df):
         return _result(REASON_BAD_SIGNAL)
     signal_bar = _row_bar(df, signal_i, naive_tz=naive_tz)
+    mode = normalize_fill_mode(fill_mode)
+    if mode == FILL_MODE_SIGNAL_CLOSE:
+        return purchase_at_signal_close(signal_bar, naive_tz=naive_tz)
     next_bar = None
     if signal_i + 1 < len(df):
         next_bar = _row_bar(df, signal_i + 1, naive_tz=naive_tz)
@@ -380,11 +435,14 @@ def purchase_after_daily_signal(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
+    fill_mode: str = FILL_MODE_NEXT_MID,
 ) -> PurchaseResult:
-    """Daily signal at price X: first 15m print of X that session, then blend with next mid.
+    """Daily signal at price X: first 15m print of X that session.
 
-    entry = (X + next_15m_mid) / 2. Wild/EOD rules match the 15m purchaser
-    (next bar after the print; 15:45 print has no window).
+    ``next-mid`` (this function's default, kept): entry = (X + next_15m_mid) / 2.
+    Wild/EOD rules match the 15m next-mid purchaser (15:45 print has no window).
+
+    ``signal-close``: fill at that print bar's close (last RTH print is allowed).
     """
     try:
         px = float(signal_buy_price)
@@ -413,6 +471,44 @@ def purchase_after_daily_signal(
         return _result(REASON_PRICE_NOT_PRINTED, signal_px=px)
 
     hit = bars[hit_i]
+    hit_ts = hit["ts"]
+    mode = normalize_fill_mode(fill_mode)
+    if mode == FILL_MODE_SIGNAL_CLOSE:
+        hit_c = _px(hit, "close")
+        hit_h = _px(hit, "high")
+        hit_l = _px(hit, "low")
+        if hit_c is None or not _hl_ok(hit_h, hit_l):
+            return _result(REASON_BAD_OHLC, signal_px=px, hit_bar_ts=hit_ts)
+        chase = (float(hit_c) - px) / px
+        if max_chase_pct is not None and chase > float(max_chase_pct):
+            return _result(
+                REASON_CHASE,
+                signal_px=px,
+                exec_bar_ts=hit_ts,
+                mid=bar_mid(hit_h, hit_l),
+                chase=chase,
+                hit_bar_ts=hit_ts,
+            )
+        inner_close = purchase_at_signal_close(hit, naive_tz=naive_tz)
+        if not inner_close.filled:
+            return _result(
+                inner_close.reason,
+                signal_px=px,
+                exec_bar_ts=inner_close.exec_bar_ts,
+                hit_bar_ts=hit_ts,
+            )
+        return _result(
+            REASON_FILLED,
+            filled=True,
+            fill_px=float(hit_c),
+            signal_time=inner_close.signal_time,
+            signal_px=px,
+            exec_bar_ts=inner_close.exec_bar_ts,
+            mid=inner_close.mid,
+            low_to_mid=inner_close.low_to_mid_pct,
+            chase=chase,
+            hit_bar_ts=hit_ts,
+        )
     nxt = bars[hit_i + 1] if hit_i + 1 < len(bars) else None
     inner = purchase_after_close_signal(
         hit,
@@ -421,7 +517,6 @@ def purchase_after_daily_signal(
         max_chase_pct=None,
         naive_tz=naive_tz,
     )
-    hit_ts = hit["ts"]
     if not inner.filled:
         return _result(
             inner.reason,
@@ -475,17 +570,26 @@ def exec_fill_15m_after_signal(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
+    fill_mode: str = DEFAULT_FILL_MODE,
 ) -> Optional[tuple]:
-    """Next same-session 15m mid after close-confirm at ``signal_i``, or None."""
+    """Realistic 15m fill at ``signal_i``, or None.
+
+    Default ``signal-close`` stays on the signal bar at its close.
+    ``next-mid`` returns (signal_i + 1, next bar mid) as before.
+    """
+    mode = normalize_fill_mode(fill_mode)
     got = purchase_at_signal_index(
         df,
         signal_i,
         max_low_to_mid_pct=max_low_to_mid_pct,
         max_chase_pct=max_chase_pct,
         naive_tz=naive_tz,
+        fill_mode=mode,
     )
     if not got.filled or got.fill_px is None:
         return None
+    if mode == FILL_MODE_SIGNAL_CLOSE:
+        return int(signal_i), float(got.fill_px)
     return int(signal_i) + 1, float(got.fill_px)
 
 
@@ -497,8 +601,9 @@ def exec_fill_daily_with_15m(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
+    fill_mode: str = DEFAULT_FILL_MODE,
 ) -> Optional[float]:
-    """Blend daily X with the next 15m mid after the first print of X."""
+    """Daily X: default fill at the 15m close that printed X; ``next-mid`` blends."""
     if df_15m is None or df_15m.empty:
         return None
     got = purchase_after_daily_signal(
@@ -508,6 +613,7 @@ def exec_fill_daily_with_15m(
         max_low_to_mid_pct=max_low_to_mid_pct,
         max_chase_pct=max_chase_pct,
         naive_tz=naive_tz,
+        fill_mode=fill_mode,
     )
     if not got.filled or got.fill_px is None:
         return None

@@ -71,6 +71,21 @@ def test_require_in_channel_drops_above_resist():
     assert set(out["stock"]) == {"AAA", "CCC"}
 
 
+def test_require_in_channel_drops_below_support():
+    below = _sample().copy()
+    below.loc[below["stock"] == "AAA", "channel_pos"] = -0.4
+    out = filter_trades(below, require_in_channel=True)
+    assert set(out["stock"]) == {"CCC"}
+
+
+def test_require_in_channel_keeps_resist_break_above_rail():
+    df = _sample().copy()
+    df["resist_break"] = False
+    df.loc[df["stock"] == "BBB", "resist_break"] = True
+    out = filter_trades(df, require_in_channel=True)
+    assert set(out["stock"]) == {"AAA", "BBB", "CCC"}
+
+
 def test_max_channel_span_days():
     out = filter_trades(_sample(), max_channel_span_days=400)
     # AAA ~151d, BBB ~882d, CCC ~152d
@@ -275,6 +290,7 @@ def test_realistic_fill_15m_shifts_entry_and_price():
         max_l3_wait_bars=252,
         include_time=True,
         realistic_fill=True,
+        realistic_fill_mode="next-mid",
     )
     with mock.patch(
         "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch_brk]
@@ -290,6 +306,59 @@ def test_realistic_fill_15m_shifts_entry_and_price():
     assert len(rows) == 1
     assert rows[0]["entry_i"] == 51
     assert rows[0]["buy_price"] == 111.11
+    assert rows[0]["wait_bars"] == 50 - 21
+
+
+def test_realistic_fill_15m_signal_close_stays_on_tag_bar():
+    df = _occ_ohlcv(80)
+    ch_brk = _occ_setup(df, h2=21, width=9.0)
+
+    def fake_fills(high, low, close, **kwargs):
+        return [(50, 115.0, 3, False, True)]
+
+    def fake_sim(high, low, close, dates, entry_i, **kwargs):
+        exit_i = min(int(entry_i) + 10, len(close) - 1)
+        px = float(kwargs.get("entry_px") or close[entry_i])
+        return {
+            "buy_date": dates[entry_i].strftime("%Y-%m-%d"),
+            "buy_price": px,
+            "sell_date": dates[exit_i].strftime("%Y-%m-%d"),
+            "sell_price": float(close[exit_i]),
+            "gain_pct": 1.0,
+            "hold_days": 10,
+            "exit_reason": "trail_stop",
+            "entry_i": int(entry_i),
+            "exit_i": int(exit_i),
+        }
+
+    scan = dict(
+        entry_mode="l3_touch",
+        h2_resist_break=True,
+        h2_resist_break_only=True,
+        entry_features=False,
+        squeeze_adaptive=False,
+        window_bars=None,
+        pivot_len=5,
+        min_l3_wait_bars=1,
+        max_l3_wait_bars=252,
+        include_time=True,
+        realistic_fill=True,
+        realistic_fill_mode="signal-close",
+    )
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch_brk]
+    ), mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ), mock.patch(
+        "backtest_channel_touch_trades.exec_fill_15m_after_signal",
+        return_value=(50, 114.25),
+    ), mock.patch(
+        "backtest_channel_touch_trades._simulate_trade", side_effect=fake_sim
+    ):
+        rows = trades_for_symbol("AAA", df, **scan)
+    assert len(rows) == 1
+    assert rows[0]["entry_i"] == 50
+    assert rows[0]["buy_price"] == 114.25
     assert rows[0]["wait_bars"] == 50 - 21
 
 

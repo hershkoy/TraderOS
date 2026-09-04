@@ -27,6 +27,7 @@ from utils.research.channel_touch_entry_model import (  # noqa: E402
     trade_metrics,
     walk_forward,
 )
+from utils.research.report_paths import dated_outdir
 
 
 def pack(df: pd.DataFrame, friction: float) -> pd.DataFrame:
@@ -48,6 +49,7 @@ def main() -> int:
     ap.add_argument("--kind", choices=("logistic", "mlp"), default="mlp")
     ap.add_argument("--outdir", type=Path, default=ROOT / "reports" / "ascending_channels")
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     raw = pd.read_csv(args.raw)
     raw["buy_date"] = pd.to_datetime(raw["buy_date"])

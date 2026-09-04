@@ -18,6 +18,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     summarize_by_year,
     _summarize,
 )
+from utils.research.report_paths import dated_outdir
 
 FRIC = 0.10
 SPAN = 10.0
@@ -79,6 +80,7 @@ def main() -> int:
     ap.add_argument("--raw", required=True, type=Path)
     ap.add_argument("--outdir", type=Path, default=ROOT / "reports" / "ascending_channels")
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     raw = pd.read_csv(args.raw)
     raw["buy_date"] = pd.to_datetime(raw["buy_date"])

@@ -2,9 +2,11 @@
 """
 IB 5m backfill for the stored IB 15m universe.
 
-TimescaleDB last_ts is the resume cursor (forward-fill, save each IB window).
-Ctrl+C, --stop-file, --until, or the RTH yield window all stop after the
-current window so the next run continues.
+Newest calendar year first for all symbols (default 2025-01-01 through now,
+then 2024 ... 2020) so a whole-universe simulation can start before older
+years finish. Resume is MAX(ts) inside that year window, not a skip-forever
+file. Ctrl+C, --stop-file, --until, or the RTH yield window all stop after
+the current window so the next run continues.
 
 Do not run during US RTH: live 15m monitoring owns Gateway (client 8826).
 Default client 8823. 15m universe is 8822; single-symbol 5m is 8824.
@@ -68,6 +70,9 @@ DEFAULT_INVENTORY = ROOT / "reports" / "ascending_channels" / "ib_5m_coverage.cs
 DEFAULT_CLIENT_ID = 8823
 TIMEFRAME = "5m"
 BAR_MINUTES = 5
+DEFAULT_YEAR_FROM = 2025
+DEFAULT_YEAR_TO = 2020
+YEAR_SLACK_DAYS = 7
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -173,6 +178,34 @@ def parse_args(argv=None) -> argparse.Namespace:
         default="",
         help="Exit 0 if this CronRunner job still holds its lock (weekend safety)",
     )
+    ap.add_argument(
+        "--year-from",
+        type=int,
+        default=DEFAULT_YEAR_FROM,
+        help="Newest calendar year to fill first (default 2025)",
+    )
+    ap.add_argument(
+        "--year-to",
+        type=int,
+        default=DEFAULT_YEAR_TO,
+        help="Oldest calendar year to fill last (default 2020)",
+    )
+    ap.add_argument(
+        "--years",
+        default="",
+        help="Optional comma list overriding --year-from/--year-to "
+        "(e.g. 2025,2024,2023,2022,2021,2020)",
+    )
+    ap.add_argument(
+        "--no-through-now",
+        action="store_true",
+        help="Cap the newest year at Jan 1 of the next year (excludes 2026 YTD from the 2025 pass)",
+    )
+    ap.add_argument(
+        "--no-year-slice",
+        action="store_true",
+        help="Old behavior: fill each symbol from first 15m bar to now before the next symbol",
+    )
     return ap.parse_args(argv)
 
 
@@ -257,6 +290,153 @@ def rewind_start(last_ts: pd.Timestamp, overlap_bars: int) -> datetime:
     return (ts - delta).to_pydatetime()
 
 
+def parse_year_list(years_csv: str, year_from: int, year_to: int) -> List[int]:
+    """Newest-first year order. --years overrides --year-from/--year-to."""
+    raw = str(years_csv or "").strip()
+    if raw:
+        out = [int(x.strip()) for x in raw.split(",") if x.strip()]
+        if not out:
+            raise ValueError("empty --years")
+        return out
+    newest = int(year_from)
+    oldest = int(year_to)
+    if newest < oldest:
+        raise ValueError("year-from must be >= year-to (newest year first)")
+    return list(range(newest, oldest - 1, -1))
+
+
+def year_slice_bounds(
+    year: int,
+    *,
+    newest_year: int,
+    now: datetime,
+    through_now: bool,
+) -> Tuple[datetime, datetime]:
+    """UTC [Jan 1, next Jan 1). Newest year optionally extends through now (2026 YTD)."""
+    start = datetime(int(year), 1, 1, tzinfo=timezone.utc)
+    when = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    when = when.astimezone(timezone.utc)
+    if through_now and int(year) == int(newest_year):
+        return start, when
+    return start, datetime(int(year) + 1, 1, 1, tzinfo=timezone.utc)
+
+
+def _window_start_bound(
+    window_start: datetime,
+    first_15m: Optional[pd.Timestamp],
+) -> datetime:
+    bound = window_start
+    if bound.tzinfo is None:
+        bound = bound.replace(tzinfo=timezone.utc)
+    f15 = _as_utc(first_15m)
+    if f15 is not None:
+        fdt = f15.to_pydatetime()
+        if fdt.tzinfo is None:
+            fdt = fdt.replace(tzinfo=timezone.utc)
+        if fdt > bound:
+            return fdt
+    return bound
+
+
+def year_window_complete(
+    first_in: Optional[pd.Timestamp],
+    last_in: Optional[pd.Timestamp],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    first_15m: Optional[pd.Timestamp],
+    last_15m: Optional[pd.Timestamp] = None,
+    now: Optional[datetime] = None,
+    slack_days: int = YEAR_SLACK_DAYS,
+    through_now: bool = False,
+    fresh_hours: float = 36.0,
+) -> bool:
+    """True if 5m already covers this year window (gap at start counts as incomplete)."""
+    last_ts = _as_utc(last_in)
+    if last_ts is None:
+        return False
+    first_ts = _as_utc(first_in)
+    start_bound = _window_start_bound(window_start, first_15m)
+    slack = timedelta(days=max(1, int(slack_days)))
+    if first_ts is None or first_ts > _as_utc(start_bound) + slack:
+        return False
+    if through_now:
+        return not needs_backfill(
+            last_ts, last_15m, now=now, fresh_hours=float(fresh_hours)
+        )
+    end_ts = _as_utc(window_end)
+    return last_ts >= end_ts - slack
+
+
+def year_fetch_start(
+    last_in: Optional[pd.Timestamp],
+    first_in: Optional[pd.Timestamp],
+    *,
+    window_start: datetime,
+    first_15m: Optional[pd.Timestamp],
+    overlap_bars: int,
+    slack_days: int = YEAR_SLACK_DAYS,
+) -> datetime:
+    """Resume inside the year, or restart from the window start if the front is missing."""
+    start_bound = _window_start_bound(window_start, first_15m)
+    last_ts = _as_utc(last_in)
+    if last_ts is None:
+        return start_bound
+    first_ts = _as_utc(first_in)
+    slack = timedelta(days=max(1, int(slack_days)))
+    if first_ts is None or first_ts > _as_utc(start_bound) + slack:
+        return start_bound
+    return rewind_start(last_ts, overlap_bars)
+
+
+def symbol_year_job(
+    symbol: str,
+    first_15m: Optional[pd.Timestamp],
+    last_15m: Optional[pd.Timestamp],
+    first_in: Optional[pd.Timestamp],
+    last_in: Optional[pd.Timestamp],
+    *,
+    year: int,
+    window_start: datetime,
+    window_end: datetime,
+    through_now: bool,
+    now: datetime,
+    overlap_bars: int,
+    fresh_hours: float,
+) -> Optional[Tuple[str, int, datetime, datetime]]:
+    """One (symbol, year) fetch job, or None if this window is skippable."""
+    f15 = _as_utc(first_15m)
+    l15 = _as_utc(last_15m)
+    if f15 is not None and f15 >= _as_utc(window_end):
+        return None
+    if l15 is not None and l15 < _as_utc(window_start):
+        return None
+    if year_window_complete(
+        first_in,
+        last_in,
+        window_start=window_start,
+        window_end=window_end,
+        first_15m=first_15m,
+        last_15m=last_15m,
+        now=now,
+        through_now=through_now,
+        fresh_hours=float(fresh_hours),
+    ):
+        return None
+    start_dt = year_fetch_start(
+        last_in,
+        first_in,
+        window_start=window_start,
+        first_15m=first_15m,
+        overlap_bars=int(overlap_bars),
+    )
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    if start_dt >= window_end:
+        return None
+    return (str(symbol).upper(), int(year), start_dt, window_end)
+
+
 def load_skip_list(path: Path) -> set:
     if not path.exists():
         return set()
@@ -318,6 +498,64 @@ def load_symbol_5m_last(symbol: str) -> Optional[pd.Timestamp]:
     if not row or row[0] is None:
         return None
     return _as_utc(row[0])
+
+
+def load_symbol_5m_range(
+    symbol: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    """MIN/MAX(ts) for one IB 5m symbol inside [start, end)."""
+    client = get_timescaledb_client()
+    if not client.ensure_connection():
+        raise RuntimeError("Failed to connect to TimescaleDB")
+    sql = """
+        SELECT MIN(ts), MAX(ts) FROM market_data
+        WHERE provider = %s AND timeframe = %s AND symbol = %s
+          AND ts >= %s AND ts < %s
+    """
+    cur = client.connection.cursor()
+    try:
+        cur.execute(
+            sql,
+            ("IB", TIMEFRAME, str(symbol).upper(), start_dt, end_dt),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    if not row or (row[0] is None and row[1] is None):
+        return None, None
+    return _as_utc(row[0]), _as_utc(row[1])
+
+
+def load_ib_coverage_range(
+    timeframe: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> pd.DataFrame:
+    """Per-symbol first/last IB timestamp inside [start, end)."""
+    client = get_timescaledb_client()
+    if not client.ensure_connection():
+        raise RuntimeError("Failed to connect to TimescaleDB")
+    sql = """
+        SELECT symbol, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n_bars
+        FROM market_data
+        WHERE provider = %s AND timeframe = %s AND ts >= %s AND ts < %s
+        GROUP BY symbol
+        ORDER BY symbol
+    """
+    cur = client.connection.cursor()
+    try:
+        cur.execute("SET LOCAL statement_timeout = '120s'")
+        cur.execute(sql, ("IB", timeframe, start_dt, end_dt))
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+    df = pd.DataFrame(rows, columns=["symbol", "first_ts", "last_ts", "n_bars"])
+    if df.empty:
+        return df
+    df["symbol"] = df["symbol"].astype(str).str.upper()
+    return df
 
 
 def _symbols_from_file(path: Path) -> List[str]:
@@ -626,31 +864,109 @@ def main(argv=None) -> int:
         )
         return 1
 
-    todo: List[Tuple[str, pd.Timestamp, Optional[pd.Timestamp]]] = []
+    year_slice = not bool(args.no_year_slice)
+    years: List[int] = []
+    through_now = not bool(args.no_through_now)
+    todo: List[Tuple[str, Optional[int], datetime, datetime]] = []
     skipped_fresh = 0
     skipped_failed = 0
-    for _, row in cov15.iterrows():
-        sym = str(row["symbol"]).upper()
-        last_15m = row["last_ts"]
-        first_15m = row["first_ts"]
-        if sym in failed:
-            skipped_failed += 1
-            continue
-        last_5m = last5_map.get(sym)
-        if not needs_backfill(
-            last_5m, last_15m, now=now, fresh_hours=float(args.fresh_hours)
-        ):
-            skipped_fresh += 1
-            continue
-        todo.append((sym, pd.Timestamp(first_15m), _as_utc(last_5m)))
+    skipped_year_done = 0
+    newest_year = None
+    if year_slice:
+        try:
+            years = parse_year_list(args.years, int(args.year_from), int(args.year_to))
+        except ValueError as exc:
+            logger.error("Bad year list: %s", exc)
+            return 1
+        newest_year = years[0]
+        skipped_failed = sum(
+            1 for _, row in cov15.iterrows() if str(row["symbol"]).upper() in failed
+        )
+        logger.info(
+            "Year order %s (newest year %s through_now=%s)",
+            years,
+            newest_year,
+            through_now,
+        )
+        for year in years:
+            ystart, yend = year_slice_bounds(
+                year,
+                newest_year=newest_year,
+                now=now,
+                through_now=through_now,
+            )
+            logger.info(
+                "Loading IB 5m coverage for %s (%s -> %s) ...",
+                year,
+                ystart.strftime("%Y-%m-%d"),
+                yend.strftime("%Y-%m-%d %H:%M"),
+            )
+            cov_year = load_ib_coverage_range(TIMEFRAME, ystart, yend)
+            range_map = {}
+            if not cov_year.empty:
+                range_map = {
+                    str(r["symbol"]).upper(): (r["first_ts"], r["last_ts"])
+                    for _, r in cov_year.iterrows()
+                }
+            n_before = len(todo)
+            for _, row in cov15.iterrows():
+                sym = str(row["symbol"]).upper()
+                if sym in failed:
+                    continue
+                first_in, last_in = range_map.get(sym, (None, None))
+                job = symbol_year_job(
+                    sym,
+                    row["first_ts"],
+                    row["last_ts"],
+                    first_in,
+                    last_in,
+                    year=year,
+                    window_start=ystart,
+                    window_end=yend,
+                    through_now=through_now and year == newest_year,
+                    now=now,
+                    overlap_bars=int(args.overlap_bars),
+                    fresh_hours=float(args.fresh_hours),
+                )
+                if job is None:
+                    skipped_year_done += 1
+                    continue
+                todo.append(job)
+            logger.info(
+                "Year %s queue +%d (total %d)",
+                year,
+                len(todo) - n_before,
+                len(todo),
+            )
+    else:
+        for _, row in cov15.iterrows():
+            sym = str(row["symbol"]).upper()
+            last_15m = row["last_ts"]
+            first_15m = row["first_ts"]
+            if sym in failed:
+                skipped_failed += 1
+                continue
+            last_5m = last5_map.get(sym)
+            if not needs_backfill(
+                last_5m, last_15m, now=now, fresh_hours=float(args.fresh_hours)
+            ):
+                skipped_fresh += 1
+                continue
+            start_dt = _as_utc(first_15m).to_pydatetime()
+            if last_5m is not None and not pd.isna(last_5m):
+                start_dt = rewind_start(last_5m, int(args.overlap_bars))
+            todo.append((sym, None, start_dt, now))
     if args.limit and args.limit > 0:
         todo = todo[: int(args.limit)]
     logger.info(
-        "Fetch queue %d | skipped_fresh=%d skipped_failed=%d fresh_hours=%.1f "
-        "client_id=%s batch_days=%d dry_run=%s",
+        "Fetch queue %d | skipped_fresh=%d skipped_year_done=%d skipped_failed=%d "
+        "year_slice=%s years=%s fresh_hours=%.1f client_id=%s batch_days=%d dry_run=%s",
         len(todo),
         skipped_fresh,
+        skipped_year_done,
         skipped_failed,
+        year_slice,
+        years if year_slice else "full-history",
         float(args.fresh_hours),
         args.ib_client_id,
         int(args.batch_days),
@@ -692,37 +1008,57 @@ def main(argv=None) -> int:
     n_stopped = False
     t0 = time.perf_counter()
     try:
-        for i, (sym, first_15m, last_5m) in enumerate(todo, start=1):
+        for i, (sym, year, start_dt, end_dt) in enumerate(todo, start=1):
             if should_stop():
                 n_stopped = True
                 logger.info("Stopping before %s (%d/%d)", sym, i, len(todo))
                 break
-            live_last = load_symbol_5m_last(sym)
-            if live_last is not None:
-                last_5m = live_last
-            if last_5m is None or pd.isna(last_5m):
-                start_dt = _as_utc(first_15m).to_pydatetime()
+            if year is None:
+                live_last = load_symbol_5m_last(sym)
+                if live_last is not None:
+                    start_dt = rewind_start(live_last, int(args.overlap_bars))
+                    end_dt = datetime.now(timezone.utc)
             else:
-                start_dt = rewind_start(last_5m, int(args.overlap_bars))
-            end_dt = datetime.now(timezone.utc)
+                ystart, yend = year_slice_bounds(
+                    year,
+                    newest_year=newest_year if newest_year is not None else year,
+                    now=now,
+                    through_now=through_now and newest_year is not None and year == newest_year,
+                )
+                first_in, live_last = load_symbol_5m_range(sym, ystart, yend)
+                start_dt = year_fetch_start(
+                    live_last,
+                    first_in,
+                    window_start=ystart,
+                    first_15m=None,
+                    overlap_bars=int(args.overlap_bars),
+                )
+                end_dt = yend
             logger.info(
-                "[%d/%d] %s 5m_last=%s fetch_from=%s",
+                "[%d/%d] %s year=%s 5m_last=%s fetch_from=%s fetch_to=%s",
                 i,
                 len(todo),
                 sym,
-                last_5m,
+                year if year is not None else "full",
+                live_last,
                 start_dt.isoformat(),
+                end_dt.isoformat(),
             )
+            if start_dt >= end_dt:
+                n_ok += 1
+                logger.info("%s: year=%s already caught up", sym, year)
+                continue
 
-            def _progress(symbol, n_bars, ts0, ts1):
+            def _progress(symbol, n_bars, ts0, ts1, _year=year, _i=i):
                 write_progress(
                     args.progress_file,
                     {
                         "symbol": symbol,
+                        "year": _year,
                         "n_bars_this_symbol": n_bars,
                         "window_first": ts0,
                         "window_last": ts1,
-                        "queue_i": i,
+                        "queue_i": _i,
                         "queue_n": len(todo),
                         "updated": datetime.now(timezone.utc).isoformat(),
                     },
@@ -751,7 +1087,13 @@ def main(argv=None) -> int:
                 continue
             if status in {"ok", "caught_up"}:
                 n_ok += 1
-                logger.info("%s: done status=%s bars=%d", sym, status, n_bars)
+                logger.info("%s: done year=%s status=%s bars=%d", sym, year, status, n_bars)
+            elif status == "empty" and year is not None:
+                n_ok += 1
+                logger.info("%s: no IB 5m in %s; continuing other years", sym, year)
+            elif status == "qualify_failed" and year is not None and year != newest_year:
+                n_ok += 1
+                logger.info("%s: qualify failed for %s; not failing older/newer years", sym, year)
             elif status in {"qualify_failed", "empty", "insert_failed"}:
                 n_fail += 1
                 if not args.dry_run:
@@ -779,6 +1121,7 @@ def main(argv=None) -> int:
             "stopped": n_stopped,
             "elapsed_sec": round(elapsed, 1),
             "queue": len(todo),
+            "years": years if year_slice else None,
         },
     )
     if n_stopped:

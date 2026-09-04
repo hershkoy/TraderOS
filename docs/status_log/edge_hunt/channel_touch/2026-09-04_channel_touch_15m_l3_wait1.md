@@ -27,6 +27,8 @@ Beyond-width A/B on this wait-1 raw (still worse than wait-12): off n=1770 E +0.
 
 **Keep wait-12.** First-tag is closer to the textbook rail-buy, but on 15m + next-bar mid the extra 1–11 bar dips lose money (PF 0.95) and 2018-19 fails. Wait-12 stays the only 15m L3 book that is net-positive after realistic fill.
 
-HTML: `reports/ascending_channels/channel_touch_tv_report_interactive_rs_top1_default_fric0.10_15m_l3_wait1_realistic_20260904_114015.html` (quality-filtered embed 61163; UI default RS top1).
+HTML: `reports/ascending_channels/2026-09-04/channel_touch_tv_report_interactive_rs_top1_default_fric0.10_15m_l3_wait1_realistic_20260904_114015.html` (quality-filtered embed 61163; UI default RS top1).
 
-Trades: `reports/ascending_channels/channel_touch_15m_trades_20260904_113653.csv` / raw `_raw_`.
+Trades: `reports/ascending_channels/2026-09-04/channel_touch_15m_trades_20260904_113653.csv` / raw `_raw_`.
+
+**Follow-up:** 436 of these RS-top1 fills had `channel_pos < 0` (GOOGL 2025-11-28 buy 318.33 vs support ~321.83). No-buy-below + keep resist-break is **n=1771 E +0.04 PF 1.06** — still worse than wait-12. See [no buy below](2026-09-04_channel_touch_no_buy_below.md).

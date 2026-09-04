@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 
 from utils.data.ohlcv_loader import load_ohlcv_many
 from utils.db.timescaledb_client import get_timescaledb_client
+from utils.research.report_paths import dated_outdir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -735,6 +736,7 @@ def main() -> int:
     )
     ap.add_argument("--symbols", default="", help="Comma-separated override list")
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     t0 = time.perf_counter()
     if args.symbols.strip():

@@ -18,6 +18,7 @@ from scripts.research.backtest_channel_touch_trades import (  # noqa: E402
 )
 from utils.data.ohlcv_loader import load_ohlcv_many
 from utils.db.timescaledb_client import get_timescaledb_client
+from utils.research.report_paths import resolve_artifact
 
 START = datetime(2018, 11, 1)
 END = datetime(2026, 8, 27)
@@ -31,7 +32,7 @@ def year_counts(df: pd.DataFrame, col: str = "buy_date") -> Counter:
 
 
 def main() -> None:
-    csv = ROOT / "reports/ascending_channels/channel_touch_trades_20260827_223039.csv"
+    csv = resolve_artifact("channel_touch_trades_20260827_223039.csv")
     kept = pd.read_csv(csv)
     print("=== KEPT TRADES (final CSV) ===")
     print(dict(sorted(year_counts(kept).items())))

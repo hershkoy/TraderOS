@@ -34,6 +34,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     select_same_day_rs,
 )
 from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,8 +44,8 @@ logging.basicConfig(
 logger = logging.getLogger("audit_channel_touch_quality")
 
 DEFAULT_TRADES = [
-    ROOT / "reports/ascending_channels/channel_touch_trades_20260823_225856.csv",
-    ROOT / "reports/ascending_channels/channel_touch_trades_20260824_015252.csv",
+    resolve_artifact("channel_touch_trades_20260823_225856.csv"),
+    resolve_artifact("channel_touch_trades_20260824_015252.csv"),
 ]
 
 
@@ -429,6 +430,7 @@ def main() -> int:
         / "docs/status_log/edge_hunt/channel_touch/2026-08-25_channel_touch_quality_audit.md",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     paths = list(args.trades) if args.trades else [p for p in DEFAULT_TRADES if p.exists()]
     if not paths:

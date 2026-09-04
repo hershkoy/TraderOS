@@ -25,6 +25,7 @@ from utils.research.channel_touch_entry_model import (  # noqa: E402
     scored_to_row,
     walk_forward,
 )
+from utils.research.report_paths import dated_outdir
 
 
 def main() -> int:
@@ -34,6 +35,7 @@ def main() -> int:
     ap.add_argument("--cutoff", default=DEFAULT_CUTOFF)
     ap.add_argument("--outdir", type=Path, default=ROOT / "reports" / "ascending_channels")
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     df = pd.read_csv(args.trades)
     df["buy_date"] = pd.to_datetime(df["buy_date"])

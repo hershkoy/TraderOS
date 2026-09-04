@@ -35,6 +35,7 @@ from utils.research.channel_touch_entry_model import (  # noqa: E402
     feature_matrix,
     trade_metrics,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,9 +44,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mine_15m_unique_filters")
 
-DEFAULT_TRADES = (
-    ROOT / "reports" / "ascending_channels" / "channel_touch_15m_full_h2_break_span10.csv"
-)
+DEFAULT_TRADES = resolve_artifact("channel_touch_15m_full_h2_break_span10.csv")
 FRICTION = 0.10
 GAIN_COL = "gain_pct_net"
 
@@ -302,6 +301,7 @@ def main() -> int:
         default=ROOT / "reports" / "ascending_channels",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     if not args.trades.exists():
         logger.error("Missing %s", args.trades)
         return 1

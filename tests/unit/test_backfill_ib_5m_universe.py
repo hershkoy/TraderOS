@@ -13,12 +13,19 @@ sys.path.insert(0, str(ROOT / "scripts" / "data"))
 
 from backfill_ib_5m_universe import (  # noqa: E402
     DEFAULT_CLIENT_ID,
+    DEFAULT_YEAR_FROM,
+    DEFAULT_YEAR_TO,
     in_rth_yield_window,
     make_should_stop,
     needs_backfill,
     next_rth_yield_dt,
     parse_args,
+    parse_year_list,
     rewind_start,
+    symbol_year_job,
+    year_fetch_start,
+    year_slice_bounds,
+    year_window_complete,
 )
 
 NY = ZoneInfo("America/New_York")
@@ -31,6 +38,10 @@ def test_default_client_id_is_distinct():
     assert args.batch_days == 7
     assert args.allow_rth is False
     assert args.ib_port == 4001
+    assert args.year_from == DEFAULT_YEAR_FROM == 2025
+    assert args.year_to == DEFAULT_YEAR_TO == 2020
+    assert args.no_year_slice is False
+    assert args.no_through_now is False
 
 
 def test_inventory_and_skip_if_job():
@@ -97,3 +108,153 @@ def test_stop_file_triggers_should_stop(tmp_path: Path):
     stop.unlink()
     check2 = make_should_stop(stop_file=stop, until=until, allow_rth=True, flag=flag)
     assert check2() is True
+
+
+def test_parse_year_list_newest_first():
+    assert parse_year_list("", 2025, 2020) == [2025, 2024, 2023, 2022, 2021, 2020]
+    assert parse_year_list("2025,2024,2023", 2025, 2020) == [2025, 2024, 2023]
+    try:
+        parse_year_list("", 2020, 2025)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_year_slice_bounds_2025_includes_now():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    start, end = year_slice_bounds(2025, newest_year=2025, now=now, through_now=True)
+    assert start == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert end == now
+    start24, end24 = year_slice_bounds(2024, newest_year=2025, now=now, through_now=True)
+    assert start24 == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    assert end24 == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    start25_cal, end25_cal = year_slice_bounds(
+        2025, newest_year=2025, now=now, through_now=False
+    )
+    assert end25_cal == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_year_window_complete_and_fetch_start():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    ystart = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    yend = now
+    first_15m = pd.Timestamp("2018-01-02T14:30:00Z")
+    assert (
+        year_window_complete(
+            None,
+            None,
+            window_start=ystart,
+            window_end=yend,
+            first_15m=first_15m,
+            last_15m=pd.Timestamp("2026-09-03T20:00:00Z"),
+            now=now,
+            through_now=True,
+        )
+        is False
+    )
+    caught_first = pd.Timestamp("2025-01-02T14:30:00Z")
+    caught_last = pd.Timestamp("2026-09-03T20:00:00Z")
+    assert (
+        year_window_complete(
+            caught_first,
+            caught_last,
+            window_start=ystart,
+            window_end=yend,
+            first_15m=first_15m,
+            last_15m=caught_last,
+            now=now,
+            through_now=True,
+        )
+        is True
+    )
+    mid = pd.Timestamp("2025-06-15T14:30:00Z")
+    start = year_fetch_start(
+        mid,
+        caught_first,
+        window_start=ystart,
+        first_15m=first_15m,
+        overlap_bars=2,
+    )
+    assert start == rewind_start(mid, 2)
+    gap_start = year_fetch_start(
+        caught_last,
+        pd.Timestamp("2025-06-15T14:30:00Z"),
+        window_start=ystart,
+        first_15m=first_15m,
+        overlap_bars=2,
+    )
+    assert gap_start == ystart
+
+
+def test_symbol_year_jobs_finish_2025_before_2024():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    first_15m = pd.Timestamp("2018-01-02T14:30:00Z")
+    last_15m = pd.Timestamp("2026-09-03T20:00:00Z")
+    symbols = ["AAA", "BBB", "CCC"]
+    jobs = []
+    for year in (2025, 2024):
+        ystart, yend = year_slice_bounds(
+            year, newest_year=2025, now=now, through_now=True
+        )
+        for sym in symbols:
+            job = symbol_year_job(
+                sym,
+                first_15m,
+                last_15m,
+                None,
+                None,
+                year=year,
+                window_start=ystart,
+                window_end=yend,
+                through_now=(year == 2025),
+                now=now,
+                overlap_bars=2,
+                fresh_hours=36.0,
+            )
+            assert job is not None
+            jobs.append(job)
+    years_order = [j[1] for j in jobs]
+    assert years_order == [2025, 2025, 2025, 2024, 2024, 2024]
+    assert [j[0] for j in jobs[:3]] == symbols
+    assert jobs[0][2] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert jobs[0][3] == now
+    assert jobs[3][2] == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    assert jobs[3][3] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+
+def test_symbol_year_job_skips_complete_and_pre_listing():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    ystart, yend = year_slice_bounds(2024, newest_year=2025, now=now, through_now=True)
+    ipo = pd.Timestamp("2025-03-01T14:30:00Z")
+    assert (
+        symbol_year_job(
+            "NEW",
+            ipo,
+            pd.Timestamp("2026-09-03T20:00:00Z"),
+            None,
+            None,
+            year=2024,
+            window_start=ystart,
+            window_end=yend,
+            through_now=False,
+            now=now,
+            overlap_bars=2,
+            fresh_hours=36.0,
+        )
+        is None
+    )
+    complete = symbol_year_job(
+        "OLD",
+        pd.Timestamp("2018-01-02T14:30:00Z"),
+        pd.Timestamp("2026-09-03T20:00:00Z"),
+        pd.Timestamp("2024-01-02T14:30:00Z"),
+        pd.Timestamp("2024-12-31T21:00:00Z"),
+        year=2024,
+        window_start=ystart,
+        window_end=yend,
+        through_now=False,
+        now=now,
+        overlap_bars=2,
+        fresh_hours=36.0,
+    )
+    assert complete is None

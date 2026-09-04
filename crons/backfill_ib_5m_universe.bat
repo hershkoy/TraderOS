@@ -1,6 +1,6 @@
 @echo off
 REM IB 5m universe backfill for the same names as IB 15m.
-REM Resume is TimescaleDB MAX(ts) per symbol (Ctrl+C / stop file / 09:15 ET are safe).
+REM Resume is per-year MIN/MAX(ts) (2025-through-now all symbols, then 2024..2020).
 REM Client 8823. Do not run during US RTH (live 15m is client 8826).
 REM Stop file: logs\data\ib_5m_universe.stop
 REM

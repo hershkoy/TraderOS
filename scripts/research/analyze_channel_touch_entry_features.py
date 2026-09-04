@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from backtest_channel_touch_trades import apply_friction
 from utils.research.channel_touch_entry_features import CATEGORICAL_FEATURES, FEATURE_COLS
+from utils.research.report_paths import dated_outdir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -198,6 +199,7 @@ def main() -> int:
         default=ROOT / "reports" / "ascending_channels",
     )
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
     if not args.trades.exists():
         logger.error("Trades file not found: %s", args.trades)
         return 1

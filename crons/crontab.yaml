@@ -50,7 +50,8 @@ jobs:
   schedule: 30 16 * * 1-5
   command: crons\after_rth_ib_backfill.bat
   description: After US cash close (16:30 ET) catch up IB 15m (client 8822)
-    then start IB 5m historical (client 8823) until next weekday 09:15 ET.
+    then start IB 5m historical (client 8823) year-first (2025-through-now
+    all symbols, then 2024..2020) until next weekday 09:15 ET.
     Friday runs through the weekend. 1d Alpaca is channel_touch_nightly
     (local 23:00). Do not run during RTH.
   timezone: America/New_York

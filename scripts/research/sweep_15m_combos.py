@@ -20,6 +20,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _summarize,
 )
 from utils.research.channel_touch_entry_model import attach_scores, time_split
+from utils.research.report_paths import dated_outdir
 
 FRIC = 0.10
 
@@ -76,6 +77,7 @@ def main() -> int:
     ap.add_argument("--l4-raw", required=True, type=Path)
     ap.add_argument("--outdir", type=Path, default=ROOT / "reports" / "ascending_channels")
     args = ap.parse_args()
+    args.outdir = dated_outdir(args.outdir)
 
     l3 = pd.read_csv(args.l3_raw)
     l4 = pd.read_csv(args.l4_raw)

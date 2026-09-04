@@ -43,6 +43,7 @@ from utils.research.channel_touch_scale import (  # noqa: E402
     DAILY_WINDOW_STEP_BARS,
     PRESET_15M,
 )
+from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,18 +52,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("channel_touch_h2_break")
 
-RAW_TRADES = (
-    ROOT / "reports" / "ascending_channels" / "channel_touch_trades_raw_20260828_194314.csv"
-)
-KEEPER_TRADES = (
-    ROOT / "reports" / "ascending_channels" / "channel_touch_trades_20260828_194314.csv"
-)
-RAW_TRADES_15M = (
-    ROOT / "reports" / "ascending_channels" / "channel_touch_15m_trades_raw_20260829_105511.csv"
-)
-KEEPER_TRADES_15M = (
-    ROOT / "reports" / "ascending_channels" / "channel_touch_15m_trades_20260829_105511.csv"
-)
+RAW_TRADES = resolve_artifact("channel_touch_trades_raw_20260828_194314.csv")
+KEEPER_TRADES = resolve_artifact("channel_touch_trades_20260828_194314.csv")
+RAW_TRADES_15M = resolve_artifact("channel_touch_15m_trades_raw_20260829_105511.csv")
+KEEPER_TRADES_15M = resolve_artifact("channel_touch_15m_trades_20260829_105511.csv")
 L3_FILTERS = dict(
     require_in_channel=True,
     max_channel_span_days=365.0,
@@ -186,7 +179,14 @@ def main() -> int:
     ap.add_argument(
         "--realistic-fill",
         action="store_true",
-        help="15m next-bar mid; 1d blend with next 15m mid after first print of X",
+        help="Use realistic purchase prices. Default 15m fill is signal-bar close; "
+        "--realistic-fill-mode next-mid restores next-bar mid.",
+    )
+    ap.add_argument(
+        "--realistic-fill-mode",
+        choices=("signal-close", "next-mid"),
+        default="signal-close",
+        help="When --realistic-fill: signal-close (default) or next-mid (kept).",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",
@@ -268,6 +268,7 @@ def main() -> int:
 
     base = _preset_15m_base() if is_15m else _daily_base()
     base["realistic_fill"] = bool(args.realistic_fill)
+    base["realistic_fill_mode"] = str(args.realistic_fill_mode)
     base["max_low_to_mid_pct"] = float(args.max_low_to_mid_pct)
     panels_15m = None
     if (not is_15m) and args.realistic_fill:
@@ -391,8 +392,7 @@ def main() -> int:
         print("=== MGNI fills (rescan) ===")
         print(mgni[cols].sort_values("buy_date").to_string(index=False))
 
-    outdir = ROOT / "reports" / "ascending_channels"
-    outdir.mkdir(parents=True, exist_ok=True)
+    outdir = dated_outdir()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if not brk.empty:
         tag = "15m_" if is_15m else ""

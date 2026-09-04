@@ -22,9 +22,10 @@ from backtest_channel_touch_trades import (  # noqa: E402
 )
 from find_ascending_channels import find_h2_l3_setups_windowed
 from utils.data.ohlcv_loader import load_ohlcv_many
+from utils.research.report_paths import resolve_artifact
 
-RAW = ROOT / "reports" / "ascending_channels" / "channel_touch_trades_raw_20260828_192557.csv"
-KEEPER = ROOT / "reports" / "ascending_channels" / "channel_touch_trades_20260828_192557.csv"
+RAW = resolve_artifact("channel_touch_trades_raw_20260828_192557.csv")
+KEEPER = resolve_artifact("channel_touch_trades_20260828_192557.csv")
 
 
 def pack(raw: pd.DataFrame, extra_m: pd.Series) -> pd.DataFrame:
