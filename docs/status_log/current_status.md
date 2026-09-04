@@ -13,7 +13,8 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 | Timeframe | Symbols | Bars (approx) | Date range / freshness |
 |-----------|---------|---------------|------------------------|
 | Daily (`1d`) | **~2,217** | ~7.6M+ | ALPACA primary; gap-fill 2026-08-23 + nightly multi-symbol refresh. Nightly 2026-08-25 ~23:00: **2113 saved / 104 failed** (95.3%), `as_of` scan bar **2026-08-24**. |
-| 15-minute (`15m`) | **1,478** | ~58.7M (EXPLAIN est.) | IB primary, ~2018-01-02 → **2025-12-02** (stale vs 2026-08-30). Catch-up: `scripts/data/backfill_ib_15m_universe.py` (client 8822). ALPACA 15m unused aside from leftover `AEO`. |
+| 15-minute (`15m`) | **1,478** | ~58.7M (EXPLAIN est.) | IB primary, ~2018-01-02 → **2025-12-02** (stale vs 2026-08-30). Catch-up now runs **16:30 ET** via `after_rth_ib_backfill` (`backfill_ib_15m_universe.py`, client 8822) then 5m. ALPACA 15m unused aside from leftover `AEO`. |
+| 5-minute (`5m`) | **0** (starting) | — | IB, same symbol set as 15m. Historical ingest `backfill_ib_5m_universe.py` (client 8823). Yields to RTH (stop 09:15 ET; resume 16:30 ET after 15m catch-up; weekends continuous). Playbook: [ib_5m_backfill](../features/ib_5m_backfill.md). |
 | Weekly | **0** | — | Not stored — resample from daily |
 
 ### Data sources
@@ -21,7 +22,7 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 | Source | Role | Persist? |
 |--------|------|----------|
 | **Alpaca** | Historical OHLCV (primary daily) via `utils/data/fetch_data.py` / `update_universe_data.py`; IEX default; nightly `--multi-symbol` batches | Yes — provider `ALPACA` |
-| **IBKR** | Historical OHLCV (primary 15m); Gateway ~4001 | Yes — provider `IB` |
+| **IBKR** | Historical OHLCV (primary 15m; 5m ingest starting 2026-09-04); Gateway ~4001 | Yes — provider `IB` |
 | **TradingView** | Chart / Pine verify only (workspace MCP, CDP 9222) | No |
 
 ### Ops notes
@@ -58,7 +59,7 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-04):** 15m textbook L3 first-tag (`--min-l3-wait-bars 1 --realistic-fill`, same 300-name panel as wait-12) is **n=1770 E +0.02 PF 1.03** — worse than wait-12 **n=1746 E +0.09 PF 1.16**. Early tags (wait 1–11) are n=1298 E −0.04 PF 0.95; 2018-19 fails. **Keep wait-12.** See [wait-1](edge_hunt/channel_touch/2026-09-04_channel_touch_15m_l3_wait1.md). Same day: `--realistic-fill` replaced `current_best/` (live daily H2 unique **n=713 E +1.78 PF 1.72**; 15m H5 p80+vol2 **n=7209 E ~0 PF 1.01**). Nightly scanner still uses close fills. See [realistic fill](edge_hunt/channel_touch/2026-09-04_channel_touch_realistic_fill.md).
+**Latest (2026-09-04):** IB 5m historical ingest for the 15m universe (client 8823), stopped at 09:15 ET and resumed after 16:30 ET 15m catch-up. See [5m backfill](edge_hunt/channel_touch/2026-09-04_ib_5m_backfill.md). Same day: 15m textbook L3 first-tag (`--min-l3-wait-bars 1 --realistic-fill`, same 300-name panel as wait-12) is **n=1770 E +0.02 PF 1.03** — worse than wait-12 **n=1746 E +0.09 PF 1.16**. Early tags (wait 1–11) are n=1298 E −0.04 PF 0.95; 2018-19 fails. **Keep wait-12.** See [wait-1](edge_hunt/channel_touch/2026-09-04_channel_touch_15m_l3_wait1.md). Same day: `--realistic-fill` replaced `current_best/` (live daily H2 unique **n=713 E +1.78 PF 1.72**; 15m H5 p80+vol2 **n=7209 E ~0 PF 1.01**). Nightly scanner still uses close fills. See [realistic fill](edge_hunt/channel_touch/2026-09-04_channel_touch_realistic_fill.md).
 
 **Prior (2026-09-03):** full-universe **causal** rescan. Live daily H2 span365 unique-symbol **n=3364 E +2.40 PF 2.02** (was leaky n=2253 E +2.80 PF 2.21). 15m H5 + overshoot p80 + vol≥2 **n=8212 E +0.92 PF 3.57**. Full IB 15m H2 RS top1 **n=1770 E +0.21 PF 1.33** — still do not promote 15m H2. AAPL 1d 2021-11-30 is in the live book. See [causal full universe](edge_hunt/channel_touch/2026-09-03_channel_touch_causal_full_universe.md).
 

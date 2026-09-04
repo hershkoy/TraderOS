@@ -12,6 +12,9 @@ from utils.data.fetch_data import (
     _parse_alpaca_start_date,
     _split_alpaca_multi_symbol_df,
     fetch_many_from_alpaca,
+    ib_bar_size_setting,
+    ib_step_back_minutes,
+    IB_INTRADAY_BATCH_DAYS,
 )
 
 
@@ -131,3 +134,11 @@ class TestIbEndDatetimeUtc:
     def test_naive_is_treated_as_utc(self):
         dt = datetime(2026, 9, 1, 20, 42)
         assert _ib_end_datetime_utc(dt) == "20260901 20:42:00 UTC"
+
+
+class TestIbBarSize:
+    def test_five_minute_maps_to_ib_setting(self):
+        assert ib_bar_size_setting("5m") == "5 mins"
+        assert ib_bar_size_setting("15m") == "15 mins"
+        assert ib_step_back_minutes("5m") == 5
+        assert IB_INTRADAY_BATCH_DAYS["5m"] == 7

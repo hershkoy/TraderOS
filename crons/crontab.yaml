@@ -23,8 +23,9 @@ jobs:
   - 0 16 * * 1-5
   command: crons\channel_touch_15m.bat
   description: LIVE IB 15m on the armed/hot list only, every US RTH 15m close
-    (client 8826). This is the /hot IB 15m fill feed. Do not confuse with
-    overnight backfill_ib_15m_universe (full ~1478 names, client 8822).
+    (client 8826). This is the /hot IB 15m fill feed. After 16:30 ET
+    after_rth_ib_backfill does full-universe 15m (8822) then 5m (8823).
+    Stop 5m at 09:15 ET so this job owns Gateway.
   timezone: America/New_York
 - name: channel_touch_15m_proximity
   enabled: true
@@ -37,9 +38,34 @@ jobs:
     of truth; not a fill.
   timezone: America/New_York
 - name: backfill_ib_15m_universe
-  enabled: true
+  enabled: false
   schedule: 30 2 * * *
   command: crons\backfill_ib_15m_universe.bat
   description: Overnight catch-up of the FULL IB 15m universe (~1478 names,
-    client 8822). Does not run during RTH and does not refresh the hot list.
-    In-session IB hist is channel_touch_15m every 15m (client 8826).
+    client 8822). Disabled 2026-09-04; after_rth_ib_backfill at 16:30 ET
+    does 15m then 5m. Keep for manual `cron_manager.py run`. Live 15m is
+    channel_touch_15m (client 8826).
+- name: after_rth_ib_backfill
+  enabled: true
+  schedule: 30 16 * * 1-5
+  command: crons\after_rth_ib_backfill.bat
+  description: After US cash close (16:30 ET) catch up IB 15m (client 8822)
+    then start IB 5m historical (client 8823) until next weekday 09:15 ET.
+    Friday runs through the weekend. 1d Alpaca is channel_touch_nightly
+    (local 23:00). Do not run during RTH.
+  timezone: America/New_York
+- name: backfill_ib_5m_universe
+  enabled: true
+  schedule: 0 0 * * 0,6
+  command: crons\backfill_ib_5m_universe.bat --skip-if-job-running after_rth_ib_backfill
+  description: Weekend safety restart of IB 5m (client 8823) if Friday's
+    after_rth job died. Skips if that job is still running (separate lock)
+    or if another 5m pid lock is held. Sat+Sun 00:00 ET.
+  timezone: America/New_York
+- name: stop_ib_5m_backfill
+  enabled: true
+  schedule: 15 9 * * 1-5
+  command: crons\stop_ib_5m_backfill.bat
+  description: 09:15 ET Mon-Fri cooperative stop of 5m (stop file + kill)
+    so live channel_touch_15m (client 8826) owns Gateway during RTH.
+  timezone: America/New_York

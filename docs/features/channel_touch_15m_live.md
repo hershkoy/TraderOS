@@ -96,7 +96,8 @@ Newly-hot (Alpaca last at/above resist) is **not** notified. Last price is proxi
 
 ```
 overnight / weekend
-  backfill_ib_15m_universe.py          # catch IB 15m up to now
+  after_rth_ib_backfill.bat             # 16:30 ET: IB 15m catch-up then 5m until 09:15 ET
+  (Friday 16:30 continues through the weekend; stop_ib_5m_backfill at 09:15 ET Mon-Fri)
 
 each 15m bar close (RTH)
   reuse stored armed list if as_of is the same NY session; else rebuild from TimescaleDB
@@ -118,7 +119,7 @@ dashboard /hot (WebSocket /ws/hot-candidates)
   sort/filter by |dist_live_pct| to resist
 ```
 
-Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8826**), drops the still-forming bar, and fill-checks that completed close. Overnight `backfill_ib_15m_universe.py` (client **8822**) still seeds the next session's watchlist. Use `--skip-ib-refresh` to disable the live pull.
+Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8826**), drops the still-forming bar, and fill-checks that completed close. After 16:30 ET `after_rth_ib_backfill` (client **8822** then **8823**) catch-up 15m then historical 5m; stop 5m at 09:15 ET. Use `--skip-ib-refresh` to disable the live pull.
 
 ### Commands
 
@@ -167,7 +168,8 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Scanner | `scripts/scanners/channel_touch_15m.py` |
 | Dashboard | `charting_server.py` `/hot` + `/ws/hot-candidates` + `templates/hot_candidates.html` |
 | Schema | `init-scripts/13-channel-touch-15m-candidates.sql` |
-| IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` |
+| IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` (now via `crons/after_rth_ib_backfill.bat` at 16:30 ET) |
+| IB 5m universe backfill | `scripts/data/backfill_ib_5m_universe.py` — [playbook](ib_5m_backfill.md) |
 | Watchlist JSON (sidecar) | `reports/ascending_channels/channel_touch_15m_watchlist.json` |
 | Fills log | `reports/ascending_channels/channel_touch_15m_fills_log.csv` |
 | Scanner logs | `logs/scanners/channel_touch_15m_*.log` |

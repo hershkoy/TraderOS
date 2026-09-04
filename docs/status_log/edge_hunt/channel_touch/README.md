@@ -31,6 +31,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-08-30 | [15m hot dashboard (no TV alerts)](2026-08-30_channel_touch_15m_hot_dashboard.md) |
 | 2026-09-02 | [Walk-replay vs batch (causal_h2)](2026-09-02_channel_touch_walk_replay.md) |
 | 2026-09-03 | [Causal full-universe 1d + 15m; current_best replaced](2026-09-03_channel_touch_causal_full_universe.md) |
+| 2026-09-04 | [IB 5m universe backfill (yield to RTH)](2026-09-04_ib_5m_backfill.md) |
 | 2026-09-04 | [Realistic-fill full-universe 1d + 15m; current_best replaced](2026-09-04_channel_touch_realistic_fill.md) |
 | 2026-09-04 | [15m L3 first-tag wait-1 vs wait-12 (realistic fill)](2026-09-04_channel_touch_15m_l3_wait1.md) |
 
@@ -63,6 +64,9 @@ python scripts\research\generate_channel_touch_tv_report.py --trades reports\asc
 python scripts\scanners\channel_touch_nightly.py --skip-update --dry-run
 crons\channel_touch_nightly.bat
 python scripts\data\backfill_ib_15m_universe.py --inventory
+python scripts\data\backfill_ib_5m_universe.py --inventory
+crons\after_rth_ib_backfill.bat
+crons\stop_ib_5m_backfill.bat
 python scripts\scanners\channel_touch_15m.py --mode run --dry-run --max-symbols 50
 python scripts\scanners\channel_touch_15m.py --mode proximity --dry-run
 crons\backfill_ib_15m_universe.bat

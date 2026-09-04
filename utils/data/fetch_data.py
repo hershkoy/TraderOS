@@ -1056,13 +1056,44 @@ def fetch_max_from_alpaca(symbol, timeframe):
 
 IB_INTRADAY_BATCH_DAYS = {
     "1m": 30,    # ~1 month chunks
+    "5m": 7,     # IB official max duration for 5-min bars is 1 W
     "15m": 365,  # up to 1 year per batch to avoid IB timeouts
 }
 
 IB_INTRADAY_BARS_PER_DAY = {
     "1m": 390,
+    "5m": 390 / 5,
     "15m": 390 / 15,
 }
+
+IB_BAR_SIZE_SETTING = {
+    "1m": "1 min",
+    "5m": "5 mins",
+    "15m": "15 mins",
+    "1h": "1 hour",
+    "1d": "1 day",
+}
+
+
+def ib_bar_size_setting(timeframe: str) -> str:
+    """Map project timeframe labels to IB barSizeSetting strings."""
+    key = str(timeframe or "").strip()
+    if key not in IB_BAR_SIZE_SETTING:
+        raise ValueError("Unsupported IB bar size timeframe: %s" % timeframe)
+    return IB_BAR_SIZE_SETTING[key]
+
+
+def ib_step_back_minutes(timeframe: str) -> int:
+    """Overlap step when walking IB hist windows."""
+    if timeframe == "1m":
+        return 1
+    if timeframe == "5m":
+        return 5
+    if timeframe == "15m":
+        return 15
+    if timeframe == "1h":
+        return 60
+    return 15
 
 
 def _prepare_ib_duration_from_days(days: int) -> str:
@@ -1118,10 +1149,46 @@ def _ib_end_datetime_utc(dt) -> str:
     return ts.strftime("%Y%m%d %H:%M:%S UTC")
 
 
+def fetch_ib_historical_window(
+    ib,
+    contract,
+    *,
+    timeframe: str,
+    end_dt,
+    duration_str: str,
+    what_to_show: str = "TRADES",
+    use_rth: bool = True,
+):
+    """One IB reqHistoricalData window. Returns a UTC timestamp DataFrame or None."""
+    end_str = _ib_end_datetime_utc(end_dt)
+    bar_size = ib_bar_size_setting(timeframe)
+
+    def fetch_batch_operation():
+        return ib.reqHistoricalData(
+            contract,
+            endDateTime=end_str,
+            durationStr=duration_str,
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+            formatDate=1,
+        )
+
+    batch_bars = intelligent_retry_with_backoff(
+        fetch_batch_operation,
+        "IBKR %s window %s" % (timeframe, end_str),
+        reset_connection_on_failure=True,
+        max_retries=MAX_RETRIES,
+    )
+    if not batch_bars:
+        return None
+    return _convert_ib_bars_to_df(batch_bars)
+
+
 def _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt):
     """Fetch intraday data in multiple IB-friendly batches to avoid timeouts."""
     max_days = IB_INTRADAY_BATCH_DAYS.get(timeframe, 180)
-    bar_size = "1 min" if timeframe == "1m" else "15 mins"
+    bar_size = ib_bar_size_setting(timeframe)
     
     all_batches = []
     current_end = end_dt
@@ -1169,7 +1236,7 @@ def _fetch_ib_intraday_batched(symbol, timeframe, ib, contract, start_dt, end_dt
         
         earliest_ts = batch_df["timestamp"].min()
         # Step back slightly to avoid duplicate bars in next batch
-        step_back_minutes = 1 if timeframe == "1m" else 15
+        step_back_minutes = ib_step_back_minutes(timeframe)
         current_end = earliest_ts - timedelta(minutes=step_back_minutes)
         
         if current_end <= start_dt:
@@ -1198,7 +1265,7 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
     """Fetch historical bars from IBKR."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1m", "15m", "1h", "1d"]:
+    if timeframe not in ["1m", "5m", "15m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     if bars == "max":
@@ -1231,18 +1298,10 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                 logger.error(f"3. Symbol format is incorrect")
                 return None
         
-        # Map timeframe to IB bar size setting
-        if timeframe == "1m":
-            bar_size = "1 min"
-        elif timeframe == "15m":
-            bar_size = "15 mins"
-        elif timeframe == "1h":
-            bar_size = "1 hour"
-        else:  # 1d
-            bar_size = "1 day"
+        bar_size = ib_bar_size_setting(timeframe)
         
-        # Special handling for 15m timeframe to avoid IB timeouts
-        if timeframe == "15m":
+        # Batch 5m/15m to avoid IB timeouts on long windows
+        if timeframe in {"5m", "15m"}:
             end_dt = datetime.now(timezone.utc)
             
             if start_date:
@@ -1254,7 +1313,7 @@ def fetch_from_ib(symbol, bars, timeframe, contract_info=None, start_date=None):
                     start_dt = start_date
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=timezone.utc)
-                logger.info(f"Using provided start date for 15m data: {start_dt}")
+                logger.info(f"Using provided start date for {timeframe} data: {start_dt}")
             else:
                 days_needed = _estimate_days_from_bars(bars, timeframe)
                 start_dt = end_dt - timedelta(days=days_needed)
@@ -1481,7 +1540,7 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
     """Fetch maximum available historical data from IBKR by looping through requests."""
     from ib_insync import IB, Stock
 
-    if timeframe not in ["1m", "15m", "1h", "1d"]:
+    if timeframe not in ["1m", "5m", "15m", "1h", "1d"]:
         raise ValueError(f"Unsupported timeframe for IBKR: {timeframe}")
 
     all_data = []
@@ -1544,14 +1603,7 @@ def fetch_max_from_ib(symbol, timeframe, contract_info=None, start_date=None):
                     break
             
             # Map timeframe to IB bar size setting
-            if timeframe == "1m":
-                bar_size = "1 min"
-            elif timeframe == "15m":
-                bar_size = "15 mins"
-            elif timeframe == "1h":
-                bar_size = "1 hour"
-            else:  # 1d
-                bar_size = "1 day"
+            bar_size = ib_bar_size_setting(timeframe)
             
             # Ensure proper spacing for IBKR duration format
             # IBKR only supports: S (seconds), D (days), W (weeks), M (months), Y (years)
@@ -1817,7 +1869,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch historical bars from Alpaca or IBKR.")
     parser.add_argument("--symbol", required=True, help="Symbol to fetch (e.g. NFLX)")
     parser.add_argument("--provider", required=True, choices=["alpaca", "ib"], help="Data provider")
-    parser.add_argument("--timeframe", required=True, choices=["1m", "15m", "1h", "1d"], help="Timeframe to fetch")
+    parser.add_argument("--timeframe", required=True, choices=["1m", "5m", "15m", "1h", "1d"], help="Timeframe to fetch")
     parser.add_argument("--bars", default=1000, help="Number of bars to fetch or 'max' for maximum available")
     parser.add_argument("--since", type=str, help="Start date for fetching data (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--no-save", action="store_true", help="Output data to console without saving to database")

@@ -119,7 +119,23 @@ def test_repo_crontab_loads():
     jobs = mgr.jobs()
     names = {j.name for j in jobs}
     assert "channel_touch_nightly" in names
+    assert "after_rth_ib_backfill" in names
+    assert "stop_ib_5m_backfill" in names
+    assert "backfill_ib_5m_universe" in names
     nightly = mgr.job("channel_touch_nightly")
     assert nightly.schedule == ["0 23 * * 1-5"]
     assert nightly.skip_if_ran_today is True
-    assert isinstance(nightly.enabled, bool)
+    after = mgr.job("after_rth_ib_backfill")
+    assert after.schedule == ["30 16 * * 1-5"]
+    assert after.timezone == "America/New_York"
+    assert after.enabled is True
+    stop = mgr.job("stop_ib_5m_backfill")
+    assert stop.schedule == ["15 9 * * 1-5"]
+    assert stop.timezone == "America/New_York"
+    assert mgr.job("backfill_ib_15m_universe").enabled is False
+
+
+def test_stop_job_when_not_running(tmp_path: Path):
+    mgr = _mgr(tmp_path)
+    mgr.add_job(CronJob(name="idle", schedule=["* * * * *"], command="echo idle", enabled=True))
+    assert mgr.stop_job("idle") == 0

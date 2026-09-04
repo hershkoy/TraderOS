@@ -129,6 +129,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     return _mgr().run_job(args.name, quiet=args.quiet)
 
 
+def cmd_stop(args: argparse.Namespace) -> int:
+    _setup_logging(tick=False)
+    return _mgr().stop_job(args.name, timeout_sec=float(args.timeout), force=not args.no_force)
+
+
 def cmd_next(args: argparse.Namespace) -> int:
     mgr = _mgr()
     if args.name:
@@ -208,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("name")
     p_run.add_argument("--quiet", action="store_true")
     p_run.set_defaults(func=cmd_run)
+
+    p_stop = sub.add_parser("stop", help="Stop a running job (process tree)")
+    p_stop.add_argument("name")
+    p_stop.add_argument("--timeout", type=float, default=60.0, help="Seconds to wait before force-kill")
+    p_stop.add_argument("--no-force", action="store_true", help="Do not taskkill /F after timeout")
+    p_stop.set_defaults(func=cmd_stop)
 
     p_next = sub.add_parser("next", help="Show next fire time")
     p_next.add_argument("name", nargs="?")

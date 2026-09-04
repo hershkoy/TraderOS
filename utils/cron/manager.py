@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -370,6 +371,46 @@ class CronManager:
         rec["running"] = alive
         rec["pid"] = pid
         return rec
+
+    def stop_job(self, name: str, timeout_sec: float = 60.0, force: bool = True) -> int:
+        """Stop a running job's process tree. Returns 0 if it is not running."""
+        alive, pid = self.lock_status(name)
+        if not alive or not pid:
+            logger.info("job %s is not running", name)
+            return 0
+        logger.info("stopping job %s pid %s", name, pid)
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T"],
+                capture_output=True,
+                text=True,
+            )
+        else:
+            try:
+                os.kill(pid, 15)
+            except OSError as exc:
+                logger.warning("kill %s: %s", pid, exc)
+        deadline = time.time() + max(1.0, float(timeout_sec))
+        while time.time() < deadline:
+            alive, _ = self.lock_status(name)
+            if not alive:
+                logger.info("job %s stopped", name)
+                return 0
+            time.sleep(1.0)
+        if force and sys.platform == "win32":
+            logger.warning("job %s still alive, taskkill /F", name)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+            )
+            time.sleep(1.0)
+        alive, _ = self.lock_status(name)
+        if alive:
+            logger.error("job %s pid %s did not stop", name, pid)
+            return 1
+        logger.info("job %s stopped", name)
+        return 0
 
     def install_windows_task(self) -> str:
         """Register the hidden every-minute Task Scheduler job. Returns task name."""
