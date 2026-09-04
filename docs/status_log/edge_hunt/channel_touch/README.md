@@ -32,6 +32,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-02 | [Walk-replay vs batch (causal_h2)](2026-09-02_channel_touch_walk_replay.md) |
 | 2026-09-03 | [Causal full-universe 1d + 15m; current_best replaced](2026-09-03_channel_touch_causal_full_universe.md) |
 | 2026-09-04 | [Realistic-fill full-universe 1d + 15m; current_best replaced](2026-09-04_channel_touch_realistic_fill.md) |
+| 2026-09-04 | [15m L3 first-tag wait-1 vs wait-12 (realistic fill)](2026-09-04_channel_touch_15m_l3_wait1.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -44,7 +45,7 @@ Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
 - **Live / nightly sample (causal optimistic 2026-09-03):** unique-symbol H2 span365 **n=3364 E +2.40 PF 2.02** (optional RS top1 n=1126 E +2.94 PF 2.24). Leaky Aug-29 was n=2253 E +2.80 PF 2.21.
 - **`current_best` (realistic fill 2026-09-04):** same live recipe + `--realistic-fill` unique-symbol H2 span365 **n=713 E +1.78 PF 1.72** (RS top1 n=419 E +2.65 PF 2.08). Nightly scanner is still close fills until rewired. See [realistic fill](2026-09-04_channel_touch_realistic_fill.md).
-- **15m research (not nightly):** Unique-symbol H5 + overshoot train p80 + vol>=2 was **n=8212 WR 47.4% E +0.92 PF 3.57** on optimistic fills; **realistic next-bar mid is n=7209 E ~0 PF 1.01** — do not promote. 300-name L3 wait-12 still net-positive (**n=1746 E +0.09 PF 1.16**). Live **research** loop (armed watchlist in TimescaleDB + Alpaca minute proximity + bar-close H5 + `/hot` dashboard): `scripts/scanners/channel_touch_15m.py` after IB 15m backfill (`scripts/data/backfill_ib_15m_universe.py`). Playbook: [15m live](../../../features/channel_touch_15m_live.md). Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD.
+- **15m research (not nightly):** Unique-symbol H5 + overshoot train p80 + vol>=2 was **n=8212 WR 47.4% E +0.92 PF 3.57** on optimistic fills; **realistic next-bar mid is n=7209 E ~0 PF 1.01** — do not promote. 300-name L3 wait-12 still net-positive (**n=1746 E +0.09 PF 1.16**). Textbook first-tag (`--min-l3-wait-bars 1`) on the same realistic stack is **n=1770 E +0.02 PF 1.03** (2018-19 fails; bars 1–11 PF 0.95) — **keep wait-12**. See [wait-1](2026-09-04_channel_touch_15m_l3_wait1.md). Live **research** loop (armed watchlist in TimescaleDB + Alpaca minute proximity + bar-close H5 + `/hot` dashboard): `scripts/scanners/channel_touch_15m.py` after IB 15m backfill (`scripts/data/backfill_ib_15m_universe.py`). Playbook: [15m live](../../../features/channel_touch_15m_live.md). Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD.
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
 - Do **not** require lower-40% geometry (`--geometry-filter` / H3) — hurts edge
 - Do **not** size from ridge P&L confidence (RS-top1 OOS: 1d E worse; 15m lift dies after RS). Equal-dollar stays the size model.

@@ -143,6 +143,7 @@ def test_build_run_meta_has_git(tmp_path):
 
 
 def test_trades_to_raw_uses_bar_times_when_present():
+    """CSV buy_time is UTC; report buy_at/sell_at are RTH (America/New_York)."""
     from scripts.research.generate_channel_touch_tv_report import trades_to_raw
 
     df = pd.DataFrame(
@@ -162,10 +163,35 @@ def test_trades_to_raw_uses_bar_times_when_present():
     by_sym = {r["symbol"]: r for r in rows}
     assert by_sym["GILD"]["buy"] == "2019-01-03"
     assert by_sym["GILD"]["sell"] == "2019-01-03"
-    assert by_sym["GILD"]["buy_at"] == "2019-01-03 15:15"
-    assert by_sym["GILD"]["sell_at"] == "2019-01-03 18:30"
-    assert by_sym["ARGX"]["buy_at"] == "2019-01-04 14:30"
-    assert by_sym["ARGX"]["sell_at"] == "2019-01-04 14:45"
+    assert by_sym["GILD"]["buy_at"] == "2019-01-03 10:15"
+    assert by_sym["GILD"]["sell_at"] == "2019-01-03 13:30"
+    assert by_sym["ARGX"]["buy_at"] == "2019-01-04 09:30"
+    assert by_sym["ARGX"]["sell_at"] == "2019-01-04 09:45"
+
+
+def test_trades_to_raw_converts_utc_clock_to_rth_across_dst():
+    from scripts.research.generate_channel_touch_tv_report import trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AFRM", "AMD"],
+            "buy_date": ["2025-02-06", "2023-05-24"],
+            "sell_date": ["2025-02-07", "2023-05-30"],
+            "buy_time": ["2025-02-06 19:45", "2023-05-24 13:45"],
+            "sell_time": ["2025-02-07 14:30", "2023-05-30 13:30"],
+            "buy_price": [61.035, 107.145],
+            "sell_price": [74.1892, 128.1742],
+            "gain_pct": [21.55, 19.63],
+            "hold_days": [5, 77],
+        }
+    )
+    by_sym = {r["symbol"]: r for r in trades_to_raw(df)}
+    # EST (UTC-5): 19:45 UTC -> 14:45; 14:30 UTC -> 09:30
+    assert by_sym["AFRM"]["buy_at"] == "2025-02-06 14:45"
+    assert by_sym["AFRM"]["sell_at"] == "2025-02-07 09:30"
+    # EDT (UTC-4): 13:45 UTC -> 09:45; 13:30 UTC -> 09:30
+    assert by_sym["AMD"]["buy_at"] == "2023-05-24 09:45"
+    assert by_sym["AMD"]["sell_at"] == "2023-05-30 09:30"
 
 
 def test_trades_to_raw_omits_bar_times_on_daily_csv():
@@ -212,7 +238,7 @@ def test_filter_max_per_day_still_groups_by_calendar_date():
     kept = filter_max_per_day_raw(trades_to_raw(df), 1)
     assert [t["symbol"] for t in kept] == ["WIN"]
     assert kept[0]["buy"] == "2020-01-02"
-    assert kept[0]["buy_at"] == "2020-01-02 14:00"
+    assert kept[0]["buy_at"] == "2020-01-02 09:00"
 
 
 def test_trades_to_raw_emits_null_rs_and_ord():
@@ -352,7 +378,7 @@ def test_render_html_includes_comparison_table():
     assert "H5 + overshoot p80 + vol >= 2" in html
     assert '"n":6306' in html or '"n": 6306' in html
     assert "stampBuy" in html
-    assert "entry/exit are bar times" in html
+    assert "entry/exit are RTH bar times" in html
 
 
 def test_render_html_embeds_bar_timestamps():
@@ -388,9 +414,10 @@ def test_render_html_embeds_bar_timestamps():
         title="15m bar times",
         source="test.csv",
     )
-    assert "2019-01-03 15:15" in html
-    assert "2019-01-03 18:30" in html
+    assert "2019-01-03 10:15" in html
+    assert "2019-01-03 13:30" in html
     assert '"buy":"2019-01-03"' in html
+    assert "RTH (America/New_York" in html
 
 
 def test_render_html_includes_distributions_tab():

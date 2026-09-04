@@ -11,7 +11,8 @@ Interactive controls in the HTML (client-side recalc):
 
 Portfolio model:
   - Equity marks on trade exit dates (calendar day; SPY overlay stays daily)
-  - Trade table uses buy_time/sell_time (HH:MM) when the CSV has them (15m bars)
+  - Trade table uses buy_time/sell_time converted to RTH (America/New_York)
+    when the CSV has them (IB 15m bars are stored UTC)
   - Max entries/day still groups by calendar buy_date
   - SPY buy-and-hold overlay for comparison
 
@@ -48,6 +49,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("generate_channel_touch_tv_report")
+
+RTH_TZ = "America/New_York"
 
 DETECTOR_META: Dict[str, str] = {
     "name": "Classical ascending channel (Edwards / Magee heuristics)",
@@ -350,10 +353,20 @@ def _series_clock_ts(df: pd.DataFrame, time_col: str, date_col: str) -> Tuple[pd
     return times.where(has_clock, dates), has_clock
 
 
+def _to_rth_clock(ts: object) -> pd.Timestamp:
+    """IB 15m CSV clocks are UTC; show US RTH (America/New_York, EST/EDT)."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    else:
+        t = t.tz_convert("UTC")
+    return t.tz_convert(RTH_TZ)
+
+
 def _fmt_stamp(ts: object, has_clock: bool) -> str:
-    stamp = pd.Timestamp(ts)
     if has_clock:
-        return stamp.strftime("%Y-%m-%d %H:%M")
+        return _to_rth_clock(ts).strftime("%Y-%m-%d %H:%M")
+    stamp = pd.Timestamp(ts)
     return stamp.strftime("%Y-%m-%d")
 
 
@@ -939,7 +952,7 @@ def render_html(
         <div class="chart-box dist"><canvas id="distDowChart"></canvas></div>
       </div>
       <div id="distHourWrap">
-        <h2>Entries by hour (bar clock)</h2>
+        <h2>Entries by hour (RTH, America/New_York)</h2>
         <div class="chart-box dist"><canvas id="distHourChart"></canvas></div>
       </div>
     </div>
@@ -963,7 +976,7 @@ def render_html(
         <tbody id="distSymBody"></tbody>
       </table>
     </div>
-    <p class="note">Distributions use the current Apply filters (sizing does not change counts; friction / win cap change P&amp;L %). Orders/day is calendar buy_date. Histogram x-range is p01–p99 with overflow bars. Hour uses buy_time when present (CSV clock, not converted). Zero-fill days use SPY trading dates when available.</p>
+    <p class="note">Distributions use the current Apply filters (sizing does not change counts; friction / win cap change P&amp;L %). Orders/day is calendar buy_date. Histogram x-range is p01–p99 with overflow bars. Hour uses buy_time converted to RTH (America/New_York; CSV is UTC). Zero-fill days use SPY trading dates when available.</p>
   </div>
 
   <div id="trades" class="panel">
@@ -1999,7 +2012,7 @@ function paintTradesTable() {{
   note += ' · sort: ' + tradeSort.key + ' ' + tradeSort.dir;
   if (sorted.length > maxRows) note += ' · showing first ' + maxRows;
   if ((RAW.trades || []).some(t => t.buy_at || t.sell_at)) {{
-    note += ' · entry/exit are bar times (YYYY-MM-DD HH:MM)';
+    note += ' · entry/exit are RTH bar times (America/New_York, YYYY-MM-DD HH:MM)';
   }}
   if ((RAW.trades || []).some(t => t.ch)) {{
     note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';
