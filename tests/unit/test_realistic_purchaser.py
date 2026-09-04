@@ -16,12 +16,15 @@ from utils.research.realistic_purchaser import (
     REASON_FILLED,
     REASON_NO_NEXT_BAR,
     REASON_OVERNIGHT,
+    REASON_PRICE_NOT_PRINTED,
     REASON_WILD_RANGE,
+    bar_contains_price,
     bar_mid,
     expected_exec_bar_start,
     is_last_rth_15m_bar,
     low_to_mid_pct,
     purchase_after_close_signal,
+    purchase_after_daily_signal,
     purchase_at_signal_index,
     signal_time_from_bar,
 )
@@ -322,3 +325,212 @@ def test_weekend_signal_is_bad():
     got = purchase_after_close_signal(sat, nxt)
     assert not got.filled
     assert got.reason == REASON_BAD_SIGNAL
+
+
+def _session_15m(day, quotes):
+    """quotes: (hh, mm, o, h, l, c)."""
+    y, m, d = day
+    return [_bar(_et(y, m, d, hh, mm), o, h, l, c) for hh, mm, o, h, l, c in quotes]
+
+
+def test_daily_blend_is_half_signal_and_next_mid():
+    x = 20.05
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 19.80, 19.90, 19.70, 19.85),
+            (9, 45, 19.90, 20.10, 19.88, 20.06),
+            (10, 0, 20.08, 20.16, 20.04, 20.12),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars, session_date="2025-06-10")
+    nxt_mid = bar_mid(20.16, 20.04)
+    assert got.filled
+    assert got.reason == REASON_FILLED
+    assert got.fill_px == pytest.approx((x + nxt_mid) / 2.0)
+    assert got.signal_px == pytest.approx(x)
+    assert got.hit_bar_ts == _et(2025, 6, 10, 9, 45)
+    assert got.exec_bar_ts == _et(2025, 6, 10, 10, 0)
+    assert got.signal_time == _et(2025, 6, 10, 10, 0)
+    assert got.fill_px != pytest.approx(x)
+    assert got.fill_px != pytest.approx(nxt_mid)
+
+
+def test_daily_uses_first_print_not_later_bar():
+    x = 10.50
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 10.40, 10.55, 10.35, 10.48),
+            (9, 45, 10.50, 10.58, 10.48, 10.54),
+            (10, 0, 10.55, 10.60, 10.52, 10.56),
+            (10, 15, 10.65, 10.90, 10.40, 10.50),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars)
+    assert got.filled
+    assert got.hit_bar_ts == _et(2025, 6, 10, 9, 30)
+    assert got.exec_bar_ts == _et(2025, 6, 10, 9, 45)
+    assert got.fill_px == pytest.approx((x + bar_mid(10.58, 10.48)) / 2.0)
+
+
+def test_daily_price_never_printed():
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 10.0, 10.2, 9.9, 10.1),
+            (9, 45, 10.1, 10.3, 10.0, 10.2),
+        ],
+    )
+    got = purchase_after_daily_signal(11.0, bars)
+    assert not got.filled
+    assert got.reason == REASON_PRICE_NOT_PRINTED
+
+
+def test_daily_print_only_on_last_bar_cancels():
+    x = 25.05
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (15, 30, 24.80, 24.90, 24.70, 24.85),
+            (15, 45, 24.90, 25.10, 24.88, 25.08),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars)
+    assert not got.filled
+    assert got.reason == REASON_END_OF_SESSION
+    assert got.hit_bar_ts == _et(2025, 6, 10, 15, 45)
+
+
+def test_daily_print_at_1530_uses_1545_window():
+    x = 12.02
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (15, 30, 11.90, 12.05, 11.85, 12.00),
+            (15, 45, 12.01, 12.10, 11.98, 12.06),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars)
+    assert got.filled
+    assert got.hit_bar_ts == _et(2025, 6, 10, 15, 30)
+    assert got.exec_bar_ts == _et(2025, 6, 10, 15, 45)
+    assert got.fill_px == pytest.approx((x + bar_mid(12.10, 11.98)) / 2.0)
+
+
+def test_daily_wild_next_15m_cancels():
+    x = 40.00
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (11, 0, 39.90, 40.10, 39.80, 40.00),
+            (11, 15, 40.20, 41.20, 39.80, 41.00),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars)
+    assert not got.filled
+    assert got.reason == REASON_WILD_RANGE
+
+
+def test_daily_quiet_gap_fills_blend_unless_chase_cap():
+    x = 100.00
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (13, 0, 99.90, 100.10, 99.80, 100.00),
+            (13, 15, 101.00, 101.15, 100.95, 101.10),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars)
+    assert got.filled
+    assert got.fill_px == pytest.approx((x + 101.05) / 2.0)
+    capped = purchase_after_daily_signal(x, bars, max_chase_pct=0.005)
+    assert not capped.filled
+    assert capped.reason == REASON_CHASE
+
+
+def test_daily_session_date_ignores_other_days():
+    x = 15.00
+    bars = _session_15m((2025, 6, 9), [(10, 0, 14.90, 15.10, 14.80, 15.00)])
+    bars += _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 14.50, 14.70, 14.40, 14.60),
+            (9, 45, 14.60, 14.80, 14.50, 14.70),
+        ],
+    )
+    bars += _session_15m(
+        (2025, 6, 10),
+        [
+            (10, 0, 14.90, 15.10, 14.85, 15.02),
+            (10, 15, 15.04, 15.12, 15.00, 15.08),
+        ],
+    )
+    got = purchase_after_daily_signal(x, bars, session_date="2025-06-10")
+    assert got.filled
+    assert got.hit_bar_ts == _et(2025, 6, 10, 10, 0)
+    assert got.fill_px == pytest.approx((x + bar_mid(15.12, 15.00)) / 2.0)
+
+
+def test_daily_dataframe_path():
+    x = 20.05
+    idx = pd.DatetimeIndex(
+        [_et(2025, 6, 10, 9, 30), _et(2025, 6, 10, 9, 45), _et(2025, 6, 10, 10, 0)]
+    )
+    df = pd.DataFrame(
+        {
+            "open": [19.80, 19.90, 20.08],
+            "high": [19.90, 20.10, 20.16],
+            "low": [19.70, 19.88, 20.04],
+            "close": [19.85, 20.06, 20.12],
+            "volume": [1e5, 1e5, 1e5],
+        },
+        index=idx,
+    )
+    got = purchase_after_daily_signal(x, df, session_date="2025-06-10")
+    assert got.filled
+    assert got.fill_px == pytest.approx((x + bar_mid(20.16, 20.04)) / 2.0)
+
+
+def test_daily_empty_or_bad_price():
+    bars = _session_15m((2025, 6, 10), [(9, 30, 10.0, 10.2, 9.9, 10.1)])
+    assert purchase_after_daily_signal(0.0, bars).reason == REASON_BAD_SIGNAL
+    assert purchase_after_daily_signal(10.0, []).reason == REASON_BAD_SIGNAL
+    assert bar_contains_price(10.2, 9.9, 10.0)
+
+
+def test_exec_fill_15m_after_signal_returns_next_index():
+    from utils.research.realistic_purchaser import exec_fill_15m_after_signal
+
+    idx = pd.DatetimeIndex([_et(2025, 6, 10, 10, 0), _et(2025, 6, 10, 10, 15)])
+    df = pd.DataFrame(
+        {
+            "open": [20.00, 20.06],
+            "high": [20.10, 20.12],
+            "low": [19.95, 20.04],
+            "close": [20.05, 20.10],
+            "volume": [1e5, 1e5],
+        },
+        index=idx,
+    )
+    got = exec_fill_15m_after_signal(df, 0)
+    assert got is not None
+    assert got[0] == 1
+    assert got[1] == pytest.approx(bar_mid(20.12, 20.04))
+
+
+def test_exec_fill_daily_with_15m_blends():
+    from utils.research.realistic_purchaser import exec_fill_daily_with_15m
+
+    x = 20.05
+    bars = _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 19.80, 19.90, 19.70, 19.85),
+            (9, 45, 19.90, 20.10, 19.88, 20.06),
+            (10, 0, 20.08, 20.16, 20.04, 20.12),
+        ],
+    )
+    df = pd.DataFrame(bars).set_index("ts")
+    got = exec_fill_daily_with_15m(x, df, "2025-06-10")
+    assert got == pytest.approx((x + bar_mid(20.16, 20.04)) / 2.0)

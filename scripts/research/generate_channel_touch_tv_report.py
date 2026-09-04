@@ -376,6 +376,177 @@ def _cell_bool(val: object) -> bool:
     return False
 
 
+def _cell_float(val: object) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        x = float(val)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) else None
+
+
+def _cell_int(val: object) -> Optional[int]:
+    x = _cell_float(val)
+    if x is None:
+        return None
+    return int(round(x))
+
+
+def _iso_utc_ms_from_cell(val: object) -> Optional[Tuple[str, int]]:
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(val).strip()
+    if text in ("", "None", "nan"):
+        return None
+    t = pd.to_datetime(text, utc=True, errors="coerce")
+    if t is None or pd.isna(t):
+        t = pd.to_datetime(text, errors="coerce")
+        if t is None or pd.isna(t):
+            return None
+        t = pd.Timestamp(t)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        else:
+            t = t.tz_convert("UTC")
+    else:
+        t = pd.Timestamp(t)
+    ms = int(round(t.timestamp() * 1000))
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ"), ms
+
+
+def _stamp_pair(row: pd.Series, time_col: str, ms_col: str, date_fallback: str = "") -> Optional[Tuple[str, int]]:
+    ms_v = _cell_int(row[ms_col]) if ms_col in row.index else None
+    raw = row[time_col] if time_col in row.index else None
+    parsed = _iso_utc_ms_from_cell(raw)
+    if ms_v is not None and parsed is not None:
+        return parsed[0], ms_v
+    if parsed is not None:
+        return parsed
+    if ms_v is not None:
+        t = pd.Timestamp(ms_v, unit="ms", tz="UTC")
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ"), ms_v
+    if date_fallback:
+        return _iso_utc_ms_from_cell(row[date_fallback] if date_fallback in row.index else None)
+    return None
+
+
+def channel_json_for_row(row: pd.Series) -> Optional[dict]:
+    """Compact CTF paste payload (Pine has no JSON.parse; keys are scanned as text).
+
+    Prefer exact L1/L2/H2 rails from the backtest CSV. Older CSVs reconstruct a
+    support-line second point at H2 from slope/width/channel_pos (src=approx).
+    """
+    sym = str(row.get("stock", "") or "").upper()
+    fill = None
+    if "buy_time" in row.index:
+        fill = _iso_utc_ms_from_cell(row["buy_time"])
+    if fill is None and "buy_date" in row.index:
+        fill = _iso_utc_ms_from_cell(row["buy_date"])
+    l1 = _stamp_pair(row, "l1_time", "l1_ms", "channel_start")
+    l2 = _stamp_pair(row, "l2_time", "l2_ms")
+    h2 = _stamp_pair(row, "h2_time", "h2_ms", "channel_end")
+    l1p = _cell_float(row["l1_price"]) if "l1_price" in row.index else None
+    l2p = _cell_float(row["l2_price"]) if "l2_price" in row.index else None
+    width = _cell_float(row["channel_width"]) if "channel_width" in row.index else None
+    src = "rails"
+    if l1p is None or l2p is None or width is None or width <= 0 or l1 is None or l2 is None:
+        recon = _reconstruct_channel_rails(row, fill)
+        if recon is None:
+            return None
+        l1, l1p, l2, l2p, h2, width = recon
+        src = "approx"
+    if fill is None or l1 is None or l2 is None or l1p is None or l2p is None or width is None:
+        return None
+    entry_px = _cell_float(row["buy_price"]) if "buy_price" in row.index else None
+    exit_px = _cell_float(row["sell_price"]) if "sell_price" in row.index else None
+    exit_ts = None
+    if "sell_time" in row.index:
+        exit_ts = _iso_utc_ms_from_cell(row["sell_time"])
+    if exit_ts is None and "sell_date" in row.index:
+        exit_ts = _iso_utc_ms_from_cell(row["sell_date"])
+    out: Dict[str, Any] = {
+        "v": 1,
+        "sym": sym,
+        "src": src,
+        "fill": fill[0],
+        "fill_ms": fill[1],
+        "en": fill[0],
+        "en_ms": fill[1],
+        "l1t": l1[0],
+        "l1_ms": l1[1],
+        "l1p": round(float(l1p), 6),
+        "l2t": l2[0],
+        "l2_ms": l2[1],
+        "l2p": round(float(l2p), 6),
+        "w": round(float(width), 6),
+    }
+    if entry_px is not None:
+        out["enp"] = round(float(entry_px), 6)
+    if exit_ts is not None:
+        out["ex"] = exit_ts[0]
+        out["ex_ms"] = exit_ts[1]
+    if exit_px is not None:
+        out["exp"] = round(float(exit_px), 6)
+    if h2 is not None:
+        out["h2t"] = h2[0]
+        out["h2_ms"] = h2[1]
+    return out
+
+
+def _reconstruct_channel_rails(
+    row: pd.Series,
+    fill: Optional[Tuple[str, int]],
+) -> Optional[Tuple[Tuple[str, int], float, Tuple[str, int], float, Optional[Tuple[str, int]], float]]:
+    """Build L1 + H2-on-support from older CSVs that only stored pct geometry."""
+    entry = _cell_float(row["buy_price"]) if "buy_price" in row.index else None
+    pos = _cell_float(row["channel_pos"]) if "channel_pos" in row.index else None
+    room = _cell_float(row["room_to_resist_pct"]) if "room_to_resist_pct" in row.index else None
+    slope_pct = _cell_float(row["slope_pct_per_bar"]) if "slope_pct_per_bar" in row.index else None
+    bars_span = _cell_int(row["bars_span"]) if "bars_span" in row.index else None
+    wait_bars = _cell_int(row["wait_bars"]) if "wait_bars" in row.index else None
+    l1 = _stamp_pair(row, "l1_time", "l1_ms", "channel_start")
+    h2 = _stamp_pair(row, "h2_time", "h2_ms", "channel_end")
+    if (
+        fill is None
+        or l1 is None
+        or h2 is None
+        or entry is None
+        or entry <= 0
+        or pos is None
+        or room is None
+        or slope_pct is None
+        or bars_span is None
+        or wait_bars is None
+        or pos >= 0.999
+    ):
+        return None
+    resist = entry * (1.0 + room / 100.0)
+    width = (resist - entry) / (1.0 - pos)
+    if not np.isfinite(width) or width <= 0:
+        return None
+    support_fill = entry - pos * width
+    bars_l1_fill = int(bars_span) + int(wait_bars)
+    denom = 1.0 + slope_pct / 100.0 * float(bars_l1_fill)
+    if denom <= 0:
+        return None
+    y1 = support_fill / denom
+    y_h2 = y1 * (1.0 + slope_pct / 100.0 * float(bars_span))
+    if not np.isfinite(y1) or not np.isfinite(y_h2) or y1 <= 0:
+        return None
+    return l1, float(y1), h2, float(y_h2), h2, float(width)
+
+
 def trades_to_raw(df: pd.DataFrame) -> List[dict]:
     """Compact trade rows for client-side recalculation.
 
@@ -416,6 +587,9 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
             item["rs"] = None if pd.isna(v) else float(v)
         if "resist_break" in t.columns:
             item["resist_break"] = _cell_bool(row["resist_break"])
+        ch = channel_json_for_row(row)
+        if ch:
+            item["ch"] = ch
         out.append(item)
     return out
 
@@ -583,6 +757,35 @@ def render_html(
   .meta-kv td:first-child {{ color:var(--muted); width:38%; }}
   tr.book-hl td {{ background:rgba(38,166,154,0.12); }}
   #filterBooks {{ margin-bottom:16px; }}
+  td.ch-cell {{ text-align:center; width:44px; }}
+  .ch-info {{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:18px; height:18px; border-radius:50%;
+    border:1px solid var(--muted); color:var(--muted);
+    font-size:11px; font-style:italic; font-weight:700;
+    cursor:pointer; background:transparent; line-height:1;
+  }}
+  .ch-info:hover {{ border-color:var(--accent); color:#fff; }}
+  .ch-info.copied {{ border-color:var(--pos); color:var(--pos); }}
+  #copyToast {{
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    background:var(--panel2); border:1px solid var(--pos); color:var(--text);
+    padding:8px 14px; border-radius:6px; font-size:12px; display:none; z-index:20;
+  }}
+  #chCopyModal {{
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:30;
+    align-items:center; justify-content:center;
+  }}
+  #chCopyModal.open {{ display:flex; }}
+  #chCopyModal .box {{
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:14px 16px; width:min(560px,92vw);
+  }}
+  #chCopyModal textarea {{
+    width:100%; height:180px; margin:10px 0; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; font-family:ui-monospace,Consolas,monospace;
+    font-size:11px; padding:8px;
+  }}
 </style>
 </head>
 <body>
@@ -810,6 +1013,7 @@ def render_html(
           <tr>
             <th class="sortable" data-sort="n">#</th>
             <th class="sortable" data-sort="symbol">Symbol</th>
+            <th>Channel</th>
             <th class="sortable" data-sort="signal">Signal</th>
             <th class="sortable" data-sort="entry_date">Entry</th>
             <th class="sortable" data-sort="exit_date">Exit</th>
@@ -861,6 +1065,20 @@ def render_html(
       <table class="meta-kv"><tbody id="dataParamsBody"></tbody></table>
     </div>
     <p class="note" id="runMetaNote"></p>
+  </div>
+</div>
+<div id="copyToast"></div>
+<div id="chCopyModal" role="dialog" aria-modal="true" aria-labelledby="chCopyTitle">
+  <div class="box">
+    <h2 id="chCopyTitle">Channel JSON (CTF paste)</h2>
+    <p class="muted">Paste into Channel Touch Fill Viewer → Channel JSON.</p>
+    <textarea id="chCopyText" readonly></textarea>
+    <div class="trade-filters" style="margin:0">
+      <div class="actions">
+        <button class="btn" type="button" id="chCopyAgain">Copy</button>
+        <button class="btn secondary" type="button" id="chCopyClose">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1032,7 +1250,8 @@ function simulate(trades, p) {{
     rows.push({{
       n: i + 1, symbol: t.symbol, signal: t.resist_break ? 'Resist-break' : (t.touch != null ? ('Touch ' + t.touch) : 'Long'),
       entry_date: stampBuy(t), exit_date: stampSell(t), entry_price: t.entry, exit_price: t.exit,
-      pnl, pnl_pct: gainPct, cum_pnl: cum, hold_days: t.hold, exit_reason: t.reason
+      pnl, pnl_pct: gainPct, cum_pnl: cum, hold_days: t.hold, exit_reason: t.reason,
+      ch: t.ch || null
     }});
   }}
 
@@ -1782,11 +2001,16 @@ function paintTradesTable() {{
   if ((RAW.trades || []).some(t => t.buy_at || t.sell_at)) {{
     note += ' · entry/exit are bar times (YYYY-MM-DD HH:MM)';
   }}
+  if ((RAW.trades || []).some(t => t.ch)) {{
+    note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';
+  }}
   setHTML('tradesNote', note);
   updateSortHeaders();
   setHTML('tradesBody', slice.map(t => `
     <tr>
-      <td>${{t.n}}</td><td>${{t.symbol}}</td><td>${{t.signal}}</td>
+      <td>${{t.n}}</td><td>${{t.symbol}}</td>
+      <td class="ch-cell">${{t.ch ? '<button type="button" class="ch-info" data-copy-ch="' + encodeURIComponent(JSON.stringify(t.ch)) + '" title="Copy channel JSON for CTF">i</button>' : ''}}</td>
+      <td>${{t.signal}}</td>
       <td class="when">${{t.entry_date}}</td><td class="when">${{t.exit_date}}</td>
       <td class="num">${{t.entry_price.toFixed(4)}}</td><td class="num">${{t.exit_price.toFixed(4)}}</td>
       <td class="num ${{cls(t.pnl)}}">${{money(t.pnl,true)}}</td>
@@ -1952,6 +2176,83 @@ document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
 }});
 document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
+
+function showCopyToast(msg) {{
+  const el = document.getElementById('copyToast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showCopyToast._t);
+  showCopyToast._t = setTimeout(() => {{ el.style.display = 'none'; }}, 2200);
+}}
+
+function openChModal(text) {{
+  const modal = document.getElementById('chCopyModal');
+  const ta = document.getElementById('chCopyText');
+  ta.value = text;
+  modal.classList.add('open');
+  ta.focus();
+  ta.select();
+}}
+
+function closeChModal() {{
+  document.getElementById('chCopyModal').classList.remove('open');
+}}
+
+function copyText(text) {{
+  if (navigator.clipboard && window.isSecureContext) {{
+    return navigator.clipboard.writeText(text);
+  }}
+  return new Promise((resolve, reject) => {{
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {{
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) resolve();
+      else reject(new Error('execCommand copy failed'));
+    }} catch (err) {{
+      document.body.removeChild(ta);
+      reject(err);
+    }}
+  }});
+}}
+
+function copyChannelJson(text, btn) {{
+  openChModal(text);
+  copyText(text).then(() => {{
+    if (btn) {{
+      btn.classList.add('copied');
+      setTimeout(() => btn.classList.remove('copied'), 1200);
+    }}
+    showCopyToast('Copied channel JSON — paste into CTF Channel JSON');
+  }}).catch(() => {{
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  }});
+}}
+
+document.getElementById('tradesTable').addEventListener('click', (e) => {{
+  const btn = e.target.closest('[data-copy-ch]');
+  if (!btn) return;
+  e.preventDefault();
+  const text = decodeURIComponent(btn.getAttribute('data-copy-ch') || '');
+  if (!text) return;
+  copyChannelJson(text, btn);
+}});
+document.getElementById('chCopyAgain').addEventListener('click', () => {{
+  copyChannelJson(document.getElementById('chCopyText').value, null);
+}});
+document.getElementById('chCopyClose').addEventListener('click', closeChModal);
+document.getElementById('chCopyModal').addEventListener('click', (e) => {{
+  if (e.target.id === 'chCopyModal') closeChModal();
+}});
+document.addEventListener('keydown', (e) => {{
+  if (e.key === 'Escape') closeChModal();
+}});
 
 document.getElementById('genAt').textContent = RAW.generated;
 renderFilterBooks();

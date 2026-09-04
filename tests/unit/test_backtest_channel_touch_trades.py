@@ -234,4 +234,115 @@ def test_h2_resist_break_only_skips_l3_occupancy():
     assert [r["entry_i"] for r in mixed] == [30]
     assert [r["entry_i"] for r in only] == [50]
     assert only[0]["resist_break"] is True
+    assert mixed[0]["l1_price"] == 100.0
+    assert mixed[0]["l2_price"] == round(float(df["low"].iloc[20]), 6)
+    assert mixed[0]["channel_width"] == 8.0
+    assert mixed[0]["l1_ms"] > 0
+    assert mixed[0]["h2_ms"] > 0
+
+
+def test_realistic_fill_15m_shifts_entry_and_price():
+    df = _occ_ohlcv(80)
+    ch_brk = _occ_setup(df, h2=21, width=9.0)
+
+    def fake_fills(high, low, close, **kwargs):
+        return [(50, 115.0, 3, False, True)]
+
+    def fake_sim(high, low, close, dates, entry_i, **kwargs):
+        exit_i = min(int(entry_i) + 10, len(close) - 1)
+        px = float(kwargs.get("entry_px") or close[entry_i])
+        return {
+            "buy_date": dates[entry_i].strftime("%Y-%m-%d"),
+            "buy_price": px,
+            "sell_date": dates[exit_i].strftime("%Y-%m-%d"),
+            "sell_price": float(close[exit_i]),
+            "gain_pct": 1.0,
+            "hold_days": 10,
+            "exit_reason": "trail_stop",
+            "entry_i": int(entry_i),
+            "exit_i": int(exit_i),
+        }
+
+    scan = dict(
+        entry_mode="l3_touch",
+        h2_resist_break=True,
+        h2_resist_break_only=True,
+        entry_features=False,
+        squeeze_adaptive=False,
+        window_bars=None,
+        pivot_len=5,
+        min_l3_wait_bars=1,
+        max_l3_wait_bars=252,
+        include_time=True,
+        realistic_fill=True,
+    )
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch_brk]
+    ), mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ), mock.patch(
+        "backtest_channel_touch_trades.exec_fill_15m_after_signal",
+        return_value=(51, 111.11),
+    ), mock.patch(
+        "backtest_channel_touch_trades._simulate_trade", side_effect=fake_sim
+    ):
+        rows = trades_for_symbol("AAA", df, **scan)
+    assert len(rows) == 1
+    assert rows[0]["entry_i"] == 51
+    assert rows[0]["buy_price"] == 111.11
+    assert rows[0]["wait_bars"] == 50 - 21
+
+
+def test_realistic_fill_daily_drops_without_15m_print():
+    df = _occ_ohlcv(80)
+    ch_brk = _occ_setup(df, h2=21, width=9.0)
+
+    def fake_fills(high, low, close, **kwargs):
+        return [(50, 115.0, 3, False, True)]
+
+    scan = dict(
+        entry_mode="l3_touch",
+        h2_resist_break=True,
+        h2_resist_break_only=True,
+        entry_features=False,
+        squeeze_adaptive=False,
+        window_bars=None,
+        pivot_len=5,
+        min_l3_wait_bars=1,
+        max_l3_wait_bars=252,
+        include_time=False,
+        realistic_fill=True,
+        df_15m=pd.DataFrame(),
+    )
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch_brk]
+    ), mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ):
+        rows = trades_for_symbol("AAA", df, **scan)
+    assert rows == []
+
+
+def test_channel_rail_fields_iso_utc():
+    from backtest_channel_touch_trades import channel_rail_fields, iso_utc_ms
+
+    idx = pd.bdate_range("2024-06-03", periods=30)
+    low = np.linspace(10.0, 12.0, 30)
+    ch = {
+        "support_x0": 2,
+        "support_y0": 10.5,
+        "support_slope": 0.02,
+        "channel_width": 1.25,
+        "l1_idx": 2,
+        "l2_idx": 8,
+        "h2_idx": 12,
+    }
+    rails = channel_rail_fields(ch, idx, low)
+    iso, ms = iso_utc_ms(idx[2])
+    assert rails["l1_time"] == iso
+    assert rails["l1_ms"] == ms
+    assert rails["l1_price"] == 10.5
+    assert rails["l2_price"] == round(float(low[8]), 6)
+    assert rails["channel_width"] == 1.25
+    assert rails["h2_time"].endswith("Z")
 

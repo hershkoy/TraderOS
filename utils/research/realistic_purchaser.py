@@ -1,20 +1,24 @@
-"""Close-confirm 15m fill: work the next same-session bar, fill at mid.
+"""Realistic fills for 15m close-confirm and daily signals that use 15m prints.
 
-Signal exists at the close of bar T (IB labels bars at period start, so that
-clock is T+15m = the open of bar T+1). The live window is that next 15m bar,
-including the last RTH bar (15:45-16:00 ET). A confirming close at 16:00 has
-no following RTH 15m and is cancelled.
+15m: signal exists at the close of bar T (IB labels bars at period start, so
+that clock is T+15m = the open of bar T+1). Fill is the next bar's mid.
+The last RTH bar (15:45-16:00 ET) is a valid window; a confirming close at
+16:00 has no following RTH 15m and is cancelled.
 
-Fill is the execution bar mid, not the signal-bar low. Cancel when
-(mid-low)/mid exceeds ``max_low_to_mid_pct`` (default 0.5%; half the range,
-about 1% high-low). Optional ``max_chase_pct`` caps mid vs the signal close
-(off by default). Not wired into the backtester yet.
+1d: given daily signal buy price X, take the first RTH 15m bar that day whose
+range contains X, then the next same-session 15m bar. Fill is
+(X + next_mid) / 2. If X never prints, or it only prints on the 15:45 bar,
+cancel. Same wild-bar gate on the next 15m.
+
+Cancel when (mid-low)/mid exceeds ``max_low_to_mid_pct`` (default 0.5%).
+Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill`` in
+``backtest_channel_touch_trades.py`` / ``backtest_channel_touch_h2_break.py``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
-from typing import Any, Mapping, Optional, Union
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, List, Mapping, Optional, Sequence, Union
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,6 +37,7 @@ REASON_WILD_RANGE = "wild_low_to_mid"
 REASON_CHASE = "chase"
 REASON_BAD_OHLC = "bad_ohlc"
 REASON_BAD_SIGNAL = "bad_signal"
+REASON_PRICE_NOT_PRINTED = "price_not_printed"
 
 BarLike = Mapping[str, Any]
 TsLike = Union[datetime, pd.Timestamp, str]
@@ -49,6 +54,7 @@ class PurchaseResult:
     mid: Optional[float] = None
     low_to_mid_pct: Optional[float] = None
     chase_pct: Optional[float] = None
+    hit_bar_ts: Optional[datetime] = None
 
 
 def bar_mid(high: float, low: float) -> float:
@@ -172,6 +178,7 @@ def _result(
     mid: Optional[float] = None,
     low_to_mid: Optional[float] = None,
     chase: Optional[float] = None,
+    hit_bar_ts: Optional[datetime] = None,
 ) -> PurchaseResult:
     return PurchaseResult(
         filled=filled,
@@ -183,6 +190,7 @@ def _result(
         mid=mid,
         low_to_mid_pct=low_to_mid,
         chase_pct=chase,
+        hit_bar_ts=hit_bar_ts,
     )
 
 
@@ -320,3 +328,187 @@ def purchase_at_signal_index(
         max_chase_pct=max_chase_pct,
         naive_tz=naive_tz,
     )
+
+
+def bar_contains_price(high: float, low: float, px: float, *, eps: float = 1e-8) -> bool:
+    return float(low) - eps <= float(px) <= float(high) + eps
+
+
+def _as_session_date(value: Any, *, naive_tz: str) -> Optional[date]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime) or isinstance(value, pd.Timestamp):
+        return as_et(value, naive_tz=naive_tz).date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _coerce_15m_bars(
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    naive_tz: str,
+) -> List[dict]:
+    if bars_15m is None:
+        return []
+    if isinstance(bars_15m, pd.DataFrame):
+        if bars_15m.empty:
+            return []
+        rows = [_row_bar(bars_15m, i, naive_tz=naive_tz) for i in range(len(bars_15m))]
+    else:
+        rows = [dict(b) for b in bars_15m]
+    keyed = []
+    for row in rows:
+        ts = _bar_ts(row, naive_tz=naive_tz)
+        if ts is None or not is_rth_15m_bar_start(ts, naive_tz=naive_tz):
+            continue
+        row = dict(row)
+        row["ts"] = _floor_15m(ts)
+        keyed.append(row)
+    keyed.sort(key=lambda b: b["ts"])
+    return keyed
+
+
+def purchase_after_daily_signal(
+    signal_buy_price: float,
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    session_date: Any = None,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
+    naive_tz: str = "UTC",
+) -> PurchaseResult:
+    """Daily signal at price X: first 15m print of X that session, then blend with next mid.
+
+    entry = (X + next_15m_mid) / 2. Wild/EOD rules match the 15m purchaser
+    (next bar after the print; 15:45 print has no window).
+    """
+    try:
+        px = float(signal_buy_price)
+    except (TypeError, ValueError):
+        return _result(REASON_BAD_SIGNAL)
+    if px != px or px <= 0:
+        return _result(REASON_BAD_SIGNAL)
+
+    day = _as_session_date(session_date, naive_tz=naive_tz)
+    bars = _coerce_15m_bars(bars_15m, naive_tz=naive_tz)
+    if day is not None:
+        bars = [b for b in bars if b["ts"].date() == day]
+    if not bars:
+        return _result(REASON_BAD_SIGNAL, signal_px=px)
+
+    hit_i = None
+    for i, bar in enumerate(bars):
+        high = _px(bar, "high")
+        low = _px(bar, "low")
+        if not _hl_ok(high, low):
+            continue
+        if bar_contains_price(high, low, px):
+            hit_i = i
+            break
+    if hit_i is None:
+        return _result(REASON_PRICE_NOT_PRINTED, signal_px=px)
+
+    hit = bars[hit_i]
+    nxt = bars[hit_i + 1] if hit_i + 1 < len(bars) else None
+    inner = purchase_after_close_signal(
+        hit,
+        nxt,
+        max_low_to_mid_pct=max_low_to_mid_pct,
+        max_chase_pct=None,
+        naive_tz=naive_tz,
+    )
+    hit_ts = hit["ts"]
+    if not inner.filled:
+        return _result(
+            inner.reason,
+            signal_time=inner.signal_time,
+            signal_px=px,
+            exec_bar_ts=inner.exec_bar_ts,
+            mid=inner.mid,
+            low_to_mid=inner.low_to_mid_pct,
+            chase=inner.chase_pct,
+            hit_bar_ts=hit_ts,
+        )
+    mid = inner.mid
+    if mid is None:
+        return _result(
+            REASON_BAD_OHLC,
+            signal_time=inner.signal_time,
+            signal_px=px,
+            hit_bar_ts=hit_ts,
+        )
+    fill = (px + float(mid)) / 2.0
+    chase = (float(mid) - px) / px
+    if max_chase_pct is not None and chase > float(max_chase_pct):
+        return _result(
+            REASON_CHASE,
+            signal_time=inner.signal_time,
+            signal_px=px,
+            exec_bar_ts=inner.exec_bar_ts,
+            mid=mid,
+            low_to_mid=inner.low_to_mid_pct,
+            chase=chase,
+            hit_bar_ts=hit_ts,
+        )
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=fill,
+        signal_time=inner.signal_time,
+        signal_px=px,
+        exec_bar_ts=inner.exec_bar_ts,
+        mid=mid,
+        low_to_mid=inner.low_to_mid_pct,
+        chase=chase,
+        hit_bar_ts=hit_ts,
+    )
+
+
+def exec_fill_15m_after_signal(
+    df: pd.DataFrame,
+    signal_i: int,
+    *,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
+    naive_tz: str = "UTC",
+) -> Optional[tuple]:
+    """Next same-session 15m mid after close-confirm at ``signal_i``, or None."""
+    got = purchase_at_signal_index(
+        df,
+        signal_i,
+        max_low_to_mid_pct=max_low_to_mid_pct,
+        max_chase_pct=max_chase_pct,
+        naive_tz=naive_tz,
+    )
+    if not got.filled or got.fill_px is None:
+        return None
+    return int(signal_i) + 1, float(got.fill_px)
+
+
+def exec_fill_daily_with_15m(
+    signal_buy_price: float,
+    df_15m: Optional[pd.DataFrame],
+    session_date: Any,
+    *,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
+    naive_tz: str = "UTC",
+) -> Optional[float]:
+    """Blend daily X with the next 15m mid after the first print of X."""
+    if df_15m is None or df_15m.empty:
+        return None
+    got = purchase_after_daily_signal(
+        signal_buy_price,
+        df_15m,
+        session_date=session_date,
+        max_low_to_mid_pct=max_low_to_mid_pct,
+        max_chase_pct=max_chase_pct,
+        naive_tz=naive_tz,
+    )
+    if not got.filled or got.fill_px is None:
+        return None
+    return float(got.fill_px)

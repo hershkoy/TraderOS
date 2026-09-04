@@ -1,16 +1,17 @@
 //@version=6
-// Lightweight overlay for one 15m H5 HTML fill (reports/ascending_channels/current_best/15m_h5_overshoot_vol.html).
+// Lightweight overlay for one HTML fill (List of trades Channel JSON, or Manual rails).
 // Not the live /hot detector (that is CTD). Runs once on the last bar in a short window.
-// HTML buy_time is naive UTC; NASDAQ 15m 09:30 ET = 13:30 UTC.
-indicator("Channel Touch Fill Viewer", "CTF", overlay = true, max_bars_back = 5000, max_lines_count = 20, max_labels_count = 30)
+// JSON times are UTC (unix ms). Pine has no JSON.parse; keys are scanned as text.
+indicator("Channel Touch Fill Viewer", "CTF", overlay = true, max_bars_back = 5000, max_lines_count = 20, max_labels_count = 40)
 
 gFill = "Fill"
 gMan  = "Manual rails (from HTML / replay)"
 gAuto = "Auto-detect (15m H2 window)"
 gVis  = "Display"
 
-drawMode = input.string("Manual rails", "Draw mode", options = ["Manual rails", "Auto-detect 15m H2"], group = gFill, tooltip = "Manual = L1/L2/width inputs (instant). Auto = find H2 in Window bars before Fill time (last bar only).")
-fillTimeIn = input.time(timestamp("10 Jun 2025 09:30"), "Fill time (chart TZ)", group = gFill, tooltip = "Chart timezone. HTML 2025-06-10 13:30 UTC = 09:30 ET on NASDAQ 15m.")
+channelJsonIn = input.text_area("", "Channel JSON", group = gFill, tooltip = "One paste from the HTML List of trades Channel column (i icon). Overrides Manual rails when l1p/l2p/w are present. Times are UTC.")
+drawMode = input.string("Manual rails", "Draw mode", options = ["Manual rails", "Auto-detect 15m H2"], group = gFill, tooltip = "Used only when Channel JSON is empty. Manual = L1/L2/width inputs. Auto = find H2 in Window bars before Fill time (last bar only).")
+fillTimeIn = input.time(timestamp("10 Jun 2025 09:30"), "Fill time (chart TZ)", group = gFill, tooltip = "Chart timezone. Ignored when Channel JSON has fill_ms. HTML 2025-06-10 13:30 UTC = 09:30 ET on NASDAQ 15m.")
 
 tL1 = input.time(timestamp("4 Jun 2025 13:00"), "L1 time", group = gMan)
 pL1 = input.float(35.63, "L1 price", step = 0.01, group = gMan)
@@ -62,8 +63,9 @@ f_draw(int t1, float y1, int t2, float y2, float width, string tag) =>
     array.push(drawnLines, lnBot)
     array.push(drawnLines, lnTop)
     array.push(drawnFills, linefill.new(lnBot, lnTop, fillColor))
-    labFill = label.new(t2, y2 + width, tag, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(resistColor, 10), textcolor = color.white, size = size.small)
-    array.push(drawnLabs, labFill)
+    if tag != ""
+        labFill = label.new(t2, y2 + width, tag, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(resistColor, 10), textcolor = color.white, size = size.small)
+        array.push(drawnLabs, labFill)
 
 f_asof_off(int ts) =>
     found = int(na)
@@ -107,9 +109,139 @@ f_tbl(string title, string fillT, string status, string tone, string sup, string
         table.cell(info, 0, 9, "", text_color = lab, text_size = sz)
         table.cell(info, 1, 9, "", text_color = lab, text_size = sz)
 
+f_norm_json(string src) =>
+    s = str.replace_all(src, "\n", "")
+    s := str.replace_all(s, "\r", "")
+    s := str.replace_all(s, " ", "")
+    s
+
+f_jraw(string src, string key) =>
+    string needle = '"' + key + '":'
+    int p = str.pos(src, needle)
+    string out = string(na)
+    if not na(p)
+        int i = p + str.length(needle)
+        int n = str.length(src)
+        if i < n and str.substring(src, i, i + 1) == '"'
+            int j = i + 1
+            int endq = j
+            for k = 0 to 48
+                if j >= n
+                    break
+                if str.substring(src, j, j + 1) == '"'
+                    endq := j
+                    break
+                j += 1
+            out := str.substring(src, i + 1, endq)
+        else
+            int j = i
+            int endn = i
+            for k = 0 to 28
+                if j >= n
+                    break
+                string c = str.substring(src, j, j + 1)
+                if c == "," or c == "}"
+                    endn := j
+                    break
+                j += 1
+                endn := j
+            out := str.substring(src, i, endn)
+    out
+
+f_jnum(string src, string key) =>
+    str.tonumber(f_jraw(src, key))
+
+f_jstr(string src, string key) =>
+    f_jraw(src, key)
+
+f_iso_ms(string s) =>
+    int ms = int(na)
+    if not na(s) and str.length(s) >= 10
+        int y = int(str.tonumber(str.substring(s, 0, 4)))
+        int mo = int(str.tonumber(str.substring(s, 5, 7)))
+        int d = int(str.tonumber(str.substring(s, 8, 10)))
+        int h = 0
+        int mi = 0
+        if str.length(s) >= 16
+            h := int(str.tonumber(str.substring(s, 11, 13)))
+            mi := int(str.tonumber(str.substring(s, 14, 16)))
+        ms := timestamp("UTC", y, mo, d, h, mi)
+    ms
+
+f_ms(string src, string msKey, string tKey) =>
+    float n = f_jnum(src, msKey)
+    int ms = int(na)
+    if not na(n)
+        ms := int(n)
+    else
+        ms := f_iso_ms(f_jstr(src, tKey))
+    ms
+
 if barstate.islast
+    jsonSrc = f_norm_json(channelJsonIn)
+    useJson = str.length(jsonSrc) >= 20 and str.contains(jsonSrc, '"l1p"')
     fillTxt = str.format_time(fillTimeIn, "yyyy-MM-dd HH:mm")
-    if drawMode == "Manual rails"
+    if useJson
+        l1p = f_jnum(jsonSrc, "l1p")
+        l2p = f_jnum(jsonSrc, "l2p")
+        widthJ = f_jnum(jsonSrc, "w")
+        tL1j = f_ms(jsonSrc, "l1_ms", "l1t")
+        tL2j = f_ms(jsonSrc, "l2_ms", "l2t")
+        tH2j = f_ms(jsonSrc, "h2_ms", "h2t")
+        tFj = f_ms(jsonSrc, "fill_ms", "fill")
+        tEnj = f_ms(jsonSrc, "en_ms", "en")
+        tExj = f_ms(jsonSrc, "ex_ms", "ex")
+        enp = f_jnum(jsonSrc, "enp")
+        exp = f_jnum(jsonSrc, "exp")
+        symJ = f_jstr(jsonSrc, "sym")
+        srcJ = f_jstr(jsonSrc, "src")
+        fillUse = na(tEnj) ? (na(tFj) ? fillTimeIn : tFj) : tEnj
+        fillTxtJ = str.format_time(fillUse, "yyyy-MM-dd HH:mm", "UTC") + " UTC"
+        h2Use = na(tH2j) ? tL2j : tH2j
+        tickerOk = true
+        if not na(symJ)
+            tickerOk := str.upper(symJ) == str.upper(syminfo.ticker)
+        if na(l1p) or na(l2p) or na(widthJ) or widthJ <= 0 or na(tL1j) or na(tL2j) or tL2j == tL1j
+            f_clear()
+            f_tbl("json", fillTxtJ, "bad JSON", "err", "-", "-", "-", "-", "Need l1p l2p w l1_ms l2_ms fill_ms", "Copy from HTML Channel i")
+            if dbgLog
+                log.info("CTF json: missing rails")
+        else
+            slopeMs = (l2p - l1p) / (tL2j - tL1j)
+            tRight = fillUse
+            if not na(tExj)
+                tRight := math.max(fillUse, tExj)
+            yRight = l1p + slopeMs * (tRight - tL1j)
+            yFill = l1p + slopeMs * (fillUse - tL1j)
+            f_draw(tL1j, l1p, tRight, yRight, widthJ, "")
+            f_lab(tL1j, l1p, "L1", label.style_label_up, supportColor)
+            f_lab(tL2j, l2p, "L2", label.style_label_up, supportColor)
+            if not na(h2Use)
+                f_lab(h2Use, l1p + slopeMs * (h2Use - tL1j) + widthJ, "H2", label.style_label_down, resistColor)
+            if not na(enp)
+                f_lab(fillUse, enp, "BUY " + str.tostring(enp, "#.00"), label.style_label_up, supportColor)
+            else
+                f_lab(fillUse, yFill + widthJ, "FILL", label.style_label_left, color.new(resistColor, 10))
+            if not na(tExj) and not na(exp)
+                f_lab(tExj, exp, "SELL " + str.tostring(exp, "#.00"), label.style_label_down, resistColor)
+            waitEst = int(math.round((fillUse - h2Use) / (15 * 60 * 1000.0)))
+            noteJ = (na(srcJ) ? "html json" : srcJ)
+            if not na(enp)
+                noteJ := noteJ + " BUY " + str.tostring(enp, "#.00")
+            if not na(exp)
+                noteJ := noteJ + " SELL " + str.tostring(exp, "#.00")
+            if not tickerOk
+                noteJ := noteJ + " ticker " + symJ
+            howJ = tickerOk ? "CTF JSON paste" : "JSON sym=" + symJ + " chart=" + syminfo.ticker
+            f_tbl("json", fillTxtJ, tickerOk ? "drawn" : "drawn (symbol?)", tickerOk ? "ok" : "err", str.tostring(yFill, "#.00"), str.tostring(yFill + widthJ, "#.00"), str.tostring(widthJ, "#.000"), str.tostring(waitEst) + " bars (H2 to fill)", noteJ, howJ)
+            if dbgLog
+                log.info("CTF json fill={0} support={1} resist={2} sym={3}", fillTxtJ, yFill, yFill + widthJ, na(symJ) ? "-" : symJ)
+    else if str.length(jsonSrc) >= 2
+        f_clear()
+        f_tbl("json", fillTxt, "bad JSON", "err", "-", "-", "-", "-", "Need keys l1p l2p w", "Copy from HTML Channel i")
+        if dbgLog
+            log.info("CTF json: paste missing l1p")
+    else if drawMode == "Manual rails"
         if pL1 <= 0 or pL2 <= 0 or widthIn <= 0 or tL2 == tL1
             f_clear()
             f_tbl("manual", fillTxt, "bad inputs", "err", "-", "-", "-", "-", "L1/L2/width required", "Use Auto-detect or paste HTML rails")

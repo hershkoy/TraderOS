@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-03**
+Last updated: **2026-09-04**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -58,7 +58,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-03):** full-universe **causal** rescan replaced `reports/ascending_channels/current_best/`. Live daily H2 span365 unique-symbol is now **n=3364 E +2.40 PF 2.02** (was leaky n=2253 E +2.80 PF 2.21). 15m H5 + overshoot p80 + vol≥2 is **n=8212 E +0.92 PF 3.57** (was 6306 / +0.93 / 3.61). Full IB 15m H2 RS top1 **n=1770 E +0.21 PF 1.33** — still do not promote 15m H2. AAPL 1d 2021-11-30 is in the live book. See [causal full universe](edge_hunt/channel_touch/2026-09-03_channel_touch_causal_full_universe.md).
+**Latest (2026-09-04):** `--realistic-fill` (15m next-bar mid; 1d blend with next 15m after first print of X) replaced `reports/ascending_channels/current_best/`. Live daily H2 span365 unique-symbol is now **n=713 E +1.78 PF 1.72** (causal optimistic was n=3364 E +2.40 PF 2.02). 15m H5 + overshoot p80 + vol≥2 is **n=7209 E ~0 PF 1.01** (was n=8212 E +0.92 PF 3.57 on fill-bar clip). 300-name 15m L3 wait-12 stays net-positive (**n=1746 E +0.09 PF 1.16**). Nightly scanner still uses close fills. See [realistic fill](edge_hunt/channel_touch/2026-09-04_channel_touch_realistic_fill.md).
+
+**Prior (2026-09-03):** full-universe **causal** rescan. Live daily H2 span365 unique-symbol **n=3364 E +2.40 PF 2.02** (was leaky n=2253 E +2.80 PF 2.21). 15m H5 + overshoot p80 + vol≥2 **n=8212 E +0.92 PF 3.57**. Full IB 15m H2 RS top1 **n=1770 E +0.21 PF 1.33** — still do not promote 15m H2. AAPL 1d 2021-11-30 is in the live book. See [causal full universe](edge_hunt/channel_touch/2026-09-03_channel_touch_causal_full_universe.md).
 
 **Prior (2026-09-02):** causal **walk-replay** vs full-series batch (`replay_channel_touch_walk.py`). AAPL 1d H2 resist-break now **matches 3/3** (batch 0.1s): freeze first H2 (`causal_h2`) and drop L3 support-tag fills *before* occupancy (`h2_resist_break_only`). The extra 2021-11-30 fill was blocked by a phantom L3 tag, not missing rails. See [walk-replay](edge_hunt/channel_touch/2026-09-02_channel_touch_walk_replay.md).
 

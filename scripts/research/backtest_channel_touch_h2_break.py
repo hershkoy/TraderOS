@@ -183,6 +183,17 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--load-workers", type=int, default=8)
     ap.add_argument("--chunk-size", type=int, default=0)
+    ap.add_argument(
+        "--realistic-fill",
+        action="store_true",
+        help="15m next-bar mid; 1d blend with next 15m mid after first print of X",
+    )
+    ap.add_argument(
+        "--max-low-to-mid-pct",
+        type=float,
+        default=0.005,
+        help="Cancel when exec 15m (mid-low)/mid exceeds this (default 0.5%%)",
+    )
     args = ap.parse_args()
     t0 = time.perf_counter()
     is_15m = (args.preset or "").strip() == "15m"
@@ -256,8 +267,27 @@ def main() -> int:
     logger.info("OHLCV loaded in %.1fs", time.perf_counter() - t0)
 
     base = _preset_15m_base() if is_15m else _daily_base()
+    base["realistic_fill"] = bool(args.realistic_fill)
+    base["max_low_to_mid_pct"] = float(args.max_low_to_mid_pct)
+    panels_15m = None
+    if (not is_15m) and args.realistic_fill:
+        t_15 = time.perf_counter()
+        panels_15m = load_ohlcv_many(
+            symbols,
+            timeframe="15m",
+            provider="IB",
+            start=start,
+            end=end,
+            workers=int(args.load_workers),
+            chunk_size=chunk_size,
+            use_cache=True,
+        )
+        n_have = sum(1 for s in symbols if s != "SPY" and panels_15m.get(s) is not None and not panels_15m[s].empty)
+        logger.info("IB 15m purchase panels %d/%d in %.1fs", n_have, len(symbols) - 1, time.perf_counter() - t_15)
     t_scan = time.perf_counter()
-    scanned = _scan_trades(panels, symbols=symbols, workers=int(args.workers), base=base)
+    scanned = _scan_trades(
+        panels, symbols=symbols, workers=int(args.workers), base=base, panels_15m=panels_15m
+    )
     logger.info("Scan n=%d in %.1fs", len(scanned), time.perf_counter() - t_scan)
     if scanned.empty:
         logger.error("No trades")

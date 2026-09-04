@@ -429,4 +429,132 @@ def test_render_html_includes_distributions_tab():
     assert 'id="distDayHistChart"' in html
     assert 'id="distDayTsChart"' in html
     assert "function renderDistributions" in html
+    assert ">Channel</th>" in html
+    assert "copyChannelJson" in html
+    assert "Channel JSON (CTF paste)" in html
+
+
+def test_channel_json_for_row_from_rails():
+    from scripts.research.generate_channel_touch_tv_report import channel_json_for_row, trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AFRM"],
+            "buy_date": ["2025-02-06"],
+            "buy_time": ["2025-02-06 19:45"],
+            "sell_date": ["2025-02-07"],
+            "sell_time": ["2025-02-07 14:30"],
+            "buy_price": [61.035],
+            "sell_price": [74.1892],
+            "gain_pct": [21.55],
+            "hold_days": [5],
+            "l1_time": ["2025-01-27T14:30:00Z"],
+            "l1_ms": [1737988200000],
+            "l1_price": [58.12],
+            "l2_time": ["2025-02-03T14:30:00Z"],
+            "l2_ms": [1738593000000],
+            "l2_price": [59.4],
+            "h2_time": ["2025-02-04T18:00:00Z"],
+            "h2_ms": [1738692000000],
+            "channel_width": [3.21],
+        }
+    )
+    ch = channel_json_for_row(df.iloc[0])
+    assert ch is not None
+    assert ch["v"] == 1
+    assert ch["sym"] == "AFRM"
+    assert ch["src"] == "rails"
+    assert ch["l1p"] == 58.12
+    assert ch["l2p"] == 59.4
+    assert ch["w"] == 3.21
+    assert ch["fill_ms"] > 0
+    assert ch["fill"].endswith("Z")
+    assert ch["en"] == ch["fill"]
+    assert ch["en_ms"] == ch["fill_ms"]
+    assert ch["enp"] == 61.035
+    assert ch["ex"].startswith("2025-02-07T14:30")
+    assert ch["exp"] == 74.1892
+    row = trades_to_raw(df)[0]
+    assert row["ch"]["l1p"] == 58.12
+    assert row["ch"]["enp"] == 61.035
+    assert row["ch"]["exp"] == 74.1892
+
+
+def test_channel_json_for_row_reconstructs_old_csv():
+    from scripts.research.generate_channel_touch_tv_report import channel_json_for_row
+
+    row = pd.Series(
+        {
+            "stock": "EZPW",
+            "channel_start": "2020-12-21",
+            "channel_end": "2021-03-18",
+            "buy_date": "2021-03-30",
+            "buy_price": 5.065,
+            "sell_date": "2021-06-08",
+            "sell_price": 6.921,
+            "channel_pos": 0.081,
+            "room_to_resist_pct": 15.643,
+            "slope_pct_per_bar": 0.2253,
+            "channel_width_pct": 19.87,
+            "bars_span": 59,
+            "wait_bars": 8,
+        }
+    )
+    ch = channel_json_for_row(row)
+    assert ch is not None
+    assert ch["src"] == "approx"
+    assert ch["sym"] == "EZPW"
+    assert ch["w"] > 0
+    assert ch["l1p"] > 0
+    assert ch["l2t"].startswith("2021-03-18")
+    assert ch["enp"] == 5.065
+    assert ch["exp"] == 6.921
+    assert ch["ex"].startswith("2021-06-08")
+
+
+def test_render_html_embeds_channel_json():
+    from scripts.research.generate_channel_touch_tv_report import render_html, trades_to_raw
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AFRM"],
+            "buy_date": ["2025-02-06"],
+            "buy_time": ["2025-02-06 19:45"],
+            "sell_date": ["2025-02-07"],
+            "buy_price": [61.0],
+            "sell_price": [74.0],
+            "gain_pct": [21.0],
+            "hold_days": [5],
+            "l1_time": ["2025-01-27T14:30:00Z"],
+            "l1_ms": [1737988200000],
+            "l1_price": [58.12],
+            "l2_time": ["2025-02-03T14:30:00Z"],
+            "l2_ms": [1738593000000],
+            "l2_price": [59.4],
+            "h2_time": ["2025-02-04T18:00:00Z"],
+            "h2_ms": [1738692000000],
+            "channel_width": [3.21],
+        }
+    )
+    html = render_html(
+        raw_trades=trades_to_raw(df),
+        spy_closes=[],
+        defaults={
+            "capital": 100000,
+            "sizeMode": "fixed",
+            "sizeVal": 10000,
+            "friction": 0.1,
+            "maxPerDay": 0,
+            "maxOpen": 0,
+            "winCap": 0,
+            "excludeSym": "",
+        },
+        run_meta={"git": {"branch": "x", "commit": "abc", "dirty": "no"}},
+        title="Channel JSON",
+        source="test.csv",
+    )
+    assert '"enp":61' in html
+    assert '"exp":74' in html
+    assert "data-copy-ch" in html
+    assert "paste into CTF Channel JSON" in html
 

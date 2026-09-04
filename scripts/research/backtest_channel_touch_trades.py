@@ -30,7 +30,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -56,6 +56,11 @@ from utils.research.channel_touch_entry_features import (
     max_beyond_width,
     snapshot_stock_features,
     stock_entry_feature_series,
+)
+from utils.research.realistic_purchaser import (
+    DEFAULT_MAX_LOW_TO_MID_PCT,
+    exec_fill_15m_after_signal,
+    exec_fill_daily_with_15m,
 )
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
 
@@ -108,6 +113,82 @@ def _adv_20(close: np.ndarray, volume: np.ndarray, i: int, lookback: int = 20) -
 
 def _line_at(y0: float, x0: int, slope: float, x: int) -> float:
     return float(y0 + slope * (x - x0))
+
+
+def iso_utc_ms(ts: object) -> Tuple[str, int]:
+    """Naive stamps are UTC (IB/Alpaca OHLCV). Returns ISO-8601 Z + unix ms."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is not None:
+        t = t.tz_convert("UTC")
+    else:
+        t = t.tz_localize("UTC")
+    ms = int(round(t.timestamp() * 1000))
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ"), ms
+
+
+def channel_rail_fields(
+    ch: dict,
+    dates,
+    low: np.ndarray,
+    *,
+    include_time: bool = False,
+) -> Dict[str, Any]:
+    """L1/L2/H2 timestamps + absolute width for CTF JSON paste.
+
+    ``include_time`` is unused for the ISO stamp (always emits HH:MM:SSZ);
+    kept so callers can pass the backtest clock flag without a mismatch.
+    """
+    del include_time
+    out: Dict[str, Any] = {}
+    n = len(dates)
+    l1 = ch.get("l1_idx", ch.get("support_x0"))
+    l2 = ch.get("l2_idx")
+    if l2 is None:
+        idxs = ch.get("touch_indices") or []
+        if len(idxs) >= 2:
+            l2 = idxs[-1]
+    h2 = ch.get("h2_idx")
+    y1 = ch.get("support_y0")
+    slope = ch.get("support_slope")
+    width = ch.get("channel_width")
+
+    def _at(idx: object) -> Optional[int]:
+        if idx is None:
+            return None
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            return None
+        return i if 0 <= i < n else None
+
+    i1 = _at(l1)
+    i2 = _at(l2)
+    ih = _at(h2)
+    if i1 is not None and y1 is not None and np.isfinite(float(y1)):
+        iso, ms = iso_utc_ms(dates[i1])
+        out["l1_time"] = iso
+        out["l1_ms"] = ms
+        out["l1_price"] = round(float(y1), 6)
+    if i2 is not None:
+        iso, ms = iso_utc_ms(dates[i2])
+        out["l2_time"] = iso
+        out["l2_ms"] = ms
+        px = float(low[i2]) if i2 < len(low) and np.isfinite(low[i2]) else float("nan")
+        if (not np.isfinite(px)) and i1 is not None and y1 is not None and slope is not None:
+            px = _line_at(float(y1), int(i1), float(slope), int(i2))
+        if np.isfinite(px):
+            out["l2_price"] = round(float(px), 6)
+    if ih is not None:
+        iso, ms = iso_utc_ms(dates[ih])
+        out["h2_time"] = iso
+        out["h2_ms"] = ms
+    elif ch.get("h2_date") or ch.get("end_date"):
+        iso, ms = iso_utc_ms(ch.get("h2_date") or ch.get("end_date"))
+        out["h2_time"] = iso
+        out["h2_ms"] = ms
+    if width is not None and np.isfinite(float(width)) and float(width) > 0:
+        out["channel_width"] = round(float(width), 6)
+    return out
 
 
 def _support_tagged(bar_low: float, bar_high: float, support: float, error_pct: float) -> bool:
@@ -505,6 +586,7 @@ def _simulate_trade(
     max_hold_days: Optional[int] = None,
     include_time: bool = False,
     entry_px: Optional[float] = None,
+    skip_entry_bar_stop: bool = False,
 ) -> Optional[dict]:
     """Long from entry_i; default fill is close, or ``entry_px`` for a limit at support.
 
@@ -549,7 +631,11 @@ def _simulate_trade(
     )
 
     lo0 = float(low[entry_i]) if entry_i < n else float("nan")
-    if np.isfinite(lo0) and lo0 <= hard_stop < entry_px:
+    if (
+        not skip_entry_bar_stop
+        and np.isfinite(lo0)
+        and lo0 <= hard_stop < entry_px
+    ):
         hold = 0
         gain_pct = (hard_stop / entry_px - 1.0) * 100.0
         ts_buy = dates[entry_i]
@@ -737,6 +823,9 @@ def trades_for_symbol(
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
     feature_asof_prior_bar: bool = False,
+    realistic_fill: bool = False,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -790,6 +879,8 @@ def trades_for_symbol(
             "min_intervening_pullback_pct", channel_kwargs.pop("min_pullback_pct")
         )
     error_pct = float(channel_kwargs.get("error_pct", 1.2))
+    use_realistic = bool(realistic_fill)
+    is_15m_bars = bool(hybrid or include_time)
 
     pending: List[tuple] = []
     if mode == "l3_touch":
@@ -844,7 +935,30 @@ def trades_for_symbol(
                     h2_high=float(high[h2]) if 0 <= h2 < n else float("nan"),
                 )
                 for j, fill, tnum in tags:
-                    pending.append((ch, j, fill, tnum, j, int(daily_i_map[j]), False, False))
+                    signal_j = int(j)
+                    fill_px = float(fill)
+                    if use_realistic:
+                        adj = exec_fill_15m_after_signal(
+                            m15,
+                            signal_j,
+                            max_low_to_mid_pct=max_low_to_mid_pct,
+                            max_chase_pct=max_chase_pct,
+                        )
+                        if adj is None:
+                            continue
+                        j, fill_px = adj
+                    pending.append(
+                        (
+                            ch,
+                            int(j),
+                            float(fill_px),
+                            tnum,
+                            signal_j,
+                            int(daily_i_map[signal_j]),
+                            False,
+                            False,
+                        )
+                    )
         else:
             for ch in setups:
                 sx0 = int(ch["support_x0"])
@@ -877,7 +991,31 @@ def trades_for_symbol(
                     is_brk = bool(tag[4]) if len(tag) > 4 else False
                     if bool(h2_resist_break_only) and not is_brk:
                         continue
-                    pending.append((ch, i, fill, tnum, i, i, is_sh, is_brk))
+                    signal_i = int(i)
+                    fill_px = float(fill) if fill is not None else None
+                    if use_realistic:
+                        if is_15m_bars:
+                            adj = exec_fill_15m_after_signal(
+                                out,
+                                signal_i,
+                                max_low_to_mid_pct=max_low_to_mid_pct,
+                                max_chase_pct=max_chase_pct,
+                            )
+                            if adj is None:
+                                continue
+                            i, fill_px = adj
+                        else:
+                            adj_px = exec_fill_daily_with_15m(
+                                float(fill),
+                                df_15m,
+                                dates[signal_i],
+                                max_low_to_mid_pct=max_low_to_mid_pct,
+                                max_chase_pct=max_chase_pct,
+                            )
+                            if adj_px is None:
+                                continue
+                            fill_px = adj_px
+                    pending.append((ch, i, fill_px, tnum, signal_i, signal_i, is_sh, is_brk))
     else:
         channels = (
             find_channels_windowed(
@@ -950,11 +1088,14 @@ def trades_for_symbol(
         sslope = float(ch["support_slope"])
         width = float(ch["channel_width"])
         line_i = int(daily_entry_i) if hybrid else int(entry_i)
-        atr_i_idx = max(0, line_i - 1) if (hybrid or feature_asof_prior_bar) else line_i
+        feat_src = int(t_idx) if use_realistic else int(entry_i)
+        atr_i_idx = max(0, feat_src - 1) if (hybrid or feature_asof_prior_bar or use_realistic) else feat_src
         if hybrid:
             atr_i = float(atr[atr_i_idx]) if atr_i_idx < len(atr) else float("nan")
         else:
-            atr_src_i = max(0, entry_i - 1) if feature_asof_prior_bar else entry_i
+            atr_src_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
+            if use_realistic:
+                atr_src_i = max(0, int(t_idx) - 1) if feature_asof_prior_bar else int(t_idx)
             atr_i = float(atr[atr_src_i]) if atr_src_i < len(atr) else float("nan")
         sim = _simulate_trade(
             sim_high,
@@ -982,6 +1123,7 @@ def trades_for_symbol(
             max_hold_days=hold_max,
             include_time=include_time,
             entry_px=fill_px,
+            skip_entry_bar_stop=bool(use_realistic and not is_15m_bars),
         )
         if sim is None:
             continue
@@ -990,7 +1132,7 @@ def trades_for_symbol(
         if hybrid:
             adv = _adv_20(close, volume, atr_i_idx, lookback=adv_lookback)
         else:
-            adv_i = max(0, entry_i - 1) if feature_asof_prior_bar else entry_i
+            adv_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
             adv = _adv_20(close, volume, adv_i, lookback=adv_lookback)
         support_at = _line_at(sy0, sx0, sslope, line_i)
         resist_at = support_at + width
@@ -1028,13 +1170,15 @@ def trades_for_symbol(
         except Exception:
             span_days = None
             age_days = None
-        feat_i = entry_i - 1 if feature_asof_prior_bar else entry_i
+        h2_idx = int(ch.get("h2_idx", t_idx))
+        wait_bars = int(t_idx - h2_idx) if (hybrid or use_realistic) else int(entry_i - h2_idx)
+        feat_i = (int(t_idx) - 1 if feature_asof_prior_bar else int(t_idx)) if use_realistic else (
+            entry_i - 1 if feature_asof_prior_bar else entry_i
+        )
         feat_snap = snapshot_stock_features(feat_series, feat_i) if feat_series is not None else {}
         feat_asof = None
         if feat_series is not None and 0 <= feat_i < len(sim_dates):
             feat_asof = pd.Timestamp(sim_dates[feat_i]).strftime("%Y-%m-%d %H:%M")
-        h2_idx = int(ch.get("h2_idx", t_idx))
-        wait_bars = int(line_i - h2_idx) if hybrid else int(entry_i - h2_idx)
         touch_ts = pd.Timestamp(sim_dates[t_idx]) if 0 <= t_idx < len(sim_dates) else buy_ts
         touch_px = float(sim_low[t_idx]) if 0 <= t_idx < len(sim_low) else float("nan")
         trades.append(
@@ -1055,6 +1199,7 @@ def trades_for_symbol(
                 "exit_i": sim["exit_i"],
                 "adv_20": round(adv, 2) if np.isfinite(adv) else None,
                 "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
+                **channel_rail_fields(ch, dates, low, include_time=include_time or is_15m_bars),
                 "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
                 "channel_width_pct": ch.get("channel_width_pct"),
                 "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
@@ -1114,6 +1259,9 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
+        realistic_fill=bool(payload.get("realistic_fill", False)),
+        max_low_to_mid_pct=payload.get("max_low_to_mid_pct", DEFAULT_MAX_LOW_TO_MID_PCT),
+        max_chase_pct=payload.get("max_chase_pct"),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -1491,12 +1639,17 @@ def _scan_trades(
     symbols: Sequence[str],
     workers: int,
     base: dict,
+    panels_15m: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
-    payloads = [
-        {"symbol": sym, "df": panels[sym], **base}
-        for sym in symbols
-        if sym in panels and sym != "SPY"
-    ]
+    payloads = []
+    extra_15 = panels_15m or {}
+    for sym in symbols:
+        if sym not in panels or sym == "SPY":
+            continue
+        payload = {"symbol": sym, "df": panels[sym], **base}
+        if extra_15:
+            payload["df_15m"] = extra_15.get(sym)
+        payloads.append(payload)
     all_trades: List[dict] = []
     if workers and workers > 1 and len(payloads) > 1:
         with ProcessPoolExecutor(max_workers=int(workers)) as pool:
@@ -1675,6 +1828,15 @@ REPORT_COLS = [
     "stock",
     "channel_start",
     "channel_end",
+    "l1_time",
+    "l1_ms",
+    "l1_price",
+    "l2_time",
+    "l2_ms",
+    "l2_price",
+    "h2_time",
+    "h2_ms",
+    "channel_width",
     "touch_num",
     "touch_date",
     "touch_time",
@@ -1994,6 +2156,23 @@ def main() -> int:
         help="l3_touch: drop L3 support-tag fills before occupancy (live H2 resist-break book)",
     )
     ap.add_argument(
+        "--realistic-fill",
+        action="store_true",
+        help="15m: fill next-bar mid after close-confirm. 1d: blend daily X with next 15m mid after first print of X. Cancel if next-bar low-to-mid exceeds --max-low-to-mid-pct.",
+    )
+    ap.add_argument(
+        "--max-low-to-mid-pct",
+        type=float,
+        default=DEFAULT_MAX_LOW_TO_MID_PCT,
+        help="Realistic fill: cancel when (mid-low)/mid of the exec 15m bar exceeds this (default 0.005)",
+    )
+    ap.add_argument(
+        "--max-chase-pct",
+        type=float,
+        default=None,
+        help="Realistic fill: optional cap on (next_mid - signal)/signal. Off if omitted.",
+    )
+    ap.add_argument(
         "--no-causal-h2",
         action="store_true",
         help="l3_touch: allow highs after the first H2 to refit width (full-series look-ahead; old batch)",
@@ -2139,9 +2318,12 @@ def main() -> int:
         time.perf_counter() - t_load,
     )
 
+    need_15m_purchase = intraday_fill == "15m" or (
+        bool(args.realistic_fill) and str(args.timeframe) == "1d"
+    )
     panels_15m: Dict[str, pd.DataFrame] = {}
     n_skip_15m = 0
-    if intraday_fill == "15m":
+    if need_15m_purchase:
         t_15 = time.perf_counter()
         names_15 = sorted({s.upper() for s in symbols})
         panels_15m = load_ohlcv_many(
@@ -2322,24 +2504,28 @@ def main() -> int:
             "shakeout_rebuy_bars": int(args.shakeout_rebuy_bars),
             "h2_resist_break": bool(args.h2_resist_break),
             "h2_resist_break_only": bool(args.h2_resist_break_only),
-            "df_15m": panels_15m.get(sym) if intraday_fill == "15m" else None,
+            "df_15m": panels_15m.get(sym) if need_15m_purchase else None,
             "intraday_fill": intraday_fill,
             "feature_asof_prior_bar": bool(use_prior_bar),
+            "realistic_fill": bool(args.realistic_fill),
+            "max_low_to_mid_pct": args.max_low_to_mid_pct,
+            "max_chase_pct": args.max_chase_pct,
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
         if sym in panels and sym != rs_symbol
         and (
-            intraday_fill != "15m"
+            not need_15m_purchase
             or (sym in panels_15m and panels_15m[sym] is not None and not panels_15m[sym].empty)
         )
     ]
-    if intraday_fill == "15m":
+    if need_15m_purchase:
         logger.info(
-            "Hybrid l3_touch 15m fill: %d symbols with daily+15m (skipped %d without 15m) feature_asof=%s",
+            "15m purchase panels: %d symbols with daily+15m (skipped %d without 15m) realistic=%s hybrid=%s",
             len(payloads),
             n_skip_15m,
-            "prior-bar" if use_prior_bar else "entry-bar",
+            bool(args.realistic_fill),
+            intraday_fill == "15m",
         )
     if args.workers and args.workers > 1 and len(payloads) > 1:
         with ProcessPoolExecutor(max_workers=int(args.workers)) as pool:
