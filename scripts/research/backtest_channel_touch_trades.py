@@ -949,6 +949,7 @@ def trades_for_symbol(
     realistic_fill_mode: str = DEFAULT_FILL_MODE,
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
+    touch_error_pct: Optional[float] = None,
     **channel_kwargs,
 ) -> List[dict]:
     if df is None or df.empty:
@@ -1002,6 +1003,10 @@ def trades_for_symbol(
             "min_intervening_pullback_pct", channel_kwargs.pop("min_pullback_pct")
         )
     error_pct = float(channel_kwargs.get("error_pct", 1.2))
+    # Tag/break tolerance for fills. Separate from detector pivot fitting (error_pct).
+    tag_error_pct = (
+        float(touch_error_pct) if touch_error_pct is not None else float(error_pct)
+    )
     use_realistic = bool(realistic_fill)
     fill_mode = normalize_fill_mode(realistic_fill_mode)
     is_15m_bars = bool(hybrid or include_time)
@@ -1051,7 +1056,7 @@ def trades_for_symbol(
                     support_slope=sslope,
                     width=float(ch.get("channel_width") or 0.0),
                     h2=h2,
-                    error_pct=error_pct,
+                    error_pct=tag_error_pct,
                     slip=slip,
                     wait_daily=wait,
                     min_wait_daily=min_wait,
@@ -1102,7 +1107,7 @@ def trades_for_symbol(
                     width=float(ch.get("channel_width") or 0.0),
                     h2=h2,
                     n=n,
-                    error_pct=error_pct,
+                    error_pct=tag_error_pct,
                     slip=slip,
                     wait=wait,
                     min_wait=min_wait,
@@ -1228,7 +1233,7 @@ def trades_for_symbol(
                 width=width,
                 h2=int(ch.get("h2_idx", -1)),
                 n=sim_n,
-                error_pct=error_pct,
+                error_pct=tag_error_pct,
                 slip=float(entry_slip_pct),
                 wait=max(1, int(max_l3_wait_bars)),
                 daily_i=daily_i_map if hybrid else None,
@@ -1425,6 +1430,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         realistic_fill_mode=str(payload.get("realistic_fill_mode") or DEFAULT_FILL_MODE),
         max_low_to_mid_pct=payload.get("max_low_to_mid_pct", DEFAULT_MAX_LOW_TO_MID_PCT),
         max_chase_pct=payload.get("max_chase_pct"),
+        touch_error_pct=payload.get("touch_error_pct"),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -2154,6 +2160,13 @@ def main() -> int:
     ap.add_argument("--squeeze-lookback", type=int, default=100, help="Bars for mom percentile window")
     ap.add_argument("--pivot-len", type=int, default=15)
     ap.add_argument("--error-pct", type=float, default=1.2)
+    ap.add_argument(
+        "--touch-error-pct",
+        type=float,
+        default=None,
+        help="L3/tag tolerance %% of price (default = --error-pct). 0 requires the bar "
+        "range to intersect support (no near-miss). Does not change detector pivot fitting.",
+    )
     ap.add_argument("--min-rally-pct", type=float, default=4.0)
     ap.add_argument("--min-pullback-pct", type=float, default=3.0)
     ap.add_argument("--min-total-rise-pct", type=float, default=3.0)
@@ -2694,6 +2707,7 @@ def main() -> int:
             "realistic_fill_mode": str(args.realistic_fill_mode),
             "max_low_to_mid_pct": args.max_low_to_mid_pct,
             "max_chase_pct": args.max_chase_pct,
+            "touch_error_pct": args.touch_error_pct,
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols
@@ -2815,7 +2829,8 @@ def main() -> int:
         f"squeeze_lookback={args.squeeze_lookback}",
         f"pivot_len={args.pivot_len} entry_mode={args.entry_mode} entry_slip_pct={args.entry_slip_pct}",
         f"preset={args.preset or 'daily'} window_bars={args.window_bars} window_step_bars={args.window_step_bars}",
-        f"error_pct={args.error_pct} min_rally_pct={args.min_rally_pct} min_total_rise_pct={args.min_total_rise_pct}",
+        f"error_pct={args.error_pct} touch_error_pct={args.touch_error_pct} "
+        f"min_rally_pct={args.min_rally_pct} min_total_rise_pct={args.min_total_rise_pct}",
         f"provider={args.provider} timeframe={args.timeframe}",
         f"fallback_provider={fb or ''}",
         f"merge_mode={merge or ''}",

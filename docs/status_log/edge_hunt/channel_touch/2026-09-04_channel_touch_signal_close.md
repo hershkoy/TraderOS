@@ -24,7 +24,9 @@ Wait-1 fires on the **first** near-rail tag (15:00), so it never waits for the 1
 
 Year E signal-close: 2018-19 −0.23, 2020-21 −0.17, 2022-23 +0.01, 2024-26 −0.15. `channel_pos<0` still 0.
 
-**Do not promote.** Wait-1 was already worse than wait-12; signal-close makes it net-negative. Frozen `current_best/15m_channel_touch.html` is still **next-mid wait-12**. Restore that fill with `--realistic-fill-mode next-mid`. Wait-12 has not been rescanned at signal-close.
+**Do not promote.** Wait-1 was already worse than wait-12; signal-close makes it net-negative.
+
+**Follow-up (same day):** wait-12 rescanned at signal-close — touch 0.24 **n=1755 E +0.05 PF 1.08** (2018-19 fails); **`--touch-error-pct 0` n=1744 E +0.13 PF 1.22** (all years +, beats prior next-mid). `current_best/15m_channel_touch.html` now holds the touch-0 signal-close book (RTH clocks). See [touch 0](2026-09-04_channel_touch_touch_error_0.md).
 
 Trades: `reports/ascending_channels/2026-09-04/channel_touch_15m_trades_20260904_160021.csv`
 HTML: `reports/ascending_channels/2026-09-04/channel_touch_tv_report_interactive_rs_top1_default_fric0.10_15m_l3_wait1_signal_close_20260904_160316.html`

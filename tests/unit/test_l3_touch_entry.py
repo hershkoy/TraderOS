@@ -41,6 +41,18 @@ def test_gap_through_is_not_l3_rail_touch():
     assert _l3_rail_touch(11.45, 10.505, 11.32, 10.44, 1.2)
 
 
+def test_touch_error_pct_zero_requires_real_intersection():
+    """0.24% near-miss is a tag; 0% requires low <= support <= high."""
+    support = 100.0
+    # Low 0.20% above support: tags at 0.24%, not at 0%.
+    assert _support_tagged(100.20, 101.0, support, 0.24)
+    assert not _support_tagged(100.20, 101.0, support, 0.0)
+    assert not _l3_rail_touch(101.0, 100.20, 100.80, support, 0.0)
+    # Real wick through the rail.
+    assert _support_tagged(99.90, 101.0, support, 0.0)
+    assert _l3_rail_touch(101.0, 99.90, 100.50, support, 0.0)
+
+
 def test_l3_touch_fills_at_support_not_mid_channel():
     n = 160
     idx = pd.date_range("2024-01-02", periods=n, freq="B")
