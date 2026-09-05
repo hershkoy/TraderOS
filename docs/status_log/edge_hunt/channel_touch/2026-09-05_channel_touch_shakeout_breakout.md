@@ -101,6 +101,8 @@ Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, 
 
 ## Realistic-fill current_best 1d (same next-mid recipe as 2026-09-04)
 
+**Caveat:** this scan converted daily midnight UTC to New York for the 15m join. Rebuild with `_as_session_date` before treating n=1239 as honest ([session date](2026-09-05_channel_touch_session_date.md)).
+
 2018-11-01 → 2026-08-27, 2216 ALPACA 1d, IB prefix, window 504/252, `--realistic-fill --realistic-fill-mode next-mid`, unique-symbol/day, 0.25% friction. Wall-clock **4068s** (1d cache 16.6s + IB 15m 255s + scan 3796s).
 
 | Book | n | E | PF | vs frozen realistic unique H2 (n=713 E +1.78 PF 1.72) |
@@ -111,7 +113,7 @@ Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, 
 
 SXI: parent 2020-08-11 @ 60.22 hard-stop 2020-08-25 −6.25% still there. Realistic extra is **2020-11-05 @ 66.55** trail 2021-03-22 **+46.04%** (close-fill extra was 2020-10-05 @ 62.66 / +55% — 15m next-mid reprices/delays). A later extra 2024-02-28 is in the book.
 
-HTML: deleted old `current_best/1d_channel_touch.html` and `1d_h2_resist_break.html` first, then copied `...h2_break_span365_shakeout_realistic_20260905_135228.html`. Do not `copy /Y` onto a hard link. 15m books and `1d_l3_touch.html` unchanged. Nightly remains **close fills**; HTML is **next-mid**.
+HTML: deleted old `current_best/1d_channel_touch.html` and `1d_h2_resist_break.html` first, then copied `...h2_break_span365_shakeout_realistic_20260905_135228.html`. Do not `copy /Y` onto a hard link. 15m books and `1d_l3_touch.html` unchanged. Nightly remains **unrealistic close / rail-clip**; HTML is **next-mid** (**pre-`_as_session_date`** — [session date](2026-09-05_channel_touch_session_date.md)).
 
 ## Code
 

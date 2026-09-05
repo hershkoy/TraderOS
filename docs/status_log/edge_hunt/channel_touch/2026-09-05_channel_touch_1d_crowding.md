@@ -1,6 +1,6 @@
 # 1d unique book — crowding and max-concurrent (2026-09-05)
 
-Follow-up to the [loser-filter](2026-09-05_channel_touch_1d_loser_filter.md) miss. No fitted score. Pre-registered structural / capital rules on `channel_touch_full_h2_break_span365_unique_20260905_135126.csv` (**n=1239 E +2.27 PF 1.92**).
+Follow-up to the [loser-filter](2026-09-05_channel_touch_1d_loser_filter.md) miss. No fitted score. Pre-registered structural / capital rules on `channel_touch_full_h2_break_span365_unique_20260905_135126.csv` (**n=1239 E +2.27 PF 1.92**, **pre-`_as_session_date`** — see [session date](2026-09-05_channel_touch_session_date.md)).
 
 ```bat
 venv\Scripts\activate
@@ -53,7 +53,7 @@ Full-day `n_day` is known at an **EOD / nightly** scan (all closes in). It is a 
 
 ## Gate
 
-**Soft-promote `cap_same_day=2` ranked by wait, not RS.** Do not replace unique-symbol with RS top1. Do not wire nightly or replace `current_best/1d_channel_touch.html` until that cap is an explicit live choice (`select_same_day_rs(..., rs_col="wait_bars", max_per_day=2)`).
+**Soft-promote `cap_same_day=2` ranked by wait, not RS.** Do not replace unique-symbol with RS top1. Do not wire nightly or replace `current_best/1d_channel_touch.html` until that cap is an explicit live choice (`select_same_day_rs(..., rs_col="wait_bars", max_per_day=2)`) **and** next-mid is rebuilt with `_as_session_date`.
 
 **Live capital:** greedy max concurrent **8** (wait tie-break) is the equal-dollar book you can actually hold; report it as capacity, not as a new edge. HTML already has Max concurrent.
 

@@ -16,7 +16,7 @@ set PYTHONPATH=.
 python scripts\research\filter_channel_touch_losers.py
 ```
 
-Book: `channel_touch_full_h2_break_span365_unique_20260905_135126.csv` **n=1239 E +2.27 PF 1.92** (extras 584). Expanding yearly OOS after the 60% buy-date quantile (first fold **2024-02-08**), purge + 21d embargo. Holdout cutoff **2023-01-01**. Ridge predicts `gain_pct_net` (winsorized train y); logistic predicts P(win). `skip0` = pred>=0 or p>=0.5; `thr` = train-only max-PF quantile (keep at least 35%).
+Book: `channel_touch_full_h2_break_span365_unique_20260905_135126.csv` **n=1239 E +2.27 PF 1.92** (extras 584). **Pre-`_as_session_date`** — next-mid used the prior session's 15m ([session date](2026-09-05_channel_touch_session_date.md)). Expanding yearly OOS after the 60% buy-date quantile (first fold **2024-02-08**), purge + 21d embargo. Holdout cutoff **2023-01-01**. Ridge predicts `gain_pct_net` (winsorized train y); logistic predicts P(win). `skip0` = pred>=0 or p>=0.5; `thr` = train-only max-PF quantile (keep at least 35%).
 
 ## Univariate
 

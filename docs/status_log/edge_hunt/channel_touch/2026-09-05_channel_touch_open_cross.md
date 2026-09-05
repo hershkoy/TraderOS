@@ -40,7 +40,7 @@ Vs frozen books (same sleeve, not a same-occupancy remap):
 
 | Fill | Unique n | E | PF |
 |------|----------|---|----|
-| Close-fill optimistic (2026-09-03 causal) | 3364 | +2.40 | 2.02 |
+| Close-fill unrealistic rail-clip (2026-09-03 causal) | 3364 | +2.40 | 2.02 |
 | Next-mid + shakeout (current_best, pre-`_as_session_date` fix) | 1239 | +2.27 | 1.92 |
 | **Open-cross + shakeout (this run)** | **2845** | **+2.06** | **1.775** |
 
@@ -50,6 +50,6 @@ CSV: `reports/ascending_channels/2026-09-05/channel_touch_full_h2_break_span365_
 
 ## Decision
 
-**Do not promote.** E/PF lose the next-mid HTML book (and optimistic close-fill). Nightly stays **close fills**. Do not replace `current_best/1d_channel_touch.html`. `--realistic-fill-mode open-cross` stays a research switch.
+**Do not promote.** E/PF lose the next-mid HTML book (and unrealistic close / rail-clip). Nightly stays **close fills**. Do not replace `current_best/1d_channel_touch.html`. `--realistic-fill-mode open-cross` stays a research switch.
 
 The fill itself is the honest gap-through purchaser (RDWR 25.71 @ 09:45 ET, not 24.64 on the 09:30 candle).

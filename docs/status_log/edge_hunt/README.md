@@ -13,7 +13,13 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 | 2026-08-22 | [Phase 6b VolTarget+BigVol](2026-08-22_edge_hunt_phase6b_voltarget_bigvol.md) |
 | 2026-08-22 | [Phase 6c VIX curve overlay](2026-08-22_edge_hunt_phase6c_vix_curve.md) |
 
-Related: [current status](../current_status.md), [channel-touch](channel_touch/README.md), [Weekly BigVol](../weekly_bigvol/README.md), [daily digests](../daily/README.md)
+Related: [current status](../current_status.md), [channel-touch](channel_touch/README.md), [Weekly BigVol](../weekly_bigvol/README.md), [daily digests](../daily/README.md), [realistic purchasing](../../features/realistic_purchasing.md)
+
+## After Phase 6 (frozen 2026-08-22)
+
+Phases 5 / 6 / 6c closed. Prefer freeze/productionize Phase 6b `Blend_VT60_BV40` over more Sharpe>1 fishing on the same window.
+
+Active production track is **channel-touch** (daily H2 resist-break nightly + 15m `/hot` research loop). Same-bar rail clip is **unrealistic**, not optimistic. Status: [channel-touch](channel_touch/README.md). Latest digest: [2026-09-05](../daily/2026-09-05.md).
 
 ## Harness
 
