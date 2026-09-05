@@ -439,6 +439,75 @@ def _shakeout_rebuy_fill(
     return None
 
 
+def _shakeout_breakout_fill(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    first_i: int,
+    h2: int,
+    n: int,
+    error_pct: float,
+    slip: float,
+    wait: int,
+    min_inside_bars: int = 1,
+) -> Optional[Tuple[int, float, int]]:
+    """After a first H2 resist-break, wait for a shakeout then the next breakout.
+
+    Shakeout = closes back inside the channel (not a resist-break close, not
+    through support). Then fill the next close above resistance at the rail
+    (+slip). Support close-through cancels. Consecutive bars still above
+    resistance are the same breakout and do not refill. Window is remaining
+    ``wait`` bars after H2. Returns ``(i, fill, inside_bars)``.
+    """
+    wait_n = max(1, int(wait))
+    need = max(1, int(min_inside_bars))
+    if first_i < 0 or first_i >= n - 1:
+        return None
+    tol = float(error_pct) / 100.0
+    inside_bars = 0
+    h2_i = int(h2)
+    end = min(int(n), h2_i + 1 + wait_n)
+    for i in range(int(first_i) + 1, end):
+        if _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            return None
+        if _close_broke_support(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            return None
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if not np.isfinite(resist) or resist <= 0:
+            continue
+        brk = float(close[i]) > resist * (1.0 + tol)
+        if not brk:
+            inside_bars += 1
+            continue
+        if inside_bars < need:
+            continue
+        fill = _limit_fill_at_support(resist, float(low[i]), float(high[i]), slip)
+        if fill is None:
+            return None
+        return (int(i), float(fill), int(inside_bars))
+    return None
+
+
 def _h2_rail_tag_fills(
     high: np.ndarray,
     low: np.ndarray,
@@ -458,6 +527,8 @@ def _h2_rail_tag_fills(
     leave_width_frac: float = 0.20,
     shakeout_rebuy_bars: int = 0,
     h2_resist_break: bool = False,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
 ) -> List[Tuple[int, float, int, bool, bool]]:
     """From-above support tags after H2. First tag is L3 (touch_num=3).
 
@@ -475,6 +546,11 @@ def _h2_rail_tag_fills(
     ``h2_resist_break``: instead of cancelling on a close above resistance after
     H2, emit a fill at the rail (breakout continuation). Support break still
     cancels. Off by default.
+
+    ``shakeout_breakout``: after a first resist-break fill, if price closes back
+    inside the channel then closes above resistance again (support still
+    holds), emit one extra resist-break fill. Not the L3 support-reclaim
+    rebuy. Occupancy skips the extra fill while the first trade is open.
     """
     want = max(3, int(entry_touch))
     wait_n = max(1, int(wait))
@@ -487,6 +563,8 @@ def _h2_rail_tag_fills(
     need_leave = False
     shake_n = max(0, int(shakeout_rebuy_bars))
     take_break = bool(h2_resist_break) and want <= 3
+    take_sbo = bool(shakeout_breakout) and take_break
+    sbo_min = max(1, int(shakeout_breakout_min_inside))
     for i in range(int(h2) + 1, min(n, int(h2) + 1 + wait_n)):
         sup = _line_at(support_y0, support_x0, support_slope, i)
         resist = float(sup) + float(width or 0.0)
@@ -499,6 +577,35 @@ def _h2_rail_tag_fills(
                 fill = _limit_fill_at_support(resist, float(low[i]), float(high[i]), slip)
                 if fill is not None:
                     out.append((i, float(fill), 3, False, True))
+                    if take_sbo:
+                        extra = _shakeout_breakout_fill(
+                            high,
+                            low,
+                            close,
+                            support_x0=support_x0,
+                            support_y0=support_y0,
+                            support_slope=support_slope,
+                            width=width,
+                            first_i=int(i),
+                            h2=int(h2),
+                            n=n,
+                            error_pct=error_pct,
+                            slip=slip,
+                            wait=wait_n,
+                            min_inside_bars=sbo_min,
+                        )
+                        if extra is not None:
+                            out.append(
+                                (
+                                    int(extra[0]),
+                                    float(extra[1]),
+                                    3,
+                                    False,
+                                    True,
+                                    True,
+                                    int(extra[2]),
+                                )
+                            )
                 break
             if take_break:
                 continue
@@ -1038,6 +1145,9 @@ def trades_for_symbol(
     shakeout_rebuy_bars: int = 0,
     h2_resist_break: bool = False,
     h2_resist_break_only: bool = False,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
+    shakeout_breakout_hard_stop: bool = False,
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
     feature_asof_prior_bar: bool = False,
@@ -1210,11 +1320,15 @@ def trades_for_symbol(
                     entry_touch=want_touch,
                     shakeout_rebuy_bars=int(shakeout_rebuy_bars),
                     h2_resist_break=bool(h2_resist_break),
+                    shakeout_breakout=bool(shakeout_breakout),
+                    shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
                 )
                 for tag in tags:
                     i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
                     is_sh = bool(tag[3]) if len(tag) > 3 else False
                     is_brk = bool(tag[4]) if len(tag) > 4 else False
+                    is_sbo = bool(tag[5]) if len(tag) > 5 else False
+                    inside_n = int(tag[6]) if len(tag) > 6 else 0
                     if bool(h2_resist_break_only) and not is_brk:
                         continue
                     signal_i = int(i)
@@ -1243,7 +1357,9 @@ def trades_for_symbol(
                             if adj_px is None:
                                 continue
                             fill_px = adj_px
-                    pending.append((ch, i, fill_px, tnum, signal_i, signal_i, is_sh, is_brk))
+                    pending.append(
+                        (ch, i, fill_px, tnum, signal_i, signal_i, is_sh, is_brk, is_sbo, inside_n)
+                    )
     else:
         channels = (
             find_channels_windowed(
@@ -1283,6 +1399,7 @@ def trades_for_symbol(
     pending.sort(key=lambda t: (int(t[1]), int(t[0].get("h2_idx", 0))))
     trades: List[dict] = []
     busy_until = -1
+    last_exit_reason: Optional[str] = None
     if hybrid:
         sim_high = m15_high
         sim_low = m15_low
@@ -1309,8 +1426,13 @@ def trades_for_symbol(
         ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i = item[:6]
         is_shakeout = bool(item[6]) if len(item) > 6 else False
         is_resist_break = bool(item[7]) if len(item) > 7 else False
+        is_sbo = bool(item[8]) if len(item) > 8 else False
+        inside_n = int(item[9]) if len(item) > 9 else 0
         if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
             continue
+        if is_sbo and bool(shakeout_breakout_hard_stop):
+            if last_exit_reason != "hard_stop":
+                continue
         sx0 = int(ch["support_x0"])
         sy0 = float(ch["support_y0"])
         sslope = float(ch["support_slope"])
@@ -1478,6 +1600,9 @@ def trades_for_symbol(
                 "entry_mode": entry_mode,
                 "shakeout_rebuy": bool(is_shakeout),
                 "resist_break": bool(is_resist_break),
+                "shakeout_breakout": bool(is_sbo),
+                "shakeout_inside_bars": int(inside_n) if is_sbo else None,
+                "parent_exit_reason": last_exit_reason if is_sbo else None,
                 "wait_bars": wait_bars,
                 "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
                 "channel_span_days": span_days,
@@ -1489,6 +1614,7 @@ def trades_for_symbol(
             }
         )
         busy_until = sim["exit_i"]
+        last_exit_reason = str(sim.get("exit_reason") or "")
     return trades
 
 
@@ -1529,6 +1655,9 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         shakeout_rebuy_bars=int(payload.get("shakeout_rebuy_bars", 0)),
         h2_resist_break=bool(payload.get("h2_resist_break", False)),
         h2_resist_break_only=bool(payload.get("h2_resist_break_only", False)),
+        shakeout_breakout=bool(payload.get("shakeout_breakout", False)),
+        shakeout_breakout_min_inside=int(payload.get("shakeout_breakout_min_inside", 1)),
+        shakeout_breakout_hard_stop=bool(payload.get("shakeout_breakout_hard_stop", False)),
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
@@ -2142,6 +2271,9 @@ def run_peak_trail_sweep(
         "shakeout_rebuy_bars": 0,
         "h2_resist_break": False,
         "h2_resist_break_only": False,
+        "shakeout_breakout": False,
+        "shakeout_breakout_min_inside": 1,
+        "shakeout_breakout_hard_stop": False,
         "realistic_fill": True,
         "realistic_fill_mode": FILL_MODE_SIGNAL_CLOSE,
         "touch_error_pct": 0.0,
@@ -2373,6 +2505,9 @@ REPORT_COLS = [
     "entry_mode",
     "shakeout_rebuy",
     "resist_break",
+    "shakeout_breakout",
+    "shakeout_inside_bars",
+    "parent_exit_reason",
     "wait_bars",
     "rs_spy_21d",
     "max_beyond_width",
@@ -2669,6 +2804,23 @@ def main() -> int:
         "--h2-resist-break-only",
         action="store_true",
         help="l3_touch: drop L3 support-tag fills before occupancy (live H2 resist-break book)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout",
+        action="store_true",
+        help="l3_touch: after first H2 resist-break, fill a later close-above-resistance "
+        "if price came back inside the channel and support held (rebuy, not hold-through)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout-min-inside",
+        type=int,
+        default=1,
+        help="shakeout-breakout: require N closes back inside the channel before the rebreak (default 1)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout-hard-stop",
+        action="store_true",
+        help="shakeout-breakout: only take the extra fill if the previous trade was a hard stop",
     )
     ap.add_argument(
         "--realistic-fill",
@@ -3141,6 +3293,9 @@ def main() -> int:
             "shakeout_rebuy_bars": int(args.shakeout_rebuy_bars),
             "h2_resist_break": bool(args.h2_resist_break),
             "h2_resist_break_only": bool(args.h2_resist_break_only),
+            "shakeout_breakout": bool(args.shakeout_breakout),
+            "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
+            "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
             "df_15m": panels_15m.get(sym) if need_15m_purchase else None,
             "intraday_fill": intraday_fill,
             "feature_asof_prior_bar": bool(use_prior_bar),
@@ -3284,7 +3439,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} shakeout_breakout={bool(args.shakeout_breakout)} shakeout_breakout_min_inside={args.shakeout_breakout_min_inside} shakeout_breakout_hard_stop={bool(args.shakeout_breakout_hard_stop)} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         "no_buy_below_channel=True (re-entry through support or resist-break)",
         f"realistic_fill={bool(args.realistic_fill)} realistic_fill_mode={args.realistic_fill_mode}",

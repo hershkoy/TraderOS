@@ -19,6 +19,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _limit_fill_at_support,
     _map_15m_to_daily_i,
     _reentry_or_breakout_fill,
+    _shakeout_breakout_fill,
     _shakeout_rebuy_fill,
     _support_tagged,
     trades_for_symbol,
@@ -786,4 +787,274 @@ def test_ensure_fill_below_support_defers_to_reentry():
     assert got[0] == 24
     assert got[1] + 1e-12 >= sup
     assert got[2] is False
+
+
+def _resist_break_bar(high, low, close, i, y0, slope, width):
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.025
+    high[i] = close[i] + 0.08
+    low[i] = resist - 0.25
+
+
+def _inside_near_resist(high, low, close, i, y0, slope, width):
+    resist = y0 + slope * i + width
+    close[i] = resist * 0.995
+    high[i] = close[i] + 0.05
+    low[i] = close[i] - 0.05
+
+
+def _h2_break_kw(n, h2=12):
+    return dict(
+        support_x0=0,
+        support_y0=10.0,
+        support_slope=0.02,
+        width=2.0,
+        h2=h2,
+        n=n,
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+        h2_resist_break=True,
+    )
+
+
+def test_shakeout_breakout_fills_after_inside_then_rebreak():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    _inside_near_resist(high, low, close, 30, y0, slope, width)
+    _resist_break_bar(high, low, close, 40, y0, slope, width)
+    kw = _h2_break_kw(len(high))
+    off = _h2_rail_tag_fills(high, low, close, shakeout_breakout=False, **kw)
+    assert len(off) == 1 and off[0][0] == 22 and off[0][4] is True
+    on = _h2_rail_tag_fills(high, low, close, shakeout_breakout=True, **kw)
+    assert len(on) == 2
+    assert on[0][0] == 22 and on[0][4] is True
+    assert len(on[1]) > 5 and on[1][5] is True
+    assert on[1][0] == 40 and on[1][4] is True
+    extra = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=1,
+    )
+    assert extra is not None and extra[0] == 40 and extra[2] >= 1
+
+
+def test_shakeout_breakout_skips_if_never_inside():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    for i in range(23, 50):
+        _resist_break_bar(high, low, close, i, y0, slope, width)
+    extra = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=1,
+    )
+    assert extra is None
+    tags = _h2_rail_tag_fills(high, low, close, shakeout_breakout=True, **_h2_break_kw(len(high)))
+    assert len(tags) == 1 and tags[0][0] == 22
+
+
+def test_shakeout_breakout_cancels_if_support_broken():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    _below_bar(high, low, close, 28, y0, slope)
+    _inside_near_resist(high, low, close, 30, y0, slope, width)
+    _resist_break_bar(high, low, close, 40, y0, slope, width)
+    extra = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=1,
+    )
+    assert extra is None
+
+
+def test_shakeout_breakout_min_inside_5_waits():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    for i in range(23, 27):
+        _inside_near_resist(high, low, close, i, y0, slope, width)
+    _resist_break_bar(high, low, close, 27, y0, slope, width)
+    early = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=5,
+    )
+    assert early is None
+    _inside_near_resist(high, low, close, 28, y0, slope, width)
+    _resist_break_bar(high, low, close, 35, y0, slope, width)
+    late = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=5,
+    )
+    assert late is not None and late[0] == 35 and late[2] >= 5
+
+
+def _h2_sbo_frame(after_first):
+    """Daily channel with first resist-break at h2+8, then caller mutates after_first(df, h2, support)."""
+    df, idx, support, h2, _l3 = _l3_daily_channel()
+    width = 2.0
+    i0 = int(h2) + 8
+    resist = float(support[i0]) + width
+    df.loc[idx[i0], "close"] = resist * 1.025
+    df.loc[idx[i0], "high"] = resist * 1.025 + 0.08
+    df.loc[idx[i0], "low"] = resist - 0.25
+    after_first(df, idx, support, i0, width)
+    return df, idx, i0
+
+
+H2_SBO_KW = dict(
+    **L3_TRADE_KW,
+    h2_resist_break=True,
+    h2_resist_break_only=True,
+    shakeout_breakout=True,
+    entry_features=False,
+    atr_stop_mult=2.0,
+    stop_pct_floor=0.015,
+    stop_pct_ceil=0.06,
+)
+
+
+def test_shakeout_breakout_skips_while_first_trade_open():
+    def _tiny_rebreak(df, idx, support, i0, width):
+        i1 = i0 + 1
+        i2 = i0 + 2
+        resist1 = float(support[i1]) + width
+        df.loc[idx[i1], "close"] = resist1 * 0.995
+        df.loc[idx[i1], "high"] = resist1 * 0.995 + 0.04
+        df.loc[idx[i1], "low"] = resist1 * 0.995 - 0.04
+        resist2 = float(support[i2]) + width
+        df.loc[idx[i2], "close"] = resist2 * 1.025
+        df.loc[idx[i2], "high"] = resist2 * 1.025 + 0.08
+        df.loc[idx[i2], "low"] = resist2 - 0.2
+
+    df, _idx, i0 = _h2_sbo_frame(_tiny_rebreak)
+    rows = trades_for_symbol("TEST", df, **H2_SBO_KW)
+    brk = [r for r in rows if r.get("resist_break")]
+    assert brk, "expected first H2 resist-break"
+    assert not any(r.get("shakeout_breakout") for r in brk)
+    assert int(brk[0]["entry_i"]) == i0
+
+
+def test_shakeout_breakout_hard_stop_filter():
+    def _stop_then_rebreak(df, idx, support, i0, width):
+        entry = float(df.loc[idx[i0], "close"])
+        crash = i0 + 1
+        df.loc[idx[crash], "open"] = entry
+        df.loc[idx[crash], "high"] = entry
+        df.loc[idx[crash], "close"] = entry * 0.92
+        df.loc[idx[crash], "low"] = entry * 0.91
+        for j in range(crash + 1, crash + 6):
+            resist = float(support[j]) + width
+            mid = resist * 0.995
+            df.loc[idx[j], "close"] = mid
+            df.loc[idx[j], "high"] = mid + 0.05
+            df.loc[idx[j], "low"] = mid - 0.05
+        i2 = crash + 6
+        resist = float(support[i2]) + width
+        df.loc[idx[i2], "close"] = resist * 1.025
+        df.loc[idx[i2], "high"] = resist * 1.025 + 0.08
+        df.loc[idx[i2], "low"] = resist - 0.2
+
+    df, _idx, _i0 = _h2_sbo_frame(_stop_then_rebreak)
+    any_closed = trades_for_symbol("TEST", df, shakeout_breakout_hard_stop=False, **H2_SBO_KW)
+    extras = [r for r in any_closed if r.get("shakeout_breakout")]
+    assert extras, "expected second breakout after hard stop"
+    assert extras[0].get("parent_exit_reason") == "hard_stop"
+    hard_only = trades_for_symbol("TEST", df, shakeout_breakout_hard_stop=True, **H2_SBO_KW)
+    assert [r for r in hard_only if r.get("shakeout_breakout")]
+
+    def _trail_then_rebreak(df, idx, support, i0, width):
+        entry = float(df.loc[idx[i0], "close"])
+        peak_i = i0 + 3
+        for j in range(i0 + 1, peak_i + 1):
+            px = entry * (1.0 + 0.05 * (j - i0))
+            df.loc[idx[j], "close"] = px
+            df.loc[idx[j], "high"] = px + 0.1
+            df.loc[idx[j], "low"] = px - 0.1
+        peak = float(df.loc[idx[peak_i], "high"])
+        trail_i = peak_i + 1
+        stop_px = peak * 0.90
+        df.loc[idx[trail_i], "high"] = peak
+        df.loc[idx[trail_i], "open"] = peak
+        df.loc[idx[trail_i], "close"] = stop_px * 0.99
+        df.loc[idx[trail_i], "low"] = stop_px * 0.98
+        for j in range(trail_i + 1, trail_i + 4):
+            resist = float(support[j]) + width
+            mid = resist * 0.995
+            df.loc[idx[j], "close"] = mid
+            df.loc[idx[j], "high"] = mid + 0.05
+            df.loc[idx[j], "low"] = mid - 0.05
+        i2 = trail_i + 4
+        resist = float(support[i2]) + width
+        df.loc[idx[i2], "close"] = resist * 1.025
+        df.loc[idx[i2], "high"] = resist * 1.025 + 0.08
+        df.loc[idx[i2], "low"] = resist - 0.2
+
+    trail_df, _idx2, _ = _h2_sbo_frame(_trail_then_rebreak)
+    trail_any = trades_for_symbol("TEST", trail_df, shakeout_breakout_hard_stop=False, **H2_SBO_KW)
+    trail_extras = [r for r in trail_any if r.get("shakeout_breakout")]
+    if trail_extras:
+        assert trail_extras[0].get("parent_exit_reason") != "hard_stop"
+        trail_hard = trades_for_symbol(
+            "TEST", trail_df, shakeout_breakout_hard_stop=True, **H2_SBO_KW
+        )
+        assert not [r for r in trail_hard if r.get("shakeout_breakout")]
 

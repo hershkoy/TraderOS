@@ -38,6 +38,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-04 | [No buy below channel (re-entry or resist-break)](2026-09-04_channel_touch_no_buy_below.md) |
 | 2026-09-04 | [Realistic fill default: signal-bar close](2026-09-04_channel_touch_signal_close.md) |
 | 2026-09-04 | [15m L3 real support touch (0%) vs 0.24% near-miss](2026-09-04_channel_touch_touch_error_0.md) |
+| 2026-09-05 | [Shakeout then second H2 resist-break](2026-09-05_channel_touch_shakeout_breakout.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -49,6 +50,7 @@ Stable HTML links: `reports/ascending_channels/current_best/` (`1d_channel_touch
 - **Retired L3 keeper:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25 (`1d_l3_touch.html`)
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
 - **Live / nightly sample (causal optimistic 2026-09-03):** unique-symbol H2 span365 **n=3364 E +2.40 PF 2.02** (optional RS top1 n=1126 E +2.94 PF 2.24). Leaky Aug-29 was n=2253 E +2.80 PF 2.21.
+- **Shakeout then second H2 break (2026-09-05, research):** `--shakeout-breakout` any-closed min_inside=1 sleeve **n=1439 E +3.16 PF 2.32**; combined unique **n=4558 E +2.62 PF 2.10**. Soft-promote flag; **nightly not rewired**. Hard-stop-only / min_inside=5 weaker. Not L3 `--shakeout-rebuy-bars`. See [shakeout breakout](2026-09-05_channel_touch_shakeout_breakout.md).
 - **`current_best` (realistic fill 2026-09-04):** same live recipe + `--realistic-fill` unique-symbol H2 span365 **n=713 E +1.78 PF 1.72** (RS top1 n=419 E +2.65 PF 2.08). Nightly scanner is still close fills until rewired. See [realistic fill](2026-09-04_channel_touch_realistic_fill.md).
 - **15m research (not nightly):** Unique-symbol H5 + overshoot train p80 + vol>=2 was **n=8212 WR 47.4% E +0.92 PF 3.57** on optimistic fills; **realistic next-bar mid is n=7209 E ~0 PF 1.01** — do not promote. **`current_best/15m_channel_touch.html`** is now wait-12 **signal-close + `--touch-error-pct 0`** (**n=1744 E +0.13 PF 1.22**; RTH clocks; IB SPY from 2018-11-06). Touch 0.24 signal-close was n=1755 E +0.05 PF 1.08; prior next-mid freeze n=1746 E +0.09 PF 1.16. Prefer `--touch-error-pct 0` for 15m L3; do not set `--error-pct 0`. Textbook first-tag wait-1 signal-close **n=1777 E −0.12 PF 0.83** — do not promote. See [touch 0](2026-09-04_channel_touch_touch_error_0.md), [wait-1](2026-09-04_channel_touch_15m_l3_wait1.md), [signal-close](2026-09-04_channel_touch_signal_close.md). Live **research** loop (armed watchlist in TimescaleDB + Alpaca minute proximity + bar-close H5 + `/hot` dashboard): `scripts/scanners/channel_touch_15m.py` after IB 15m backfill (`scripts/data/backfill_ib_15m_universe.py`). Playbook: [15m live](../../../features/channel_touch_15m_live.md). Do **not** copy daily beyond-0.25 or span 365 onto 15m. Nightly stays **daily** EOD.
 - Do **not** use `entry_mode=reclaim` until look-ahead fixed
