@@ -17,6 +17,11 @@ close. ``next-mid`` blends X with the next 15m mid (cancels on 15:45 prints).
 that same bar's **close** (known when the 15m completes). Last RTH bar is
 allowed. Days with no 15m open above resist are skipped.
 
+``next-open`` (1d): signal is the completed daily close; fill at the **next
+session's open** (MOO after an EOD scan). No IB 15m join. Last bar of the
+sample has no next open and is skipped. 15m ``next-open`` buys the next same-
+session 15m **open** (last RTH cancelled, same as next-mid).
+
 Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
 and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
 ``backtest_channel_touch_h2_break.py``.
@@ -38,7 +43,14 @@ DEFAULT_MAX_LOW_TO_MID_PCT = 0.005
 FILL_MODE_SIGNAL_CLOSE = "signal-close"
 FILL_MODE_NEXT_MID = "next-mid"
 FILL_MODE_OPEN_CROSS = "open-cross"
+FILL_MODE_NEXT_OPEN = "next-open"
 DEFAULT_FILL_MODE = FILL_MODE_SIGNAL_CLOSE
+FILL_MODES_1D = (
+    FILL_MODE_SIGNAL_CLOSE,
+    FILL_MODE_NEXT_MID,
+    FILL_MODE_OPEN_CROSS,
+    FILL_MODE_NEXT_OPEN,
+)
 
 
 def normalize_fill_mode(raw: Optional[str]) -> str:
@@ -49,7 +61,29 @@ def normalize_fill_mode(raw: Optional[str]) -> str:
         return FILL_MODE_SIGNAL_CLOSE
     if text in (FILL_MODE_OPEN_CROSS, "opencross", "open-confirm", "openconfirm"):
         return FILL_MODE_OPEN_CROSS
+    if text in (
+        FILL_MODE_NEXT_OPEN,
+        "nextopen",
+        "next-session-open",
+        "next-day-open",
+        "moo",
+    ):
+        return FILL_MODE_NEXT_OPEN
     raise ValueError("unknown realistic fill mode: %s" % raw)
+
+
+def needs_15m_purchase_panels(
+    timeframe: str,
+    *,
+    realistic_fill: bool,
+    fill_mode: str,
+) -> bool:
+    """True when a 1d book must join IB 15m to price the fill."""
+    if not realistic_fill:
+        return False
+    if str(timeframe or "").strip().lower() not in ("1d", "d", "daily"):
+        return False
+    return normalize_fill_mode(fill_mode) != FILL_MODE_NEXT_OPEN
 
 REASON_FILLED = "filled"
 REASON_NO_NEXT_BAR = "no_next_bar"
@@ -61,6 +95,7 @@ REASON_BAD_OHLC = "bad_ohlc"
 REASON_BAD_SIGNAL = "bad_signal"
 REASON_PRICE_NOT_PRINTED = "price_not_printed"
 REASON_NO_OPEN_CROSS = "no_open_cross"
+REASON_NO_NEXT_OPEN = "no_next_open"
 
 BarLike = Mapping[str, Any]
 TsLike = Union[datetime, pd.Timestamp, str]
@@ -349,6 +384,91 @@ def purchase_at_signal_close(
     )
 
 
+def purchase_next_bar_open(
+    signal_bar: BarLike,
+    next_bar: Optional[BarLike],
+    *,
+    naive_tz: str = "UTC",
+) -> PurchaseResult:
+    """Fill at the next same-session 15m **open** (known at the signal close).
+
+    Last RTH bar has no following print and is cancelled. No wild-bar gate:
+    the open is the executable MOO-style price, not a mid.
+    """
+    inner = purchase_after_close_signal(
+        signal_bar,
+        next_bar,
+        max_low_to_mid_pct=None,
+        max_chase_pct=None,
+        naive_tz=naive_tz,
+    )
+    if not inner.filled:
+        return inner
+    opened = _px(next_bar, "open") if next_bar is not None else None
+    if opened is None or opened != opened or float(opened) <= 0:
+        return _result(
+            REASON_BAD_OHLC,
+            signal_time=inner.signal_time,
+            signal_px=inner.signal_px,
+            exec_bar_ts=inner.exec_bar_ts,
+        )
+    chase = None
+    if inner.signal_px:
+        chase = (float(opened) - float(inner.signal_px)) / float(inner.signal_px)
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=float(opened),
+        signal_time=inner.signal_time,
+        signal_px=inner.signal_px,
+        exec_bar_ts=inner.exec_bar_ts,
+        mid=inner.mid,
+        low_to_mid=inner.low_to_mid_pct,
+        chase=chase,
+        hit_bar_ts=inner.exec_bar_ts,
+    )
+
+
+def purchase_next_daily_open(
+    df: pd.DataFrame,
+    signal_i: int,
+) -> PurchaseResult:
+    """1d: buy the next session's **open** after a completed close signal.
+
+    Nightly-honest: EOD scan on bar T, MOO on T+1. No 15m join. The last daily
+    bar in the sample has no next open.
+    """
+    if df is None or df.empty or signal_i < 0 or signal_i >= len(df):
+        return _result(REASON_BAD_SIGNAL)
+    nxt = int(signal_i) + 1
+    if nxt >= len(df):
+        return _result(REASON_NO_NEXT_OPEN)
+    if "open" not in df.columns:
+        return _result(REASON_BAD_OHLC)
+    try:
+        px = float(df["open"].iloc[nxt])
+    except (TypeError, ValueError):
+        return _result(REASON_BAD_OHLC)
+    if px != px or px <= 0:
+        return _result(REASON_BAD_OHLC)
+    sig_c = None
+    if "close" in df.columns:
+        try:
+            sig_c = float(df["close"].iloc[signal_i])
+        except (TypeError, ValueError):
+            sig_c = None
+    ts = df.index[nxt]
+    exec_ts = pd.Timestamp(ts).to_pydatetime()
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=px,
+        signal_px=sig_c,
+        exec_bar_ts=exec_ts,
+        hit_bar_ts=exec_ts,
+    )
+
+
 def _row_bar(df: pd.DataFrame, i: int, *, naive_tz: str) -> dict:
     row = df.iloc[i]
     ts = df.index[i]
@@ -383,6 +503,8 @@ def purchase_at_signal_index(
     next_bar = None
     if signal_i + 1 < len(df):
         next_bar = _row_bar(df, signal_i + 1, naive_tz=naive_tz)
+    if mode == FILL_MODE_NEXT_OPEN:
+        return purchase_next_bar_open(signal_bar, next_bar, naive_tz=naive_tz)
     return purchase_after_close_signal(
         signal_bar,
         next_bar,
@@ -651,6 +773,7 @@ def exec_fill_15m_after_signal(
 
     Default ``signal-close`` stays on the signal bar at its close.
     ``next-mid`` returns (signal_i + 1, next bar mid) as before.
+    ``next-open`` returns (signal_i + 1, next bar open).
     """
     mode = normalize_fill_mode(fill_mode)
     got = purchase_at_signal_index(

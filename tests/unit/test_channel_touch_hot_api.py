@@ -471,3 +471,60 @@ def test_hub_kick_pushes_new_payload():
         hub.unregister()
         hub.stop()
 
+
+def test_hub_always_run_without_clients():
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        return _hub_payload(last_price=float(calls["n"]))
+
+    hub = HotCandidatesHub(interval=0.05, payload_fn=fn, always_run=True)
+    hub.start()
+    try:
+        seq, payload = hub.wait_next(0, timeout=2.0)
+        assert payload is not None
+        assert calls["n"] >= 1
+        snap = hub.snapshot()
+        assert snap["clients"] == 0
+        assert snap["seq"] == seq
+        assert snap["always_run"] is True
+        assert snap["running"] is True
+    finally:
+        hub.stop()
+
+
+def test_kick_price_service_posts_and_swallows_errors(monkeypatch):
+    from utils.scanning.channel_touch_hot_api import kick_price_service
+
+    calls = {}
+
+    class _Resp:
+        status = 200
+
+    def fake_urlopen(req, timeout=1.0):
+        calls["url"] = req.full_url
+        calls["method"] = req.get_method()
+        calls["timeout"] = timeout
+
+        class _Ctx:
+            def __enter__(self):
+                return _Resp()
+
+            def __exit__(self, *args):
+                return False
+
+        return _Ctx()
+
+    monkeypatch.setattr("utils.scanning.channel_touch_hot_api.urllib.request.urlopen", fake_urlopen)
+    assert kick_price_service(port=5001, timeout=0.5) is True
+    assert calls["url"] == "http://127.0.0.1:5001/kick"
+    assert calls["method"] == "POST"
+    assert calls["timeout"] == 0.5
+
+    def boom(req, timeout=1.0):
+        raise TimeoutError("down")
+
+    monkeypatch.setattr("utils.scanning.channel_touch_hot_api.urllib.request.urlopen", boom)
+    assert kick_price_service() is False
+

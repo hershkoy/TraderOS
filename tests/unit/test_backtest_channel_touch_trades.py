@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
@@ -452,6 +453,64 @@ def test_realistic_fill_daily_open_cross_uses_15m_close():
     assert len(rows) == 1
     assert rows[0]["buy_price"] == 115.5
     assert rows[0]["buy_time"] == "2025-06-13 13:45"
+
+
+def test_realistic_fill_daily_next_open_uses_next_bar_open():
+    df = _occ_ohlcv(80)
+    df.iloc[51, df.columns.get_loc("open")] = 118.25
+    ch_brk = _occ_setup(df, h2=21, width=9.0)
+
+    def fake_fills(high, low, close, **kwargs):
+        return [(50, 115.0, 3, False, True)]
+
+    captured = {}
+
+    def fake_sim(high, low, close, dates, entry_i, **kwargs):
+        captured["entry_i"] = int(entry_i)
+        captured["entry_px"] = kwargs.get("entry_px")
+        captured["skip"] = kwargs.get("skip_entry_bar_stop")
+        exit_i = min(int(entry_i) + 10, len(close) - 1)
+        px = float(kwargs.get("entry_px") or close[entry_i])
+        return {
+            "buy_date": dates[entry_i].strftime("%Y-%m-%d"),
+            "buy_price": px,
+            "sell_date": dates[exit_i].strftime("%Y-%m-%d"),
+            "sell_price": float(close[exit_i]),
+            "gain_pct": 1.0,
+            "hold_days": 10,
+            "exit_reason": "trail_stop",
+            "entry_i": int(entry_i),
+            "exit_i": int(exit_i),
+        }
+
+    scan = dict(
+        entry_mode="l3_touch",
+        h2_resist_break=True,
+        h2_resist_break_only=True,
+        entry_features=False,
+        squeeze_adaptive=False,
+        window_bars=None,
+        pivot_len=5,
+        min_l3_wait_bars=1,
+        max_l3_wait_bars=252,
+        include_time=False,
+        realistic_fill=True,
+        realistic_fill_mode="next-open",
+    )
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch_brk]
+    ), mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ), mock.patch(
+        "backtest_channel_touch_trades._simulate_trade", side_effect=fake_sim
+    ):
+        rows = trades_for_symbol("AAA", df, **scan)
+    assert len(rows) == 1
+    assert captured["entry_i"] == 51
+    assert captured["entry_px"] == pytest.approx(118.25)
+    assert captured["skip"] is False
+    assert rows[0]["buy_price"] == pytest.approx(118.25)
+    assert rows[0]["buy_date"] == df.index[51].strftime("%Y-%m-%d")
 
 
 def test_channel_rail_fields_iso_utc():

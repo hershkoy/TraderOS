@@ -2,9 +2,8 @@
 Charting Server for Backtrader Data
 A Flask-based web server that provides charting capabilities for symbols in the data folder.
 """
-from flask import Flask, render_template, request, jsonify, current_app
+from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
-from flask_sock import Sock
 import pandas as pd
 import numpy as np
 import json

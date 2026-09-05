@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -483,9 +486,40 @@ def candidates_payload(
 
 
 HUB_INTERVAL_SEC = 5.0
+DEFAULT_PRICE_WS_PORT = 5001
+PRICE_KICK_TIMEOUT_SEC = 1.0
 
 _hub: Optional["HotCandidatesHub"] = None
 _hub_lock = threading.Lock()
+
+
+def price_ws_port() -> int:
+    """Port the /hot page uses for live quotes (env HOT_PRICE_WS_PORT)."""
+    raw = os.environ.get("HOT_PRICE_WS_PORT")
+    if raw in (None, ""):
+        return DEFAULT_PRICE_WS_PORT
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PRICE_WS_PORT
+
+
+def kick_price_service(
+    *,
+    host: str = "127.0.0.1",
+    port: Optional[int] = None,
+    timeout: float = PRICE_KICK_TIMEOUT_SEC,
+) -> bool:
+    """Ask the always-on price process to push immediately. Failures are non-fatal."""
+    dest = int(port if port is not None else price_ws_port())
+    url = "http://%s:%s/kick" % (host, dest)
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+            return 200 <= int(getattr(resp, "status", 200)) < 300
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.debug("hot price service kick failed: %s", exc)
+        return False
 
 
 def payload_fingerprint(payload: Dict[str, Any]) -> str:
@@ -564,8 +598,10 @@ class HotCandidatesHub:
         *,
         interval: float = HUB_INTERVAL_SEC,
         payload_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+        always_run: bool = False,
     ) -> None:
         self.interval = float(interval)
+        self.always_run = bool(always_run)
         self._payload_fn = payload_fn
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -587,6 +623,9 @@ class HotCandidatesHub:
         with self._lock:
             return self._clients
 
+    def _should_poll(self) -> bool:
+        return bool(self.always_run) or self._client_count() > 0
+
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -595,6 +634,11 @@ class HotCandidatesHub:
             target=self._loop, name="hot-candidates-hub", daemon=True
         )
         self._thread.start()
+
+    def start(self) -> None:
+        """Run the refresh loop even before any WebSocket client registers."""
+        self._ensure_thread()
+        self.kick()
 
     def register(self) -> None:
         with self._lock:
@@ -608,6 +652,18 @@ class HotCandidatesHub:
 
     def kick(self) -> None:
         self._kick.set()
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            payload = self._payload or {}
+            thread = self._thread
+            return {
+                "seq": self._seq,
+                "clients": self._clients,
+                "price_ts": payload.get("price_ts"),
+                "running": bool(thread is not None and thread.is_alive()),
+                "always_run": bool(self.always_run),
+            }
 
     def wait_next(
         self, after_seq: int, timeout: float = 30.0
@@ -631,7 +687,7 @@ class HotCandidatesHub:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            if self._client_count() <= 0:
+            if not self._should_poll():
                 self._kick.wait(timeout=1.0)
                 self._kick.clear()
                 continue

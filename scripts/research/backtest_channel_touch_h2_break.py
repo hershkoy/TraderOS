@@ -48,6 +48,10 @@ from scripts.research.generate_channel_touch_tv_report import (  # noqa: E402
     write_summary_sidecar,
 )
 from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
+from utils.research.realistic_purchaser import (  # noqa: E402
+    FILL_MODES_1D,
+    needs_15m_purchase_panels,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -215,14 +219,23 @@ def main() -> int:
         "--realistic-fill",
         action="store_true",
         help="Use realistic purchase prices. Default 15m fill is signal-bar close; "
-        "--realistic-fill-mode next-mid restores next-bar mid.",
+        "--realistic-fill-mode next-mid restores next-bar mid. 1d next-open buys the "
+        "next session open (no 15m).",
     )
     ap.add_argument(
         "--realistic-fill-mode",
-        choices=("signal-close", "next-mid", "open-cross"),
+        choices=FILL_MODES_1D,
         default="signal-close",
         help="When --realistic-fill: signal-close (default), next-mid (kept), "
-        "or open-cross (1d: first 15m open above resist, fill at that bar close).",
+        "open-cross (1d: first 15m open above resist, fill at that bar close), "
+        "or next-open (1d: next session open after the EOD close).",
+    )
+    ap.add_argument(
+        "--touch-error-pct",
+        type=float,
+        default=None,
+        help="Break/tag buffer %% of price (default = detector error_pct 1.2). "
+        "0 = true close above the painted rail. Does not change pivot fitting.",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",
@@ -325,11 +338,18 @@ def main() -> int:
     base["realistic_fill"] = bool(args.realistic_fill)
     base["realistic_fill_mode"] = str(args.realistic_fill_mode)
     base["max_low_to_mid_pct"] = float(args.max_low_to_mid_pct)
+    if args.touch_error_pct is not None:
+        base["touch_error_pct"] = float(args.touch_error_pct)
     base["shakeout_breakout"] = bool(args.shakeout_breakout)
     base["shakeout_breakout_min_inside"] = int(args.shakeout_breakout_min_inside)
     base["shakeout_breakout_hard_stop"] = bool(args.shakeout_breakout_hard_stop)
     panels_15m = None
-    if (not is_15m) and args.realistic_fill:
+    load_15m = (not is_15m) and needs_15m_purchase_panels(
+        "1d",
+        realistic_fill=bool(args.realistic_fill),
+        fill_mode=str(args.realistic_fill_mode),
+    )
+    if load_15m:
         t_15 = time.perf_counter()
         panels_15m = load_ohlcv_many(
             symbols,
@@ -470,6 +490,9 @@ def main() -> int:
         "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
         "realistic_fill": bool(args.realistic_fill),
         "realistic_fill_mode": str(args.realistic_fill_mode),
+        "touch_error_pct": (
+            float(args.touch_error_pct) if args.touch_error_pct is not None else None
+        ),
     }
     notes = [
         "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail); fill at max(hard,trail) when low hits",

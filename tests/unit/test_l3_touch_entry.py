@@ -651,6 +651,33 @@ def test_h2_resist_break_fills_close_above_rail():
     assert len(on) == 1 and on[0][0] == 22 and on[0][4] is True
 
 
+def test_h2_resist_break_error_pct_zero_fires_tick_above_rail():
+    """RDWR Jun 9: close +0.69% over the rail is not a 1.2% break."""
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    i = 22
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.0069
+    high[i] = close[i] + 0.05
+    low[i] = resist - 0.20
+    kw = dict(
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2=12,
+        n=len(high),
+        slip=0.001,
+        wait=80,
+        min_wait=6,
+        entry_touch=3,
+        h2_resist_break=True,
+    )
+    buffered = _h2_rail_tag_fills(high, low, close, error_pct=1.2, **kw)
+    assert buffered == []
+    tick = _h2_rail_tag_fills(high, low, close, error_pct=0.0, **kw)
+    assert len(tick) == 1 and tick[0][0] == 22 and tick[0][4] is True
+
+
 def test_h2_resist_break_skips_if_support_already_broken():
     y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
     _below_bar(high, low, close, 20, y0, slope)

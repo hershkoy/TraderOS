@@ -10,6 +10,7 @@ import pytest
 from utils.research.realistic_purchaser import (
     DEFAULT_MAX_LOW_TO_MID_PCT,
     FILL_MODE_NEXT_MID,
+    FILL_MODE_NEXT_OPEN,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     REASON_BAD_OHLC,
@@ -19,6 +20,7 @@ from utils.research.realistic_purchaser import (
     REASON_FILLED,
     REASON_NO_NEXT_BAR,
     REASON_NO_OPEN_CROSS,
+    REASON_NO_NEXT_OPEN,
     REASON_OVERNIGHT,
     REASON_PRICE_NOT_PRINTED,
     REASON_WILD_RANGE,
@@ -31,6 +33,8 @@ from utils.research.realistic_purchaser import (
     purchase_after_daily_signal,
     purchase_at_signal_close,
     purchase_at_signal_index,
+    purchase_next_bar_open,
+    purchase_next_daily_open,
     purchase_open_cross_15m,
     signal_time_from_bar,
 )
@@ -719,3 +723,48 @@ def test_exec_fill_daily_open_cross_uses_resist_not_x():
         resist=24.47,
     )
     assert got == pytest.approx(25.71)
+
+
+def test_next_daily_open_fills_next_session_open():
+    idx = pd.bdate_range("2025-06-09", periods=4)
+    df = pd.DataFrame(
+        {
+            "open": [24.19, 24.525, 24.63, 24.66],
+            "high": [24.63, 24.745, 24.66, 24.66],
+            "low": [24.085, 24.265, 24.27, 24.37],
+            "close": [24.605, 24.27, 24.40, 24.42],
+        },
+        index=idx,
+    )
+    got = purchase_next_daily_open(df, 0)
+    assert got.filled
+    assert got.fill_px == pytest.approx(24.525)
+    assert got.exec_bar_ts.date().isoformat() == "2025-06-10"
+    last = purchase_next_daily_open(df, 3)
+    assert not last.filled
+    assert last.reason == REASON_NO_NEXT_OPEN
+
+
+def test_next_bar_open_uses_next_15m_open_not_mid():
+    sig = _bar(_et(2025, 6, 10, 9, 30), 39.15, 39.98, 38.75, 39.38)
+    nxt = _bar(_et(2025, 6, 10, 9, 45), 39.50, 40.10, 39.40, 39.90)
+    got = purchase_next_bar_open(sig, nxt)
+    assert got.filled
+    assert got.fill_px == pytest.approx(39.50)
+    eod = purchase_next_bar_open(_bar(_et(2025, 6, 10, 15, 45), 39.0, 39.2, 38.9, 39.1), None)
+    assert not eod.filled
+    assert eod.reason == REASON_END_OF_SESSION
+
+
+def test_needs_15m_purchase_panels_skips_next_open():
+    from utils.research.realistic_purchaser import needs_15m_purchase_panels
+
+    assert needs_15m_purchase_panels(
+        "1d", realistic_fill=True, fill_mode=FILL_MODE_OPEN_CROSS
+    )
+    assert not needs_15m_purchase_panels(
+        "1d", realistic_fill=True, fill_mode=FILL_MODE_NEXT_OPEN
+    )
+    assert not needs_15m_purchase_panels(
+        "1d", realistic_fill=False, fill_mode=FILL_MODE_NEXT_MID
+    )

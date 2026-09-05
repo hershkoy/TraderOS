@@ -23,6 +23,9 @@ Located in `features/`:
 - [Universe Data Updater](features/UNIVERSE_DATA_UPDATER_README.md) - Data update system
 - [Symbol Mapping](features/SYMBOL_MAPPING_SYSTEM.md) - Symbol mapping system
 - [Failed Symbols](features/FAILED_SYMBOLS_README.md) - Failed symbols identification
+- [Realistic purchasing](features/realistic_purchasing.md) - 1d / 15m open vs close fills; how daily signals price from IB 15m
+- [15m channel-touch live](features/channel_touch_15m_live.md) - Armed H2 watchlist + `/hot`
+- [IB 5m backfill](features/ib_5m_backfill.md) - After-RTH 5m ingest for tighter fills later
 
 ### ⚙️ Setup & Configuration
 Located in `setup/`:
@@ -55,7 +58,8 @@ docs/
 │   ├── TICKER_UNIVERSE_README.md
 │   ├── UNIVERSE_DATA_UPDATER_README.md
 │   ├── SYMBOL_MAPPING_SYSTEM.md
-│   └── FAILED_SYMBOLS_README.md
+│   ├── FAILED_SYMBOLS_README.md
+│   └── realistic_purchasing.md
 ├── setup/                       # Setup and migration docs
 │   ├── TIMESCALEDB_MIGRATION.md
 │   ├── POLYGON_SETUP.md

@@ -61,11 +61,15 @@ from utils.research.channel_touch_entry_features import (
 from utils.research.realistic_purchaser import (
     DEFAULT_FILL_MODE,
     DEFAULT_MAX_LOW_TO_MID_PCT,
+    FILL_MODE_NEXT_OPEN,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
+    FILL_MODES_1D,
     exec_fill_15m_after_signal,
     exec_fill_daily_with_15m,
+    needs_15m_purchase_panels,
     normalize_fill_mode,
+    purchase_next_daily_open,
     purchase_open_cross_15m,
 )
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
@@ -1348,6 +1352,15 @@ def trades_for_symbol(
                             if adj is None:
                                 continue
                             i, fill_px = adj
+                        elif fill_mode == FILL_MODE_NEXT_OPEN:
+                            got = purchase_next_daily_open(out, signal_i)
+                            if not got.filled or got.fill_px is None:
+                                continue
+                            i = int(signal_i) + 1
+                            if i >= n:
+                                continue
+                            fill_px = float(got.fill_px)
+                            fill_time = got.exec_bar_ts
                         elif fill_mode == FILL_MODE_OPEN_CROSS:
                             resist_now = _line_at(
                                 float(ch["support_y0"]),
@@ -1530,7 +1543,11 @@ def trades_for_symbol(
             include_time=include_time,
             entry_px=fill_px,
             skip_entry_bar_stop=bool(
-                (use_realistic and not is_15m_bars)
+                (
+                    use_realistic
+                    and not is_15m_bars
+                    and fill_mode != FILL_MODE_NEXT_OPEN
+                )
                 or deferred_channel
                 or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
             ),
@@ -2656,8 +2673,9 @@ def main() -> int:
         "--touch-error-pct",
         type=float,
         default=None,
-        help="L3/tag tolerance %% of price (default = --error-pct). 0 requires the bar "
-        "range to intersect support (no near-miss). Does not change detector pivot fitting.",
+        help="L3/tag/break tolerance %% of price (default = --error-pct). 0 requires a "
+        "true close above the painted rail (not 1.2%% through). Does not change detector "
+        "pivot fitting.",
     )
     ap.add_argument("--min-rally-pct", type=float, default=4.0)
     ap.add_argument("--min-pullback-pct", type=float, default=3.0)
@@ -2855,15 +2873,17 @@ def main() -> int:
         help="Use realistic purchase prices. 15m default is signal-bar close; "
         "pass --realistic-fill-mode next-mid for the old next-bar mid. "
         "1d default is the 15m close that printed X; next-mid blends X with the following 15m mid; "
-        "open-cross fills at the close of the first 15m that opens above resist.",
+        "open-cross fills at the close of the first 15m that opens above resist; "
+        "next-open fills at the next session open (no 15m join).",
     )
     ap.add_argument(
         "--realistic-fill-mode",
-        choices=("signal-close", "next-mid", "open-cross"),
+        choices=FILL_MODES_1D,
         default=DEFAULT_FILL_MODE,
         help="When --realistic-fill: signal-close (default) fills at the touch bar close; "
         "next-mid keeps the previous next-bar mid purchaser; "
-        "open-cross (1d) waits for a 15m open above resist and buys that bar's close.",
+        "open-cross (1d) waits for a 15m open above resist and buys that bar's close; "
+        "next-open (1d) buys the next session open after the EOD close signal.",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",
@@ -3079,8 +3099,10 @@ def main() -> int:
         time.perf_counter() - t_load,
     )
 
-    need_15m_purchase = intraday_fill == "15m" or (
-        bool(args.realistic_fill) and str(args.timeframe) == "1d"
+    need_15m_purchase = intraday_fill == "15m" or needs_15m_purchase_panels(
+        str(args.timeframe),
+        realistic_fill=bool(args.realistic_fill),
+        fill_mode=str(args.realistic_fill_mode),
     )
     panels_15m: Dict[str, pd.DataFrame] = {}
     n_skip_15m = 0
