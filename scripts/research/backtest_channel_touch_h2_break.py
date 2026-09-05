@@ -43,6 +43,10 @@ from utils.research.channel_touch_scale import (  # noqa: E402
     DAILY_WINDOW_STEP_BARS,
     PRESET_15M,
 )
+from scripts.research.generate_channel_touch_tv_report import (  # noqa: E402
+    summary_sidecar_path,
+    write_summary_sidecar,
+)
 from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 
 logging.basicConfig(
@@ -83,6 +87,34 @@ def _net(df: pd.DataFrame, friction: float) -> pd.DataFrame:
     if df.empty:
         return df
     return apply_friction(df, friction) if friction else df
+
+
+def _flat_scan_params(base: dict) -> dict:
+    out = {k: v for k, v in base.items() if k != "channel_kwargs"}
+    ck = base.get("channel_kwargs") or {}
+    if isinstance(ck, dict):
+        out.update(ck)
+    return out
+
+
+def _write_h2_summary(
+    csv_path: Path,
+    *,
+    title: str,
+    base: dict,
+    extra: dict,
+    results: dict | None = None,
+    notes: list | None = None,
+) -> Path:
+    params = _flat_scan_params(base)
+    params.update(extra)
+    return write_summary_sidecar(
+        summary_sidecar_path(csv_path),
+        title=title,
+        params=params,
+        results=results,
+        notes=notes,
+    )
 
 
 def _daily_base() -> dict:
@@ -394,18 +426,52 @@ def main() -> int:
 
     outdir = dated_outdir()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    extra_meta = {
+        "provider": "IB" if is_15m else "ALPACA",
+        "timeframe": "15m" if is_15m else "1d",
+        "fallback_provider": "" if is_15m else "IB",
+        "merge_mode": "" if is_15m else "prefix",
+        "start": start_s,
+        "end": end_s,
+        "symbols": max(0, len(symbols) - 1),
+        "friction_pct": friction,
+        "max_channel_span_days": span_cap,
+        "elapsed_sec": round(time.perf_counter() - t0, 1),
+        "all_symbols": bool(args.all_symbols),
+        "causal_h2": True,
+    }
+    notes = [
+        "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail); fill at max(hard,trail) when low hits",
+        "H2 resist-break fills a close above resistance after H2 (not L3 support tag)",
+    ]
     if not brk.empty:
         tag = "15m_" if is_15m else ""
         uni = "full_" if args.all_symbols else ""
         path = outdir / ("channel_touch_%s%sh2_resist_break_%s.csv" % (tag, uni, stamp))
         brk.to_csv(path, index=False)
         logger.info("Wrote %s", path)
+        _write_h2_summary(
+            path,
+            title="H2 resistance-break backtest (no span cap)",
+            base=base,
+            extra={**extra_meta, "max_channel_span_days": None},
+            results=_summarize(brk_n, gain_col=gain_col) if not brk_n.empty else None,
+            notes=notes,
+        )
         if not brk_span.empty:
             span_path = outdir / (
                 "channel_touch_%s%sh2_break_span%s_%s.csv" % (tag, uni, span_label, stamp)
             )
             brk_span.to_csv(span_path, index=False)
             logger.info("Wrote %s", span_path)
+            _write_h2_summary(
+                span_path,
+                title="H2 resistance-break backtest (span<=%s)" % span_label,
+                base=base,
+                extra=extra_meta,
+                results=_summarize(brk_span_n, gain_col=gain_col) if not brk_span_n.empty else None,
+                notes=notes,
+            )
     print("elapsed_sec=%.1f" % (time.perf_counter() - t0))
     return 0
 

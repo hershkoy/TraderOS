@@ -68,6 +68,8 @@ DETECTOR_META: Dict[str, str] = {
 DETECTOR_PARAM_KEYS = frozenset(
     {
         "error_pct",
+        "touch_error_pct",
+        "flat_pct",
         "min_rally_pct",
         "min_total_rise_pct",
         "pivot_len",
@@ -75,6 +77,11 @@ DETECTOR_PARAM_KEYS = frozenset(
         "preset",
         "window_bars",
         "window_step_bars",
+        "causal_h2",
+        "max_low_pivots",
+        "min_bars_apart",
+        "min_intervening_rally_pct",
+        "min_intervening_pullback_pct",
     }
 )
 
@@ -113,8 +120,17 @@ RESULT_PARAM_KEYS = frozenset(
         "resist_exits",
         "time_stop_exits",
         "eod_exits",
+        "peak_trail_exits",
+        "resist_arm_trail_exits",
     }
 )
+
+
+# key=value or key>=value; value runs until the next token (so "ALPACA 1d" stays intact).
+_KV_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*(>=|=)\s*(.*?)(?=(?:\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:>=|=))|$)"
+)
+_NOTE_PREFIXES = ("Exit:", "Features:", "Note:", "Notes:")
 
 
 def _git_info() -> Dict[str, str]:
@@ -138,15 +154,60 @@ def _git_info() -> Dict[str, str]:
     return {"branch": branch, "commit": commit, "dirty": "yes" if dirty else "no"}
 
 
-def _summary_path_for_trades(trades_path: Path) -> Optional[Path]:
+def summary_sidecar_path(trades_path: Path) -> Path:
+    """Preferred summary txt path next to a trades CSV (may not exist yet)."""
     name = trades_path.name
     if "_trades_raw_" in name:
-        name = name.replace("_trades_raw_", "_trades_", 1)
-    if "_trades_" not in name:
-        return None
-    summary_name = name.replace("_trades_", "_trades_summary_", 1).replace(".csv", ".txt")
-    candidate = trades_path.parent / summary_name
-    return candidate if candidate.exists() else None
+        summary_name = name.replace("_trades_raw_", "_trades_summary_", 1).replace(".csv", ".txt")
+        return trades_path.parent / summary_name
+    if "_trades_" in name:
+        summary_name = name.replace("_trades_", "_trades_summary_", 1).replace(".csv", ".txt")
+        return trades_path.parent / summary_name
+    return trades_path.with_name(f"{trades_path.stem}_summary.txt")
+
+
+def _summary_path_for_trades(trades_path: Path) -> Optional[Path]:
+    """Find an existing summary sidecar (standard `_trades_summary_` or `{stem}_summary.txt`)."""
+    candidates: List[Path] = [summary_sidecar_path(trades_path)]
+    stem_summary = trades_path.with_name(f"{trades_path.stem}_summary.txt")
+    if stem_summary not in candidates:
+        candidates.append(stem_summary)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def write_summary_sidecar(
+    path: Path,
+    *,
+    title: str,
+    params: Dict[str, Any],
+    results: Optional[Dict[str, Any]] = None,
+    notes: Optional[List[str]] = None,
+) -> Path:
+    """Write one-key-per-line summary txt so Run info can parse every param."""
+    lines: List[str] = [title]
+    for key, val in params.items():
+        if isinstance(val, dict):
+            for nested_key, nested_val in val.items():
+                lines.append(f"{nested_key}={nested_val}")
+        else:
+            lines.append(f"{key}={val}")
+    if results:
+        lines.append("")
+        for key, val in results.items():
+            lines.append(f"{key}={val}")
+    if notes:
+        lines.append("")
+        for note in notes:
+            text = str(note).strip()
+            if not any(text.startswith(p) for p in _NOTE_PREFIXES):
+                text = "Note: " + text
+            lines.append(text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _raw_sibling_csv(trades_path: Path) -> Optional[Path]:
@@ -172,13 +233,16 @@ def _opt_bool(raw: Optional[str]) -> bool:
 
 
 def parse_summary_tokens(path: Optional[Path]) -> Dict[str, str]:
-    """Parse all key=value tokens in a summary sidecar (lines may hold several pairs)."""
+    """Parse all key=value / key>=value tokens in a summary sidecar (lines may hold several pairs)."""
     kv: Dict[str, str] = {}
     if path is None or not path.exists():
         return kv
     for line in path.read_text(encoding="utf-8").splitlines():
-        for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)", line):
-            kv[match.group(1)] = match.group(2)
+        stripped = line.strip()
+        if any(stripped.startswith(p) for p in _NOTE_PREFIXES):
+            continue
+        for match in _KV_RE.finditer(stripped):
+            kv[match.group(1)] = match.group(3).strip()
     return kv
 
 
@@ -238,18 +302,15 @@ def _parse_summary_txt(path: Optional[Path]) -> Tuple[Dict[str, str], List[str],
         line = raw.strip()
         if not line:
             continue
-        if ">=" in line and "=" not in line.split(">=", 1)[0]:
-            key, _, val = line.partition(">=")
-            kv[key.strip()] = val.strip()
-        elif "=" in line:
-            key, _, val = line.partition("=")
-            kv[key.strip()] = val.strip()
-        elif line.startswith("Exit:") or line.startswith("Features:"):
+        if any(line.startswith(p) for p in _NOTE_PREFIXES):
             notes.append(line)
-        elif line[0].isupper() and "backtest" in line.lower():
-            config_lines.append(line)
-        else:
-            config_lines.append(line)
+            continue
+        pairs = list(_KV_RE.finditer(line))
+        if pairs:
+            for match in pairs:
+                kv[match.group(1)] = match.group(3).strip()
+            continue
+        config_lines.append(line)
     return kv, config_lines, notes
 
 
@@ -280,9 +341,21 @@ def _split_param_rows(
     return detector, backtest, data
 
 
-def build_run_meta(trades_path: Path) -> Dict[str, Any]:
-    summary_path = _summary_path_for_trades(trades_path)
-    kv, config_lines, notes = _parse_summary_txt(summary_path)
+def build_run_meta(
+    trades_path: Path,
+    extra: Optional[Dict[str, Any]] = None,
+    summary_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    sidecar = summary_path if summary_path is not None else _summary_path_for_trades(trades_path)
+    if sidecar is not None and not sidecar.exists():
+        sidecar = None
+    kv, config_lines, notes = _parse_summary_txt(sidecar)
+    if extra:
+        for key, val in extra.items():
+            if val is None or val == "":
+                continue
+            if key not in kv:
+                kv[str(key)] = str(val)
     det_rows, bt_rows, data_rows = _split_param_rows(kv, config_lines)
     return {
         "git": _git_info(),
@@ -291,7 +364,7 @@ def build_run_meta(trades_path: Path) -> Dict[str, Any]:
         "data_params": data_rows,
         "results": {k: kv[k] for k in RESULT_PARAM_KEYS if k in kv},
         "notes": notes,
-        "summary_file": summary_path.name if summary_path else None,
+        "summary_file": sidecar.name if sidecar else None,
         "trades_file": trades_path.name,
     }
 
@@ -1090,6 +1163,12 @@ def render_html(
     <div class="metric-grid" id="gitGrid"></div>
     <h2>Detector</h2>
     <div id="detectorBlock"></div>
+    <div id="resultsBlock" style="display:none">
+      <h2>Summary stats</h2>
+      <div class="table-scroll" style="max-height:280px;margin-bottom:12px">
+        <table class="meta-kv"><tbody id="resultsBody"></tbody></table>
+      </div>
+    </div>
     <h2>Parameters</h2>
     <h3 style="font-size:13px;color:var(--muted);margin:8px 0 8px;">Backtest / execution</h3>
     <div class="table-scroll" style="max-height:360px;margin-bottom:12px">
@@ -2134,6 +2213,16 @@ function renderRunInfo() {{
     ${{detParams ? '<div class="table-scroll" style="max-height:200px;margin-top:8px"><table class="meta-kv"><tbody>' + detParams + '</tbody></table></div>' : ''}}
   `;
 
+  const res = m.results || {{}};
+  const resKeys = Object.keys(res);
+  const resBox = document.getElementById('resultsBlock');
+  if (resBox) resBox.style.display = resKeys.length ? 'block' : 'none';
+  if (resKeys.length) {{
+    document.getElementById('resultsBody').innerHTML = resKeys.sort().map(k =>
+      `<tr><td>${{esc(k)}}</td><td>${{esc(res[k])}}</td></tr>`
+    ).join('');
+  }}
+
   const bt = m.backtest_params || [];
   document.getElementById('backtestParamsBody').innerHTML = bt.length
     ? bt.map(r => `<tr><td>${{esc(r.key)}}</td><td>${{esc(r.value)}}</td></tr>`).join('')
@@ -2328,6 +2417,12 @@ def main() -> int:
         default=None,
         help="Optional JSON with filter-book comparison rows (title/note/rows)",
     )
+    ap.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="Summary sidecar txt (default: next to --trades as *_trades_summary_*.txt or <stem>_summary.txt)",
+    )
     args = ap.parse_args()
 
     trades_path = args.trades or _latest_trades_csv(args.outdir)
@@ -2398,7 +2493,23 @@ def main() -> int:
     out_html = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.html"
     out_json = args.outdir / f"channel_touch_tv_report_{tag}_{stamp}.json"
 
-    run_meta = build_run_meta(trades_path)
+    extra_meta = {
+        "friction_pct": float(args.friction_pct),
+        "provider": args.provider,
+        "max_entries_per_day": int(max_per_day),
+        "n_trades_embedded": len(raw_trades),
+    }
+    if args.tag:
+        extra_meta["report_tag"] = args.tag
+    summary_override = args.summary
+    if summary_override is not None and not summary_override.exists():
+        logger.warning("Summary sidecar not found: %s", summary_override)
+        summary_override = None
+    run_meta = build_run_meta(
+        trades_path,
+        extra=extra_meta,
+        summary_path=summary_override,
+    )
     comparison = load_comparison_json(args.comparison_json)
     logger.info(
         "Run meta: branch=%s commit=%s summary=%s comparison_rows=%s",
@@ -2426,6 +2537,7 @@ def main() -> int:
                 "n_spy_bars": len(spy_closes),
                 "source": str(trades_path),
                 "source_raw": str(_raw_sibling_csv(trades_path) or ""),
+                "run_meta": run_meta,
             },
             indent=2,
         ),

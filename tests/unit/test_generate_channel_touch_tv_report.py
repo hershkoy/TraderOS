@@ -9,6 +9,8 @@ from scripts.research.generate_channel_touch_tv_report import (
     _split_param_rows,
     _summary_path_for_trades,
     build_run_meta,
+    summary_sidecar_path,
+    write_summary_sidecar,
 )
 
 
@@ -38,6 +40,15 @@ def test_summary_path_for_raw_trades(tmp_path):
     raw.write_text("stock\n", encoding="utf-8")
     summary.write_text("n_trades=1\n", encoding="utf-8")
     assert _summary_path_for_trades(raw) == summary
+
+
+def test_summary_path_for_h2_stem_sidecar(tmp_path):
+    trades = tmp_path / "channel_touch_h2_break_keeper_plus_span365.csv"
+    summary = tmp_path / "channel_touch_h2_break_keeper_plus_span365_summary.txt"
+    trades.write_text("stock\n", encoding="utf-8")
+    summary.write_text("h2_resist_break=True\n", encoding="utf-8")
+    assert summary_sidecar_path(trades) == summary
+    assert _summary_path_for_trades(trades) == summary
 
 
 def test_raw_sibling_csv(tmp_path):
@@ -112,15 +123,15 @@ def test_parse_and_split_summary(tmp_path):
             [
                 "Ascending channel bottom-touch long backtest",
                 "entry_touch>=3",
-                "error_pct=1.2",
-                "min_rally_pct=4.0",
-                "provider=ALPACA",
-                "timeframe=1d",
+                "error_pct=1.2 min_rally_pct=4.0 min_total_rise_pct=3.0",
+                "provider=ALPACA timeframe=1d",
+                "bars_per_session=1 rs_source=ALPACA 1d rs_symbol=SPY",
                 "fallback_provider=IB",
                 "merge_mode=prefix",
                 "n_trades=10",
                 "expectancy_pct=2.5",
-                "Exit: hard stop",
+                "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail)",
+                "Note: Combined book for HTML max/day=1 re-RS (n=28).",
             ]
         ),
         encoding="utf-8",
@@ -129,12 +140,46 @@ def test_parse_and_split_summary(tmp_path):
     assert kv["fallback_provider"] == "IB"
     assert kv["n_trades"] == "10"
     assert kv.get("entry_touch") == "3"
-    assert "1.2" in kv.get("error_pct", "")
+    assert kv.get("error_pct") == "1.2"
+    assert kv.get("min_rally_pct") == "4.0"
+    assert kv.get("min_total_rise_pct") == "3.0"
+    assert kv.get("timeframe") == "1d"
+    assert kv.get("rs_source") == "ALPACA 1d"
+    assert kv.get("rs_symbol") == "SPY"
     assert notes[0].startswith("Exit:")
+    assert any(n.startswith("Note:") for n in notes)
+    assert "day" not in kv
+    assert kv.get("n_trades") == "10"
 
     det, bt, data = _split_param_rows(kv, config_lines)
     assert any(r["key"] == "fallback_provider" for r in data)
+    assert any(r["key"] == "timeframe" and r["value"] == "1d" for r in data)
     assert kv["n_trades"] not in {r["key"] for r in bt}
+
+
+def test_build_run_meta_reads_h2_sidecar_and_extra(tmp_path):
+    trades = tmp_path / "channel_touch_h2_break_span365.csv"
+    trades.write_text("stock,buy_date\nAAA,2020-01-02\n", encoding="utf-8")
+    write_summary_sidecar(
+        summary_sidecar_path(trades),
+        title="H2 resistance-break span<=365",
+        params={"h2_resist_break": True, "provider": "ALPACA", "error_pct": 1.2},
+        results={"n_trades": 713, "profit_factor": 1.72},
+        notes=["Exit: hard stop = entry*(1-stop)", "Combined book for HTML max/day=1 (n=28)."],
+    )
+    meta = build_run_meta(
+        trades,
+        extra={"friction_pct": 0.25, "n_trades_embedded": 741},
+    )
+    assert meta["summary_file"] == "channel_touch_h2_break_span365_summary.txt"
+    assert meta["results"]["n_trades"] == "713"
+    assert meta["results"]["profit_factor"] == "1.72"
+    assert any(r["key"] == "h2_resist_break" for r in meta["backtest_params"])
+    assert any(r["key"] == "friction_pct" for r in meta["backtest_params"])
+    assert any(r["key"] == "error_pct" for r in meta["detector"]["params"])
+    assert meta["notes"][0].startswith("Exit:")
+    assert any(n.startswith("Note:") and "max/day=1" in n for n in meta["notes"])
+    assert not any(r["key"] == "day" for r in meta["backtest_params"])
 
 
 def test_spy_to_raw_keeps_window():
@@ -392,6 +437,40 @@ def test_render_html_includes_comparison_table():
     assert '"n":6306' in html or '"n": 6306' in html
     assert "stampBuy" in html
     assert "entry/exit are RTH bar times" in html
+    assert 'id="resultsBody"' in html
+    assert "renderRunInfo" in html
+
+
+def test_render_html_embeds_run_meta_results():
+    from scripts.research.generate_channel_touch_tv_report import render_html
+
+    html = render_html(
+        raw_trades=[],
+        spy_closes=[],
+        defaults={
+            "capital": 100000,
+            "sizeMode": "fixed",
+            "sizeVal": 10000,
+            "friction": 0.25,
+            "maxPerDay": 1,
+            "maxOpen": 0,
+            "winCap": 0,
+            "excludeSym": "",
+        },
+        run_meta={
+            "git": {"branch": "x", "commit": "abc", "dirty": "no"},
+            "results": {"n_trades": "713", "profit_factor": "1.72"},
+            "backtest_params": [{"key": "h2_resist_break", "value": "True"}],
+            "data_params": [{"key": "provider", "value": "ALPACA"}],
+            "summary_file": "channel_touch_h2_break_keeper_plus_span365_summary.txt",
+        },
+        title="Keeper plus H2",
+        source="channel_touch_h2_break_keeper_plus_span365.csv",
+    )
+    assert '"n_trades":"713"' in html or '"n_trades": "713"' in html
+    assert "h2_resist_break" in html
+    assert "channel_touch_h2_break_keeper_plus_span365_summary.txt" in html
+    assert 'id="resultsBlock"' in html
 
 
 def test_render_html_embeds_bar_timestamps():
