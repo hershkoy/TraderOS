@@ -415,3 +415,168 @@ def test_channel_rail_fields_iso_utc():
     assert rails["channel_width"] == 1.25
     assert rails["h2_time"].endswith("Z")
 
+
+def test_resist_arm_trail_holds_until_upper_rail():
+    """Peak trail from entry: ratchet stop with highs; exit when low hits stop."""
+    from backtest_channel_touch_trades import _simulate_trade
+
+    # Entry 105, stop 3% -> 101.85. Peak 114 -> trail 110.58; bar5 low 110 exits.
+    dates = pd.bdate_range("2025-01-02", periods=8)
+    high = np.array([106, 107, 108, 112, 114, 113, 110, 109], dtype=float)
+    low = np.array([104, 105, 106, 109, 111, 110, 109.5, 108], dtype=float)
+    close = np.array([105, 106, 107, 111, 113, 112, 110, 109], dtype=float)
+    out = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        entry_i=0,
+        stop_pct=0.03,
+        trail_pct=0.03,
+        resist_arm_trail=True,
+        entry_px=105.0,
+        skip_entry_bar_stop=True,
+    )
+    assert out is not None
+    assert out["exit_reason"] == "peak_trail"
+    assert out["exit_i"] == 5
+    assert abs(out["sell_price"] - 114.0 * 0.97) < 1e-6
+    assert abs(out["peak_price"] - 114.0) < 1e-6
+
+
+def test_resist_arm_trail_hard_stop_before_arm():
+    """If price never lifts the trail above entry-3%, that floor still binds."""
+    from backtest_channel_touch_trades import _simulate_trade
+
+    dates = pd.bdate_range("2025-01-02", periods=5)
+    # Peak never above entry 105 -> trail stays at/below hard stop 101.85
+    high = np.array([105.0, 104.8, 104.5, 104.0, 103.0])
+    low = np.array([104.5, 101.0, 100.0, 99.0, 98.0])  # bar1 through 101.85
+    close = np.array([104.9, 102.0, 101.0, 100.0, 99.0])
+    out = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        entry_i=0,
+        stop_pct=0.03,
+        trail_pct=0.03,
+        resist_arm_trail=True,
+        entry_px=105.0,
+        skip_entry_bar_stop=True,
+    )
+    assert out is not None
+    assert out["exit_reason"] == "hard_stop"
+    assert out["exit_i"] == 1
+    assert abs(out["sell_price"] - 105.0 * 0.97) < 1e-6
+
+
+def test_peak_trail_exits_after_31_high_like_mtsi():
+    """After high 31.03, stop=30.09; next bar low through stop exits."""
+    from backtest_channel_touch_trades import _simulate_trade
+
+    dates = pd.bdate_range("2020-01-02", periods=6)
+    high = np.array([16.0, 20.0, 25.0, 31.03, 30.50, 28.0])
+    low = np.array([15.2, 19.5, 24.5, 30.50, 29.80, 27.0])  # bar4 low 29.80 < 30.09
+    close = np.array([15.5, 19.8, 24.8, 30.80, 30.00, 27.5])
+    out = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        entry_i=0,
+        stop_pct=0.03,
+        trail_pct=0.03,
+        resist_arm_trail=True,
+        entry_px=15.33,
+        skip_entry_bar_stop=True,
+    )
+    assert out is not None
+    assert out["exit_reason"] == "peak_trail"
+    assert out["exit_i"] == 4
+    assert abs(out["sell_price"] - 31.03 * 0.97) < 1e-6
+    assert abs(out["peak_price"] - 31.03) < 1e-6
+
+
+def test_peak_trail_width_time_decay():
+    from backtest_channel_touch_trades import _peak_trail_width
+
+    w0 = _peak_trail_width(
+        mode="time_decay",
+        trail_pct=0.04,
+        bars_held=0,
+        peak=100.0,
+        entry_px=100.0,
+        trail_floor=0.01,
+        trail_decay_per_bar=0.0002,
+    )
+    assert abs(w0 - 0.04) < 1e-12
+    w50 = _peak_trail_width(
+        mode="time_decay",
+        trail_pct=0.04,
+        bars_held=50,
+        peak=100.0,
+        entry_px=100.0,
+        trail_floor=0.01,
+        trail_decay_per_bar=0.0002,
+    )
+    assert abs(w50 - (0.04 - 50 * 0.0002)) < 1e-12
+    w_floor = _peak_trail_width(
+        mode="time_decay",
+        trail_pct=0.04,
+        bars_held=1000,
+        peak=100.0,
+        entry_px=100.0,
+        trail_floor=0.01,
+        trail_decay_per_bar=0.0002,
+    )
+    assert abs(w_floor - 0.01) < 1e-12
+
+
+def test_peak_trail_width_gain_tighten():
+    from backtest_channel_touch_trades import _peak_trail_width
+
+    # +3% peak from entry -> floor(3)=3 steps * 0.33pp
+    w = _peak_trail_width(
+        mode="gain_tighten",
+        trail_pct=0.04,
+        bars_held=10,
+        peak=103.0,
+        entry_px=100.0,
+        trail_floor=0.01,
+        trail_tighten_per_pct=0.0033,
+    )
+    assert abs(w - (0.04 - 3 * 0.0033)) < 1e-12
+
+
+def test_peak_trail_time_decay_sim_tightens():
+    """After many bars, 4% trail decays enough that a shallow dip exits."""
+    from backtest_channel_touch_trades import _simulate_trade
+
+    n = 160
+    dates = pd.bdate_range("2024-01-02", periods=n)
+    # Flat peak at 110 after bar 1; after 150 bars width=4%-3%=1%; stop=108.9
+    high = np.full(n, 110.0)
+    low = np.full(n, 109.5)
+    close = np.full(n, 109.8)
+    high[0], low[0], close[0] = 105.0, 104.0, 105.0
+    high[1], low[1], close[1] = 110.0, 108.0, 109.0
+    low[155] = 108.5  # below 110*0.99=108.9 after decay
+    out = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        entry_i=0,
+        stop_pct=0.04,
+        trail_pct=0.04,
+        peak_trail_mode="time_decay",
+        trail_floor=0.01,
+        trail_decay_per_bar=0.0002,
+        entry_px=105.0,
+        skip_entry_bar_stop=True,
+    )
+    assert out is not None
+    assert out["exit_reason"] == "peak_trail"
+    assert out["exit_i"] == 155
+

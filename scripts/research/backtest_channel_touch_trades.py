@@ -7,6 +7,7 @@ Rules:
   - Enter long on each bottom touch number >= entry_touch (default 3)
   - Entry at close of pivot-confirmation bar (touch_index + pivot_len)
   - Exit: 3% hard stop OR 10% trailing stop from peak (whichever is higher)
+  - Optional --resist-arm-trail: hard stop only until upper rail is tagged, then trail from peak
   - One open position per symbol (skip new entries while in a trade)
 
 Edge filters (optional):
@@ -681,6 +682,51 @@ def _hard_stop_price(
     return entry_px * (1.0 - float(stop_pct))
 
 
+PEAK_TRAIL_MODES = ("off", "fixed", "time_decay", "gain_tighten")
+
+
+def _normalize_peak_trail_mode(
+    mode: Optional[str] = None,
+    *,
+    resist_arm_trail: bool = False,
+) -> str:
+    m = (mode or "off").strip().lower().replace("-", "_")
+    if m in ("", "none", "off"):
+        m = "off"
+    if bool(resist_arm_trail) and m == "off":
+        return "fixed"
+    if m not in PEAK_TRAIL_MODES:
+        raise ValueError(f"Unknown peak_trail_mode={mode!r}; expected one of {PEAK_TRAIL_MODES}")
+    return m
+
+
+def _peak_trail_width(
+    *,
+    mode: str,
+    trail_pct: float,
+    bars_held: int,
+    peak: float,
+    entry_px: float,
+    trail_floor: float = 0.01,
+    trail_decay_per_bar: float = 0.0002,
+    trail_tighten_per_pct: float = 0.0033,
+) -> float:
+    """Trail width as a fraction of price (e.g. 0.04 = 4%)."""
+    w0 = float(trail_pct)
+    if mode == "fixed" or mode == "off":
+        return w0
+    floor = max(0.0, float(trail_floor))
+    if mode == "time_decay":
+        return max(floor, w0 - max(0, int(bars_held)) * float(trail_decay_per_bar))
+    if mode == "gain_tighten":
+        gain_pp = 0.0
+        if entry_px > 0 and np.isfinite(peak) and peak > 0:
+            gain_pp = max(0.0, (float(peak) / float(entry_px) - 1.0) * 100.0)
+        steps = int(np.floor(gain_pp))
+        return max(floor, w0 - steps * float(trail_tighten_per_pct))
+    return w0
+
+
 def _simulate_trade(
     high: np.ndarray,
     low: np.ndarray,
@@ -703,6 +749,11 @@ def _simulate_trade(
     support_slope: Optional[float] = None,
     channel_width: Optional[float] = None,
     resist_exit: bool = False,
+    resist_arm_trail: bool = False,
+    peak_trail_mode: str = "off",
+    trail_floor: float = 0.01,
+    trail_decay_per_bar: float = 0.0002,
+    trail_tighten_per_pct: float = 0.0033,
     trail_pct_tight: Optional[float] = None,
     squeeze_fade_tighten: bool = False,
     max_hold_days: Optional[int] = None,
@@ -715,6 +766,10 @@ def _simulate_trade(
     If trail_pct_wide and squeeze_mom are provided, widen the trail when TTM
     Squeeze momentum is positive, non-decreasing, and strong vs its recent
     distribution (LazyBear lime-green / strong-up regime).
+
+    ``peak_trail_mode`` (or legacy ``resist_arm_trail`` -> fixed): from-entry peak
+    trail with no resist gate / no squeeze. Width modes: fixed, time_decay,
+    gain_tighten. Exit when low hits stop; fill at stop. Reason ``peak_trail``.
     """
     n = len(close)
     if entry_i < 0 or entry_i >= n - 1:
@@ -727,21 +782,29 @@ def _simulate_trade(
         return None
     entry_px = fill
 
+    pt_mode = _normalize_peak_trail_mode(peak_trail_mode, resist_arm_trail=resist_arm_trail)
+    use_peak_trail = pt_mode != "off"
+
     hard_stop = _hard_stop_price(
         entry_px,
         stop_pct=stop_pct,
-        atr_at_entry=atr_at_entry,
-        atr_stop_mult=atr_stop_mult,
+        atr_at_entry=None if use_peak_trail else atr_at_entry,
+        atr_stop_mult=None if use_peak_trail else atr_stop_mult,
         stop_pct_floor=stop_pct_floor,
         stop_pct_ceil=stop_pct_ceil,
     )
     peak = entry_px
+    stop_level = hard_stop
     exit_i = n - 1
     exit_px = float(close[exit_i])
     exit_reason = "eod"
     used_wide = False
-    wide = float(trail_pct_wide) if trail_pct_wide is not None else None
-    tight = float(trail_pct_tight) if trail_pct_tight is not None else None
+    wide = None if use_peak_trail else (
+        float(trail_pct_wide) if trail_pct_wide is not None else None
+    )
+    tight = None if use_peak_trail else (
+        float(trail_pct_tight) if trail_pct_tight is not None else None
+    )
     have_line = (
         support_x0 is not None
         and support_y0 is not None
@@ -785,24 +848,54 @@ def _simulate_trade(
     for i in range(entry_i + 1, n):
         hi = float(high[i])
         lo = float(low[i])
+        cl = float(close[i])
         if np.isfinite(hi):
             peak = max(peak, hi)
 
         if max_hold_days is not None and (i - entry_i) >= int(max_hold_days):
             exit_i = i
-            exit_px = float(close[i])
+            exit_px = float(cl) if np.isfinite(cl) else float(close[i])
             exit_reason = "time_stop"
             break
 
-        if resist_exit and have_line and np.isfinite(hi):
+        resist = float("nan")
+        if have_line and np.isfinite(hi):
             resist = _line_at(float(support_y0), int(support_x0), float(support_slope), i) + float(
                 channel_width
             )
-            if hi >= resist:
+
+        if resist_exit and not use_peak_trail and np.isfinite(resist) and hi >= resist:
+            exit_i = i
+            exit_px = float(resist)
+            exit_reason = "resist_exit"
+            break
+
+        if use_peak_trail:
+            bars_held = int(i - entry_i)
+            trail_w = _peak_trail_width(
+                mode=pt_mode,
+                trail_pct=float(trail_pct),
+                bars_held=bars_held,
+                peak=float(peak),
+                entry_px=float(entry_px),
+                trail_floor=float(trail_floor),
+                trail_decay_per_bar=float(trail_decay_per_bar),
+                trail_tighten_per_pct=float(trail_tighten_per_pct),
+            )
+            trail_stop = peak * (1.0 - trail_w)
+            stop_level = max(float(stop_level), float(hard_stop), float(trail_stop))
+            if np.isfinite(lo) and lo <= stop_level:
                 exit_i = i
-                exit_px = float(resist)
-                exit_reason = "resist_exit"
+                exit_px = float(stop_level)
+                if abs(stop_level - hard_stop) < 1e-9 and trail_stop <= hard_stop + 1e-9:
+                    exit_reason = "hard_stop"
+                else:
+                    exit_reason = "peak_trail"
                 break
+            exit_i = i
+            exit_px = float(cl) if np.isfinite(cl) else float(close[i])
+            exit_reason = "eod"
+            continue
 
         trail_use = float(trail_pct)
         wide_now = False
@@ -836,24 +929,22 @@ def _simulate_trade(
 
         trail_stop = peak * (1.0 - trail_use)
         stop_level = max(hard_stop, trail_stop)
+        trail_active = stop_level > hard_stop + 1e-9
         if np.isfinite(lo) and lo <= stop_level:
             exit_i = i
             exit_px = float(stop_level)
-            if abs(stop_level - hard_stop) < 1e-9:
+            if not trail_active:
                 exit_reason = "hard_stop"
-            elif stop_level > hard_stop + 1e-9:
-                if wide_now:
-                    exit_reason = "trail_stop_wide"
-                    used_wide = True
-                elif fade_now:
-                    exit_reason = "trail_stop_tight"
-                else:
-                    exit_reason = "trail_stop"
+            elif wide_now:
+                exit_reason = "trail_stop_wide"
+                used_wide = True
+            elif fade_now:
+                exit_reason = "trail_stop_tight"
             else:
-                exit_reason = "hard_stop"
+                exit_reason = "trail_stop"
             break
         exit_i = i
-        exit_px = float(close[i])
+        exit_px = float(cl) if np.isfinite(cl) else float(close[i])
         exit_reason = "eod"
 
     hold = int(exit_i - entry_i)
@@ -927,6 +1018,11 @@ def trades_for_symbol(
     stop_pct_floor: float = 0.015,
     stop_pct_ceil: float = 0.06,
     resist_exit: bool = False,
+    resist_arm_trail: bool = False,
+    peak_trail_mode: str = "off",
+    trail_floor: float = 0.01,
+    trail_decay_per_bar: float = 0.0002,
+    trail_tighten_per_pct: float = 0.0033,
     trail_pct_tight: Optional[float] = None,
     squeeze_fade_tighten: bool = False,
     max_hold_days: Optional[int] = None,
@@ -1281,6 +1377,11 @@ def trades_for_symbol(
             support_slope=sslope,
             channel_width=width,
             resist_exit=resist_exit and not hybrid,
+            resist_arm_trail=bool(resist_arm_trail),
+            peak_trail_mode=str(peak_trail_mode or "off"),
+            trail_floor=float(trail_floor),
+            trail_decay_per_bar=float(trail_decay_per_bar),
+            trail_tighten_per_pct=float(trail_tighten_per_pct),
             trail_pct_tight=trail_pct_tight,
             squeeze_fade_tighten=squeeze_fade_tighten,
             max_hold_days=hold_max,
@@ -1409,6 +1510,11 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         stop_pct_floor=float(payload.get("stop_pct_floor", 0.015)),
         stop_pct_ceil=float(payload.get("stop_pct_ceil", 0.06)),
         resist_exit=bool(payload.get("resist_exit", False)),
+        resist_arm_trail=bool(payload.get("resist_arm_trail", False)),
+        peak_trail_mode=str(payload.get("peak_trail_mode") or "off"),
+        trail_floor=float(payload.get("trail_floor", 0.01)),
+        trail_decay_per_bar=float(payload.get("trail_decay_per_bar", 0.0002)),
+        trail_tighten_per_pct=float(payload.get("trail_tighten_per_pct", 0.0033)),
         trail_pct_tight=payload.get("trail_pct_tight"),
         squeeze_fade_tighten=bool(payload.get("squeeze_fade_tighten", False)),
         max_hold_days=payload.get("max_hold_days"),
@@ -1477,6 +1583,8 @@ def _summarize(trades: pd.DataFrame, gain_col: str = "gain_pct") -> dict:
         out["trail_stop_wide_exits"] = int((trades["exit_reason"] == "trail_stop_wide").sum())
         out["trail_stop_tight_exits"] = int((trades["exit_reason"] == "trail_stop_tight").sum())
         out["resist_exits"] = int((trades["exit_reason"] == "resist_exit").sum())
+        out["resist_arm_trail_exits"] = int((trades["exit_reason"] == "resist_arm_trail").sum())
+        out["peak_trail_exits"] = int((trades["exit_reason"] == "peak_trail").sum())
         out["time_stop_exits"] = int((trades["exit_reason"] == "time_stop").sum())
         out["eod_exits"] = int((trades["exit_reason"] == "eod").sum())
     return out
@@ -2002,6 +2110,228 @@ def run_edge_v2(
     return summary_df, year_df, raw_by_name
 
 
+def _drop_top_n_stats(trades: pd.DataFrame, *, gain_col: str, n: int = 10) -> dict:
+    if trades is None or trades.empty or gain_col not in trades.columns:
+        return {"n_trades": 0, "expectancy_pct": None, "profit_factor": None}
+    ranked = trades.sort_values(gain_col, ascending=False)
+    kept = ranked.iloc[int(n) :] if len(ranked) > int(n) else ranked.iloc[0:0]
+    return _summarize(kept, gain_col=gain_col)
+
+
+def run_peak_trail_sweep(
+    panels: Dict[str, pd.DataFrame],
+    spy_df: pd.DataFrame,
+    symbols: Sequence[str],
+    *,
+    workers: int,
+    friction_pct: float = 0.10,
+    max_entries_per_day: int = 1,
+    require_in_channel: bool = True,
+    max_channel_span_days: Optional[float] = 10.0,
+    bars_per_session: int = 26,
+    channel_kwargs: Optional[dict] = None,
+    scan_base: Optional[dict] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, pd.DataFrame]]:
+    """Keeper + five peak-trail exit variants on one loaded 15m panel set."""
+    ch_kw = dict(channel_kwargs or {})
+    base = {
+        "entry_touch": 3,
+        "entry_mode": "l3_touch",
+        "min_l3_wait_bars": 12,
+        "max_l3_wait_bars": 252,
+        "shakeout_rebuy_bars": 0,
+        "h2_resist_break": False,
+        "h2_resist_break_only": False,
+        "realistic_fill": True,
+        "realistic_fill_mode": FILL_MODE_SIGNAL_CLOSE,
+        "touch_error_pct": 0.0,
+        "include_time": True,
+        "entry_features": True,
+        "feature_asof_prior_bar": True,
+        "entry_slip_pct": 0.001,
+        "pivot_len": int(PRESET_15M["pivot_len"]),
+        "window_bars": int(PRESET_15M["window_bars"]),
+        "window_step_bars": int(PRESET_15M["window_step_bars"]),
+        "adv_lookback": int(PRESET_15M["adv_lookback"]),
+        "squeeze_pctile": 75.0,
+        "squeeze_lookback": int(PRESET_15M["squeeze_lookback"]),
+        "channel_kwargs": ch_kw,
+    }
+    if scan_base:
+        base.update(scan_base)
+
+    keeper = {
+        "stop_pct": float(PRESET_15M["stop_pct"]),
+        "trail_pct": float(PRESET_15M["trail_pct"]),
+        "trail_pct_wide": float(PRESET_15M["trail_pct_wide"]),
+        "squeeze_adaptive": True,
+        "atr_stop_mult": float(PRESET_15M["atr_stop_mult"]),
+        "stop_pct_floor": float(PRESET_15M["stop_pct_floor"]),
+        "stop_pct_ceil": float(PRESET_15M["stop_pct_ceil"]),
+        "resist_exit": False,
+        "resist_arm_trail": False,
+        "peak_trail_mode": "off",
+        "trail_floor": 0.01,
+        "trail_decay_per_bar": 0.0002,
+        "trail_tighten_per_pct": 0.0033,
+    }
+    peak_common = {
+        "squeeze_adaptive": False,
+        "atr_stop_mult": None,
+        "resist_exit": False,
+        "resist_arm_trail": False,
+        "trail_pct_wide": None,
+        "trail_pct_tight": None,
+        "squeeze_fade_tighten": False,
+        "stop_pct_floor": 0.015,
+        "stop_pct_ceil": 0.06,
+        "trail_floor": 0.01,
+        "trail_decay_per_bar": 0.0002,
+        "trail_tighten_per_pct": 0.0033,
+    }
+    scan_specs: List[Tuple[str, dict]] = [
+        ("Keeper", dict(keeper)),
+        (
+            "F125",
+            {
+                **peak_common,
+                "peak_trail_mode": "fixed",
+                "stop_pct": 0.0125,
+                "trail_pct": 0.0125,
+            },
+        ),
+        (
+            "F200",
+            {
+                **peak_common,
+                "peak_trail_mode": "fixed",
+                "stop_pct": 0.02,
+                "trail_pct": 0.02,
+            },
+        ),
+        (
+            "F300",
+            {
+                **peak_common,
+                "peak_trail_mode": "fixed",
+                "stop_pct": 0.03,
+                "trail_pct": 0.03,
+            },
+        ),
+        (
+            "T4d",
+            {
+                **peak_common,
+                "peak_trail_mode": "time_decay",
+                "stop_pct": 0.04,
+                "trail_pct": 0.04,
+                "trail_decay_per_bar": 0.0002,
+            },
+        ),
+        (
+            "G4t",
+            {
+                **peak_common,
+                "peak_trail_mode": "gain_tighten",
+                "stop_pct": 0.04,
+                "trail_pct": 0.04,
+                "trail_tighten_per_pct": 0.0033,
+            },
+        ),
+    ]
+
+    raw_by_name: Dict[str, pd.DataFrame] = {}
+    summary_rows: List[dict] = []
+    year_frames: List[pd.DataFrame] = []
+    rs_lookbacks = (21, 63, 126)
+
+    for name, overrides in scan_specs:
+        cfg = dict(base)
+        cfg.update(overrides)
+        t1 = time.perf_counter()
+        logger.info("peak-trail sweep %s ...", name)
+        raw = _scan_trades(panels, symbols=symbols, workers=workers, base=cfg)
+        if raw.empty:
+            raw_by_name[name] = raw
+            summary_rows.append(
+                {
+                    "scenario": name,
+                    "n_trades": 0,
+                    "expectancy_pct": None,
+                    "profit_factor": None,
+                }
+            )
+            logger.info("peak-trail sweep %s -> 0 trades (%.1fs)", name, time.perf_counter() - t1)
+            continue
+        raw = enrich_rs(
+            raw,
+            panels,
+            spy_df,
+            lookbacks=rs_lookbacks,
+            bars_per_session=int(bars_per_session),
+        )
+        raw_by_name[name] = raw
+        filtered = filter_trades(
+            raw,
+            require_in_channel=bool(require_in_channel),
+            max_channel_span_days=max_channel_span_days,
+        )
+        if max_entries_per_day and max_entries_per_day > 0:
+            filtered = select_same_day_rs(
+                filtered, rs_col="rs_spy_126d", max_per_day=int(max_entries_per_day)
+            )
+        gain_col = "gain_pct"
+        if friction_pct and friction_pct > 0:
+            filtered = apply_friction(filtered, friction_pct)
+            gain_col = "gain_pct_net"
+        s = _summarize(filtered, gain_col=gain_col)
+        drop10 = _drop_top_n_stats(filtered, gain_col=gain_col, n=10)
+        no_eod = filtered
+        if "exit_reason" in filtered.columns:
+            no_eod = filtered[filtered["exit_reason"] != "eod"]
+        s_no_eod = _summarize(no_eod, gain_col=gain_col)
+        summary_rows.append(
+            {
+                "scenario": name,
+                "n_trades": s["n_trades"],
+                "n_symbols": s["n_symbols"],
+                "expectancy_pct": s["expectancy_pct"],
+                "profit_factor": s["profit_factor"],
+                "median_gain_pct": s.get("median_gain_pct"),
+                "win_rate_pct": s["win_rate_pct"],
+                "avg_hold_days": s["avg_hold_days"],
+                "eod_exits": s.get("eod_exits"),
+                "peak_trail_exits": s.get("peak_trail_exits"),
+                "hard_stop_exits": s.get("hard_stop_exits"),
+                "trail_stop_exits": s.get("trail_stop_exits"),
+                "trail_stop_wide_exits": s.get("trail_stop_wide_exits"),
+                "no_eod_n": s_no_eod["n_trades"],
+                "no_eod_E": s_no_eod["expectancy_pct"],
+                "no_eod_PF": s_no_eod["profit_factor"],
+                "drop_top10_E": drop10.get("expectancy_pct"),
+                "drop_top10_PF": drop10.get("profit_factor"),
+            }
+        )
+        ydf = summarize_by_year(filtered, gain_col=gain_col)
+        if not ydf.empty:
+            ydf = ydf.copy()
+            ydf.insert(0, "scenario", name)
+            year_frames.append(ydf)
+        logger.info(
+            "peak-trail sweep %s -> raw=%d final=%d E=%s PF=%s (%.1fs)",
+            name,
+            len(raw),
+            s["n_trades"],
+            s["expectancy_pct"],
+            s["profit_factor"],
+            time.perf_counter() - t1,
+        )
+
+    summary_df = pd.DataFrame(summary_rows)
+    year_df = pd.concat(year_frames, ignore_index=True) if year_frames else pd.DataFrame()
+    return summary_df, year_df, raw_by_name
+
+
 REPORT_COLS = [
     "stock",
     "channel_start",
@@ -2402,6 +2732,35 @@ def main() -> int:
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
     ap.add_argument("--stop-pct-ceil", type=float, default=0.06)
     ap.add_argument("--resist-exit", action="store_true")
+    ap.add_argument(
+        "--resist-arm-trail",
+        action="store_true",
+        help="Alias for --peak-trail-mode fixed (from-entry peak trail; ATR/squeeze off).",
+    )
+    ap.add_argument(
+        "--peak-trail-mode",
+        default="off",
+        choices=("off", "fixed", "time_decay", "gain_tighten"),
+        help="From-entry peak trail: fixed | time_decay | gain_tighten (ATR/squeeze off).",
+    )
+    ap.add_argument("--trail-floor", type=float, default=0.01, help="Min trail width for dynamic peak trail")
+    ap.add_argument(
+        "--trail-decay-per-bar",
+        type=float,
+        default=0.0002,
+        help="time_decay: subtract this width each bar (0.0002 = 0.02pp)",
+    )
+    ap.add_argument(
+        "--trail-tighten-per-pct",
+        type=float,
+        default=0.0033,
+        help="gain_tighten: subtract this width per full +1%% from entry (0.0033 = 0.33pp)",
+    )
+    ap.add_argument(
+        "--peak-trail-sweep",
+        action="store_true",
+        help="One-load A/B: Keeper + F125/F200/F300/T4d/G4t peak-trail exits (15m L3 stack).",
+    )
     ap.add_argument("--trail-pct-tight", type=float, default=None)
     ap.add_argument("--squeeze-fade-tighten", action="store_true")
     ap.add_argument("--max-hold-days", type=int, default=None)
@@ -2446,6 +2805,31 @@ def main() -> int:
         if args.edge_v2:
             logger.warning("Ignoring --edge-v2 with --preset 15m (daily H0-H5 matrix)")
             args.edge_v2 = False
+
+    if bool(getattr(args, "resist_arm_trail", False)) and str(
+        getattr(args, "peak_trail_mode", "off")
+    ).strip().lower() in ("", "off"):
+        args.peak_trail_mode = "fixed"
+    pt_mode = _normalize_peak_trail_mode(
+        getattr(args, "peak_trail_mode", "off"),
+        resist_arm_trail=bool(getattr(args, "resist_arm_trail", False)),
+    )
+    args.peak_trail_mode = pt_mode
+    if pt_mode != "off":
+        args.atr_stop_mult = None
+        args.squeeze_adaptive = False
+        args.squeeze_fade_tighten = False
+        args.resist_exit = False
+        logger.info(
+            "peak_trail_mode=%s stop_pct=%.2f%% trail_pct=%.2f%% floor=%.2f%% "
+            "decay/bar=%.4f tighten/%%=%.4f (ATR/squeeze exit overlays off)",
+            pt_mode,
+            float(args.stop_pct) * 100.0,
+            float(args.trail_pct) * 100.0,
+            float(args.trail_floor) * 100.0,
+            float(args.trail_decay_per_bar),
+            float(args.trail_tighten_per_pct),
+        )
 
     apply_daily_long_history_defaults(args)
     if str(args.timeframe) == "1d" and int(args.window_bars) > 0:
@@ -2655,6 +3039,58 @@ def main() -> int:
         print(f"Summary: {summary_txt}")
         return 0
 
+    if bool(getattr(args, "peak_trail_sweep", False)):
+        friction = float(args.friction_pct) if args.friction_pct > 0 else float(PRESET_15M["friction_pct"])
+        max_day = int(args.max_entries_per_day) if args.max_entries_per_day > 0 else 1
+        channel_kwargs = {
+            "error_pct": float(args.error_pct),
+            "flat_pct": float(args.flat_pct),
+            "min_bars_apart": int(args.min_bars_apart),
+            "min_intervening_rally_pct": float(args.min_rally_pct),
+            "min_intervening_pullback_pct": float(args.min_pullback_pct),
+            "min_total_rise_pct": float(args.min_total_rise_pct),
+            "max_low_pivots": int(args.max_low_pivots),
+            "causal_h2": not bool(args.no_causal_h2),
+        }
+        summary_df, year_df, raw_by_name = run_peak_trail_sweep(
+            panels,
+            spy_df,
+            symbols,
+            workers=int(args.workers),
+            friction_pct=friction,
+            max_entries_per_day=max_day,
+            require_in_channel=bool(args.require_in_channel),
+            max_channel_span_days=args.max_channel_span_days,
+            bars_per_session=int(args.bars_per_session),
+            channel_kwargs=channel_kwargs,
+        )
+        scenarios_csv = args.outdir / f"channel_touch_peak_trail_sweep_{stamp}.csv"
+        year_csv = args.outdir / f"channel_touch_peak_trail_sweep_years_{stamp}.csv"
+        summary_txt = args.outdir / f"channel_touch_peak_trail_sweep_summary_{stamp}.txt"
+        summary_df.to_csv(scenarios_csv, index=False)
+        year_df.to_csv(year_csv, index=False)
+        lines = [
+            "Peak-trail exit sweep (Keeper + F125/F200/F300/T4d/G4t)",
+            f"start={args.start} end={args.end} friction_pct={friction} max_entries_per_day={max_day}",
+            f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
+            f"elapsed_sec={time.perf_counter() - t0:.1f}",
+            "",
+            summary_df.to_string(index=False),
+            "",
+            "Year splits:",
+            year_df.to_string(index=False) if not year_df.empty else "(none)",
+        ]
+        summary_txt.write_text("\n".join(lines), encoding="utf-8")
+        logger.info("peak-trail sweep -> %s", scenarios_csv)
+        print("\nPeak-trail sweep summary:")
+        print(summary_df.to_string(index=False))
+        print("\nYear splits:")
+        print(year_df.to_string(index=False) if not year_df.empty else "(none)")
+        print(f"\nScenarios CSV: {scenarios_csv}")
+        print(f"Years CSV: {year_csv}")
+        print(f"Summary: {summary_txt}")
+        return 0
+
     t_scan = time.perf_counter()
     all_trades: List[dict] = []
     channel_kwargs = {
@@ -2686,6 +3122,11 @@ def main() -> int:
             "stop_pct_floor": float(args.stop_pct_floor),
             "stop_pct_ceil": float(args.stop_pct_ceil),
             "resist_exit": bool(args.resist_exit),
+            "resist_arm_trail": bool(args.resist_arm_trail) or str(args.peak_trail_mode) != "off",
+            "peak_trail_mode": str(args.peak_trail_mode),
+            "trail_floor": float(args.trail_floor),
+            "trail_decay_per_bar": float(args.trail_decay_per_bar),
+            "trail_tighten_per_pct": float(args.trail_tighten_per_pct),
             "trail_pct_tight": args.trail_pct_tight,
             "squeeze_fade_tighten": bool(args.squeeze_fade_tighten),
             "max_hold_days": args.max_hold_days,
