@@ -32,6 +32,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-02 | [Walk-replay vs batch (causal_h2)](2026-09-02_channel_touch_walk_replay.md) |
 | 2026-09-03 | [Causal full-universe 1d + 15m; current_best replaced](2026-09-03_channel_touch_causal_full_universe.md) |
 | 2026-09-04 | [IB 5m universe backfill (yield to RTH)](2026-09-04_ib_5m_backfill.md) |
+| 2026-09-05 | [IB 5m hourly watchdog (backfill windows)](2026-09-05_ib_5m_hourly_watchdog.md) |
 | 2026-09-04 | [Realistic-fill full-universe 1d + 15m; current_best replaced](2026-09-04_channel_touch_realistic_fill.md) |
 | 2026-09-04 | [15m L3 first-tag wait-1 vs wait-12 (realistic fill)](2026-09-04_channel_touch_15m_l3_wait1.md) |
 | 2026-09-04 | [No buy below channel (re-entry or resist-break)](2026-09-04_channel_touch_no_buy_below.md) |

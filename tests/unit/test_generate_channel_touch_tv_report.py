@@ -552,6 +552,40 @@ def test_channel_json_for_row_reconstructs_old_csv():
     assert ch["ex"].startswith("2021-06-08")
 
 
+def test_channel_json_for_row_reconstructs_resist_break():
+    """H2 resist-break rows have channel_pos near/above 1; use width_pct."""
+    from scripts.research.generate_channel_touch_tv_report import channel_json_for_row
+
+    row = pd.Series(
+        {
+            "stock": "WGO",
+            "channel_start": "2019-02-07",
+            "channel_end": "2019-04-18",
+            "buy_date": "2019-06-19",
+            "buy_price": 38.5243,
+            "sell_date": "2019-06-25",
+            "sell_price": 37.872,
+            "channel_pos": 1.014,
+            "room_to_resist_pct": -0.35,
+            "slope_pct_per_bar": 0.15,
+            "channel_width_pct": 28.1,
+            "bars_span": 48,
+            "wait_bars": 42,
+            "resist_break": True,
+        }
+    )
+    ch = channel_json_for_row(row)
+    assert ch is not None
+    assert ch["src"] == "approx"
+    assert ch["sym"] == "WGO"
+    assert ch["w"] > 0
+    assert ch["l1p"] > 0
+    assert ch["enp"] == 38.5243
+    # width_pct = width / L1 * 100
+    assert abs(ch["w"] / ch["l1p"] * 100.0 - 28.1) < 0.05
+    assert ch["l2p"] > ch["l1p"]  # positive slope
+
+
 def test_render_html_embeds_channel_json():
     from scripts.research.generate_channel_touch_tv_report import render_html, trades_to_raw
 

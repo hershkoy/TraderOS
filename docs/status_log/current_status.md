@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-04**
+Last updated: **2026-09-05**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -14,7 +14,7 @@ Stocks only; options excluded. Queried via `utils.db.timescaledb_client.get_time
 |-----------|---------|---------------|------------------------|
 | Daily (`1d`) | **~2,217** | ~7.6M+ | ALPACA primary; gap-fill 2026-08-23 + nightly multi-symbol refresh. Nightly 2026-08-25 ~23:00: **2113 saved / 104 failed** (95.3%), `as_of` scan bar **2026-08-24**. |
 | 15-minute (`15m`) | **1,478** | ~58.7M (EXPLAIN est.) | IB primary, ~2018-01-02 → **2025-12-02** (stale vs 2026-08-30). Catch-up now runs **16:30 ET** via `after_rth_ib_backfill` (`backfill_ib_15m_universe.py`, client 8822) then 5m. ALPACA 15m unused aside from leftover `AEO`. |
-| 5-minute (`5m`) | starting (A, AAL full; rest pending) | — | IB, same symbol set as 15m. Ingest `backfill_ib_5m_universe.py` (client 8823) **year-first**: 2025-through-now all symbols, then 2024..2020. Yields to RTH (stop 09:15 ET; resume 16:30 ET after 15m catch-up; weekends continuous). Playbook: [ib_5m_backfill](../features/ib_5m_backfill.md). |
+| 5-minute (`5m`) | starting (A, AAL full; rest pending) | — | IB, same symbol set as 15m. Ingest `backfill_ib_5m_universe.py` (client 8823) **year-first**: 2025-through-now all symbols, then 2024..2020. Yields to RTH (stop 09:15 ET; resume 16:30 ET after 15m catch-up; weekends continuous). Hourly watchdog restarts 5m if the after-RTH job died. Playbook: [ib_5m_backfill](../features/ib_5m_backfill.md). |
 | Weekly | **0** | — | Not stored — resample from daily |
 
 ### Data sources

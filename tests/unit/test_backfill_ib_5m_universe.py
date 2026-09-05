@@ -15,7 +15,9 @@ from backfill_ib_5m_universe import (  # noqa: E402
     DEFAULT_CLIENT_ID,
     DEFAULT_YEAR_FROM,
     DEFAULT_YEAR_TO,
+    PidLock,
     in_rth_yield_window,
+    is_transient_ib_error,
     make_should_stop,
     needs_backfill,
     next_rth_yield_dt,
@@ -48,6 +50,31 @@ def test_inventory_and_skip_if_job():
     args = parse_args(["--inventory", "--skip-if-job-running", "after_rth_ib_backfill"])
     assert args.inventory is True
     assert args.skip_if_job_running == "after_rth_ib_backfill"
+    reset = parse_args(["--reset-failed", "--skip-if-job-running", "after_rth_ib_backfill"])
+    assert reset.reset_failed is True
+
+
+def test_transient_ib_error_not_qualify():
+    assert is_transient_ib_error(OSError("API connection failed: ConnectionRefusedError"))
+    assert is_transient_ib_error(
+        ConnectionRefusedError(22, "The remote computer refused the network connection")
+    )
+    assert is_transient_ib_error(RuntimeError("Not connected"))
+    assert is_transient_ib_error(TimeoutError("timed out"))
+    assert not is_transient_ib_error(ValueError("qualify failed for AAPL"))
+    assert not is_transient_ib_error(RuntimeError("TimescaleDB insert failed"))
+
+
+def test_pid_lock_steals_recycled_pid(tmp_path: Path):
+    import json
+    import os
+
+    lock_path = tmp_path / "ib_5m_universe.lock"
+    lock_path.write_text(json.dumps({"pid": os.getpid(), "started": "stale"}), encoding="utf-8")
+    lock = PidLock(lock_path)
+    assert lock.acquire() is True
+    lock.release()
+    assert not lock_path.exists()
 
 
 def test_needs_backfill_missing_behind_and_fresh():

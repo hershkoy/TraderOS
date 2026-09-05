@@ -133,6 +133,38 @@ def test_repo_crontab_loads():
     assert stop.schedule == ["15 9 * * 1-5"]
     assert stop.timezone == "America/New_York"
     assert mgr.job("backfill_ib_15m_universe").enabled is False
+    five = mgr.job("backfill_ib_5m_universe")
+    assert five.schedule == ["0 17-23 * * 1-5", "0 0-8 * * 1-5", "0 * * * 0,6"]
+    assert five.timezone == "America/New_York"
+    assert "--skip-if-job-running after_rth_ib_backfill" in five.command
+    assert "--reset-failed" in five.command
+
+
+def test_5m_watchdog_due_only_in_backfill_windows():
+    from zoneinfo import ZoneInfo
+
+    mgr = CronManager()
+    ny = ZoneInfo("America/New_York")
+
+    def due_names(dt):
+        return [j.name for j in mgr.due_jobs(now=dt)]
+
+    saturday_10 = datetime(2026, 9, 5, 10, 0, tzinfo=ny)
+    sunday_16 = datetime(2026, 9, 6, 16, 0, tzinfo=ny)
+    monday_rth = datetime(2026, 9, 7, 10, 0, tzinfo=ny)
+    monday_evening = datetime(2026, 9, 7, 17, 0, tzinfo=ny)
+    tuesday_overnight = datetime(2026, 9, 8, 3, 0, tzinfo=ny)
+    friday_1600 = datetime(2026, 9, 4, 16, 0, tzinfo=ny)
+    friday_0915 = datetime(2026, 9, 4, 9, 15, tzinfo=ny)
+
+    assert "backfill_ib_5m_universe" in due_names(saturday_10)
+    assert "backfill_ib_5m_universe" in due_names(sunday_16)
+    assert "backfill_ib_5m_universe" in due_names(monday_evening)
+    assert "backfill_ib_5m_universe" in due_names(tuesday_overnight)
+    assert "backfill_ib_5m_universe" not in due_names(monday_rth)
+    assert "backfill_ib_5m_universe" not in due_names(friday_1600)
+    assert "backfill_ib_5m_universe" not in due_names(friday_0915)
+    assert "stop_ib_5m_backfill" in due_names(friday_0915)
 
 
 def test_stop_job_when_not_running(tmp_path: Path):

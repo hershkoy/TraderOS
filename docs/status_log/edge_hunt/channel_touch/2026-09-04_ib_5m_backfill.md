@@ -10,7 +10,7 @@
 - **16:30 ET Mon–Fri:** `after_rth_ib_backfill` — IB 15m catch-up (8822) then 5m (8823) until next 09:15 ET. Friday continues through the weekend.
 - **1d** stays Alpaca `channel_touch_nightly` (local 23:00 ≈ 16:00 ET). Does not use IB.
 - Overnight 02:30 `backfill_ib_15m_universe` **disabled** (same 15m catch-up now runs at 16:30 ET).
-- Weekend 00:00 ET safety restart if Friday’s job died.
+- Hourly 5m watchdog in the backfill window (weekends; Mon–Fri 17:00–08:00 ET) restarts if Friday’s job died.
 
 Playbook: `docs/features/ib_5m_backfill.md`.
 

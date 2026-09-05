@@ -523,11 +523,19 @@ def _reconstruct_channel_rails(
     row: pd.Series,
     fill: Optional[Tuple[str, int]],
 ) -> Optional[Tuple[Tuple[str, int], float, Tuple[str, int], float, Optional[Tuple[str, int]], float]]:
-    """Build L1 + H2-on-support from older CSVs that only stored pct geometry."""
+    """Build L1 + H2-on-support from older CSVs that only stored pct geometry.
+
+    Prefer ``channel_width_pct`` (width / L1 support * 100) + ``channel_pos`` —
+    stable for L3 and H2 resist-break (pos near/above 1). Fall back to
+    room/(1-pos) only when |1-pos| is large enough (in-channel L3).
+    """
     entry = _cell_float(row["buy_price"]) if "buy_price" in row.index else None
     pos = _cell_float(row["channel_pos"]) if "channel_pos" in row.index else None
     room = _cell_float(row["room_to_resist_pct"]) if "room_to_resist_pct" in row.index else None
     slope_pct = _cell_float(row["slope_pct_per_bar"]) if "slope_pct_per_bar" in row.index else None
+    width_pct = (
+        _cell_float(row["channel_width_pct"]) if "channel_width_pct" in row.index else None
+    )
     bars_span = _cell_int(row["bars_span"]) if "bars_span" in row.index else None
     wait_bars = _cell_int(row["wait_bars"]) if "wait_bars" in row.index else None
     l1 = _stamp_pair(row, "l1_time", "l1_ms", "channel_start")
@@ -539,25 +547,37 @@ def _reconstruct_channel_rails(
         or entry is None
         or entry <= 0
         or pos is None
-        or room is None
         or slope_pct is None
         or bars_span is None
         or wait_bars is None
-        or pos >= 0.999
     ):
         return None
-    resist = entry * (1.0 + room / 100.0)
-    width = (resist - entry) / (1.0 - pos)
-    if not np.isfinite(width) or width <= 0:
-        return None
-    support_fill = entry - pos * width
     bars_l1_fill = int(bars_span) + int(wait_bars)
-    denom = 1.0 + slope_pct / 100.0 * float(bars_l1_fill)
-    if denom <= 0:
+    slope_term = slope_pct / 100.0 * float(bars_l1_fill)
+    y1: Optional[float] = None
+    width: Optional[float] = None
+    if width_pct is not None and width_pct > 0:
+        # entry = y1 * (1 + slope*bars_l1_fill) + pos * (y1 * width_pct/100)
+        denom = 1.0 + slope_term + float(pos) * (width_pct / 100.0)
+        if denom > 0:
+            y1 = float(entry) / denom
+            width = y1 * (width_pct / 100.0)
+    if (y1 is None or width is None or not np.isfinite(y1) or not np.isfinite(width) or width <= 0) and (
+        room is not None and abs(1.0 - float(pos)) >= 0.001
+    ):
+        resist = entry * (1.0 + room / 100.0)
+        width = (resist - entry) / (1.0 - pos)
+        if not np.isfinite(width) or width <= 0:
+            return None
+        support_fill = entry - pos * width
+        denom = 1.0 + slope_term
+        if denom <= 0:
+            return None
+        y1 = support_fill / denom
+    if y1 is None or width is None or not np.isfinite(y1) or not np.isfinite(width) or y1 <= 0 or width <= 0:
         return None
-    y1 = support_fill / denom
     y_h2 = y1 * (1.0 + slope_pct / 100.0 * float(bars_span))
-    if not np.isfinite(y1) or not np.isfinite(y_h2) or y1 <= 0:
+    if not np.isfinite(y_h2) or y_h2 <= 0:
         return None
     return l1, float(y1), h2, float(y_h2), h2, float(width)
 

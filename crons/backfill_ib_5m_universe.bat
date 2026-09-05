@@ -16,6 +16,9 @@ set PYTHONPATH=.
 set PYTHONUNBUFFERED=1
 set IB_PORT=4001
 
+REM Leftover 09:15 ET stop file would exit immediately; watchdog/restart must clear it.
+if exist logs\data\ib_5m_universe.stop del /f /q logs\data\ib_5m_universe.stop
+
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set datetime=%%I
 set logfile=logs\data\ib_5m_universe_backfill_%datetime:~0,8%_%datetime:~8,6%.log
 

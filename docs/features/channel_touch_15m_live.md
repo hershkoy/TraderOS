@@ -97,7 +97,7 @@ Newly-hot (Alpaca last at/above resist) is **not** notified. Last price is proxi
 ```
 overnight / weekend
   after_rth_ib_backfill.bat             # 16:30 ET: IB 15m catch-up then 5m until 09:15 ET
-  (Friday 16:30 continues through the weekend; stop_ib_5m_backfill at 09:15 ET Mon-Fri)
+  (Friday 16:30 continues through the weekend; hourly backfill_ib_5m_universe restarts 5m if it died; stop_ib_5m_backfill at 09:15 ET Mon-Fri)
 
 each 15m bar close (RTH)
   reuse stored armed list if as_of is the same NY session; else rebuild from TimescaleDB

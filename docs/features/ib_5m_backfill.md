@@ -21,7 +21,7 @@ CronRunner jobs in `crons/crontab.yaml` (America/New_York unless noted):
 1. **16:00 ET-ish** — existing `channel_touch_nightly` (local 23:00) refreshes **Alpaca 1d** and runs the daily H2 scan. Alpaca, not IB.
 2. **16:30 ET Mon–Fri** — `after_rth_ib_backfill`: IB **15m** catch-up (`--reset-resume --fresh-hours 12`, client 8822), then IB **5m** historical (client 8823) until the next weekday **09:15 ET**. Friday’s run continues through the weekend.
 3. **09:15 ET Mon–Fri** — `stop_ib_5m_backfill`: writes `logs/data/ib_5m_universe.stop`, waits, then kills the job tree so live 15m owns Gateway.
-4. **Sat/Sun 00:00 ET** — `backfill_ib_5m_universe` safety restart if Friday’s job died (`--skip-if-job-running after_rth_ib_backfill`).
+4. **Hourly in the backfill window** — `backfill_ib_5m_universe` watchdog: weekends all hours; Mon–Fri **17:00–08:00 ET** (not RTH 09:15–16:30). Restarts 5m if `after_rth_ib_backfill` died (`--skip-if-job-running after_rth_ib_backfill --reset-failed`). Skips if that job or a live 5m pid lock is held. Clears leftover stop files and ignores stale locks after reboot.
 5. Overnight `backfill_ib_15m_universe` at 02:30 local is **disabled** (folded into step 2).
 
 The 5m process also self-exits at next 09:15 ET (`--until`) and refuses to start Mon–Fri 09:15–16:30 ET unless `--allow-rth`.
@@ -30,7 +30,7 @@ The 5m process also self-exits at next 09:15 ET (`--until`) and refuses to start
 
 TimescaleDB `MIN/MAX(ts)` **inside the current year window** is the cursor (not global `MAX(ts)` — a 2026 last bar must not skip 2024). Each IB window (default **7 days**, official 5m max) is upserted before the next request. Ctrl+C, stop file, `--until`, or the RTH guard stop after the current window. Re-run continues the same year-first queue.
 
-Failed qualify / insert: `logs/data/ib_5m_universe_failed.txt` (skip until `--reset-failed`). Empty 5m in an older year is not a global fail. Progress: `logs/data/ib_5m_universe_progress.json`. Coverage CSV: `reports/ascending_channels/ib_5m_coverage.csv`.
+Failed qualify / insert: `logs/data/ib_5m_universe_failed.txt` (skip until `--reset-failed`). Gateway drops (`ConnectionRefused`, `Not connected`) are **not** written there; the hourly watchdog also passes `--reset-failed` so an outage cannot skip thousands of names. Empty 5m in an older year is not a global fail. Progress: `logs/data/ib_5m_universe_progress.json`. Coverage CSV: `reports/ascending_channels/ib_5m_coverage.csv`.
 
 Do **not** copy the 15m skip-forever resume file pattern. `--fresh-hours` still skips names that are caught up on the newest (through-now) slice.
 

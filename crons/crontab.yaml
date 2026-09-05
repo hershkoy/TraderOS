@@ -25,6 +25,7 @@ jobs:
   description: LIVE IB 15m on the armed/hot list only, every US RTH 15m close
     (client 8826). This is the /hot IB 15m fill feed. After 16:30 ET
     after_rth_ib_backfill does full-universe 15m (8822) then 5m (8823).
+    Hourly backfill_ib_5m_universe restarts 5m if that job died.
     Stop 5m at 09:15 ET so this job owns Gateway.
   timezone: America/New_York
 - name: channel_touch_15m_proximity
@@ -52,16 +53,23 @@ jobs:
   description: After US cash close (16:30 ET) catch up IB 15m (client 8822)
     then start IB 5m historical (client 8823) year-first (2025-through-now
     all symbols, then 2024..2020) until next weekday 09:15 ET.
-    Friday runs through the weekend. 1d Alpaca is channel_touch_nightly
+    Friday runs through the weekend. Hourly backfill_ib_5m_universe
+    restarts 5m if this job died. 1d Alpaca is channel_touch_nightly
     (local 23:00). Do not run during RTH.
   timezone: America/New_York
 - name: backfill_ib_5m_universe
   enabled: true
-  schedule: 0 0 * * 0,6
-  command: crons\backfill_ib_5m_universe.bat --skip-if-job-running after_rth_ib_backfill
-  description: Weekend safety restart of IB 5m (client 8823) if Friday's
-    after_rth job died. Skips if that job is still running (separate lock)
-    or if another 5m pid lock is held. Sat+Sun 00:00 ET.
+  schedule:
+  - 0 17-23 * * 1-5
+  - 0 0-8 * * 1-5
+  - 0 * * * 0,6
+  command: crons\backfill_ib_5m_universe.bat --skip-if-job-running after_rth_ib_backfill --reset-failed
+  description: Hourly 5m watchdog (client 8823) during backfill windows only
+    (weekends all hours; Mon-Fri 17:00-08:00 ET, not RTH 09:15-16:30).
+    Restarts if Friday's after_rth 5m died. Skips if that job is still
+    running (separate lock) or if a live 5m pid lock is held. Clears the
+    failed-symbol skip list on restart so Gateway drops are not permanent.
+    Stale locks after reboot are ignored.
   timezone: America/New_York
 - name: stop_ib_5m_backfill
   enabled: true

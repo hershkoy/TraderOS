@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -176,7 +177,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument(
         "--skip-if-job-running",
         default="",
-        help="Exit 0 if this CronRunner job still holds its lock (weekend safety)",
+        help="Exit 0 if this CronRunner job still holds its lock (hourly watchdog)",
     )
     ap.add_argument(
         "--year-from",
@@ -628,7 +629,7 @@ class PidLock:
                 pid = int(data.get("pid") or 0)
             except (OSError, ValueError, json.JSONDecodeError):
                 pid = 0
-            if pid and _pid_alive(pid) and pid != os.getpid():
+            if pid and pid != os.getpid() and _pid_holds_5m_lock(pid):
                 logger.error("Another 5m backfill is running (pid %s, lock %s)", pid, self.path)
                 return False
             try:
@@ -670,6 +671,67 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _process_cmdline(pid: int) -> str:
+    """Best-effort command line for a live pid (stale-lock detection after reboot)."""
+    if pid <= 0:
+        return ""
+    if sys.platform == "win32":
+        try:
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine" % pid,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return (completed.stdout or "").strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    try:
+        raw = Path("/proc/%d/cmdline" % pid).read_bytes()
+        return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _pid_holds_5m_lock(pid: int) -> bool:
+    """True only if pid is alive and still looks like this backfill (not a recycled pid)."""
+    if not _pid_alive(pid):
+        return False
+    cmd = _process_cmdline(pid).lower().replace("/", "\\")
+    if not cmd:
+        return True
+    return "scripts\\data\\backfill_ib_5m_universe.py" in cmd
+
+
+_TRANSIENT_IB_MARKERS = (
+    "connection refused",
+    "connectionrefused",
+    "refused the network",
+    "not connected",
+    "winerror 1225",
+    "10054",
+    "10053",
+    "10060",
+    "timed out",
+    "timeout",
+    "forcibly closed",
+    "api connection failed",
+    "make sure api port",
+)
+
+
+def is_transient_ib_error(exc: BaseException) -> bool:
+    """Gateway down / handshake drop: retry on next run, do not poison the failed list."""
+    text = ("%s %s" % (type(exc).__name__, exc)).lower()
+    return any(marker in text for marker in _TRANSIENT_IB_MARKERS)
 
 
 def make_should_stop(
@@ -1082,8 +1144,13 @@ def main(argv=None) -> int:
             except Exception as exc:
                 logger.exception("%s: backfill failed: %s", sym, exc)
                 n_fail += 1
-                if not args.dry_run:
+                if not args.dry_run and not is_transient_ib_error(exc):
                     append_skip_list(args.failed_file, sym)
+                elif not args.dry_run:
+                    logger.warning(
+                        "%s: transient IB error; not adding to failed list",
+                        sym,
+                    )
                 continue
             if status in {"ok", "caught_up"}:
                 n_ok += 1
