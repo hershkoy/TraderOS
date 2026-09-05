@@ -1349,7 +1349,7 @@ def trades_for_symbol(
                             adj_px = exec_fill_daily_with_15m(
                                 float(fill),
                                 df_15m,
-                                dates[signal_i],
+                                pd.Timestamp(dates[signal_i]).strftime("%Y-%m-%d"),
                                 max_low_to_mid_pct=max_low_to_mid_pct,
                                 max_chase_pct=max_chase_pct,
                                 fill_mode=fill_mode,

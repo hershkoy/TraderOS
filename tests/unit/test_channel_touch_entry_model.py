@@ -11,15 +11,20 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from utils.research.channel_touch_entry_model import (  # noqa: E402
+    add_loser_filter_columns,
     apply_size_map,
     buy_timestamps,
+    expanding_keep_walk_forward,
     expanding_ridge_walk_forward,
     expanding_year_windows,
     fit_and_eval,
+    fit_keep_fold,
     fit_ridge_size_fold,
     fit_size_map,
+    keep_filter_verdict,
     purged_embargo_split,
     sell_timestamps,
+    stitched_keep_metrics,
     time_split,
 )
 
@@ -207,4 +212,71 @@ def test_expanding_wf_train_sells_before_test_minus_embargo():
     )
     assert sell_timestamps(tr).max() < first_start - pd.Timedelta(days=21)
     assert buy_timestamps(te).min() >= first_start
+
+
+def test_add_loser_filter_columns_from_shakeout_flag():
+    df = pd.DataFrame(
+        {
+            "buy_date": pd.to_datetime(["2021-01-04", "2021-02-01"]),
+            "gain_pct_net": [1.0, -1.0],
+            "shakeout_breakout": [False, True],
+            "parent_exit_reason": [None, "hard_stop"],
+        }
+    )
+    out = add_loser_filter_columns(df)
+    assert list(out["is_extra"]) == [0.0, 1.0]
+
+
+def test_expanding_keep_wf_does_not_use_future_rows():
+    rng = np.random.default_rng(2)
+    n = 900
+    dates = pd.date_range("2019-01-02", periods=n, freq="B")
+    wait = rng.uniform(5, 80, size=n)
+    gain = np.where(wait > 40, 2.0, -1.0) + rng.normal(0, 0.2, size=n)
+    df = pd.DataFrame(
+        {
+            "buy_date": dates,
+            "sell_date": dates + pd.Timedelta(days=8),
+            "gain_pct_net": gain,
+            "wait_bars": wait,
+            "channel_pos": rng.uniform(0.9, 1.2, size=n),
+            "channel_width_pct": rng.uniform(5, 20, size=n),
+            "slope_pct_per_bar": rng.uniform(0.02, 0.2, size=n),
+            "channel_span_days": rng.uniform(40, 200, size=n),
+            "channel_age_at_buy_days": rng.uniform(50, 250, size=n),
+            "room_to_resist_pct": rng.uniform(-1, 1, size=n),
+            "dow": rng.integers(0, 5, size=n),
+            "month": rng.integers(1, 13, size=n),
+        }
+    )
+    folds, oos = expanding_keep_walk_forward(
+        df,
+        ["wait_bars", "channel_pos", "channel_width_pct"],
+        kind="ridge",
+        rule="skip0",
+        embargo_days=21,
+        min_train_frac=0.50,
+        min_train_n=40,
+        min_test_n=20,
+    )
+    assert not folds.empty
+    assert not oos.empty
+    assert "keep" in oos.columns
+    first_start = expanding_year_windows(buy_timestamps(df), min_train_frac=0.50)[0][0]
+    tr, te = purged_embargo_split(
+        df, str(first_start), str(expanding_year_windows(buy_timestamps(df), min_train_frac=0.50)[0][1]),
+        embargo_days=21,
+    )
+    scores, keep0, keep_thr, thr, n_feat = fit_keep_fold(
+        tr, te, ["wait_bars", "channel_pos"], kind="ridge"
+    )
+    assert n_feat == 2
+    assert len(scores) == len(te)
+    assert len(keep0) == len(te)
+    assert len(keep_thr) == len(te)
+    assert sell_timestamps(tr).max() < first_start - pd.Timedelta(days=21)
+    stitched = stitched_keep_metrics(oos)
+    assert stitched["all"]["n_trades"] == len(oos)
+    verdict = keep_filter_verdict(stitched, folds)
+    assert verdict in ("research_only", "no_promote")
 

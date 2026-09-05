@@ -390,9 +390,20 @@ def bar_contains_price(high: float, low: float, px: float, *, eps: float = 1e-8)
 
 
 def _as_session_date(value: Any, *, naive_tz: str) -> Optional[date]:
+    """US cash session date for a daily bar.
+
+    Daily OHLCV here is keyed by the session calendar date at 00:00 (naive or
+    UTC). Converting that instant to America/New_York turns Monday 00:00 UTC
+    into Sunday evening, so ``--realistic-fill`` looks up Sunday 15m and drops
+    every Monday (and fills Tue-Fri from the prior session).
+    """
     if value is None or value == "":
         return None
     if isinstance(value, datetime) or isinstance(value, pd.Timestamp):
+        ts = pd.Timestamp(value)
+        clock = ts.time()
+        if clock.hour == 0 and clock.minute == 0 and clock.second == 0 and clock.microsecond == 0:
+            return ts.date()
         return as_et(value, naive_tz=naive_tz).date()
     if isinstance(value, date):
         return value

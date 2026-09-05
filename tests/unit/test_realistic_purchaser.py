@@ -452,6 +452,38 @@ def test_daily_quiet_gap_fills_blend_unless_chase_cap():
     assert capped.reason == REASON_CHASE
 
 
+def test_daily_utc_midnight_timestamp_uses_that_session_not_prior_evening():
+    """Daily bars are session-dated at 00:00 UTC. ET conversion made Monday Sunday."""
+    x = 20.05
+    bars = _session_15m(
+        (2025, 6, 9),
+        [
+            (9, 30, 19.80, 19.90, 19.70, 19.85),
+            (9, 45, 19.90, 20.10, 19.88, 20.06),
+            (10, 0, 20.08, 20.16, 20.04, 20.12),
+        ],
+    )
+    bars += _session_15m(
+        (2025, 6, 10),
+        [
+            (9, 30, 14.50, 14.70, 14.40, 14.60),
+            (9, 45, 14.60, 14.80, 14.50, 14.70),
+        ],
+    )
+    for session in (
+        pd.Timestamp("2025-06-09 00:00:00"),
+        pd.Timestamp("2025-06-09 00:00:00", tz="UTC"),
+    ):
+        got = purchase_after_daily_signal(x, bars, session_date=session)
+        assert got.filled, session
+        assert got.hit_bar_ts == _et(2025, 6, 9, 9, 45)
+    tue = purchase_after_daily_signal(
+        x, bars, session_date=pd.Timestamp("2025-06-10 00:00:00")
+    )
+    assert not tue.filled
+    assert tue.reason == REASON_PRICE_NOT_PRINTED
+
+
 def test_daily_session_date_ignores_other_days():
     x = 15.00
     bars = _session_15m((2025, 6, 9), [(10, 0, 14.90, 15.10, 14.80, 15.00)])

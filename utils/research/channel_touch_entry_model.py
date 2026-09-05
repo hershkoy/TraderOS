@@ -1009,3 +1009,278 @@ def confidence_size_verdict(stitched: dict, fold_df: pd.DataFrame) -> str:
     if beat_e and beat_pf and drop_ok and fold_ok:
         return "research_only"
     return "no_promote"
+
+
+# ---------------------------------------------------------------------------
+# Hard keep/skip filter (ridge P&L or logistic win-prob) with purged WF
+# ---------------------------------------------------------------------------
+
+# Known at a 15m next-mid fill: rails, wait, calendar, extra-vs-parent.
+# Fill-day daily close / RSI / %B / range / SMA distance / same-day volume
+# are not known until the session ends (current_best 1d is next-mid).
+HONEST_1D_NEXTMID_FEATURES: Sequence[str] = (
+    "channel_pos",
+    "room_to_resist_pct",
+    "channel_width_pct",
+    "slope_pct_per_bar",
+    "channel_span_days",
+    "channel_age_at_buy_days",
+    "wait_bars",
+    "is_extra",
+    "spy_ret_20d",
+    "spy_above_sma50",
+    "spy_atr_pct",
+    "dow",
+    "month",
+)
+
+HONEST_1D_GEOM_FEATURES: Sequence[str] = (
+    "channel_pos",
+    "room_to_resist_pct",
+    "channel_width_pct",
+    "slope_pct_per_bar",
+    "channel_span_days",
+    "channel_age_at_buy_days",
+    "wait_bars",
+    "dow",
+    "month",
+)
+
+LEAKY_1D_CLOSE_FEATURES: Sequence[str] = MODEL_FEATURES
+
+
+def add_loser_filter_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add is_extra (shakeout re-break vs first H2 fill). Known at the extra fill."""
+    out = df.copy()
+    if "shakeout_breakout" in out.columns:
+        extra = pd.to_numeric(out["shakeout_breakout"], errors="coerce")
+        out["is_extra"] = extra.fillna(0.0).astype(float)
+    elif "parent_exit_reason" in out.columns:
+        out["is_extra"] = out["parent_exit_reason"].notna().astype(float)
+    else:
+        out["is_extra"] = 0.0
+    return out
+
+
+def _sort_by_buy(df: pd.DataFrame) -> pd.DataFrame:
+    ts = buy_timestamps(df)
+    order = ts.argsort(kind="mergesort")
+    return df.iloc[order].copy()
+
+
+def fit_keep_fold(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    *,
+    kind: str = "ridge",
+    l2: float = DEFAULT_RIDGE_L2,
+    min_frac: float = 0.35,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
+    """Fit on train only. Return test scores, keep_skip0, keep_thr, threshold, n_features.
+
+    Ridge scores are predicted gain_pct; skip0 keeps pred>=0; thr keeps pred>=train
+    PF-max quantile (same rule as logistic). Logistic scores are P(win).
+    """
+    cols = resolve_ridge_features(train_df, feature_cols)
+    train_df = _sort_by_buy(train_df)
+    test_df = test_df.copy()
+    gain_col = _gain_col(train_df)
+    x_tr_raw, med = feature_matrix(train_df, cols)
+    x_te_raw, _ = feature_matrix(test_df, cols, medians=med)
+    x_tr, x_te, _, _ = _standardize(x_tr_raw, x_te_raw)
+    g_tr = pd.to_numeric(train_df[gain_col], errors="coerce").to_numpy(dtype=float)
+    n_feat = int(x_tr.shape[1])
+    kind_l = (kind or "ridge").lower()
+    n_tr = len(x_tr)
+    val_n = max(20, int(n_tr * 0.2)) if n_tr >= 80 else 0
+
+    if kind_l == "logistic":
+        y_tr = (g_tr > 0).astype(float)
+        w_tr = np.clip(np.abs(g_tr), 0.1, 15.0)
+        if val_n:
+            x_fit, x_val = x_tr[:-val_n], x_tr[-val_n:]
+            y_fit, y_val = y_tr[:-val_n], y_tr[-val_n:]
+            w_fit = w_tr[:-val_n]
+            g_val = g_tr[-val_n:]
+        else:
+            x_fit, y_fit, w_fit = x_tr, y_tr, w_tr
+            x_val = y_val = g_val = None
+        model = LogisticScorer()
+        model.fit(x_fit, y_fit, sample_weight=w_fit)
+        s_tr = model.score(x_tr)
+        s_te = model.score(x_te) if len(x_te) else np.zeros(0, dtype=float)
+        if x_val is not None:
+            thr = _choose_threshold(model.score(x_val), g_val, min_frac=min_frac, min_n=20)
+        else:
+            thr = _choose_threshold(s_tr, g_tr, min_frac=min_frac, min_n=20)
+        keep_thr = s_te >= thr if len(s_te) else np.zeros(0, dtype=bool)
+        keep_skip0 = s_te >= 0.5 if len(s_te) else np.zeros(0, dtype=bool)
+        return s_te, keep_skip0, keep_thr, float(thr), n_feat
+
+    y_fit = winsorize_y(g_tr)
+    ok = np.isfinite(y_fit)
+    model = RidgePnlScorer(l2=l2)
+    model.fit(x_tr[ok], y_fit[ok])
+    s_tr = model.predict(x_tr)
+    s_te = model.predict(x_te) if len(x_te) else np.zeros(0, dtype=float)
+    if val_n:
+        thr = _choose_threshold(s_tr[-val_n:], g_tr[-val_n:], min_frac=min_frac, min_n=20)
+    else:
+        thr = _choose_threshold(s_tr[ok], g_tr[ok], min_frac=min_frac, min_n=20)
+    keep_thr = s_te >= thr if len(s_te) else np.zeros(0, dtype=bool)
+    keep_skip0 = s_te >= 0.0 if len(s_te) else np.zeros(0, dtype=bool)
+    return s_te, keep_skip0, keep_thr, float(thr), n_feat
+
+
+def _keep_fold_row(
+    name: str,
+    test_start: str,
+    test_end: str,
+    n_train: int,
+    n_features: int,
+    threshold: float,
+    test_df: pd.DataFrame,
+    scores: np.ndarray,
+    keep: np.ndarray,
+    rule: str,
+) -> dict:
+    gain_col = _gain_col(test_df)
+    g = pd.to_numeric(test_df[gain_col], errors="coerce").to_numpy(dtype=float)
+    all_m = trade_metrics(g)
+    kept_g = g[np.asarray(keep, dtype=bool)] if len(g) else np.array([])
+    kept_m = trade_metrics(kept_g)
+    drop3 = drop_top_n_sized_metrics(
+        kept_g, np.ones(len(kept_g), dtype=float), n=3
+    ) if len(kept_g) else trade_metrics(np.array([]))
+    rho = spearman_pred_actual(scores, g)
+    return {
+        "name": name,
+        "rule": rule,
+        "test_start": str(test_start)[:10],
+        "test_end": str(test_end)[:10],
+        "n_train": int(n_train),
+        "n_test": int(len(test_df)),
+        "n_kept": int(np.asarray(keep, dtype=bool).sum()) if len(keep) else 0,
+        "n_features": int(n_features),
+        "threshold": round(float(threshold), 4),
+        "spearman": rho,
+        "all_n": all_m["n_trades"],
+        "all_E": all_m["expectancy_pct"],
+        "all_PF": all_m["profit_factor"],
+        "all_WR": all_m["win_rate_pct"],
+        "kept_n": kept_m["n_trades"],
+        "kept_E": kept_m["expectancy_pct"],
+        "kept_PF": kept_m["profit_factor"],
+        "kept_WR": kept_m["win_rate_pct"],
+        "kept_med": kept_m["median_pct"],
+        "kept_drop3_E": drop3.get("expectancy") if isinstance(drop3, dict) else None,
+        "kept_drop3_PF": drop3.get("profit_factor") if isinstance(drop3, dict) else None,
+    }
+
+
+def expanding_keep_walk_forward(
+    df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    *,
+    kind: str = "ridge",
+    rule: str = "skip0",
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+    min_train_frac: float = 0.60,
+    min_train_n: int = MIN_TRAIN_N,
+    min_test_n: int = MIN_TEST_N,
+    l2: float = DEFAULT_RIDGE_L2,
+    min_frac: float = 0.35,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Expanding yearly OOS keep/skip. rule=skip0 (pred>=0 or p>=0.5) or thr (train PF)."""
+    buy = buy_timestamps(df)
+    windows = expanding_year_windows(buy, min_train_frac=min_train_frac)
+    rows: List[dict] = []
+    parts: List[pd.DataFrame] = []
+    rule_l = (rule or "skip0").lower()
+    for start, end in windows:
+        train_df, test_df = purged_embargo_split(
+            df, str(start), str(end), embargo_days=embargo_days
+        )
+        if len(train_df) < int(min_train_n) or len(test_df) < int(min_test_n):
+            continue
+        scores, keep0, keep_thr, thr, n_feat = fit_keep_fold(
+            train_df, test_df, feature_cols, kind=kind, l2=l2, min_frac=min_frac
+        )
+        keep = keep0 if rule_l == "skip0" else keep_thr
+        name = f"{kind} {rule_l} {str(start)[:10]}..{str(end)[:10]}"
+        rows.append(
+            _keep_fold_row(
+                name, str(start), str(end), len(train_df), n_feat, thr,
+                test_df, scores, keep, rule_l,
+            )
+        )
+        part = test_df.copy()
+        part["pred_score"] = scores
+        part["keep"] = np.asarray(keep, dtype=bool)
+        part["fold"] = name
+        parts.append(part)
+    oos = pd.concat(parts, ignore_index=True) if parts else df.iloc[0:0].copy()
+    return pd.DataFrame(rows), oos
+
+
+def stitched_keep_metrics(oos: pd.DataFrame) -> dict:
+    if oos.empty or "keep" not in oos.columns:
+        empty = trade_metrics(np.array([]))
+        return {"all": empty, "kept": empty, "dropped": empty, "kept_drop3": empty, "spearman": None}
+    gain_col = _gain_col(oos)
+    g = pd.to_numeric(oos[gain_col], errors="coerce").to_numpy(dtype=float)
+    keep = oos["keep"].to_numpy(dtype=bool)
+    pred = (
+        pd.to_numeric(oos["pred_score"], errors="coerce").to_numpy(dtype=float)
+        if "pred_score" in oos.columns
+        else np.full(len(g), np.nan)
+    )
+    kept_g = g[keep]
+    drop3 = drop_top_n_sized_metrics(kept_g, np.ones(len(kept_g), dtype=float), n=3)
+    return {
+        "all": trade_metrics(g),
+        "kept": trade_metrics(kept_g),
+        "dropped": trade_metrics(g[~keep]),
+        "kept_drop3": drop3,
+        "spearman": spearman_pred_actual(pred, g),
+        "n_kept": int(keep.sum()),
+        "n_dropped": int((~keep).sum()),
+        "keep_frac": round(float(keep.mean()), 4) if len(keep) else None,
+    }
+
+
+def keep_filter_verdict(stitched: dict, fold_df: pd.DataFrame) -> str:
+    """Promote-to-research if OOS kept beats all on E and PF, >=2 folds, drop-top-3 PF>1."""
+    all_m = stitched.get("all") or {}
+    kept = stitched.get("kept") or {}
+    d3 = stitched.get("kept_drop3") or {}
+    if not all_m.get("n_trades") or not kept.get("n_trades"):
+        return "no_promote"
+    if kept.get("expectancy_pct") is None or all_m.get("expectancy_pct") is None:
+        return "no_promote"
+    pf_all = all_m.get("profit_factor")
+    pf_kept = kept.get("profit_factor")
+    if pf_all is None or pf_kept is None:
+        return "no_promote"
+    beat_e = float(kept["expectancy_pct"]) > float(all_m["expectancy_pct"])
+    beat_pf = float(pf_kept) > float(pf_all)
+    drop_ok = d3.get("profit_factor") is not None and float(d3["profit_factor"]) > 1.0
+    fold_ok = True
+    if fold_df is not None and not fold_df.empty and "kept_E" in fold_df.columns:
+        better = 0
+        n_f = 0
+        for _, row in fold_df.iterrows():
+            if row.get("all_E") is None or row.get("kept_E") is None:
+                continue
+            n_f += 1
+            pf_k = row.get("kept_PF")
+            pf_a = row.get("all_PF")
+            pf_ge = pf_k is None or pf_a is None or float(pf_k) >= float(pf_a)
+            if float(row["kept_E"]) > float(row["all_E"]) and pf_ge:
+                better += 1
+        if n_f >= 2 and better < 2:
+            fold_ok = False
+    if beat_e and beat_pf and drop_ok and fold_ok:
+        return "research_only"
+    return "no_promote"
