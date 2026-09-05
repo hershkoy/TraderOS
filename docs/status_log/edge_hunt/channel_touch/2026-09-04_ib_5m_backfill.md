@@ -11,6 +11,7 @@
 - **1d** stays Alpaca `channel_touch_nightly` (local 23:00 ≈ 16:00 ET). Does not use IB.
 - Overnight 02:30 `backfill_ib_15m_universe` **disabled** (same 15m catch-up now runs at 16:30 ET).
 - Hourly 5m watchdog in the backfill window (weekends; Mon–Fri 17:00–08:00 ET) restarts if Friday’s job died.
+- Cold-start coverage: no full-table `GROUP BY`/`COUNT` (120s timeout after reboot). `utils/db/market_data_coverage.py` uses recent-chunk `DISTINCT` + per-symbol `LIMIT 1`.
 
 Playbook: `docs/features/ib_5m_backfill.md`.
 

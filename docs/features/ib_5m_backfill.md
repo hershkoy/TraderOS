@@ -30,6 +30,8 @@ The 5m process also self-exits at next 09:15 ET (`--until`) and refuses to start
 
 TimescaleDB `MIN/MAX(ts)` **inside the current year window** is the cursor (not global `MAX(ts)` — a 2026 last bar must not skip 2024). Each IB window (default **7 days**, official 5m max) is upserted before the next request. Ctrl+C, stop file, `--until`, or the RTH guard stop after the current window. Re-run continues the same year-first queue.
 
+Universe coverage (15m/5m first/last) does **not** `COUNT(*) GROUP BY symbol` on `market_data`. After a reboot that scan times out at 120s even when the container is healthy. Loader is `utils/db/market_data_coverage.py`: `MAX(ts)` + `DISTINCT symbol` on the newest ~21 days, then per-symbol `ORDER BY ts LIMIT 1`. `first_ts` is cached in `logs/data/ib_{tf}_coverage_cache.json`.
+
 Failed qualify / insert: `logs/data/ib_5m_universe_failed.txt` (skip until `--reset-failed`). Gateway drops (`ConnectionRefused`, `Not connected`) are **not** written there; the hourly watchdog also passes `--reset-failed` so an outage cannot skip thousands of names. Empty 5m in an older year is not a global fail. Progress: `logs/data/ib_5m_universe_progress.json`. Coverage CSV: `reports/ascending_channels/ib_5m_coverage.csv`.
 
 Do **not** copy the 15m skip-forever resume file pattern. `--fresh-hours` still skips names that are caught up on the newest (through-now) slice.

@@ -12,4 +12,10 @@
 - `--reset-failed` on restart so Gateway drops are not a permanent skip list
 - Clears leftover `ib_5m_universe.stop`; ignores recycled PID locks
 
+## Cold-start coverage (same day)
+
+The 11:00 local watchdog **did fire** but died at 11:02: TimescaleDB was healthy (`docker ps` Up) while `load_ib_coverage("15m")` `COUNT(*) GROUP BY symbol` hit `statement_timeout` 120s on a cold cache.
+
+Fix: `utils/db/market_data_coverage.py` — recent-chunk `DISTINCT symbol` + per-symbol `ORDER BY ts LIMIT 1`, cache `first_ts`. No full-table GROUP BY.
+
 Playbook: `docs/features/ib_5m_backfill.md`.

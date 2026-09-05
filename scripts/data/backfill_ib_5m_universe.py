@@ -49,6 +49,10 @@ from utils.data.fetch_data import (  # noqa: E402
     set_ib_client_id,
 )
 from utils.db.timescaledb_client import get_timescaledb_client  # noqa: E402
+from utils.db.market_data_coverage import (  # noqa: E402
+    load_ib_coverage,
+    load_ib_coverage_range,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -455,32 +459,6 @@ def append_skip_list(path: Path, symbol: str) -> None:
         fh.write(str(symbol).upper() + "\n")
 
 
-def load_ib_coverage(timeframe: str) -> pd.DataFrame:
-    """Per-symbol first/last IB timestamp for one timeframe."""
-    client = get_timescaledb_client()
-    if not client.ensure_connection():
-        raise RuntimeError("Failed to connect to TimescaleDB")
-    sql = """
-        SELECT symbol, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n_bars
-        FROM market_data
-        WHERE provider = %s AND timeframe = %s
-        GROUP BY symbol
-        ORDER BY symbol
-    """
-    cur = client.connection.cursor()
-    try:
-        cur.execute("SET LOCAL statement_timeout = '120s'")
-        cur.execute(sql, ("IB", timeframe))
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-    df = pd.DataFrame(rows, columns=["symbol", "first_ts", "last_ts", "n_bars"])
-    if df.empty:
-        return df
-    df["symbol"] = df["symbol"].astype(str).str.upper()
-    return df
-
-
 def load_symbol_5m_last(symbol: str) -> Optional[pd.Timestamp]:
     """MAX(ts) for one IB 5m symbol (index-friendly; not a universe GROUP BY)."""
     client = get_timescaledb_client()
@@ -527,36 +505,6 @@ def load_symbol_5m_range(
     if not row or (row[0] is None and row[1] is None):
         return None, None
     return _as_utc(row[0]), _as_utc(row[1])
-
-
-def load_ib_coverage_range(
-    timeframe: str,
-    start_dt: datetime,
-    end_dt: datetime,
-) -> pd.DataFrame:
-    """Per-symbol first/last IB timestamp inside [start, end)."""
-    client = get_timescaledb_client()
-    if not client.ensure_connection():
-        raise RuntimeError("Failed to connect to TimescaleDB")
-    sql = """
-        SELECT symbol, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n_bars
-        FROM market_data
-        WHERE provider = %s AND timeframe = %s AND ts >= %s AND ts < %s
-        GROUP BY symbol
-        ORDER BY symbol
-    """
-    cur = client.connection.cursor()
-    try:
-        cur.execute("SET LOCAL statement_timeout = '120s'")
-        cur.execute(sql, ("IB", timeframe, start_dt, end_dt))
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-    df = pd.DataFrame(rows, columns=["symbol", "first_ts", "last_ts", "n_bars"])
-    if df.empty:
-        return df
-    df["symbol"] = df["symbol"].astype(str).str.upper()
-    return df
 
 
 def _symbols_from_file(path: Path) -> List[str]:
@@ -963,7 +911,12 @@ def main(argv=None) -> int:
                 ystart.strftime("%Y-%m-%d"),
                 yend.strftime("%Y-%m-%d %H:%M"),
             )
-            cov_year = load_ib_coverage_range(TIMEFRAME, ystart, yend)
+            cov_year = load_ib_coverage_range(
+                TIMEFRAME,
+                ystart,
+                yend,
+                symbols=[str(s).upper() for s in cov15["symbol"].tolist()],
+            )
             range_map = {}
             if not cov_year.empty:
                 range_map = {
