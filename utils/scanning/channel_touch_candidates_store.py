@@ -20,11 +20,13 @@ INIT_SQL_PATHS = (
     ROOT / "init-scripts" / "14-channel-touch-candidates-timeframe.sql",
     ROOT / "init-scripts" / "15-channel-touch-desktop-notify.sql",
     ROOT / "init-scripts" / "16-channel-touch-display-timezone.sql",
+    ROOT / "init-scripts" / "17-channel-touch-bought-trades.sql",
 )
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "telegram_on_fill": True,
     "telegram_on_hot": False,
+    "telegram_on_sell": True,
     "desktop_notify": True,
     "proximity_below_pct": 0.0,
     "max_abs_dist_pct": None,
@@ -73,9 +75,32 @@ CANDIDATE_COLUMNS = (
     "hot_notified_on",
 )
 
+BOUGHT_COLUMNS = (
+    "id",
+    "stock",
+    "timeframe",
+    "h2_time",
+    "entry_px",
+    "entry_ts",
+    "hard_stop",
+    "atr_at_entry",
+    "stop_pct_used",
+    "trail_pct",
+    "peak_px",
+    "current_stop",
+    "last_price",
+    "last_price_ts",
+    "dist_to_stop_pct",
+    "status",
+    "exit_reason",
+    "sell_notified_at",
+    "closed_at",
+)
+
 SETTINGS_COLUMNS = (
     "telegram_on_fill",
     "telegram_on_hot",
+    "telegram_on_sell",
     "desktop_notify",
     "proximity_below_pct",
     "max_abs_dist_pct",
@@ -92,7 +117,14 @@ SETTINGS_COLUMNS = (
     "display_timezone",
 )
 
-_BOOL_KEYS = {"telegram_on_fill", "telegram_on_hot", "desktop_notify", "wait_ok", "hot"}
+_BOOL_KEYS = {
+    "telegram_on_fill",
+    "telegram_on_hot",
+    "telegram_on_sell",
+    "desktop_notify",
+    "wait_ok",
+    "hot",
+}
 _TZ_MODES = ("exchange", "utc", "local")
 _INT_KEYS = {"wait_bars", "support_x0", "h2_idx", "as_of_i", "n_universe"}
 _FLOAT_KEYS = {
@@ -112,6 +144,14 @@ _FLOAT_KEYS = {
     "channel_width",
     "last_price",
     "dist_live_pct",
+    "entry_px",
+    "hard_stop",
+    "atr_at_entry",
+    "stop_pct_used",
+    "trail_pct",
+    "peak_px",
+    "current_stop",
+    "dist_to_stop_pct",
 }
 
 
@@ -173,6 +213,7 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out = dict(DEFAULT_SETTINGS)
     out["telegram_on_fill"] = _as_bool(src.get("telegram_on_fill"), True)
     out["telegram_on_hot"] = _as_bool(src.get("telegram_on_hot"), False)
+    out["telegram_on_sell"] = _as_bool(src.get("telegram_on_sell"), True)
     out["desktop_notify"] = _as_bool(src.get("desktop_notify"), True)
     below = _as_float(src.get("proximity_below_pct"))
     out["proximity_below_pct"] = 0.0 if below is None else float(below)
@@ -415,6 +456,7 @@ class ChannelTouchCandidatesStore:
             UPDATE channel_touch_15m_settings
             SET telegram_on_fill = %s,
                 telegram_on_hot = %s,
+                telegram_on_sell = %s,
                 desktop_notify = %s,
                 proximity_below_pct = %s,
                 max_abs_dist_pct = %s,
@@ -435,6 +477,7 @@ class ChannelTouchCandidatesStore:
             (
                 settings["telegram_on_fill"],
                 settings["telegram_on_hot"],
+                settings["telegram_on_sell"],
                 settings["desktop_notify"],
                 settings["proximity_below_pct"],
                 settings["max_abs_dist_pct"],
@@ -555,6 +598,170 @@ class ChannelTouchCandidatesStore:
                     stock,
                     str(row.get("timeframe") or "15m"),
                 ),
+            )
+
+    def _bought_from_db(self, raw: dict) -> dict:
+        out = {}
+        for col in BOUGHT_COLUMNS:
+            out[col] = _jsonish(raw.get(col))
+        out["stock"] = str(out.get("stock") or "").upper()
+        out["timeframe"] = str(out.get("timeframe") or "15m")
+        out["status"] = str(out.get("status") or "open")
+        if out.get("id") is not None:
+            out["id"] = _as_int(out.get("id"))
+        return out
+
+    def load_bought(self, *, active_only: bool = True) -> List[dict]:
+        self.ensure_tables()
+        if active_only:
+            rows = self._run(
+                "SELECT * FROM channel_touch_bought_trades "
+                "WHERE status IN ('open', 'sell_now') "
+                "ORDER BY entry_ts DESC, id DESC",
+                fetch=True,
+            )
+        else:
+            rows = self._run(
+                "SELECT * FROM channel_touch_bought_trades "
+                "ORDER BY entry_ts DESC, id DESC LIMIT 200",
+                fetch=True,
+            )
+        if not rows:
+            return []
+        return [self._bought_from_db(dict(r)) for r in rows]
+
+    def find_active_bought(self, stock: str, timeframe: str = "15m") -> Optional[dict]:
+        self.ensure_tables()
+        rows = self._run(
+            "SELECT * FROM channel_touch_bought_trades "
+            "WHERE stock = %s AND timeframe = %s AND status IN ('open', 'sell_now') "
+            "ORDER BY id DESC LIMIT 1",
+            (str(stock).upper(), str(timeframe or "15m")),
+            fetch=True,
+        )
+        if not rows:
+            return None
+        return self._bought_from_db(dict(rows[0]))
+
+    def upsert_bought(self, trade: dict) -> dict:
+        self.ensure_tables()
+        stock = str(trade.get("stock") or "").upper()
+        tf = str(trade.get("timeframe") or "15m")
+        existing = self.find_active_bought(stock, tf)
+        if existing:
+            return existing
+        rows = self._run(
+            """
+            INSERT INTO channel_touch_bought_trades (
+                stock, timeframe, h2_time, entry_px, entry_ts, hard_stop,
+                atr_at_entry, stop_pct_used, trail_pct, peak_px, current_stop,
+                last_price, last_price_ts, dist_to_stop_pct, status, exit_reason
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
+            )
+            RETURNING *
+            """,
+            (
+                stock,
+                tf,
+                None if trade.get("h2_time") in (None, "") else str(trade.get("h2_time")),
+                _as_float(trade.get("entry_px")),
+                trade.get("entry_ts") or datetime.now(timezone.utc),
+                _as_float(trade.get("hard_stop")),
+                _as_float(trade.get("atr_at_entry")),
+                _as_float(trade.get("stop_pct_used")),
+                _as_float(trade.get("trail_pct")) if trade.get("trail_pct") is not None else 0.10,
+                _as_float(trade.get("peak_px")),
+                _as_float(trade.get("current_stop")),
+                _as_float(trade.get("last_price")),
+                trade.get("last_price_ts"),
+                _as_float(trade.get("dist_to_stop_pct")),
+                str(trade.get("status") or "open"),
+                None if trade.get("exit_reason") in (None, "") else str(trade.get("exit_reason")),
+            ),
+            fetch=True,
+        )
+        if not rows:
+            found = self.find_active_bought(stock, tf)
+            if found:
+                return found
+            raise RuntimeError("upsert_bought did not return a row")
+        return self._bought_from_db(dict(rows[0]))
+
+    def update_bought_live(self, trade: dict) -> Optional[dict]:
+        self.ensure_tables()
+        tid = _as_int(trade.get("id"))
+        if tid is None:
+            stock = str(trade.get("stock") or "").upper()
+            tf = str(trade.get("timeframe") or "15m")
+            existing = self.find_active_bought(stock, tf)
+            if existing is None:
+                return None
+            tid = existing.get("id")
+        rows = self._run(
+            """
+            UPDATE channel_touch_bought_trades
+            SET peak_px = %s,
+                current_stop = %s,
+                last_price = %s,
+                last_price_ts = %s,
+                dist_to_stop_pct = %s,
+                status = %s,
+                exit_reason = %s,
+                updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (
+                _as_float(trade.get("peak_px")),
+                _as_float(trade.get("current_stop")),
+                _as_float(trade.get("last_price")),
+                trade.get("last_price_ts"),
+                _as_float(trade.get("dist_to_stop_pct")),
+                str(trade.get("status") or "open"),
+                None if trade.get("exit_reason") in (None, "") else str(trade.get("exit_reason")),
+                tid,
+            ),
+            fetch=True,
+        )
+        if not rows:
+            return None
+        return self._bought_from_db(dict(rows[0]))
+
+    def close_bought(self, trade_id: int) -> Optional[dict]:
+        self.ensure_tables()
+        rows = self._run(
+            """
+            UPDATE channel_touch_bought_trades
+            SET status = 'closed',
+                closed_at = now(),
+                updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (int(trade_id),),
+            fetch=True,
+        )
+        if not rows:
+            return None
+        return self._bought_from_db(dict(rows[0]))
+
+    def mark_sell_notified(self, trade_ids: Sequence[Any], *, when: Optional[datetime] = None) -> None:
+        self.ensure_tables()
+        ts = when or datetime.now(timezone.utc)
+        for tid in trade_ids:
+            nid = _as_int(tid)
+            if nid is None:
+                continue
+            self._run(
+                """
+                UPDATE channel_touch_bought_trades
+                SET sell_notified_at = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (ts, nid),
             )
 
     def mark_hot_notified(

@@ -32,12 +32,14 @@ if str(RESEARCH) not in sys.path:
 
 from find_ascending_channels import find_h2_l3_setups_windowed  # noqa: E402
 from backtest_channel_touch_trades import (  # noqa: E402
+    _close_broke_support,
     _l3_rail_touch,
     _limit_fill_at_support,
     _line_at,
+    _shakeout_breakout_fill,
 )
 from utils.research.channel_touch_scale import PRESET_15M  # noqa: E402
-from utils.scanning.channel_touch import _remap_channel_kwargs  # noqa: E402
+from utils.scanning.channel_touch import first_trade_still_open, _remap_channel_kwargs  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -166,11 +168,22 @@ def walk_h2_resist_asof(
     max_wait: int = 252,
     error_pct: float = 0.24,
     slip: float = 0.001,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
+    stop_pct: float = 0.03,
+    trail_pct: float = 0.10,
+    trail_pct_wide: float = 0.18,
+    atr_stop_mult: Optional[float] = 2.0,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
 ) -> dict:
     """State of one H2 resist-break setup at ``as_of_i`` (inclusive).
 
     Mirrors ``_h2_rail_tag_fills(..., h2_resist_break=True)`` but returns
     armed/waiting/cancelled/expired when there is no fill on this bar.
+
+    ``shakeout_breakout`` (1d /hot only): after a first fill that is already
+    closed, re-arm (armed) or emit a second fill on this bar. 15m live stays off.
     """
     n = len(close)
     h2 = int(h2_idx)
@@ -241,15 +254,83 @@ def walk_h2_resist_asof(
                     return base
                 pos = channel_pos_at(float(fill), sup, float(width))
                 overshoot = pos - 1.0 if np.isfinite(pos) else float("nan")
-                if i < asof:
+                if i == asof:
+                    base["status"] = "filled"
+                    base["fill_i"] = int(i)
+                    base["fill_px"] = round(float(fill), 6)
+                    base["overshoot"] = round(float(overshoot), 4) if np.isfinite(overshoot) else None
+                    return base
+                dummy_dates = pd.bdate_range("1990-01-02", periods=n)
+                still_open = first_trade_still_open(
+                    high,
+                    low,
+                    close,
+                    dummy_dates,
+                    entry_i=int(i),
+                    entry_px=float(fill),
+                    asof_i=int(asof),
+                    stop_pct=float(stop_pct),
+                    trail_pct=float(trail_pct),
+                    trail_pct_wide=float(trail_pct_wide),
+                    atr_stop_mult=atr_stop_mult,
+                    stop_pct_floor=float(stop_pct_floor),
+                    stop_pct_ceil=float(stop_pct_ceil),
+                )
+                if (not bool(shakeout_breakout)) or still_open:
                     base["status"] = "filled_earlier"
                     base["fill_i"] = int(i)
                     base["fill_px"] = float(fill)
                     return base
-                base["status"] = "filled"
-                base["fill_i"] = int(i)
-                base["fill_px"] = round(float(fill), 6)
-                base["overshoot"] = round(float(overshoot), 4) if np.isfinite(overshoot) else None
+                extra = _shakeout_breakout_fill(
+                    high,
+                    low,
+                    close,
+                    support_x0=support_x0,
+                    support_y0=support_y0,
+                    support_slope=support_slope,
+                    width=width,
+                    first_i=int(i),
+                    h2=h2,
+                    n=int(asof) + 1,
+                    error_pct=err,
+                    slip=slip,
+                    wait=wait_n,
+                    min_inside_bars=int(shakeout_breakout_min_inside),
+                )
+                if extra is not None:
+                    ei, efill, _inside_n = extra
+                    sup_e, _resist_e = rails_at(
+                        support_x0=support_x0,
+                        support_y0=support_y0,
+                        support_slope=support_slope,
+                        width=width,
+                        i=int(ei),
+                    )
+                    epos = channel_pos_at(float(efill), sup_e, float(width))
+                    eover = epos - 1.0 if np.isfinite(epos) else float("nan")
+                    if int(ei) < int(asof):
+                        base["status"] = "filled_earlier"
+                        base["fill_i"] = int(ei)
+                        base["fill_px"] = float(efill)
+                        return base
+                    base["status"] = "filled"
+                    base["fill_i"] = int(ei)
+                    base["fill_px"] = round(float(efill), 6)
+                    base["overshoot"] = round(float(eover), 4) if np.isfinite(eover) else None
+                    base["shakeout_breakout"] = True
+                    return base
+                for j in range(int(i) + 1, int(asof) + 1):
+                    if _close_broke_support(
+                        close,
+                        j,
+                        support_x0=support_x0,
+                        support_y0=support_y0,
+                        support_slope=support_slope,
+                        error_pct=err,
+                    ):
+                        base["status"] = "cancelled"
+                        return base
+                base["status"] = "armed"
                 return base
             continue
         touched = _l3_rail_touch(float(high[i]), float(low[i]), close_i, sup, err)
@@ -293,6 +374,8 @@ def armed_rows_for_symbol(
     window_bars: int = 390,
     window_step_bars: int = 130,
     setups: Optional[List[dict]] = None,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
 ) -> List[dict]:
     """Armed or waiting H2 resist-break setups as of the last bar."""
     if df is None or df.empty:
@@ -340,6 +423,8 @@ def armed_rows_for_symbol(
             max_wait=int(max_wait),
             error_pct=float(error_pct),
             slip=float(slip),
+            shakeout_breakout=bool(shakeout_breakout),
+            shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
         )
         status = st.get("status")
         if status not in ("armed", "waiting", "filled"):
@@ -377,6 +462,7 @@ def armed_rows_for_symbol(
             "overshoot_prior": round(float(over_prior), 4) if np.isfinite(over_prior) else None,
             "fill_px": st.get("fill_px"),
             "overshoot": st.get("overshoot"),
+            "shakeout_breakout": bool(st.get("shakeout_breakout", False)),
             "support_x0": int(ch["support_x0"]),
             "support_y0": float(ch["support_y0"]),
             "support_slope": float(ch["support_slope"]),

@@ -3,7 +3,10 @@
 Nightly channel-touch job:
   1) Refresh ALPACA 1d bars for the stored daily universe
   2) Scan for H2 resist-break fills on the latest bar (min-wait 6,
-     span365, unique-symbol/day, ATR k=2.0; skip in-channel / RSI / beyond-width)
+     span365, unique-symbol/day, ATR k=2.0; skip in-channel / RSI / beyond-width).
+     After a taken fill, re-arm for a second close-above-resist if price closes
+     back inside (any-closed, min_inside=1). Occupancy skips extras while the
+     first trade is still open.
   3) Telegram-notify triggers (and a no-signal heartbeat)
 
 Usage (Windows CMD):
@@ -139,6 +142,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=bool(LIVE_DEFAULTS["h2_resist_break_only"]),
         help="Drop L3 support-tag fills; live trigger is resist-break only (default on)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout",
+        action=argparse.BooleanOptionalAction,
+        default=bool(LIVE_DEFAULTS["shakeout_breakout"]),
+        help="Re-arm after a taken H2 fill: inside closes, then next close above resist (default on)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout-min-inside",
+        type=int,
+        default=int(LIVE_DEFAULTS["shakeout_breakout_min_inside"]),
+        help="Inside closes required before the second resist-break (default 1)",
     )
     ap.add_argument(
         "--max-rsi",
@@ -278,12 +293,13 @@ def main() -> int:
         as_of = resolve_as_of_from_panels(panels, spy_df)
         as_of_s = as_of.strftime("%Y-%m-%d")
         logger.info(
-            "Scanning live triggers as_of=%s mode=%s h2_break=%s only=%s min_wait=%d "
-            "max_rsi=%s in_channel=%s span<=%.0f beyond=%s window=%d/%d",
+            "Scanning live triggers as_of=%s mode=%s h2_break=%s only=%s shakeout=%s "
+            "min_wait=%d max_rsi=%s in_channel=%s span<=%.0f beyond=%s window=%d/%d",
             as_of_s,
             args.entry_mode,
             bool(args.h2_resist_break),
             bool(args.h2_resist_break_only),
+            bool(args.shakeout_breakout),
             int(args.min_l3_wait_bars),
             args.max_rsi,
             bool(args.require_in_channel),
@@ -316,6 +332,8 @@ def main() -> int:
             max_rsi=args.max_rsi,
             h2_resist_break=bool(args.h2_resist_break),
             h2_resist_break_only=bool(args.h2_resist_break_only),
+            shakeout_breakout=bool(args.shakeout_breakout),
+            shakeout_breakout_min_inside=int(args.shakeout_breakout_min_inside),
             stats=scan_stats,
         )
         n_raw = int(scan_stats.get("n_raw", 0 if raw.empty else len(raw)))
@@ -385,6 +403,7 @@ def main() -> int:
             max_beyond_width=args.max_beyond_width,
             max_channel_span_days=float(args.max_channel_span_days),
             h2_resist_break=bool(args.h2_resist_break),
+            shakeout_breakout=bool(args.shakeout_breakout),
         )
         msg = f"{msg}\nelapsed_sec={time.perf_counter() - t0:.1f}\ncsv={out_csv.name}"
         logger.info("Notify payload:\n%s", msg)

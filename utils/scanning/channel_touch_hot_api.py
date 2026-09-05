@@ -12,6 +12,15 @@ from utils.scanning.channel_touch_15m import (
     fetch_alpaca_last_prices,
     passes_h5_stack,
 )
+from utils.scanning.channel_touch_bought import (
+    active_bought_symbols,
+    flush_sell_notifications,
+    load_bought_safe,
+    sell_alerts_from_trades,
+    sell_keys_from_trades,
+    sync_bought_prices,
+    tag_candidates_bought,
+)
 from utils.scanning.channel_touch_feed_status import build_feeds, feeds_fingerprint
 from utils.scanning.channel_touch_candidates_store import (
     ChannelTouchCandidatesStore,
@@ -307,13 +316,18 @@ def refresh_live_prices(
     batch_size: int = 200,
 ) -> List[dict]:
     rows = store.load_rows()
-    symbols = sorted({str(r.get("stock", "")).upper() for r in rows if r.get("stock")})
+    symbols = sorted(
+        {str(r.get("stock", "")).upper() for r in rows if r.get("stock")}
+        | set(active_bought_symbols(store))
+    )
     if not symbols:
         return rows
     prices = fetch_fn(symbols, batch_size=int(batch_size))
     updated = attach_last_prices(rows, prices, below_pct=float(below_pct))
     ts = now or datetime.now(timezone.utc)
-    store.update_live_prices(updated, price_ts=ts)
+    if updated:
+        store.update_live_prices(updated, price_ts=ts)
+    sync_bought_prices(store, prices, now=ts)
     return store.load_rows()
 
 
@@ -330,14 +344,16 @@ def maybe_refresh_live_prices(
     """Refresh Alpaca last if rows are stale. Process-level throttle for many tabs."""
     global _last_refresh_mono
     rows = store.load_rows()
-    if not refresh or not rows:
+    bought = load_bought_safe(store, active_only=True)
+    if not refresh or (not rows and not bought):
         return rows, False
     below = float(settings.get("proximity_below_pct") or 0.0)
+    stale_src = rows if rows else [{"last_price_ts": t.get("last_price_ts")} for t in bought]
     with _refresh_lock:
         mono = float(monotonic_fn())
         if _last_refresh_mono is not None and (mono - _last_refresh_mono) < float(min_interval):
             return rows, False
-        if not prices_are_stale(rows, now=now, max_age_sec=min_interval):
+        if not prices_are_stale(stale_src, now=now, max_age_sec=min_interval):
             return rows, False
         try:
             rows = refresh_live_prices(store, below_pct=below, fetch_fn=fetch_fn, now=now)
@@ -362,8 +378,22 @@ def candidates_payload(
     rows, refreshed = maybe_refresh_live_prices(
         st, settings, refresh=refresh, fetch_fn=fetch_fn, now=now
     )
+    if not refreshed:
+        prices = {}
+        for row in rows:
+            stock = str(row.get("stock") or "").upper()
+            px = row.get("last_price")
+            if stock and px is not None:
+                try:
+                    prices[stock] = float(px)
+                except (TypeError, ValueError):
+                    pass
+        if prices:
+            sync_bought_prices(st, prices, now=now)
+    bought = load_bought_safe(st, active_only=True)
+    tagged = tag_candidates_bought(rows, bought)
     filtered = filter_candidates(
-        rows,
+        tagged,
         status_filter=str(settings.get("status_filter") or "all"),
         max_abs_dist_pct=settings.get("max_abs_dist_pct"),
         search=str(settings.get("search") or ""),
@@ -431,6 +461,10 @@ def candidates_payload(
         "hot_keys": hot_keys_from_rows(rows),
         "fill_keys": fill_keys_from_rows(rows),
         "fill_alerts": fill_alerts_from_rows(rows),
+        "bought": bought,
+        "n_bought": len(bought),
+        "sell_keys": sell_keys_from_trades(bought),
+        "sell_alerts": sell_alerts_from_trades(bought),
         "as_of": settings.get("as_of"),
         "as_of_1d": settings.get("as_of_1d"),
         "n_universe": n_universe,
@@ -472,6 +506,21 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
                 row.get("volume_rel_20"),
                 row.get("as_of"),
                 row.get("resist"),
+                bool(row.get("bought")),
+            )
+        )
+    bought_slim = []
+    for trade in payload.get("bought") or []:
+        bought_slim.append(
+            (
+                trade.get("id"),
+                trade.get("stock"),
+                trade.get("timeframe"),
+                trade.get("status"),
+                trade.get("last_price"),
+                trade.get("current_stop"),
+                trade.get("dist_to_stop_pct"),
+                trade.get("peak_px"),
             )
         )
     settings = payload.get("settings") or {}
@@ -493,6 +542,8 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
         feeds_fingerprint(payload.get("feeds") or []),
         tuple(payload.get("fill_keys") or []),
         tuple(payload.get("hot_keys") or []),
+        tuple(payload.get("sell_keys") or []),
+        tuple(bought_slim),
         settings.get("status_filter"),
         settings.get("timeframe_filter"),
         settings.get("search"),
@@ -596,7 +647,15 @@ class HotCandidatesHub:
                     "n_hot": 0,
                     "fill_keys": [],
                     "hot_keys": [],
+                    "bought": [],
+                    "sell_keys": [],
                 }
+            else:
+                try:
+                    settings = payload.get("settings") or {}
+                    flush_sell_notifications(get_store(), settings)
+                except Exception:
+                    logger.exception("SELL NOW telegram flush failed")
             fp = payload_fingerprint(payload)
             if fp != self._fp:
                 with self._cond:

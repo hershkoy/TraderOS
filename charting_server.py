@@ -299,6 +299,51 @@ def api_hot_settings():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/hot-candidates/bought', methods=['POST'])
+def api_hot_bought_mark():
+    """Mark a /hot row as bought so the ATR/trail stop can fire SELL NOW."""
+    try:
+        from utils.scanning.channel_touch_bought import mark_bought_from_candidate
+        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
+
+        body = request.get_json(silent=True) or {}
+        stock = str(body.get('stock') or '').strip()
+        timeframe = str(body.get('timeframe') or '15m').strip() or '15m'
+        entry_px = body.get('entry_px')
+        trade = mark_bought_from_candidate(
+            get_store(),
+            stock=stock,
+            timeframe=timeframe,
+            entry_px=None if entry_px in (None, '') else float(entry_px),
+        )
+        get_hot_hub().kick()
+        return jsonify(trade)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/hot-candidates/bought/close', methods=['POST'])
+def api_hot_bought_close():
+    """Drop a bought trade from the live stop watch (manual sold / unbuy)."""
+    try:
+        from utils.scanning.channel_touch_bought import close_bought_trade
+        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
+
+        body = request.get_json(silent=True) or {}
+        tid = body.get('id')
+        if tid in (None, ''):
+            return jsonify({'error': 'id is required'}), 400
+        closed = close_bought_trade(get_store(), trade_id=int(tid))
+        if closed is None:
+            return jsonify({'error': 'trade not found'}), 404
+        get_hot_hub().kick()
+        return jsonify(closed)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @sock.route('/ws/hot-candidates')
 def ws_hot_candidates(ws):
     """Push filtered hot-candidate snapshots; one Alpaca refresh loop for all tabs."""

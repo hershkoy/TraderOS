@@ -301,3 +301,121 @@ def test_format_triggers_message_no_signal():
     assert "mode=h2_resist_break" in msg
     assert "min_wait=6" in msg
     assert "max_rsi=off" in msg
+    assert "shakeout_breakout=on" in msg
+
+
+def test_live_shakeout_breakout_emits_extra_when_parent_closed():
+    df = _ohlcv(n=100)
+    n = len(df)
+    h2 = n - 40
+    parent_i = n - 20
+    extra_i = n - 1
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": h2,
+            "h2_date": df.index[h2].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[h2].strftime("%Y-%m-%d"),
+            "slope_pct_per_bar": 0.05,
+            "channel_width_pct": 6.0,
+            "pivot_len": 15,
+        }
+    ]
+    tags = [
+        (parent_i, 110.0, 3, False, True),
+        (extra_i, 112.5, 3, False, True, True),
+    ]
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=tags,
+    ), mock.patch(
+        "utils.scanning.channel_touch.first_trade_still_open",
+        return_value=False,
+    ):
+        rows = live_entries_for_symbol(
+            "SXI",
+            df,
+            entry_mode="l3_touch",
+            window_bars=0,
+            min_l3_wait_bars=6,
+        )
+    assert len(rows) == 1
+    assert rows[0]["stock"] == "SXI"
+    assert rows[0]["shakeout_breakout"] is True
+    assert rows[0]["resist_break"] is True
+    assert rows[0]["buy_price"] == 112.5
+
+
+def test_live_shakeout_breakout_skips_extra_while_parent_open():
+    df = _ohlcv(n=100)
+    n = len(df)
+    h2 = n - 40
+    parent_i = n - 20
+    extra_i = n - 1
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": h2,
+            "h2_date": df.index[h2].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[h2].strftime("%Y-%m-%d"),
+            "pivot_len": 15,
+        }
+    ]
+    tags = [
+        (parent_i, 110.0, 3, False, True),
+        (extra_i, 112.5, 3, False, True, True),
+    ]
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=tags,
+    ), mock.patch(
+        "utils.scanning.channel_touch.first_trade_still_open",
+        return_value=True,
+    ):
+        rows = live_entries_for_symbol(
+            "SXI",
+            df,
+            entry_mode="l3_touch",
+            window_bars=0,
+            min_l3_wait_bars=6,
+        )
+    assert rows == []
+
+
+def test_live_entries_passes_shakeout_breakout_to_fills():
+    df = _ohlcv(n=80)
+    n = len(df)
+    fake_setups = [
+        {
+            "support_x0": 10,
+            "support_y0": 100.0,
+            "support_slope": 0.05,
+            "channel_width": 8.0,
+            "h2_idx": n - 20,
+            "h2_date": df.index[n - 20].strftime("%Y-%m-%d"),
+            "start_date": df.index[10].strftime("%Y-%m-%d"),
+            "end_date": df.index[n - 20].strftime("%Y-%m-%d"),
+            "pivot_len": 15,
+        }
+    ]
+    with mock.patch(
+        "utils.scanning.channel_touch.find_h2_l3_setups", return_value=fake_setups
+    ), mock.patch(
+        "utils.scanning.channel_touch._h2_rail_tag_fills",
+        return_value=[],
+    ) as fills:
+        live_entries_for_symbol("AAA", df, entry_mode="l3_touch", window_bars=0)
+    assert fills.call_args.kwargs["shakeout_breakout"] is True
+    assert fills.call_args.kwargs["shakeout_breakout_min_inside"] == 1

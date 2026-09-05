@@ -110,13 +110,16 @@ each 15m bar close (RTH)
 each RTH minute
   Alpaca last on the armed list (~1s)
   update last_price / dist_live_pct / hot in TimescaleDB
-  no Telegram (hot is not a fill)
+  also refresh Bought stops; Telegram SELL NOW if last hits the live stop
+  no Telegram for newly hot (hot is not a fill)
 
 dashboard /hot (WebSocket /ws/hot-candidates)
   page opens a socket; HTTP poll is fallback only if the socket fails
   one server hub refreshes Alpaca if last_price_ts older than ~5s
   pushes a snapshot when rows/quotes change; settings POST kicks an immediate push
   sort/filter by |dist_live_pct| to resist
+  Bought column marks a live position; Bought tab shows entry / last / stop / dist-to-stop
+  last through ATR k=2 (1.5%-6%) or 10% trail from peak -> SELL NOW (browser + Telegram)
 ```
 
 Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8826**), drops the still-forming bar, and fill-checks that completed close. After 16:30 ET `after_rth_ib_backfill` (client **8822** then **8823**) catch-up 15m then historical 5m; stop 5m at 09:15 ET. Use `--skip-ib-refresh` to disable the live pull.
@@ -167,6 +170,7 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Dashboard API | `utils/scanning/channel_touch_hot_api.py` |
 | Scanner | `scripts/scanners/channel_touch_15m.py` |
 | Dashboard | `charting_server.py` `/hot` + `/ws/hot-candidates` + `templates/hot_candidates.html` |
+| Bought trades | `utils/scanning/channel_touch_bought.py` + `init-scripts/17-channel-touch-bought-trades.sql` |
 | Schema | `init-scripts/13-channel-touch-15m-candidates.sql` |
 | IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` (now via `crons/after_rth_ib_backfill.bat` at 16:30 ET) |
 | IB 5m universe backfill | `scripts/data/backfill_ib_5m_universe.py` — [playbook](ib_5m_backfill.md) |
@@ -177,8 +181,9 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 
 Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 H5 fills raise Telegram plus a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
-**Browser + sound on fills** is unchecked on `/hot`. With `/hot` open, a new H5 fill also beeps
-in the browser. Hot (last at/above resist) never notifies.
+**Browser + sound on fills / sells** is unchecked on `/hot`. With `/hot` open, a new H5 fill also beeps
+in the browser. A **Bought** row whose last price hits the ATR/trail stop raises **SELL NOW** the same
+way (browser + Telegram). Hot (last at/above resist) never notifies.
 
 ---
 

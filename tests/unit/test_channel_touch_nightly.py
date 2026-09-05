@@ -28,3 +28,6 @@ def test_nightly_cli_defaults_match_h2_resist_break():
     assert ns.window_bars == 504
     assert ns.window_step_bars == 252
     assert ns.skip_hot_dashboard is False
+    assert ns.shakeout_breakout is True
+    assert ns.shakeout_breakout_min_inside == 1
+    assert LIVE_DEFAULTS["shakeout_breakout"] is True

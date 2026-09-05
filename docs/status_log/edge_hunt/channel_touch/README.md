@@ -39,6 +39,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-04 | [Realistic fill default: signal-bar close](2026-09-04_channel_touch_signal_close.md) |
 | 2026-09-04 | [15m L3 real support touch (0%) vs 0.24% near-miss](2026-09-04_channel_touch_touch_error_0.md) |
 | 2026-09-05 | [Shakeout then second H2 resist-break](2026-09-05_channel_touch_shakeout_breakout.md) |
+| 2026-09-05 | [/hot Bought tab + SELL NOW](2026-09-05_channel_touch_hot_bought.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 

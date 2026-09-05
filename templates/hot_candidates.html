@@ -172,6 +172,52 @@
         .pill.feed-waiting { background: #e2e8f0; color: #4a5568; }
         .pill.feed-stale { background: #feebc8; color: #9c4221; }
         .pill.feed-failed, .pill.feed-missing { background: #fed7d7; color: #9b2c2c; }
+        .pill.owned { background: #c6f6d5; color: #276749; }
+        .pill.sell { background: #9b2c2c; color: #fff; }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 10px 14px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        .tab {
+            border: 2px solid #e2e8f0;
+            background: #edf2f7;
+            color: #4a5568;
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .tab.active { background: #5a67d8; color: #fff; border-color: #5a67d8; }
+        .tab .count {
+            display: inline-block;
+            min-width: 1.4em;
+            margin-left: 4px;
+            font-weight: 700;
+        }
+        .btn-bought, .btn-sold {
+            border: none;
+            border-radius: 8px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+        .btn-bought { background: #5a67d8; color: #fff; }
+        .btn-bought:hover { background: #434190; }
+        .btn-bought:disabled { background: #a0aec0; cursor: default; }
+        .btn-sold { background: #c53030; color: #fff; }
+        .btn-sold:hover { background: #9b2c2c; }
+        tr.sell-now { background: #fff5f5; }
+        .stop-ok { color: #276749; font-weight: 600; }
+        .stop-hit { color: #c53030; font-weight: 700; }
     </style>
 </head>
 <body>
@@ -256,12 +302,17 @@
             </div>
             <div class="checks">
                 <label><input type="checkbox" id="tg-fill" checked> Telegram on 15m H5 fills</label>
-                <label><input type="checkbox" id="desk-notify" checked> Browser + sound on fills</label>
+                <label><input type="checkbox" id="tg-sell" checked> Telegram on SELL NOW</label>
+                <label><input type="checkbox" id="desk-notify" checked> Browser + sound on fills / sells</label>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
         </div>
 
-        <div class="table-wrap">
+        <div class="tabs">
+            <button type="button" id="tab-candidates" class="tab active">Candidates</button>
+            <button type="button" id="tab-bought" class="tab">Bought <span class="count" id="bought-count">0</span></button>
+        </div>
+        <div id="panel-candidates" class="table-wrap">
             <table>
                 <thead>
                     <tr>
@@ -275,10 +326,32 @@
                         <th data-key="wait_bars">Wait</th>
                         <th data-key="volume_rel_20">Vol rel</th>
                         <th data-key="as_of" data-label="As of">As of</th>
+                        <th data-key="bought">Bought</th>
                     </tr>
                 </thead>
                 <tbody id="rows">
-                    <tr><td colspan="10" class="empty">Loading...</td></tr>
+                    <tr><td colspan="11" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="panel-bought" class="table-wrap" style="display:none;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Detector</th>
+                        <th>Status</th>
+                        <th>Entry</th>
+                        <th>Last</th>
+                        <th>Stop</th>
+                        <th>Dist to stop %</th>
+                        <th>Peak</th>
+                        <th>Bought at</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="bought-rows">
+                    <tr><td colspan="10" class="empty">No bought trades. Click Bought on a candidate to track its stop.</td></tr>
                 </tbody>
             </table>
         </div>
@@ -287,6 +360,7 @@
         const POLL_MS = 5000;
         const WS_PATH = '/ws/hot-candidates';
         const FILL_SEEN_KEY = 'hotCandidates.seenFills';
+        const SELL_SEEN_KEY = 'hotCandidates.seenSells';
         const FETCH_OPTS = { cache: 'no-store' };
         let saveTimer = null;
         let loading = false;
@@ -317,7 +391,18 @@
 
         let seenFills = loadSeenFills();
         let primedFill = seenFills.size > 0;
+        let seenSells = (function() {
+            try {
+                const raw = sessionStorage.getItem(SELL_SEEN_KEY);
+                if (!raw) return new Set();
+                const arr = JSON.parse(raw);
+                if (!Array.isArray(arr)) return new Set();
+                return new Set(arr);
+            } catch (err) { return new Set(); }
+        })();
+        let primedSell = seenSells.size > 0;
         let lastData = null;
+        let activeTab = 'candidates';
         const EXCHANGE_TZ = 'America/New_York';
 
         function tzMode() {
@@ -429,6 +514,7 @@
             return {
                 telegram_on_fill: document.getElementById('tg-fill').checked,
                 telegram_on_hot: false,
+                telegram_on_sell: document.getElementById('tg-sell').checked,
                 desktop_notify: document.getElementById('desk-notify').checked,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
@@ -444,6 +530,7 @@
         function applySettings(s) {
             if (!s) return;
             document.getElementById('tg-fill').checked = !!s.telegram_on_fill;
+            document.getElementById('tg-sell').checked = s.telegram_on_sell !== false;
             document.getElementById('desk-notify').checked = s.desktop_notify !== false;
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
@@ -477,6 +564,20 @@
         function rememberFills(next) {
             seenFills = next;
             saveSeenFills(seenFills);
+        }
+
+        function sellKeySet(data) {
+            if (data && Array.isArray(data.sell_keys)) {
+                return new Set(data.sell_keys);
+            }
+            return new Set();
+        }
+
+        function rememberSells(next) {
+            seenSells = next;
+            try {
+                sessionStorage.setItem(SELL_SEEN_KEY, JSON.stringify(Array.from(seenSells)));
+            } catch (err) {}
         }
 
         function playBeep() {
@@ -559,6 +660,39 @@
             );
         }
 
+        function maybeSellAlerts(data) {
+            if (!data || data.error) return;
+            const next = sellKeySet(data);
+            if (!primedSell) {
+                rememberSells(next);
+                primedSell = true;
+                return;
+            }
+            const newsKeys = [];
+            next.forEach(function(k) {
+                if (!seenSells.has(k)) newsKeys.push(k);
+            });
+            rememberSells(next);
+            const deskOn = document.getElementById('desk-notify').checked;
+            if (!deskOn || !newsKeys.length) return;
+            const alerts = (data.sell_alerts || []).filter(function(a) {
+                return newsKeys.indexOf(a.key) >= 0;
+            });
+            const names = (alerts.length ? alerts : newsKeys.map(function(k) {
+                return { stock: String(k).split('|')[0] };
+            })).map(function(a) { return a.stock; });
+            const unique = names.filter(function(s, i) { return names.indexOf(s) === i; });
+            const detail = alerts.slice(0, 4).map(function(a) {
+                const px = a.last_price == null || a.last_price === '' ? '--' : Number(a.last_price).toFixed(2);
+                const stop = a.current_stop == null || a.current_stop === '' ? '--' : Number(a.current_stop).toFixed(2);
+                return a.stock + ' last ' + px + ' stop ' + stop;
+            }).join(', ');
+            desktopAlert(
+                unique.length === 1 ? ('SELL NOW ' + unique[0]) : ('SELL NOW ' + unique.length),
+                (detail || unique.join(', ')) + ' — stop hit, sell now'
+            );
+        }
+
         async function saveSettings() {
             const patch = collectPatch();
             document.getElementById('save-status').textContent = 'Saving...';
@@ -607,7 +741,7 @@
         function renderRows(rows) {
             const tbody = document.getElementById('rows');
             if (!rows || !rows.length) {
-                tbody.innerHTML = '<tr><td colspan="10" class="empty">No candidates. Run the 15m watchlist and/or nightly 1d scan.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="11" class="empty">No candidates. Run the 15m watchlist and/or nightly 1d scan.</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(function(r) {
@@ -619,8 +753,13 @@
                 const tf = r.timeframe || '15m';
                 const chartTf = tf === '1d' ? '1d' : '15m';
                 const tfClass = tf === '1d' ? 'tf-1d' : 'tf-15m';
+                const stock = r.stock || '';
+                const boughtCell = r.bought
+                    ? '<span class="pill owned">bought</span>'
+                    : '<button type="button" class="btn-bought" data-bought-stock="' + stock +
+                        '" data-bought-tf="' + tf + '">Bought</button>';
                 return '<tr>' +
-                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(r.stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + (r.stock || '') + '</a></td>' +
+                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +
                     '<td><span class="pill ' + tfClass + '">' + tf + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
@@ -630,8 +769,53 @@
                     '<td>' + (r.wait_bars == null ? '--' : r.wait_bars) + '</td>' +
                     '<td>' + fmtNum(r.volume_rel_20, 2) + '</td>' +
                     '<td>' + fmtTs(r.as_of) + '</td>' +
+                    '<td>' + boughtCell + '</td>' +
                     '</tr>';
             }).join('');
+        }
+
+        function renderBought(trades) {
+            const tbody = document.getElementById('bought-rows');
+            const countEl = document.getElementById('bought-count');
+            const list = trades || [];
+            if (countEl) countEl.textContent = String(list.length);
+            if (!list.length) {
+                tbody.innerHTML = '<tr><td colspan="10" class="empty">No bought trades. Click Bought on a candidate to track its stop.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = list.map(function(t) {
+                const tf = t.timeframe || '15m';
+                const chartTf = tf === '1d' ? '1d' : '15m';
+                const stock = t.stock || '';
+                const st = t.status || 'open';
+                const dist = t.dist_to_stop_pct;
+                const distCls = dist == null ? '' : (Number(dist) > 0 ? 'stop-ok' : 'stop-hit');
+                const distTxt = dist == null ? '--' : ((Number(dist) >= 0 ? '+' : '') + fmtNum(dist, 2));
+                const stPill = st === 'sell_now'
+                    ? '<span class="pill sell">SELL NOW</span>'
+                    : '<span class="pill owned">' + st + '</span>';
+                const rowCls = st === 'sell_now' ? ' class="sell-now"' : '';
+                return '<tr' + rowCls + '>' +
+                    '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +
+                    '<td><span class="pill ' + (tf === '1d' ? 'tf-1d' : 'tf-15m') + '">' + tf + '</span></td>' +
+                    '<td>' + stPill + '</td>' +
+                    '<td>' + fmtNum(t.entry_px, 2) + '</td>' +
+                    '<td>' + fmtNum(t.last_price, 2) + '</td>' +
+                    '<td>' + fmtNum(t.current_stop, 2) + '</td>' +
+                    '<td class="' + distCls + '">' + distTxt + '</td>' +
+                    '<td>' + fmtNum(t.peak_px, 2) + '</td>' +
+                    '<td>' + fmtTs(t.entry_ts) + '</td>' +
+                    '<td><button type="button" class="btn-sold" data-close-id="' + (t.id == null ? '' : t.id) + '">Sold</button></td>' +
+                    '</tr>';
+            }).join('');
+        }
+
+        function showTab(name) {
+            activeTab = name === 'bought' ? 'bought' : 'candidates';
+            document.getElementById('panel-candidates').style.display = activeTab === 'candidates' ? '' : 'none';
+            document.getElementById('panel-bought').style.display = activeTab === 'bought' ? '' : 'none';
+            document.getElementById('tab-candidates').classList.toggle('active', activeTab === 'candidates');
+            document.getElementById('tab-bought').classList.toggle('active', activeTab === 'bought');
         }
 
         function applyPayload(data, source) {
@@ -686,7 +870,9 @@
                 banner.className = 'banner';
             }
             renderRows(data.rows || []);
+            renderBought(data.bought || []);
             maybeDesktopAlerts(data);
+            maybeSellAlerts(data);
         }
 
         async function poll() {
@@ -801,7 +987,7 @@
             });
         });
 
-        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'desk-notify', 'tz-filter'].forEach(function(id) {
+        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-sell', 'desk-notify', 'tz-filter'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
                 if (id === 'desk-notify' && el.checked) ensureNotifyPermission();
@@ -811,6 +997,7 @@
                     if (lastData) {
                         renderFeeds(lastData);
                         renderRows(lastData.rows || []);
+                        renderBought(lastData.bought || []);
                     }
                     return;
                 }
@@ -820,6 +1007,61 @@
                 el.addEventListener('input', scheduleSave);
             }
         });
+
+        async function markBought(stock, timeframe, btn) {
+            if (btn) btn.disabled = true;
+            document.getElementById('save-status').textContent = 'Marking bought...';
+            try {
+                const res = await fetch('/api/hot-candidates/bought', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stock: stock, timeframe: timeframe })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+                document.getElementById('save-status').textContent = 'Tracking ' + stock;
+                showTab('bought');
+                poll();
+            } catch (err) {
+                document.getElementById('save-status').textContent = 'Bought failed';
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function closeBought(id, btn) {
+            if (!id) return;
+            if (btn) btn.disabled = true;
+            document.getElementById('save-status').textContent = 'Closing...';
+            try {
+                const res = await fetch('/api/hot-candidates/bought/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: Number(id) })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+                document.getElementById('save-status').textContent = 'Sold';
+                poll();
+            } catch (err) {
+                document.getElementById('save-status').textContent = 'Close failed';
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        document.getElementById('rows').addEventListener('click', function(ev) {
+            const btn = ev.target.closest('[data-bought-stock]');
+            if (!btn) return;
+            ev.preventDefault();
+            markBought(btn.getAttribute('data-bought-stock'), btn.getAttribute('data-bought-tf'), btn);
+        });
+        document.getElementById('bought-rows').addEventListener('click', function(ev) {
+            const btn = ev.target.closest('[data-close-id]');
+            if (!btn) return;
+            ev.preventDefault();
+            closeBought(btn.getAttribute('data-close-id'), btn);
+        });
+        document.getElementById('tab-candidates').addEventListener('click', function() { showTab('candidates'); });
+        document.getElementById('tab-bought').addEventListener('click', function() { showTab('bought'); });
 
         labelLocalTzOption();
         syncAsOfHeader();

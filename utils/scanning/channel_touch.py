@@ -10,6 +10,9 @@ Production defaults match the 2026-08-29 H2 resist-break span365 sleeve:
   entry_mode=l3_touch, h2_resist_break, min_l3_wait_bars=6,
   no max_rsi / in-channel / beyond-width, max_channel_span_days=365,
   unique-symbol/day (no RS top1 cap), ATR hard-stop k=2.0 clamped, windowed 504/252.
+  After a taken fill, re-arm for a second close-above-resist if price closes back
+  inside (any-closed, min_inside=1). Occupancy skips the extra while the first
+  trade is still open.
 
 Rollback to the L3 support-tag keeper:
   --no-h2-resist-break --require-in-channel --max-rsi 50 --max-beyond-width 0.25
@@ -46,6 +49,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _hard_stop_price,
     _line_at,
     _resolve_entry_i,
+    _simulate_trade,
     enrich_rs,
     filter_trades,
     keep_one_per_symbol_day,
@@ -72,6 +76,8 @@ LIVE_DEFAULTS: Dict[str, Any] = {
     "entry_slip_pct": 0.001,
     "h2_resist_break": True,
     "h2_resist_break_only": True,
+    "shakeout_breakout": True,
+    "shakeout_breakout_min_inside": 1,
     "max_rsi": None,
     "require_in_channel": False,
     "max_channel_span_days": 365.0,
@@ -100,6 +106,48 @@ def _remap_channel_kwargs(channel_kwargs: dict) -> dict:
     if "min_pullback_pct" in kw:
         kw.setdefault("min_intervening_pullback_pct", kw.pop("min_pullback_pct"))
     return kw
+
+
+def first_trade_still_open(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    dates: pd.DatetimeIndex,
+    *,
+    entry_i: int,
+    entry_px: float,
+    asof_i: int,
+    stop_pct: float = 0.03,
+    trail_pct: float = 0.10,
+    trail_pct_wide: float = 0.18,
+    atr_at_entry: Optional[float] = None,
+    atr_stop_mult: Optional[float] = 2.0,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
+) -> bool:
+    """True if the first fill's ATR/trail sim has not exited before asof_i.
+
+    Nightly occupancy uses the 10% trail (no squeeze-wide). If simulation
+    cannot run, treat as still open so a second Telegram buy is not emitted.
+    """
+    sim = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        int(entry_i),
+        stop_pct=float(stop_pct),
+        trail_pct=float(trail_pct),
+        trail_pct_wide=float(trail_pct_wide),
+        atr_at_entry=atr_at_entry,
+        atr_stop_mult=atr_stop_mult,
+        stop_pct_floor=float(stop_pct_floor),
+        stop_pct_ceil=float(stop_pct_ceil),
+        entry_px=float(entry_px),
+    )
+    if sim is None:
+        return True
+    return int(sim["exit_i"]) >= int(asof_i)
 
 
 def _asof_index(dates: pd.DatetimeIndex, as_of: Optional[pd.Timestamp], n: int) -> Optional[int]:
@@ -152,6 +200,7 @@ def _build_trigger(
     stop_pct_ceil: float,
     adv_lookback: int,
     resist_break: bool = False,
+    shakeout_breakout: bool = False,
 ) -> Optional[dict]:
     if not np.isfinite(entry_px) or entry_px <= 0:
         return None
@@ -218,6 +267,7 @@ def _build_trigger(
         "channel_age_at_buy_days": age_days,
         "rsi_14": round(rsi_i, 4) if np.isfinite(rsi_i) else None,
         "resist_break": bool(resist_break),
+        "shakeout_breakout": bool(shakeout_breakout),
     }
 
 
@@ -242,6 +292,8 @@ def live_entries_for_symbol(
     window_step_bars: Optional[int] = None,
     h2_resist_break: bool = True,
     h2_resist_break_only: bool = True,
+    shakeout_breakout: bool = True,
+    shakeout_breakout_min_inside: int = 1,
     **channel_kwargs,
 ) -> List[dict]:
     """
@@ -316,14 +368,44 @@ def live_entries_for_symbol(
                 min_wait=min_wait,
                 entry_touch=want_touch,
                 h2_resist_break=bool(h2_resist_break),
+                shakeout_breakout=bool(shakeout_breakout),
+                shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
             )
+            parent_i: Optional[int] = None
+            parent_px: Optional[float] = None
             for tag in tags:
                 i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
                 is_brk = bool(tag[4]) if len(tag) > 4 else False
+                is_sbo = bool(tag[5]) if len(tag) > 5 else False
+                if is_brk and not is_sbo:
+                    parent_i, parent_px = int(i), float(fill)
                 if bool(h2_resist_break_only) and not is_brk:
                     continue
                 if int(i) != int(target_i):
                     continue
+                if is_sbo:
+                    if parent_i is None or parent_px is None:
+                        continue
+                    atr_p = (
+                        float(atr[parent_i])
+                        if 0 <= parent_i < len(atr) and np.isfinite(atr[parent_i])
+                        else None
+                    )
+                    if first_trade_still_open(
+                        high,
+                        low,
+                        close,
+                        dates,
+                        entry_i=int(parent_i),
+                        entry_px=float(parent_px),
+                        asof_i=int(target_i),
+                        stop_pct=float(stop_pct),
+                        atr_at_entry=atr_p,
+                        atr_stop_mult=atr_stop_mult,
+                        stop_pct_floor=float(stop_pct_floor),
+                        stop_pct_ceil=float(stop_pct_ceil),
+                    ):
+                        continue
                 row = _build_trigger(
                     symbol=symbol,
                     dates=dates,
@@ -345,6 +427,7 @@ def live_entries_for_symbol(
                     stop_pct_ceil=stop_pct_ceil,
                     adv_lookback=adv_lookback,
                     resist_break=is_brk,
+                    shakeout_breakout=is_sbo,
                 )
                 if row is not None:
                     triggers.append(row)
@@ -431,6 +514,14 @@ def _worker_live_entries(payload: dict) -> List[dict]:
         h2_resist_break_only=bool(
             payload.get("h2_resist_break_only", LIVE_DEFAULTS["h2_resist_break_only"])
         ),
+        shakeout_breakout=bool(
+            payload.get("shakeout_breakout", LIVE_DEFAULTS["shakeout_breakout"])
+        ),
+        shakeout_breakout_min_inside=int(
+            payload.get(
+                "shakeout_breakout_min_inside", LIVE_DEFAULTS["shakeout_breakout_min_inside"]
+            )
+        ),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -461,6 +552,8 @@ def scan_live_triggers(
     max_rsi: Optional[float] = None,
     h2_resist_break: bool = True,
     h2_resist_break_only: bool = True,
+    shakeout_breakout: bool = True,
+    shakeout_breakout_min_inside: int = 1,
     stats: Optional[dict] = None,
     **channel_kwargs,
 ) -> pd.DataFrame:
@@ -496,6 +589,8 @@ def scan_live_triggers(
         "window_step_bars": window_step_bars,
         "h2_resist_break": bool(h2_resist_break),
         "h2_resist_break_only": bool(h2_resist_break_only),
+        "shakeout_breakout": bool(shakeout_breakout),
+        "shakeout_breakout_min_inside": int(shakeout_breakout_min_inside),
         "channel_kwargs": ck,
     }
     payloads = [
@@ -557,6 +652,7 @@ def format_triggers_message(
     max_beyond_width: Optional[float] = None,
     max_channel_span_days: float = 365.0,
     h2_resist_break: bool = True,
+    shakeout_breakout: bool = True,
 ) -> str:
     """Plain-text Telegram / log summary."""
     rsi_s = "off" if max_rsi is None else str(max_rsi)
@@ -567,7 +663,8 @@ def format_triggers_message(
         f"as_of={as_of}",
         (
             f"mode={mode_s} min_wait={min_l3_wait_bars} max_rsi={rsi_s} "
-            f"span<={max_channel_span_days} beyond={beyond_s}"
+            f"span<={max_channel_span_days} beyond={beyond_s} "
+            f"shakeout_breakout={'on' if shakeout_breakout else 'off'}"
         ),
     ]
     if n_raw is not None:
@@ -596,14 +693,19 @@ def format_triggers_message(
         rsi_s = f"{float(rsi):.1f}" if rsi is not None and np.isfinite(float(rsi)) else "n/a"
         wait = row.get("wait_bars")
         wait_s = str(int(wait)) if wait is not None and np.isfinite(float(wait)) else "n/a"
+        rearm = ""
+        sbo = row.get("shakeout_breakout")
+        if sbo is not None and bool(sbo) and not (isinstance(sbo, float) and not np.isfinite(sbo)):
+            rearm = " | re-arm"
         lines.append(
-            "{stock} @ {px} | stop={stop} (-{spct:.2f}%) | RS126={rs} | touch#{tn}".format(
+            "{stock} @ {px} | stop={stop} (-{spct:.2f}%) | RS126={rs} | touch#{tn}{rearm}".format(
                 stock=row["stock"],
                 px=row["buy_price"],
                 stop=row["hard_stop"],
                 spct=float(row.get("stop_pct_used") or 0.0),
                 rs=rs_s,
                 tn=int(row.get("touch_num") or 0),
+                rearm=rearm,
             )
         )
         lines.append(

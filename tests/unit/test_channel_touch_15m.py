@@ -374,3 +374,117 @@ def test_prior_et_session_uses_new_york_date():
         now=datetime(2026, 9, 2, 18, 30, tzinfo=timezone.utc),
     )
 
+
+def test_walk_filled_earlier_when_first_fill_is_before_asof():
+    n = 80
+    h2 = 20
+    support, resist, width, slope, y0 = _rails(n)
+    close = support + 0.4
+    high = close + 0.2
+    low = close - 0.2
+    fill_i = h2 + 12
+    close[fill_i] = resist[fill_i] + 0.25
+    high[fill_i] = close[fill_i] + 0.1
+    low[fill_i] = resist[fill_i] - 0.05
+    st = walk_h2_resist_asof(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        h2_idx=h2,
+        as_of_i=fill_i + 5,
+        min_wait=12,
+        error_pct=0.24,
+        slip=0.001,
+    )
+    assert st["status"] == "filled_earlier"
+    assert st["fill_i"] == fill_i
+
+
+def test_walk_shakeout_rearm_fills_second_break_on_asof():
+    from unittest import mock
+
+    n = 80
+    h2 = 20
+    support, resist, width, slope, y0 = _rails(n)
+    close = support + 0.4
+    high = close + 0.2
+    low = close - 0.2
+    first = h2 + 12
+    close[first] = resist[first] + 0.25
+    high[first] = close[first] + 0.1
+    low[first] = resist[first] - 0.05
+    inside = first + 3
+    close[inside] = resist[inside] * 0.995
+    high[inside] = close[inside] + 0.05
+    low[inside] = close[inside] - 0.05
+    second = first + 8
+    close[second] = resist[second] + 0.25
+    high[second] = close[second] + 0.1
+    low[second] = resist[second] - 0.05
+    with mock.patch(
+        "utils.scanning.channel_touch_15m.first_trade_still_open",
+        return_value=False,
+    ):
+        st = walk_h2_resist_asof(
+            high,
+            low,
+            close,
+            support_x0=0,
+            support_y0=y0,
+            support_slope=slope,
+            width=width,
+            h2_idx=h2,
+            as_of_i=second,
+            min_wait=12,
+            error_pct=0.24,
+            slip=0.001,
+            shakeout_breakout=True,
+        )
+    assert st["status"] == "filled"
+    assert st["fill_i"] == second
+    assert st.get("shakeout_breakout") is True
+
+
+def test_walk_shakeout_stays_armed_after_exit_before_second_break():
+    from unittest import mock
+
+    n = 80
+    h2 = 20
+    support, resist, width, slope, y0 = _rails(n)
+    close = support + 0.4
+    high = close + 0.2
+    low = close - 0.2
+    first = h2 + 12
+    close[first] = resist[first] + 0.25
+    high[first] = close[first] + 0.1
+    low[first] = resist[first] - 0.05
+    inside = first + 3
+    close[inside] = resist[inside] * 0.995
+    high[inside] = close[inside] + 0.05
+    low[inside] = close[inside] - 0.05
+    asof = inside + 2
+    with mock.patch(
+        "utils.scanning.channel_touch_15m.first_trade_still_open",
+        return_value=False,
+    ):
+        st = walk_h2_resist_asof(
+            high,
+            low,
+            close,
+            support_x0=0,
+            support_y0=y0,
+            support_slope=slope,
+            width=width,
+            h2_idx=h2,
+            as_of_i=asof,
+            min_wait=12,
+            error_pct=0.24,
+            slip=0.001,
+            shakeout_breakout=True,
+        )
+    assert st["status"] == "armed"
+

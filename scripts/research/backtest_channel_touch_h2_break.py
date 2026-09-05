@@ -139,6 +139,9 @@ def _daily_base() -> dict:
         "min_l3_wait_bars": 6,
         "h2_resist_break": True,
         "h2_resist_break_only": True,
+        "shakeout_breakout": False,
+        "shakeout_breakout_min_inside": 1,
+        "shakeout_breakout_hard_stop": False,
         "channel_kwargs": {
             "error_pct": 1.2,
             "flat_pct": 0.04,
@@ -226,6 +229,25 @@ def main() -> int:
         default=0.005,
         help="Cancel when exec 15m (mid-low)/mid exceeds this (default 0.5%%)",
     )
+    ap.add_argument(
+        "--shakeout-breakout",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="After first H2 resist-break, re-arm for a second close above resist "
+        "(any-closed, min inside closes). Off by default.",
+    )
+    ap.add_argument(
+        "--shakeout-breakout-min-inside",
+        type=int,
+        default=1,
+        help="Inside closes required before the second resist-break (default 1)",
+    )
+    ap.add_argument(
+        "--shakeout-breakout-hard-stop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Only keep extras whose parent exited on the ATR hard stop",
+    )
     args = ap.parse_args()
     t0 = time.perf_counter()
     is_15m = (args.preset or "").strip() == "15m"
@@ -302,6 +324,9 @@ def main() -> int:
     base["realistic_fill"] = bool(args.realistic_fill)
     base["realistic_fill_mode"] = str(args.realistic_fill_mode)
     base["max_low_to_mid_pct"] = float(args.max_low_to_mid_pct)
+    base["shakeout_breakout"] = bool(args.shakeout_breakout)
+    base["shakeout_breakout_min_inside"] = int(args.shakeout_breakout_min_inside)
+    base["shakeout_breakout_hard_stop"] = bool(args.shakeout_breakout_hard_stop)
     panels_15m = None
     if (not is_15m) and args.realistic_fill:
         t_15 = time.perf_counter()
@@ -439,11 +464,21 @@ def main() -> int:
         "elapsed_sec": round(time.perf_counter() - t0, 1),
         "all_symbols": bool(args.all_symbols),
         "causal_h2": True,
+        "shakeout_breakout": bool(args.shakeout_breakout),
+        "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
+        "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
+        "realistic_fill": bool(args.realistic_fill),
+        "realistic_fill_mode": str(args.realistic_fill_mode),
     }
     notes = [
         "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail); fill at max(hard,trail) when low hits",
         "H2 resist-break fills a close above resistance after H2 (not L3 support tag)",
     ]
+    if args.shakeout_breakout:
+        notes.append(
+            "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "
+            "(any-closed unless --shakeout-breakout-hard-stop)"
+        )
     if not brk.empty:
         tag = "15m_" if is_15m else ""
         uni = "full_" if args.all_symbols else ""
@@ -472,6 +507,21 @@ def main() -> int:
                 results=_summarize(brk_span_n, gain_col=gain_col) if not brk_span_n.empty else None,
                 notes=notes,
             )
+            if not brk_span_u.empty:
+                u_path = outdir / (
+                    "channel_touch_%s%sh2_break_span%s_unique_%s.csv" % (tag, uni, span_label, stamp)
+                )
+                brk_span_u.to_csv(u_path, index=False)
+                logger.info("Wrote %s", u_path)
+                _write_h2_summary(
+                    u_path,
+                    title="H2 resistance-break unique-symbol/day (span<=%s)" % span_label,
+                    base=base,
+                    extra=extra_meta,
+                    results=_summarize(brk_span_u, gain_col=gain_col),
+                    notes=notes
+                    + ["Occupancy: keep_one_per_symbol_day (earliest fill per name per calendar day)"],
+                )
     print("elapsed_sec=%.1f" % (time.perf_counter() - t0))
     return 0
 

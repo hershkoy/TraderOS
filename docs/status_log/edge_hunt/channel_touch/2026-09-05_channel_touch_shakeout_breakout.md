@@ -65,6 +65,32 @@ Parent 2020-08-11 @ 60.30, hard-stop 2020-08-25 @ 56.68, −6.25% net.
 
 Extra (min_inside=1 and 5): **2020-10-05 @ 62.6564**, trail 2021-03-22 @ 97.353, **+55.13% net**, 36 inside bars, `parent_exit_reason=hard_stop`. Same L1/H2 rails as the Aug fill.
 
+## Complete history (full daily universe)
+
+Same recipe, ALPACA 1d union IB 1d (**2223 loaded + SPY**), IB prefix from **2006-01-01** through last stored bar (**2026-09-03**), windowed 504/252. SPY IB-prefix from **2010-01-04**. Wall-clock **144s** (merged cache hit).
+
+`start=None` is **not** complete history: IB prefix only runs when Alpaca is empty or starts after `start`, so an unclipped load is Alpaca-native (2020–21 collapses, SXI 2020 disappears). `--complete-history` clips start at 2006-01-01 so prefix stitches.
+
+```bat
+venv\Scripts\activate
+set PYTHONPATH=.
+python scripts\research\backtest_channel_touch_shakeout_breakout.py --complete-history --workers 4 --load-workers 8
+```
+
+### min_inside=1 (complete history)
+
+| book | n | E | PF | 2020-21 | pre-2018 |
+|------|---|---|----|---------|----------|
+| Parent unique H2 span365 | 3137 | +2.41 | 2.013 | E +1.91 PF 1.79 | n=4 |
+| **Sleeve any-closed** | **1445** | **+3.14** | **2.296** | **E +3.24 PF 2.39** | n=3 (noise) |
+| Sleeve hard-stop | 514 | +2.27 | 1.929 | E +1.33 PF 1.51 | n=2 |
+| **Combined any-closed** | **4582** | **+2.64** | **2.103** | E +2.33 PF 1.97 | n=7 |
+| Combined hard-stop | 3651 | +2.39 | 2.001 | E +1.84 PF 1.75 | n=6 |
+
+Same shape as the 2018-11-01 2216-name scan (sleeve n=1439 E +3.16 PF 2.32). Extra names and 2006–2017 add almost no trades (`max_low_pivots` still needs the 504/252 window). SXI 2020-10-05 extra still **+55.13%**.
+
+min_inside=5 complete-history sleeve n=1793 E +2.67 PF 2.08 — still weaker than min 1. Gate unchanged.
+
 ## Gate
 
 Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, combined unique-symbol **lifts** rather than dilutes, and **2020-21 is healthy** (the hole that killed L3 support-reclaim rebuy).
@@ -86,3 +112,9 @@ Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, 
 - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_any_min5_20260905_114330.csv` (n=1786)
 - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_hs_min5_20260905_114330.csv` (n=620)
 - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_summary_20260905_114330.csv`
+- Complete history (IB prefix from 2006, 2223 names, through 2026-09-03):
+  - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_any_min1_20260905_122540.csv` (n=1445)
+  - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_hs_min1_20260905_122540.csv` (n=514)
+  - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_any_min5_20260905_122540.csv` (n=1793)
+  - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_hs_min5_20260905_122540.csv` (n=623)
+  - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_summary_20260905_122540.csv`

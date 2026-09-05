@@ -2,7 +2,8 @@
 
 Nightly still Telegrams fills. This writes the armed/waiting/filled book so
 the dashboard can show 1d names next to the 15m list. Detector params match
-LIVE_DEFAULTS (H2 resist-break, wait 6, span 365, window 504/252).
+LIVE_DEFAULTS (H2 resist-break, wait 6, span 365, window 504/252,
+shakeout-breakout re-arm after the first fill has exited).
 """
 from __future__ import annotations
 
@@ -74,6 +75,8 @@ def build_1d_watchlist_rows(
             slip=slip_f,
             window_bars=win,
             window_step_bars=step,
+            shakeout_breakout=bool(d.get("shakeout_breakout", False)),
+            shakeout_breakout_min_inside=int(d.get("shakeout_breakout_min_inside", 1)),
         )
         for row in got:
             item = dict(row)

@@ -38,6 +38,8 @@ class MemoryStore:
             }
         ]
         self.settings = apply_settings_patch(DEFAULT_SETTINGS, {"as_of": "2026-08-30 15:45:00", "n_universe": 12})
+        self.bought = []
+        self._next_id = 1
 
     def load_settings(self):
         return dict(self.settings)
@@ -52,9 +54,59 @@ class MemoryStore:
     def update_live_prices(self, rows, *, price_ts=None):
         return None
 
+    def load_bought(self, *, active_only=True):
+        if not active_only:
+            return [dict(t) for t in self.bought]
+        return [dict(t) for t in self.bought if t.get("status") in ("open", "sell_now")]
+
+    def find_active_bought(self, stock, timeframe="15m"):
+        stock_u = str(stock).upper()
+        tf = str(timeframe or "15m")
+        for trade in self.bought:
+            if (
+                str(trade.get("stock") or "").upper() == stock_u
+                and str(trade.get("timeframe") or "15m") == tf
+                and trade.get("status") in ("open", "sell_now")
+            ):
+                return dict(trade)
+        return None
+
+    def upsert_bought(self, trade):
+        existing = self.find_active_bought(trade.get("stock"), trade.get("timeframe") or "15m")
+        if existing:
+            return existing
+        item = dict(trade)
+        item["id"] = self._next_id
+        self._next_id += 1
+        self.bought.append(item)
+        return dict(item)
+
+    def update_bought_live(self, trade):
+        for item in self.bought:
+            if item.get("id") == trade.get("id"):
+                item.update(trade)
+                return dict(item)
+        return None
+
+    def close_bought(self, trade_id):
+        for item in self.bought:
+            if item.get("id") == int(trade_id):
+                item["status"] = "closed"
+                return dict(item)
+        return None
+
+    def mark_sell_notified(self, trade_ids, when=None):
+        for item in self.bought:
+            if item.get("id") in set(trade_ids):
+                item["sell_notified_at"] = when or "marked"
+
 
 def test_hot_page_and_api(monkeypatch):
     reset_refresh_throttle()
+    monkeypatch.setattr(
+        "utils.scanning.channel_touch_bought.atr_for_symbol",
+        lambda stock, timeframe, runner=None: 1.0,
+    )
     store = MemoryStore()
     set_store(store)
     try:
@@ -66,7 +118,12 @@ def test_hot_page_and_api(monkeypatch):
         assert b"Hot candidates" in page.data
         assert b"Detector" in page.data
         assert b'id="tf-filter"' in page.data
-        assert b"Browser + sound on fills" in page.data
+        assert b"Browser + sound on fills / sells" in page.data
+        assert b"Telegram on SELL NOW" in page.data
+        assert b'id="tab-bought"' in page.data
+        assert b"Dist to stop" in page.data
+        assert b"SELL NOW" in page.data
+        assert b'data-bought-stock' in page.data
         assert b"Telegram when newly hot" not in page.data
         assert b'id="live-badge"' in page.data
         assert b"Connecting" in page.data
@@ -99,6 +156,9 @@ def test_hot_page_and_api(monkeypatch):
         assert body["hot_keys"] == ["AAA|15m"]
         assert body["fill_keys"] == []
         assert body["fill_alerts"] == []
+        assert body["bought"] == []
+        assert body["sell_keys"] == []
+        assert body["n_bought"] == 0
         assert body["refreshed"] is False
         assert "fill_data_ok" in body
         assert body["settings"]["display_timezone"] == "exchange"
@@ -121,6 +181,29 @@ def test_hot_page_and_api(monkeypatch):
         assert listed.get_json()["telegram_on_hot"] is True
         assert listed.get_json()["display_timezone"] == "local"
         assert hub.kicked >= 1
+
+        marked = client.post(
+            "/api/hot-candidates/bought",
+            data=json.dumps({"stock": "AAA", "timeframe": "15m"}),
+            content_type="application/json",
+        )
+        assert marked.status_code == 200
+        bought = marked.get_json()
+        assert bought["stock"] == "AAA"
+        assert bought["status"] == "open"
+        assert bought["current_stop"] is not None
+        payload2 = client.get("/api/hot-candidates?refresh=0").get_json()
+        assert payload2["n_bought"] == 1
+        assert payload2["rows"][0]["bought"] is True
+        closed = client.post(
+            "/api/hot-candidates/bought/close",
+            data=json.dumps({"id": bought["id"]}),
+            content_type="application/json",
+        )
+        assert closed.status_code == 200
+        assert closed.get_json()["status"] == "closed"
+        payload3 = client.get("/api/hot-candidates?refresh=0").get_json()
+        assert payload3["n_bought"] == 0
     finally:
         set_store(None)
         set_hot_hub(None)

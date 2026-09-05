@@ -60,6 +60,11 @@ from utils.scanning.channel_touch_15m_refresh import (  # noqa: E402
     last_ts_map_from_rows,
     refresh_ib_15m_symbols,
 )
+from utils.scanning.channel_touch_bought import (  # noqa: E402
+    active_bought_symbols,
+    flush_sell_notifications,
+    sync_bought_prices,
+)
 from utils.scanning.channel_touch_candidates_store import (  # noqa: E402
     ChannelTouchCandidatesStore,
     DEFAULT_SETTINGS,
@@ -256,6 +261,37 @@ def _load_rows_from_store_or_json(
         logger.info("Loaded watchlist %s rows=%d as_of=%s", args.watchlist, len(rows), payload.get("as_of"))
         return payload, rows
     raise FileNotFoundError("No candidates in TimescaleDB and watchlist JSON missing: %s" % args.watchlist)
+
+
+def _sync_bought_stops(
+    store: Optional[ChannelTouchCandidatesStore],
+    last_prices: Dict[str, float],
+    settings: dict,
+    *,
+    dry_run: bool,
+    alpaca_batch: int,
+) -> None:
+    if store is None:
+        return
+    prices = dict(last_prices)
+    missing = [s for s in active_bought_symbols(store) if s not in prices]
+    if missing:
+        try:
+            extra = fetch_alpaca_last_prices(missing, batch_size=int(alpaca_batch))
+            prices.update(extra)
+        except Exception as exc:
+            logger.warning("Alpaca last for bought names failed: %s", exc)
+    if prices:
+        try:
+            sync_bought_prices(store, prices, now=datetime.now(timezone.utc))
+        except Exception as exc:
+            logger.warning("Could not update bought stops: %s", exc)
+    try:
+        msgs = flush_sell_notifications(store, settings, dry_run=dry_run)
+        for msg in msgs:
+            logger.info("SELL NOW:\n%s", msg)
+    except Exception as exc:
+        logger.warning("SELL NOW notify failed: %s", exc)
 
 
 def _load_filled_today(path: Path) -> List[str]:
@@ -793,6 +829,13 @@ def main() -> int:
                     store.update_live_prices(rows, price_ts=datetime.now(timezone.utc))
                 except Exception as exc:
                     logger.warning("Could not update live prices: %s", exc)
+            _sync_bought_stops(
+                store,
+                last_prices,
+                settings,
+                dry_run=dry_run,
+                alpaca_batch=int(args.alpaca_batch),
+            )
 
         n_hot = sum(1 for r in filter_15m_rows(rows) if r.get("hot"))
         n_armed = sum(1 for r in filter_15m_rows(rows) if r.get("status") == "armed")

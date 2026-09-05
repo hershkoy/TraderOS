@@ -7,6 +7,7 @@ the finder stopped after the first close above resistance.
 
 Usage (Windows CMD):
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_shakeout_breakout.py --all-symbols
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_shakeout_breakout.py --complete-history
 """
 from __future__ import annotations
 
@@ -50,6 +51,13 @@ RAW_TRADES = resolve_artifact("channel_touch_trades_raw_20260828_194314.csv")
 SPAN_CAP = 365.0
 FRICTION = 0.25
 GAIN_COL = "gain_pct_net"
+YEAR_BUCKETS_FULL: list = [
+    ("pre-2018", "1990-01-01", "2017-12-31"),
+    ("2018-2019", "2018-01-01", "2019-12-31"),
+    ("2020-2021", "2020-01-01", "2021-12-31"),
+    ("2022-2023", "2022-01-01", "2023-12-31"),
+    ("2024-2026", "2024-01-01", "2026-12-31"),
+]
 
 
 def _fmt(s: dict) -> str:
@@ -97,12 +105,12 @@ def _combo(parent: pd.DataFrame, extra: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([parent, extra], ignore_index=True, sort=False)
 
 
-def _print_block(title: str, trades: pd.DataFrame) -> dict:
+def _print_block(title: str, trades: pd.DataFrame, buckets=YEAR_BUCKETS) -> dict:
     s = _summarize(trades, gain_col=GAIN_COL)
     print("=== %s ===" % title)
     print(_fmt(s))
     if not trades.empty:
-        print(summarize_by_year(trades, gain_col=GAIN_COL, buckets=YEAR_BUCKETS).to_string(index=False))
+        print(summarize_by_year(trades, gain_col=GAIN_COL, buckets=buckets).to_string(index=False))
     return s
 
 
@@ -135,16 +143,74 @@ def _print_sxi(df: pd.DataFrame, label: str) -> None:
     print(rows[cols].to_string(index=False))
 
 
+def _universe_symbols(*, all_symbols: bool, include_ib: bool, raw_path: Path) -> list:
+    if not all_symbols:
+        raw = pd.read_csv(raw_path)
+        symbols = sorted(set(raw["stock"].astype(str).str.upper()) | {"SPY"})
+        logger.info("Raw-CSV universe n=%d unique=%d", len(raw), len(symbols) - 1)
+        return symbols
+    alpaca = {s.upper() for s in list_symbols_fast("ALPACA", "1d")}
+    ib = {s.upper() for s in list_symbols_fast("IB", "1d")} if include_ib else set()
+    symbols = sorted(alpaca | ib | {"SPY"})
+    logger.info(
+        "Full universe ALPACA 1d=%d IB 1d=%d union=%d (incl SPY)",
+        len(alpaca),
+        len(ib),
+        len(symbols),
+    )
+    return symbols
+
+
+def _log_panel_span(panels: dict) -> None:
+    firsts = []
+    lasts = []
+    n_ok = 0
+    for sym, df in panels.items():
+        if sym == "SPY" or df is None or df.empty:
+            continue
+        n_ok += 1
+        firsts.append(pd.Timestamp(df.index.min()))
+        lasts.append(pd.Timestamp(df.index.max()))
+    if not firsts:
+        logger.warning("No loaded non-SPY panels")
+        return
+    spy = panels.get("SPY")
+    spy_span = ""
+    if spy is not None and not spy.empty:
+        spy_span = " SPY %s -> %s" % (
+            pd.Timestamp(spy.index.min()).date(),
+            pd.Timestamp(spy.index.max()).date(),
+        )
+    logger.info(
+        "Loaded %d names; panel firsts %s .. %s; lasts %s .. %s;%s",
+        n_ok,
+        min(firsts).date(),
+        max(firsts).date(),
+        min(lasts).date(),
+        max(lasts).date(),
+        spy_span,
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="H2 shakeout then second resist-break A/B")
     ap.add_argument("--raw", type=Path, default=None)
-    ap.add_argument("--start", default="2018-11-01")
+    ap.add_argument(
+        "--start",
+        default="2018-11-01",
+        help="YYYY-MM-DD. Empty with --complete-history loads all stored bars.",
+    )
     ap.add_argument("--end", default="2026-08-27")
     ap.add_argument("--friction-pct", type=float, default=FRICTION)
     ap.add_argument(
         "--all-symbols",
         action="store_true",
         help="Scan full ALPACA 1d universe (IB prefix). Default uses the frozen raw-trades names.",
+    )
+    ap.add_argument(
+        "--complete-history",
+        action="store_true",
+        help="All ALPACA+IB 1d names, IB prefix from 2006-01-01 through last stored bar, windowed 504/252.",
     )
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--load-workers", type=int, default=8)
@@ -153,19 +219,25 @@ def main() -> int:
     t0 = time.perf_counter()
     friction = float(args.friction_pct)
     raw_path = args.raw or RAW_TRADES
-    start_s = args.start.strip() or "2018-11-01"
-    end_s = args.end.strip() or "2026-08-27"
-
-    if args.all_symbols:
-        symbols = sorted({s.upper() for s in list_symbols_fast("ALPACA", "1d")} | {"SPY"})
-        logger.info("Full universe ALPACA 1d: %d symbols", len(symbols) - 1)
+    complete = bool(args.complete_history)
+    all_symbols = bool(args.all_symbols) or complete
+    buckets = YEAR_BUCKETS_FULL if complete else YEAR_BUCKETS
+    # start=None skips IB prefix (only empty ALPACA names get IB). Clip start
+    # early so prefix stitches bars before the first Alpaca print.
+    if complete:
+        start_s = "2006-01-01"
+        end_s = ""
     else:
-        raw = pd.read_csv(raw_path)
-        symbols = sorted(set(raw["stock"].astype(str).str.upper()) | {"SPY"})
-        logger.info("Raw-CSV universe n=%d unique=%d", len(raw), len(symbols) - 1)
+        start_s = args.start.strip() or "2018-11-01"
+        end_s = args.end.strip() or "2026-08-27"
 
-    start = datetime.strptime(start_s, "%Y-%m-%d")
-    end = datetime.strptime(end_s, "%Y-%m-%d")
+    symbols = _universe_symbols(
+        all_symbols=all_symbols, include_ib=complete, raw_path=raw_path
+    )
+
+    start = datetime.strptime(start_s, "%Y-%m-%d") if start_s else None
+    end = datetime.strptime(end_s, "%Y-%m-%d") if end_s else None
+    logger.info("Load window start=%s end=%s complete_history=%s", start, end, complete)
     panels = load_ohlcv_many(
         symbols,
         timeframe="1d",
@@ -181,6 +253,7 @@ def main() -> int:
         logger.error("No SPY panel")
         return 1
     logger.info("OHLCV loaded in %.1fs", time.perf_counter() - t0)
+    _log_panel_span(panels)
 
     mins = [int(x.strip()) for x in str(args.min_inside).split(",") if x.strip()]
     if not mins:
@@ -224,17 +297,28 @@ def main() -> int:
 
         print("")
         print("----- min_inside=%d -----" % min_inside)
-        parent_s = _print_block("parent unique-symbol H2 span365 (no extras)", parent)
-        any_s = _print_block("sleeve any-closed unique-symbol", extra_any_u)
-        hs_s = _print_block("sleeve hard-stop unique-symbol", extra_hs_u)
-        combo_any_s = _print_block("combined unique-symbol any-closed", combo_any)
-        combo_hs_s = _print_block("combined unique-symbol hard-stop", combo_hs)
+        parent_s = _print_block(
+            "parent unique-symbol H2 span365 (no extras)", parent, buckets=buckets
+        )
+        any_s = _print_block("sleeve any-closed unique-symbol", extra_any_u, buckets=buckets)
+        hs_s = _print_block("sleeve hard-stop unique-symbol", extra_hs_u, buckets=buckets)
+        combo_any_s = _print_block(
+            "combined unique-symbol any-closed", combo_any, buckets=buckets
+        )
+        combo_hs_s = _print_block(
+            "combined unique-symbol hard-stop", combo_hs, buckets=buckets
+        )
         _print_sxi(parent, "parent min_inside=%d" % min_inside)
         _print_sxi(extra_any, "extras any-closed min_inside=%d" % min_inside)
         _print_sxi(extra_hs, "extras hard-stop min_inside=%d" % min_inside)
 
-        csv_any = outdir / ("channel_touch_shakeout_breakout_any_min%d_%s.csv" % (min_inside, stamp))
-        csv_hs = outdir / ("channel_touch_shakeout_breakout_hs_min%d_%s.csv" % (min_inside, stamp))
+        tag = "fullhist_" if complete else ""
+        csv_any = outdir / (
+            "channel_touch_shakeout_breakout_%sany_min%d_%s.csv" % (tag, min_inside, stamp)
+        )
+        csv_hs = outdir / (
+            "channel_touch_shakeout_breakout_%shs_min%d_%s.csv" % (tag, min_inside, stamp)
+        )
         extra_any.to_csv(csv_any, index=False)
         extra_hs.to_csv(csv_hs, index=False)
         logger.info("Wrote %s n=%d", csv_any, len(extra_any))
@@ -251,6 +335,7 @@ def main() -> int:
             row["variant"] = name
             row["min_inside"] = int(min_inside)
             row["n_raw"] = int(n_raw)
+            row["complete_history"] = bool(complete)
             summary_rows.append(row)
 
     elapsed = time.perf_counter() - t0
@@ -258,7 +343,10 @@ def main() -> int:
     print("elapsed_sec=%.1f" % elapsed)
     print("Nightly stays off until a sleeve beats parent E/PF without wrecking 2020-21.")
     if summary_rows:
-        summary_csv = outdir / ("channel_touch_shakeout_breakout_summary_%s.csv" % stamp)
+        summary_csv = outdir / (
+            "channel_touch_shakeout_breakout_%ssummary_%s.csv"
+            % ("fullhist_" if complete else "", stamp)
+        )
         pd.DataFrame(summary_rows).to_csv(summary_csv, index=False)
         logger.info("Summary -> %s", summary_csv)
     return 0

@@ -48,6 +48,9 @@ class MemoryStore:
             item["hot"] = upd.get("hot")
             item["last_price_ts"] = str(price_ts) if price_ts is not None else upd.get("last_price_ts")
 
+    def load_bought(self, *, active_only=True):
+        return []
+
     def mark_hot_notified(self, stocks, day=None):
         day_s = str(day or "")[:10]
         want = {str(s).upper() for s in stocks}
@@ -157,6 +160,9 @@ def test_candidates_payload_uses_saved_filter():
         assert payload["prices_stale"] is True
         assert payload["price_age_sec"] is not None
         assert payload["hot_keys"] == ["AAA|15m"]
+        assert payload["bought"] == []
+        assert payload["sell_keys"] == []
+        assert payload["n_bought"] == 0
     finally:
         set_store(None)
 
