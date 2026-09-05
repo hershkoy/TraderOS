@@ -44,6 +44,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-05 | [1d unique crowding / max-concurrent](2026-09-05_channel_touch_1d_crowding.md) |
 | 2026-09-05 | [1d open-cross fill (15m open>resist, buy close)](2026-09-05_channel_touch_open_cross.md) |
 | 2026-09-05 | [1d next-open vs tick-above A/B](2026-09-05_channel_touch_next_open_ab.md) |
+| 2026-09-05 | [/hot always-on price WebSocket](2026-09-05_channel_touch_hot_price_ws.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [realistic purchasing](../../../features/realistic_purchasing.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 

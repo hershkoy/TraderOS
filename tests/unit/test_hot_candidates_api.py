@@ -10,15 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.scanning.channel_touch_candidates_store import DEFAULT_SETTINGS, apply_settings_patch
-from utils.scanning.channel_touch_hot_api import reset_refresh_throttle, set_hot_hub, set_store
-
-
-class _FakeHub:
-    def __init__(self):
-        self.kicked = 0
-
-    def kick(self):
-        self.kicked += 1
+from utils.scanning.channel_touch_hot_api import reset_refresh_throttle, set_store
 
 
 class MemoryStore:
@@ -134,7 +126,10 @@ def test_hot_page_and_api(monkeypatch):
         assert b"America/New_York" in page.data
         assert b"fmtTs" in page.data
         assert b"WS_PATH" in page.data
+        assert b"PRICE_WS_PORT" in page.data
+        assert b"const PRICE_WS_PORT = 5001" in page.data
         assert b"/ws/hot-candidates" in page.data
+        assert b"location.hostname" in page.data
         assert b"connectWs();" in page.data
         assert b"startPollingFallback" in page.data
         assert b"new WebSocket" in page.data
@@ -163,8 +158,18 @@ def test_hot_page_and_api(monkeypatch):
         assert "fill_data_ok" in body
         assert body["settings"]["display_timezone"] == "exchange"
 
-        hub = _FakeHub()
-        set_hot_hub(hub)
+        missing_ws = client.get("/ws/hot-candidates")
+        assert missing_ws.status_code == 404
+
+        kicks = {"n": 0}
+
+        def fake_kick(*args, **kwargs):
+            kicks["n"] += 1
+            return True
+
+        monkeypatch.setattr(
+            "utils.scanning.channel_touch_hot_api.kick_price_service", fake_kick
+        )
         posted = client.post(
             "/api/hot-candidates/settings",
             data=json.dumps({"telegram_on_hot": True, "status_filter": "armed", "display_timezone": "local"}),
@@ -180,7 +185,7 @@ def test_hot_page_and_api(monkeypatch):
         listed = client.get("/api/hot-candidates/settings")
         assert listed.get_json()["telegram_on_hot"] is True
         assert listed.get_json()["display_timezone"] == "local"
-        assert hub.kicked >= 1
+        assert kicks["n"] >= 1
 
         marked = client.post(
             "/api/hot-candidates/bought",
@@ -204,6 +209,6 @@ def test_hot_page_and_api(monkeypatch):
         assert closed.get_json()["status"] == "closed"
         payload3 = client.get("/api/hot-candidates?refresh=0").get_json()
         assert payload3["n_bought"] == 0
+        assert kicks["n"] >= 3
     finally:
         set_store(None)
-        set_hot_hub(None)

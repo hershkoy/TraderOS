@@ -235,7 +235,7 @@ def _alpaca_last_feed(
     job: dict,
 ) -> Dict[str, Any]:
     role = "Live last price (proximity / hot). Not a fill."
-    cadence = "Every RTH minute; dashboard refreshes ~5s while /hot is open"
+    cadence = "Every RTH minute; always-on price hub ~5s even if /hot is closed"
     parsed = _parse_ts(price_ts)
     if job.get("running"):
         return _feed(

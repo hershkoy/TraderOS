@@ -494,6 +494,17 @@ def test_hub_always_run_without_clients():
         hub.stop()
 
 
+def test_price_ws_port_reads_env(monkeypatch):
+    from utils.scanning.channel_touch_hot_api import DEFAULT_PRICE_WS_PORT, price_ws_port
+
+    monkeypatch.delenv("HOT_PRICE_WS_PORT", raising=False)
+    assert price_ws_port() == DEFAULT_PRICE_WS_PORT
+    monkeypatch.setenv("HOT_PRICE_WS_PORT", "5010")
+    assert price_ws_port() == 5010
+    monkeypatch.setenv("HOT_PRICE_WS_PORT", "nope")
+    assert price_ws_port() == DEFAULT_PRICE_WS_PORT
+
+
 def test_kick_price_service_posts_and_swallows_errors(monkeypatch):
     from utils.scanning.channel_touch_hot_api import kick_price_service
 

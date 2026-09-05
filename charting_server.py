@@ -25,8 +25,6 @@ from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, 
 
 app = Flask(__name__)
 CORS(app)
-app.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 20}
-sock = Sock(app)
 
 # Available indicators
 INDICATORS = {
@@ -263,16 +261,25 @@ def get_indicators():
     return jsonify(INDICATORS)
 
 
+def _kick_price_hub():
+    """Wake the always-on price process; ignore if it is not running."""
+    from utils.scanning.channel_touch_hot_api import kick_price_service
+
+    kick_price_service()
+
+
 @app.route('/hot')
 def hot_candidates_page():
     """15m + 1d channel-touch hot candidates dashboard."""
-    return render_template('hot_candidates.html')
+    from utils.scanning.channel_touch_hot_api import price_ws_port
+
+    return render_template('hot_candidates.html', price_ws_port=price_ws_port())
 
 
 @app.route('/api/hot-candidates')
 def api_hot_candidates():
-    """Armed 15m and 1d setups from TimescaleDB with live Alpaca last (throttled)."""
-    refresh = str(request.args.get('refresh', '1')).lower() not in ('0', 'false', 'no')
+    """Armed 15m and 1d setups from TimescaleDB (live Alpaca is the price hub)."""
+    refresh = str(request.args.get('refresh', '0')).lower() in ('1', 'true', 'yes')
     try:
         from utils.scanning.channel_touch_hot_api import candidates_payload
 
@@ -285,14 +292,14 @@ def api_hot_candidates():
 def api_hot_settings():
     """Persisted Telegram + filter settings (cron and UI share this row)."""
     try:
-        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
+        from utils.scanning.channel_touch_hot_api import get_store
 
         store = get_store()
         if request.method == 'GET':
             return jsonify(store.load_settings())
         patch = request.get_json(silent=True) or {}
         saved = store.save_settings(patch)
-        get_hot_hub().kick()
+        _kick_price_hub()
         return jsonify(saved)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
@@ -303,7 +310,7 @@ def api_hot_bought_mark():
     """Mark a /hot row as bought so the ATR/trail stop can fire SELL NOW."""
     try:
         from utils.scanning.channel_touch_bought import mark_bought_from_candidate
-        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
+        from utils.scanning.channel_touch_hot_api import get_store
 
         body = request.get_json(silent=True) or {}
         stock = str(body.get('stock') or '').strip()
@@ -315,7 +322,7 @@ def api_hot_bought_mark():
             timeframe=timeframe,
             entry_px=None if entry_px in (None, '') else float(entry_px),
         )
-        get_hot_hub().kick()
+        _kick_price_hub()
         return jsonify(trade)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -328,7 +335,7 @@ def api_hot_bought_close():
     """Drop a bought trade from the live stop watch (manual sold / unbuy)."""
     try:
         from utils.scanning.channel_touch_bought import close_bought_trade
-        from utils.scanning.channel_touch_hot_api import get_hot_hub, get_store
+        from utils.scanning.channel_touch_hot_api import get_store
 
         body = request.get_json(silent=True) or {}
         tid = body.get('id')
@@ -337,36 +344,10 @@ def api_hot_bought_close():
         closed = close_bought_trade(get_store(), trade_id=int(tid))
         if closed is None:
             return jsonify({'error': 'trade not found'}), 404
-        get_hot_hub().kick()
+        _kick_price_hub()
         return jsonify(closed)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
-
-
-@sock.route('/ws/hot-candidates')
-def ws_hot_candidates(ws):
-    """Push filtered hot-candidate snapshots; one Alpaca refresh loop for all tabs."""
-    import time as _time
-
-    from utils.scanning.channel_touch_hot_api import get_hot_hub
-
-    hub = get_hot_hub()
-    hub.register()
-    last_seq = 0
-    last_send = _time.monotonic()
-    try:
-        while True:
-            last_seq, payload = hub.wait_next(last_seq, timeout=1.0)
-            if payload is not None:
-                ws.send(current_app.json.dumps(payload))
-                last_send = _time.monotonic()
-            elif (_time.monotonic() - last_send) >= 25.0:
-                ws.send(current_app.json.dumps({'event': 'ping'}))
-                last_send = _time.monotonic()
-            if not getattr(ws, 'connected', True):
-                break
-    finally:
-        hub.unregister()
 
 
 def parse_args(argv=None):

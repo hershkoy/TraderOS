@@ -359,6 +359,7 @@
     <script>
         const POLL_MS = 5000;
         const WS_PATH = '/ws/hot-candidates';
+        const PRICE_WS_PORT = {{ price_ws_port|default(5001)|int }};
         const FILL_SEEN_KEY = 'hotCandidates.seenFills';
         const SELL_SEEN_KEY = 'hotCandidates.seenSells';
         const FETCH_OPTS = { cache: 'no-store' };
@@ -914,7 +915,7 @@
 
         function wsUrl() {
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            return proto + '//' + location.host + WS_PATH;
+            return proto + '//' + location.hostname + ':' + PRICE_WS_PORT + WS_PATH;
         }
 
         function handleSocketMessage(data) {

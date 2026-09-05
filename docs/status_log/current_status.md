@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-05):** 1d H2 A/B of `--touch-error-pct` 1.2 vs 0 and same-bar close-fill vs `--realistic-fill-mode next-open`. Unique span365 + shakeout: B12 close **n=4558 E +2.62 PF 2.10** (keeper); tick-above **n=5649 E +1.38 PF 1.49**; next-open 1.2 **n=4894 E +0.45 PF 1.14** (2020-21 E −0.07). RDWR Jun 9 next-open 24.525 works on that name; the book does not. **No promote.** See [next-open A/B](edge_hunt/channel_touch/2026-09-05_channel_touch_next_open_ab.md).
+**Latest (2026-09-05):** `/hot` live Alpaca quotes and SELL NOW Telegram moved to always-on `hot_price_server.py` (`backTraderTest\HotPriceHub`, **:5001**). ChartingServer `:5000` is HTML/REST only. See [price WS](edge_hunt/channel_touch/2026-09-05_channel_touch_hot_price_ws.md).
+
+**Prior (2026-09-05):** 1d H2 A/B of `--touch-error-pct` 1.2 vs 0 and same-bar close-fill vs `--realistic-fill-mode next-open`. Unique span365 + shakeout: B12 close **n=4558 E +2.62 PF 2.10** (keeper); tick-above **n=5649 E +1.38 PF 1.49**; next-open 1.2 **n=4894 E +0.45 PF 1.14** (2020-21 E −0.07). RDWR Jun 9 next-open 24.525 works on that name; the book does not. **No promote.** See [next-open A/B](edge_hunt/channel_touch/2026-09-05_channel_touch_next_open_ab.md).
 
 **Prior (2026-09-05):** 1d `--realistic-fill-mode open-cross` (first 15m **open above resist**, buy that close). Unique span365 + shakeout **n=2845 E +2.06 PF 1.775** — more fills than next-mid n=1239, worse E/PF. RDWR 2025-06-13 **25.71 @ 09:45 ET**. **No promote.** See [open-cross](edge_hunt/channel_touch/2026-09-05_channel_touch_open_cross.md).
 

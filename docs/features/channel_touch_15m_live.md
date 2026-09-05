@@ -85,7 +85,8 @@ Alpaca 15m is **not** a substitute. Research volume is IB. IEX daily volume on t
 TradingView drawing alerts are **not** the live path. CronRunner ticks every minute;
 proximity uses Alpaca last on the armed list; fills still wait for a completed 15m bar.
 
-Dashboard: `http://localhost:5000/hot` (charting_server). Source of truth is TimescaleDB
+Dashboard: `http://localhost:5000/hot` (charting_server HTML/REST). Live last prices come from
+`hot_price_server.py` on **:5001** (`ws://host:5001/ws/hot-candidates`). Source of truth is TimescaleDB
 (`channel_touch_15m_candidates` + `channel_touch_15m_settings`). Rows are keyed by
 `(stock, timeframe)` so **15m** and **1d nightly** share the page (filter All / 15m / 1d).
 JSON watchlist is a debug sidecar. Nightly writes 1d armed/waiting/filled H2 rows unless
@@ -111,15 +112,22 @@ each RTH minute
   Alpaca last on the armed list (~1s)
   update last_price / dist_live_pct / hot in TimescaleDB
   also refresh Bought stops; Telegram SELL NOW if last hits the live stop
+  backup if the always-on price hub is not running
   no Telegram for newly hot (hot is not a fill)
 
-dashboard /hot (WebSocket /ws/hot-candidates)
-  page opens a socket; HTTP poll is fallback only if the socket fails
-  one server hub refreshes Alpaca if last_price_ts older than ~5s
-  pushes a snapshot when rows/quotes change; settings POST kicks an immediate push
+always-on price hub (logon task HotPriceHub, default :5001)
+  Alpaca last ~5s even with no /hot tab
+  writes last_price / Bought stops to TimescaleDB
+  Telegram SELL NOW (telegram_on_sell); desktop toast via send_alert
+  WebSocket /ws/hot-candidates for the dashboard page
+
+dashboard /hot (charting_server :5000 HTML/REST)
+  page opens ws://<host>:5001/ws/hot-candidates; HTTP poll is fallback if the socket fails
+  Flask does not fetch Alpaca; GET /api/hot-candidates reads stored last prices
+  settings / Bought / Sold POST kicks the price hub (http://127.0.0.1:5001/kick)
   sort/filter by |dist_live_pct| to resist
   Bought column marks a live position; Bought tab shows entry / last / stop / dist-to-stop
-  last through ATR k=2 (1.5%-6%) or 10% trail from peak -> SELL NOW (browser + Telegram)
+  last through ATR k=2 (1.5%-6%) or 10% trail from peak -> SELL NOW (browser + Telegram from the hub)
 ```
 
 Do **not** stream 1,478 names. The detector runs on **stored** bars (short lookback, not 2018–now). Alpaca is last trade only. At each RTH 15m close the scanner pulls IB hist **only on the armed/hot list** (client id **8826**), drops the still-forming bar, and fill-checks that completed close. After 16:30 ET `after_rth_ib_backfill` (client **8822** then **8823**) catch-up 15m then historical 5m; stop 5m at 09:15 ET. Use `--skip-ib-refresh` to disable the live pull.
@@ -143,10 +151,13 @@ REM Minute proximity (DB first, JSON fallback)
 python scripts\scanners\channel_touch_15m.py --mode proximity --dry-run
 python scripts\scanners\channel_touch_15m.py --mode fills --dry-run
 
-REM Dashboard (always-on Windows task, not crontab.yaml)
+REM Dashboard HTML (always-on Windows task, not crontab.yaml)
 python scripts\pipeline\charting_server_service.py install-task
+REM Live Alpaca quotes + SELL NOW Telegram (separate logon task, port 5001)
+python scripts\pipeline\hot_price_service.py install-task
 REM or, one-shot in a terminal:
 python charting_server.py
+python hot_price_server.py
 REM then open http://localhost:5000/hot
 ```
 
@@ -169,7 +180,9 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Candidates store | `utils/scanning/channel_touch_candidates_store.py` |
 | Dashboard API | `utils/scanning/channel_touch_hot_api.py` |
 | Scanner | `scripts/scanners/channel_touch_15m.py` |
-| Dashboard | `charting_server.py` `/hot` + `/ws/hot-candidates` + `templates/hot_candidates.html` |
+| Dashboard | `charting_server.py` `/hot` + `templates/hot_candidates.html` (HTML/REST :5000) |
+| Live prices | `hot_price_server.py` `ws://host:5001/ws/hot-candidates` (Alpaca ~5s + SELL NOW Telegram) |
+| Price hub task | `scripts/pipeline/hot_price_service.py` (`backTraderTest\HotPriceHub`) |
 | Bought trades | `utils/scanning/channel_touch_bought.py` + `init-scripts/17-channel-touch-bought-trades.sql` |
 | Schema | `init-scripts/13-channel-touch-15m-candidates.sql` |
 | IB 15m universe backfill | `scripts/data/backfill_ib_15m_universe.py` (now via `crons/after_rth_ib_backfill.bat` at 16:30 ET) |
@@ -180,10 +193,11 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Daily nightly (unchanged) | `scripts/scanners/channel_touch_nightly.py` |
 
 Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-H5 fills raise Telegram plus a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
+H5 fills raise Telegram from `channel_touch_15m --mode run` plus a **Windows toast + system sound** (`utils/notify/desktop.py`) unless
 **Browser + sound on fills / sells** is unchecked on `/hot`. With `/hot` open, a new H5 fill also beeps
-in the browser. A **Bought** row whose last price hits the ATR/trail stop raises **SELL NOW** the same
-way (browser + Telegram). Hot (last at/above resist) never notifies.
+in the browser. A **Bought** row whose last price hits the ATR/trail stop raises **SELL NOW** from
+`hot_price_server.py` (browser + Telegram) even if the page is closed. The RTH-minute proximity job
+is a backup. Hot (last at/above resist) never notifies.
 
 ---
 

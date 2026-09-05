@@ -72,6 +72,14 @@ Or: `crons\install_charting_server_task.bat`
 
 Then open `http://localhost:5000` (dashboard: `/hot`). Logs: `logs\charting_server\charting_server.log`.
 
+Live Alpaca quotes for `/hot` are a **separate** logon task (`backTraderTest\HotPriceHub`, port **5001**):
+
+```bat
+python scripts\pipeline\hot_price_service.py install-task
+```
+
+Or: `crons\install_hot_price_task.bat`. Logs: `logs\hot_price\hot_price.log`.
+
 ```bat
 python scripts\pipeline\charting_server_service.py task-status
 python scripts\pipeline\charting_server_service.py start

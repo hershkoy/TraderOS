@@ -12,8 +12,8 @@ Entry price is `fill_px`, else last, else last close. One open/sell_now row per 
 
 ## Where it runs
 
-- `/hot` hub (~5s Alpaca) while the page is open
-- `channel_touch_15m --mode proximity` every RTH minute (Telegram even if `/hot` is closed)
+- Always-on `hot_price_server.py` (~5s Alpaca) even if `/hot` is closed
+- `channel_touch_15m --mode proximity` every RTH minute (backup if the price hub is down)
 - Dedup via `sell_notified_at`
 
 Schema: `init-scripts/17-channel-touch-bought-trades.sql`. Helpers: `utils/scanning/channel_touch_bought.py`.
