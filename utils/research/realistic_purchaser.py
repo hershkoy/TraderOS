@@ -13,6 +13,9 @@ and is cancelled. Wild-bar gate: cancel when (mid-low)/mid exceeds
 
 1d default (``signal-close``): first RTH 15m that prints X, fill at that bar's
 close. ``next-mid`` blends X with the next 15m mid (cancels on 15:45 prints).
+``open-cross``: first RTH 15m whose **open** is already above resist; fill at
+that same bar's **close** (known when the 15m completes). Last RTH bar is
+allowed. Days with no 15m open above resist are skipped.
 
 Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
 and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
@@ -34,6 +37,7 @@ BAR_MINUTES = 15
 DEFAULT_MAX_LOW_TO_MID_PCT = 0.005
 FILL_MODE_SIGNAL_CLOSE = "signal-close"
 FILL_MODE_NEXT_MID = "next-mid"
+FILL_MODE_OPEN_CROSS = "open-cross"
 DEFAULT_FILL_MODE = FILL_MODE_SIGNAL_CLOSE
 
 
@@ -43,6 +47,8 @@ def normalize_fill_mode(raw: Optional[str]) -> str:
         return FILL_MODE_NEXT_MID
     if text in (FILL_MODE_SIGNAL_CLOSE, "close", "signalclose", "bar-close", "current-close"):
         return FILL_MODE_SIGNAL_CLOSE
+    if text in (FILL_MODE_OPEN_CROSS, "opencross", "open-confirm", "openconfirm"):
+        return FILL_MODE_OPEN_CROSS
     raise ValueError("unknown realistic fill mode: %s" % raw)
 
 REASON_FILLED = "filled"
@@ -54,6 +60,7 @@ REASON_CHASE = "chase"
 REASON_BAD_OHLC = "bad_ohlc"
 REASON_BAD_SIGNAL = "bad_signal"
 REASON_PRICE_NOT_PRINTED = "price_not_printed"
+REASON_NO_OPEN_CROSS = "no_open_cross"
 
 BarLike = Mapping[str, Any]
 TsLike = Union[datetime, pd.Timestamp, str]
@@ -371,7 +378,7 @@ def purchase_at_signal_index(
         return _result(REASON_BAD_SIGNAL)
     signal_bar = _row_bar(df, signal_i, naive_tz=naive_tz)
     mode = normalize_fill_mode(fill_mode)
-    if mode == FILL_MODE_SIGNAL_CLOSE:
+    if mode in (FILL_MODE_SIGNAL_CLOSE, FILL_MODE_OPEN_CROSS):
         return purchase_at_signal_close(signal_bar, naive_tz=naive_tz)
     next_bar = None
     if signal_i + 1 < len(df):
@@ -574,6 +581,63 @@ def purchase_after_daily_signal(
     )
 
 
+def purchase_open_cross_15m(
+    resist: float,
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    session_date: Any = None,
+    error_pct: float = 0.0,
+    naive_tz: str = "UTC",
+) -> PurchaseResult:
+    """First RTH 15m that **opens** above resist; fill at that bar's close.
+
+    Detection is the open (already through the rail at the print). The close is
+    the executable price once that 15m completes. Last RTH bar is allowed.
+    """
+    try:
+        lvl = float(resist)
+    except (TypeError, ValueError):
+        return _result(REASON_BAD_SIGNAL)
+    if lvl != lvl or lvl <= 0:
+        return _result(REASON_BAD_SIGNAL)
+    floor = lvl * (1.0 + max(0.0, float(error_pct)) / 100.0)
+    day = _as_session_date(session_date, naive_tz=naive_tz)
+    bars = _coerce_15m_bars(bars_15m, naive_tz=naive_tz)
+    if day is not None:
+        bars = [b for b in bars if b["ts"].date() == day]
+    if not bars:
+        return _result(REASON_BAD_SIGNAL, signal_px=lvl)
+
+    for bar in bars:
+        opened = _px(bar, "open")
+        if opened is None:
+            continue
+        if opened <= floor:
+            continue
+        inner = purchase_at_signal_close(bar, naive_tz=naive_tz)
+        hit_ts = bar.get("ts")
+        if not inner.filled:
+            return _result(
+                inner.reason,
+                signal_px=lvl,
+                exec_bar_ts=inner.exec_bar_ts,
+                hit_bar_ts=hit_ts,
+            )
+        return _result(
+            REASON_FILLED,
+            filled=True,
+            fill_px=float(inner.fill_px) if inner.fill_px is not None else None,
+            signal_time=inner.signal_time,
+            signal_px=lvl,
+            exec_bar_ts=inner.exec_bar_ts,
+            mid=inner.mid,
+            low_to_mid=inner.low_to_mid_pct,
+            chase=inner.chase_pct,
+            hit_bar_ts=hit_ts,
+        )
+    return _result(REASON_NO_OPEN_CROSS, signal_px=lvl)
+
+
 def exec_fill_15m_after_signal(
     df: pd.DataFrame,
     signal_i: int,
@@ -599,7 +663,7 @@ def exec_fill_15m_after_signal(
     )
     if not got.filled or got.fill_px is None:
         return None
-    if mode == FILL_MODE_SIGNAL_CLOSE:
+    if mode in (FILL_MODE_SIGNAL_CLOSE, FILL_MODE_OPEN_CROSS):
         return int(signal_i), float(got.fill_px)
     return int(signal_i) + 1, float(got.fill_px)
 
@@ -613,19 +677,36 @@ def exec_fill_daily_with_15m(
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
     fill_mode: str = DEFAULT_FILL_MODE,
+    resist: Optional[float] = None,
+    open_cross_error_pct: float = 0.0,
 ) -> Optional[float]:
-    """Daily X: default fill at the 15m close that printed X; ``next-mid`` blends."""
+    """Daily X: default fill at the 15m close that printed X; ``next-mid`` blends.
+
+    ``open-cross`` ignores X and fills at the close of the first 15m that
+    opens above ``resist`` (falls back to X if resist is omitted).
+    """
     if df_15m is None or df_15m.empty:
         return None
-    got = purchase_after_daily_signal(
-        signal_buy_price,
-        df_15m,
-        session_date=session_date,
-        max_low_to_mid_pct=max_low_to_mid_pct,
-        max_chase_pct=max_chase_pct,
-        naive_tz=naive_tz,
-        fill_mode=fill_mode,
-    )
+    mode = normalize_fill_mode(fill_mode)
+    if mode == FILL_MODE_OPEN_CROSS:
+        lvl = float(resist) if resist is not None else float(signal_buy_price)
+        got = purchase_open_cross_15m(
+            lvl,
+            df_15m,
+            session_date=session_date,
+            error_pct=open_cross_error_pct,
+            naive_tz=naive_tz,
+        )
+    else:
+        got = purchase_after_daily_signal(
+            signal_buy_price,
+            df_15m,
+            session_date=session_date,
+            max_low_to_mid_pct=max_low_to_mid_pct,
+            max_chase_pct=max_chase_pct,
+            naive_tz=naive_tz,
+            fill_mode=mode,
+        )
     if not got.filled or got.fill_px is None:
         return None
     return float(got.fill_px)

@@ -61,10 +61,12 @@ from utils.research.channel_touch_entry_features import (
 from utils.research.realistic_purchaser import (
     DEFAULT_FILL_MODE,
     DEFAULT_MAX_LOW_TO_MID_PCT,
+    FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     exec_fill_15m_after_signal,
     exec_fill_daily_with_15m,
     normalize_fill_mode,
+    purchase_open_cross_15m,
 )
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
 from utils.research.report_paths import dated_outdir
@@ -1333,6 +1335,7 @@ def trades_for_symbol(
                         continue
                     signal_i = int(i)
                     fill_px = float(fill) if fill is not None else None
+                    fill_time = None
                     if use_realistic:
                         if is_15m_bars:
                             adj = exec_fill_15m_after_signal(
@@ -1345,6 +1348,22 @@ def trades_for_symbol(
                             if adj is None:
                                 continue
                             i, fill_px = adj
+                        elif fill_mode == FILL_MODE_OPEN_CROSS:
+                            resist_now = _line_at(
+                                float(ch["support_y0"]),
+                                int(ch["support_x0"]),
+                                float(ch["support_slope"]),
+                                signal_i,
+                            ) + float(ch.get("channel_width") or 0.0)
+                            got = purchase_open_cross_15m(
+                                float(resist_now),
+                                df_15m,
+                                session_date=pd.Timestamp(dates[signal_i]).strftime("%Y-%m-%d"),
+                            )
+                            if not got.filled or got.fill_px is None:
+                                continue
+                            fill_px = float(got.fill_px)
+                            fill_time = got.exec_bar_ts
                         else:
                             adj_px = exec_fill_daily_with_15m(
                                 float(fill),
@@ -1358,7 +1377,7 @@ def trades_for_symbol(
                                 continue
                             fill_px = adj_px
                     pending.append(
-                        (ch, i, fill_px, tnum, signal_i, signal_i, is_sh, is_brk, is_sbo, inside_n)
+                        (ch, i, fill_px, tnum, signal_i, signal_i, is_sh, is_brk, is_sbo, inside_n, fill_time)
                     )
     else:
         channels = (
@@ -1428,6 +1447,7 @@ def trades_for_symbol(
         is_resist_break = bool(item[7]) if len(item) > 7 else False
         is_sbo = bool(item[8]) if len(item) > 8 else False
         inside_n = int(item[9]) if len(item) > 9 else 0
+        fill_time = item[10] if len(item) > 10 else None
         if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
             continue
         if is_sbo and bool(shakeout_breakout_hard_stop):
@@ -1613,6 +1633,13 @@ def trades_for_symbol(
                 **feat_snap,
             }
         )
+        if fill_time is not None:
+            ts_fill = pd.Timestamp(fill_time)
+            if ts_fill.tzinfo is not None:
+                ts_fill = ts_fill.tz_convert("UTC")
+            else:
+                ts_fill = ts_fill.tz_localize("UTC")
+            trades[-1]["buy_time"] = ts_fill.strftime("%Y-%m-%d %H:%M")
         busy_until = sim["exit_i"]
         last_exit_reason = str(sim.get("exit_reason") or "")
     return trades
@@ -2827,14 +2854,16 @@ def main() -> int:
         action="store_true",
         help="Use realistic purchase prices. 15m default is signal-bar close; "
         "pass --realistic-fill-mode next-mid for the old next-bar mid. "
-        "1d default is the 15m close that printed X; next-mid blends X with the following 15m mid.",
+        "1d default is the 15m close that printed X; next-mid blends X with the following 15m mid; "
+        "open-cross fills at the close of the first 15m that opens above resist.",
     )
     ap.add_argument(
         "--realistic-fill-mode",
-        choices=("signal-close", "next-mid"),
+        choices=("signal-close", "next-mid", "open-cross"),
         default=DEFAULT_FILL_MODE,
         help="When --realistic-fill: signal-close (default) fills at the touch bar close; "
-        "next-mid keeps the previous next-bar mid purchaser.",
+        "next-mid keeps the previous next-bar mid purchaser; "
+        "open-cross (1d) waits for a 15m open above resist and buys that bar's close.",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",

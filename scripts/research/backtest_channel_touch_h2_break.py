@@ -219,9 +219,10 @@ def main() -> int:
     )
     ap.add_argument(
         "--realistic-fill-mode",
-        choices=("signal-close", "next-mid"),
+        choices=("signal-close", "next-mid", "open-cross"),
         default="signal-close",
-        help="When --realistic-fill: signal-close (default) or next-mid (kept).",
+        help="When --realistic-fill: signal-close (default), next-mid (kept), "
+        "or open-cross (1d: first 15m open above resist, fill at that bar close).",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",

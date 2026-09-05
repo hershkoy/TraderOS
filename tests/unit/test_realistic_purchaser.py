@@ -10,6 +10,7 @@ import pytest
 from utils.research.realistic_purchaser import (
     DEFAULT_MAX_LOW_TO_MID_PCT,
     FILL_MODE_NEXT_MID,
+    FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     REASON_BAD_OHLC,
     REASON_BAD_SIGNAL,
@@ -17,6 +18,7 @@ from utils.research.realistic_purchaser import (
     REASON_END_OF_SESSION,
     REASON_FILLED,
     REASON_NO_NEXT_BAR,
+    REASON_NO_OPEN_CROSS,
     REASON_OVERNIGHT,
     REASON_PRICE_NOT_PRINTED,
     REASON_WILD_RANGE,
@@ -29,6 +31,7 @@ from utils.research.realistic_purchaser import (
     purchase_after_daily_signal,
     purchase_at_signal_close,
     purchase_at_signal_index,
+    purchase_open_cross_15m,
     signal_time_from_bar,
 )
 
@@ -623,3 +626,96 @@ def test_exec_fill_daily_signal_close_uses_print_close():
     df = pd.DataFrame(bars).set_index("ts")
     got = exec_fill_daily_with_15m(x, df, "2025-06-10")
     assert got == pytest.approx(20.06)
+
+
+def test_open_cross_skips_bar_that_opens_below_resist():
+    # RDWR 2025-06-13: 09:30 opened under the rail; 09:45 opened above.
+    resist = 24.47
+    bars = _session_15m(
+        (2025, 6, 13),
+        [
+            (9, 30, 24.37, 25.29, 24.35, 25.24),
+            (9, 45, 25.19, 25.83, 25.06, 25.71),
+            (10, 0, 25.71, 25.90, 25.52, 25.82),
+        ],
+    )
+    got = purchase_open_cross_15m(resist, bars, session_date="2025-06-13")
+    assert got.filled
+    assert got.fill_px == pytest.approx(25.71)
+    assert got.hit_bar_ts == _et(2025, 6, 13, 9, 45)
+    assert got.exec_bar_ts == _et(2025, 6, 13, 9, 45)
+    assert got.signal_time == _et(2025, 6, 13, 10, 0)
+
+
+def test_open_cross_fills_first_bar_when_gap_opens_above():
+    resist = 24.47
+    bars = _session_15m(
+        (2025, 6, 13),
+        [
+            (9, 30, 24.65, 25.29, 24.65, 25.24),
+            (9, 45, 25.19, 25.83, 25.06, 25.71),
+        ],
+    )
+    got = purchase_open_cross_15m(resist, bars, session_date="2025-06-13")
+    assert got.filled
+    assert got.fill_px == pytest.approx(25.24)
+    assert got.hit_bar_ts == _et(2025, 6, 13, 9, 30)
+
+
+def test_open_cross_skips_when_no_15m_opens_above():
+    resist = 24.47
+    bars = _session_15m(
+        (2025, 6, 12),
+        [
+            (9, 30, 24.33, 24.33, 24.30, 24.30),
+            (9, 45, 24.46, 24.48, 24.40, 24.47),
+            (15, 45, 24.39, 24.44, 24.35, 24.42),
+        ],
+    )
+    got = purchase_open_cross_15m(resist, bars, session_date="2025-06-12")
+    assert not got.filled
+    assert got.reason == REASON_NO_OPEN_CROSS
+
+
+def test_open_cross_uses_signal_session_not_prior_day():
+    resist = 24.47
+    bars = _session_15m(
+        (2025, 6, 12),
+        [
+            (10, 15, 24.55, 24.70, 24.54, 24.70),
+        ],
+    )
+    bars += _session_15m(
+        (2025, 6, 13),
+        [
+            (9, 30, 24.37, 25.29, 24.35, 25.24),
+            (9, 45, 25.19, 25.83, 25.06, 25.71),
+        ],
+    )
+    got = purchase_open_cross_15m(resist, bars, session_date="2025-06-13")
+    assert got.filled
+    assert got.fill_px == pytest.approx(25.71)
+    prior = purchase_open_cross_15m(resist, bars, session_date="2025-06-12")
+    assert prior.filled
+    assert prior.fill_px == pytest.approx(24.70)
+
+
+def test_exec_fill_daily_open_cross_uses_resist_not_x():
+    from utils.research.realistic_purchaser import exec_fill_daily_with_15m
+
+    bars = _session_15m(
+        (2025, 6, 13),
+        [
+            (9, 30, 24.37, 25.29, 24.35, 25.24),
+            (9, 45, 25.19, 25.83, 25.06, 25.71),
+        ],
+    )
+    df = pd.DataFrame(bars).set_index("ts")
+    got = exec_fill_daily_with_15m(
+        24.65,
+        df,
+        "2025-06-13",
+        fill_mode=FILL_MODE_OPEN_CROSS,
+        resist=24.47,
+    )
+    assert got == pytest.approx(25.71)
