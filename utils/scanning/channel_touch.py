@@ -67,6 +67,7 @@ from utils.research.channel_touch_scale import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 # Daily H2 resist-break span365 sleeve (report 1d_h2_resist_break.html).
+# Shakeout-breakout re-arm is on (any-closed, min_inside=1).
 LIVE_DEFAULTS: Dict[str, Any] = {
     "entry_mode": "l3_touch",
     "entry_touch": 3,

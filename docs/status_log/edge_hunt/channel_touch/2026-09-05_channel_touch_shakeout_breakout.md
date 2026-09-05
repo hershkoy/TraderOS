@@ -95,15 +95,33 @@ min_inside=5 complete-history sleeve n=1793 E +2.67 PF 2.08 — still weaker tha
 
 Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, combined unique-symbol **lifts** rather than dilutes, and **2020-21 is healthy** (the hole that killed L3 support-reclaim rebuy).
 
-**Soft-promote as a research flag** (`--shakeout-breakout`, default off). Prefer **any-closed + min_inside=1** over hard-stop-only and over min_inside=5.
+**Soft-promote and productionize any-closed + min_inside=1.** `--shakeout-breakout` is **on** for nightly (close fills) and `current_best` 1d (realistic next-mid). Prefer this over hard-stop-only and over min_inside=5.
 
-**Nightly scanner not rewired.** Re-arming a filled H2 after exit is a live-path change (not just a backtest flag). 15m unchanged. Do not reuse `--shakeout-rebuy-bars`.
+**Nightly re-arm (2026-09-05):** `LIVE_DEFAULTS["shakeout_breakout"]=True`. After a taken H2 fill, if the first trade has exited (`busy_until` / ATR+10% trail occupancy), Telegram the next close above resist after ≥1 inside close. Occupancy skips extras while the first trade is still open. 1d `/hot` re-arms the same way. 15m live H5 path stays first-fill-and-done. Do not reuse `--shakeout-rebuy-bars`.
+
+## Realistic-fill current_best 1d (same next-mid recipe as 2026-09-04)
+
+2018-11-01 → 2026-08-27, 2216 ALPACA 1d, IB prefix, window 504/252, `--realistic-fill --realistic-fill-mode next-mid`, unique-symbol/day, 0.25% friction. Wall-clock **4068s** (1d cache 16.6s + IB 15m 255s + scan 3796s).
+
+| Book | n | E | PF | vs frozen realistic unique H2 (n=713 E +1.78 PF 1.72) |
+|------|---|---|-----|------|
+| Parent unique span365 | 655 | +1.93 | 1.79 | occupancy from extras skips some later first-breaks (713→655) |
+| **Sleeve extras** | **584** | **+2.66** | **2.07** | 2020-21 E +2.61 PF 2.04; all year buckets + |
+| **Combined unique** | **1239** | **+2.27** | **1.92** | **lifts** n/E/PF; RS top1 n=635 E +2.42 PF 1.97 |
+
+SXI: parent 2020-08-11 @ 60.22 hard-stop 2020-08-25 −6.25% still there. Realistic extra is **2020-11-05 @ 66.55** trail 2021-03-22 **+46.04%** (close-fill extra was 2020-10-05 @ 62.66 / +55% — 15m next-mid reprices/delays). A later extra 2024-02-28 is in the book.
+
+HTML: deleted old `current_best/1d_channel_touch.html` and `1d_h2_resist_break.html` first, then copied `...h2_break_span365_shakeout_realistic_20260905_135228.html`. Do not `copy /Y` onto a hard link. 15m books and `1d_l3_touch.html` unchanged. Nightly remains **close fills**; HTML is **next-mid**.
 
 ## Code
 
 - [`scripts/research/backtest_channel_touch_trades.py`](../../../scripts/research/backtest_channel_touch_trades.py): `_shakeout_breakout_fill`, `--shakeout-breakout`
 - [`scripts/research/backtest_channel_touch_shakeout_breakout.py`](../../../scripts/research/backtest_channel_touch_shakeout_breakout.py)
-- Tests: `tests/unit/test_l3_touch_entry.py`
+- [`scripts/research/backtest_channel_touch_h2_break.py`](../../../scripts/research/backtest_channel_touch_h2_break.py): `--shakeout-breakout` on the daily H2 recipe
+- [`utils/scanning/channel_touch.py`](../../../utils/scanning/channel_touch.py): live occupancy + `LIVE_DEFAULTS`
+- [`scripts/scanners/channel_touch_nightly.py`](../../../scripts/scanners/channel_touch_nightly.py)
+- [`utils/scanning/channel_touch_15m.py`](../../../utils/scanning/channel_touch_15m.py) `walk_h2_resist_asof` (1d `/hot` only; 15m live stays off)
+- Tests: `tests/unit/test_l3_touch_entry.py`, `tests/unit/test_channel_touch.py`, `tests/unit/test_channel_touch_nightly.py`, `tests/unit/test_channel_touch_15m.py`
 
 ## Artifacts
 
@@ -118,3 +136,7 @@ Sleeve any-closed **min_inside=1** beats the frozen unique H2 book on E and PF, 
   - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_any_min5_20260905_122540.csv` (n=1793)
   - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_hs_min5_20260905_122540.csv` (n=623)
   - `reports/ascending_channels/2026-09-05/channel_touch_shakeout_breakout_fullhist_summary_20260905_122540.csv`
+- Realistic-fill current_best 1d (next-mid, unique span365):
+  - `reports/ascending_channels/2026-09-05/channel_touch_full_h2_break_span365_unique_20260905_135126.csv` (n=1239)
+  - HTML stamp `...h2_break_span365_shakeout_realistic_20260905_135228.html`
+  - Stable trades `reports/ascending_channels/channel_touch_h2_break_span365.csv`

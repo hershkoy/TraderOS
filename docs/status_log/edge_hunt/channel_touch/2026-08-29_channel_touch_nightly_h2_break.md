@@ -7,6 +7,10 @@ ATR k=2), not the L3 support-tag. Breakouts skip in-channel / RSI<=50 /
 beyond-width. `--h2-resist-break-only` drops same-setup L3 tags so Telegram
 is the new book, not a mix.
 
+As of 2026-09-05 nightly also **re-arms** after the first fill exits
+(`--shakeout-breakout`, any-closed min_inside=1). `--no-shakeout-breakout`
+restores first-break-and-done. See [shakeout breakout](2026-09-05_channel_touch_shakeout_breakout.md).
+
 Rollback to the L3 keeper:
 
 ```bat
