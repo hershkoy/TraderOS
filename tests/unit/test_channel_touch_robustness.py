@@ -55,3 +55,35 @@ def test_apply_max_open():
     )
     kept = apply_max_open(df, 2)
     assert len(kept) == 2
+
+
+def test_n_open_at_entry_ignores_later_buys():
+    from channel_touch_robustness import n_open_at_entry
+
+    df = pd.DataFrame(
+        {
+            "buy_date": pd.to_datetime(["2024-01-01", "2024-01-10", "2024-02-01"]),
+            "sell_date": pd.to_datetime(["2024-01-31", "2024-01-20", "2024-02-10"]),
+            "stock": ["A", "B", "C"],
+        }
+    )
+    n = n_open_at_entry(df)
+    assert list(n) == [0, 1, 0]
+
+
+def test_skip_crowded_days_drops_busy_session():
+    from channel_touch_robustness import cap_same_day, skip_crowded_days
+
+    df = pd.DataFrame(
+        {
+            "buy_date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02", "2024-01-03"]),
+            "sell_date": pd.to_datetime(["2024-01-10"] * 4),
+            "stock": ["A", "B", "C", "D"],
+            "wait_bars": [40, 10, 20, 5],
+        }
+    )
+    quiet = skip_crowded_days(df, max_names=2)
+    assert set(quiet["stock"]) == {"D"}
+    cap = cap_same_day(df, 2, tie_break="wait")
+    jan2 = cap.loc[pd.to_datetime(cap["buy_date"]) == pd.Timestamp("2024-01-02")]
+    assert list(jan2["stock"]) == ["A", "C"]

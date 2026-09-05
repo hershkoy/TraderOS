@@ -236,11 +236,36 @@ def concurrent_open_stats(df: pd.DataFrame) -> dict:
     }
 
 
-def apply_max_open(df: pd.DataFrame, max_open: int) -> pd.DataFrame:
-    """Greedy keep trades in buy-date order while open count < max_open."""
+def _tie_sort_frame(df: pd.DataFrame, *, tie_break: str) -> pd.DataFrame:
+    """Stable same-day order. rs = higher RS first (HTML default); wait = longer wait first; fifo = symbol."""
+    t = df.copy()
+    t["_buy"] = pd.to_datetime(t["buy_date"], errors="coerce")
+    kind = (tie_break or "rs").lower()
+    if kind == "wait" and "wait_bars" in t.columns:
+        t["_rk"] = -pd.to_numeric(t["wait_bars"], errors="coerce").fillna(0.0)
+    elif kind == "rs" and "rs_spy_126d" in t.columns:
+        t["_rk"] = -pd.to_numeric(t["rs_spy_126d"], errors="coerce").fillna(1e18)
+    else:
+        t["_rk"] = 0.0
+    t["_sym"] = t["stock"].astype(str) if "stock" in t.columns else ""
+    return t.sort_values(["_buy", "_rk", "_sym"], kind="mergesort")
+
+
+def apply_max_open(
+    df: pd.DataFrame,
+    max_open: int,
+    *,
+    tie_break: str = "rs",
+) -> pd.DataFrame:
+    """Greedy keep trades in buy-date order while open count < max_open.
+
+    ``tie_break``: ``rs`` (HTML / prior robustness default), ``wait`` (longer
+    wait first — not RS), or ``fifo`` (symbol). A slot still counts as occupied
+    on the sell date (sell >= buy).
+    """
     if max_open <= 0 or df.empty:
         return df.copy()
-    t = df.sort_values(["buy_date", "rs_spy_126d"] if "rs_spy_126d" in df.columns else ["buy_date"], ascending=[True, False] if "rs_spy_126d" in df.columns else [True]).copy()
+    t = _tie_sort_frame(df, tie_break=tie_break)
     kept_idx: List[int] = []
     open_exits: List[pd.Timestamp] = []
     for idx, row in t.iterrows():
@@ -250,7 +275,58 @@ def apply_max_open(df: pd.DataFrame, max_open: int) -> pd.DataFrame:
             continue
         kept_idx.append(idx)
         open_exits.append(pd.Timestamp(row["sell_date"]))
-    return t.loc[kept_idx].copy()
+    extra = [c for c in ("_buy", "_rk", "_sym") if c in t.columns]
+    return t.loc[kept_idx].drop(columns=extra).copy()
+
+
+def n_open_at_entry(df: pd.DataFrame) -> pd.Series:
+    """Count other trades with buy < this buy and sell >= this buy (causal)."""
+    if df.empty:
+        return pd.Series(dtype=int)
+    buy = pd.to_datetime(df["buy_date"], errors="coerce")
+    sell = pd.to_datetime(df["sell_date"], errors="coerce")
+    buys = buy.to_numpy()
+    sells = sell.to_numpy()
+    out = np.zeros(len(df), dtype=int)
+    for i in range(len(df)):
+        b = buys[i]
+        if pd.isna(b):
+            continue
+        out[i] = int(((buys < b) & (sells >= b)).sum())
+    return pd.Series(out, index=df.index, dtype=int)
+
+
+def same_day_fill_count(df: pd.DataFrame) -> pd.Series:
+    """How many unique-symbol fills share this buy_date (known at EOD, not intra-day)."""
+    if df.empty or "buy_date" not in df.columns:
+        return pd.Series(dtype=int)
+    day = pd.to_datetime(df["buy_date"], errors="coerce").dt.normalize()
+    counts = day.value_counts()
+    return day.map(counts).astype(int)
+
+
+def skip_crowded_days(df: pd.DataFrame, max_names: int) -> pd.DataFrame:
+    """Stand aside when that calendar day has more than ``max_names`` fills."""
+    if df.empty or int(max_names) <= 0:
+        return df.iloc[0:0].copy()
+    n = same_day_fill_count(df)
+    return df.loc[n <= int(max_names)].copy()
+
+
+def cap_same_day(
+    df: pd.DataFrame,
+    k: int,
+    *,
+    tie_break: str = "wait",
+) -> pd.DataFrame:
+    """Keep at most ``k`` fills per calendar day (FIFO by ``tie_break``)."""
+    if df.empty or int(k) <= 0:
+        return df.iloc[0:0].copy()
+    t = _tie_sort_frame(df, tie_break=tie_break)
+    t["_day"] = t["_buy"].dt.normalize()
+    kept = t.groupby("_day", sort=False, as_index=False).head(int(k))
+    extra = [c for c in ("_buy", "_rk", "_sym", "_day") if c in kept.columns]
+    return kept.drop(columns=extra).copy()
 
 
 def top_winner_labels(df: pd.DataFrame, gains: np.ndarray, n: int = 5) -> List[dict]:

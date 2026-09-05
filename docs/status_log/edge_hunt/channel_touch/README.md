@@ -41,6 +41,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-05 | [Shakeout then second H2 resist-break](2026-09-05_channel_touch_shakeout_breakout.md) |
 | 2026-09-05 | [/hot Bought tab + SELL NOW](2026-09-05_channel_touch_hot_bought.md) |
 | 2026-09-05 | [1d unique loser-filter ridge/logistic](2026-09-05_channel_touch_1d_loser_filter.md) |
+| 2026-09-05 | [1d unique crowding / max-concurrent](2026-09-05_channel_touch_1d_crowding.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -86,6 +87,7 @@ python scripts\research\backtest_channel_touch_h2_break.py --preset 15m --all-sy
 python scripts\research\backtest_channel_touch_confidence_size.py --stack 1d
 python scripts\research\backtest_channel_touch_confidence_size.py --stack 15m
 python scripts\research\filter_channel_touch_losers.py
+python scripts\research\filter_channel_touch_crowding.py
 ```
 
 Outputs: `reports/ascending_channels/`, `logs/scanners/channel_touch_nightly_*.log`
