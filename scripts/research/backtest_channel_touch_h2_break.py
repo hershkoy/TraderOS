@@ -49,7 +49,9 @@ from scripts.research.generate_channel_touch_tv_report import (  # noqa: E402
 )
 from utils.research.report_paths import dated_outdir, resolve_artifact  # noqa: E402
 from utils.research.realistic_purchaser import (  # noqa: E402
+    DEFAULT_HOT_CROSS_FILL,
     FILL_MODES_1D,
+    HOT_CROSS_FILLS,
     needs_15m_purchase_panels,
 )
 
@@ -74,6 +76,72 @@ L3_FILTERS_15M = dict(
     require_in_channel=True,
     max_channel_span_days=10.0,
 )
+
+
+def _remap_gap_open(df: pd.DataFrame) -> pd.DataFrame:
+    """Same-exit sensitivity: gap rows fill at 15m open instead of lerp."""
+    if df.empty or "gap_15m" not in df.columns or "fill_15m_open" not in df.columns:
+        return df
+    out = df.copy()
+    gap = out["gap_15m"].fillna(False).astype(bool)
+    opened = pd.to_numeric(out["fill_15m_open"], errors="coerce")
+    sell = pd.to_numeric(out["sell_price"], errors="coerce") if "sell_price" in out.columns else None
+    if sell is None or not gap.any():
+        return out
+    ok = gap & opened.notna() & (opened > 0) & sell.notna() & (sell > 0)
+    out.loc[ok, "buy_price"] = opened.loc[ok]
+    out.loc[ok, "gain_pct"] = (sell.loc[ok] / opened.loc[ok] - 1.0) * 100.0
+    return out
+
+
+def _print_hot_cross_gaps(df: pd.DataFrame, *, gain_col: str, friction: float) -> None:
+    if df is None or df.empty or "gap_15m" not in df.columns:
+        return
+    g = df["gap_15m"].fillna(False).astype(bool)
+    under = df.loc[~g]
+    gap = df.loc[g]
+    print("=== hot-cross G-under (15m open < rail) ===")
+    print(_fmt(_summarize(under, gain_col=gain_col)))
+    if not under.empty:
+        print(summarize_by_year(under, gain_col=gain_col, buckets=YEAR_BUCKETS).to_string(index=False))
+    print("=== hot-cross G-gap lerp (15m open >= rail) ===")
+    print(_fmt(_summarize(gap, gain_col=gain_col)))
+    if not gap.empty:
+        print(summarize_by_year(gap, gain_col=gain_col, buckets=YEAR_BUCKETS).to_string(index=False))
+    print("=== hot-cross G-skip (drop 15m gaps) ===")
+    print(_fmt(_summarize(under, gain_col=gain_col)))
+    gap_open = _remap_gap_open(df)
+    if "gain_pct_net" in gap_open.columns:
+        gap_open = gap_open.copy()
+        gap_open["gain_pct_net"] = gap_open["gain_pct"].astype(float) - float(friction)
+    print("=== hot-cross G-gap-open (same-exit approx; gaps fill at open) ===")
+    print(_fmt(_summarize(gap_open, gain_col=gain_col)))
+    if "fill_15m_open" in df.columns and "hot_cross_rail" in df.columns:
+        opened = pd.to_numeric(df["fill_15m_open"], errors="coerce")
+        rail = pd.to_numeric(df["hot_cross_rail"], errors="coerce")
+        wild = g & rail.notna() & (rail > 0) & opened.notna() & ((opened - rail) / rail > 0.01)
+        quiet = df.loc[~wild]
+        print("=== hot-cross G-wild skip (open already >1%% through rail) ===")
+        print(_fmt(_summarize(quiet, gain_col=gain_col)))
+    rdwr = df[df["stock"].astype(str).str.upper() == "RDWR"] if "stock" in df.columns else df.iloc[0:0]
+    if not rdwr.empty:
+        cols = [
+            c
+            for c in (
+                "buy_date",
+                "buy_time",
+                "buy_price",
+                "gap_15m",
+                "fill_15m_open",
+                "fill_15m_high",
+                "fill_15m_close",
+                "hot_cross_rail",
+                "gain_pct_net",
+            )
+            if c in rdwr.columns
+        ]
+        print("=== RDWR hot-cross fills ===")
+        print(rdwr[cols].sort_values("buy_date").to_string(index=False))
 
 
 def _fmt(s: dict) -> str:
@@ -262,6 +330,18 @@ def main() -> int:
         default=False,
         help="Only keep extras whose parent exited on the ATR hard stop",
     )
+    ap.add_argument(
+        "--intraday-trigger",
+        default="",
+        choices=("", "hot-cross"),
+        help="1d buy-now: first 15m high >= daily resist after wait (no EOD close gate).",
+    )
+    ap.add_argument(
+        "--hot-cross-fill",
+        default=DEFAULT_HOT_CROSS_FILL,
+        choices=HOT_CROSS_FILLS,
+        help="hot-cross fill: lerp85 (default), rail, or 15m close.",
+    )
     args = ap.parse_args()
     t0 = time.perf_counter()
     is_15m = (args.preset or "").strip() == "15m"
@@ -343,11 +423,14 @@ def main() -> int:
     base["shakeout_breakout"] = bool(args.shakeout_breakout)
     base["shakeout_breakout_min_inside"] = int(args.shakeout_breakout_min_inside)
     base["shakeout_breakout_hard_stop"] = bool(args.shakeout_breakout_hard_stop)
+    base["intraday_trigger"] = str(args.intraday_trigger or "")
+    base["hot_cross_fill"] = str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL)
     panels_15m = None
     load_15m = (not is_15m) and needs_15m_purchase_panels(
         "1d",
         realistic_fill=bool(args.realistic_fill),
         fill_mode=str(args.realistic_fill_mode),
+        intraday_trigger=str(args.intraday_trigger or ""),
     )
     if load_15m:
         t_15 = time.perf_counter()
@@ -411,6 +494,8 @@ def main() -> int:
                 index=False
             )
         )
+    if str(args.intraday_trigger or "") == "hot-cross":
+        _print_hot_cross_gaps(brk_span_u, gain_col=gain_col, friction=friction)
     brk_span_rs = select_same_day_rs(brk_span_n, rs_col="rs_spy_126d", max_per_day=1)
     print("=== resist-break span%s + RS top1 (optional cap) ===" % span_label)
     print(_fmt(_summarize(brk_span_rs, gain_col=gain_col)))
@@ -493,11 +578,18 @@ def main() -> int:
         "touch_error_pct": (
             float(args.touch_error_pct) if args.touch_error_pct is not None else None
         ),
+        "intraday_trigger": str(args.intraday_trigger or ""),
+        "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
     }
     notes = [
         "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail); fill at max(hard,trail) when low hits",
         "H2 resist-break fills a close above resistance after H2 (not L3 support tag)",
     ]
+    if str(args.intraday_trigger or "") == "hot-cross":
+        notes.append(
+            "hot-cross buy-now: first 15m high>=resist after wait; fill %s; no daily-close gate"
+            % str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL)
+        )
     if args.shakeout_breakout:
         notes.append(
             "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "

@@ -701,3 +701,50 @@ def test_peak_trail_time_decay_sim_tightens():
     assert out["exit_reason"] == "peak_trail"
     assert out["exit_i"] == 155
 
+
+def test_h2_hot_cross_fills_without_daily_close_above():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from backtest_channel_touch_trades import _h2_hot_cross_fills
+
+    et = ZoneInfo("America/New_York")
+    dates = pd.bdate_range("2025-06-02", periods=10)
+    n = len(dates)
+    close = np.full(n, 12.0)
+    ts_et = datetime(2025, 6, 3, 9, 30, tzinfo=et)
+    ts_utc = ts_et.astimezone(timezone.utc).replace(tzinfo=None)
+    m15 = pd.DataFrame(
+        [
+            {
+                "open": 14.50,
+                "high": 16.20,
+                "low": 14.40,
+                "close": 15.80,
+                "volume": 1e4,
+            }
+        ],
+        index=pd.DatetimeIndex([ts_utc]),
+    )
+    tags = _h2_hot_cross_fills(
+        close,
+        dates,
+        support_x0=0,
+        support_y0=10.0,
+        support_slope=0.0,
+        width=5.0,
+        h2=0,
+        n=n,
+        error_pct=1.2,
+        wait=20,
+        min_wait=1,
+        df_15m=m15,
+        fill_mode="lerp85",
+    )
+    assert len(tags) == 1
+    i, fill, tnum, _sh, is_brk = tags[0][:5]
+    assert int(i) == 1
+    assert is_brk is True
+    assert tags[0][8]["gap_15m"] is False
+    assert fill == pytest.approx(15.0 + 0.85 * (15.80 - 15.0))
+

@@ -22,9 +22,15 @@ session's open** (MOO after an EOD scan). No IB 15m join. Last bar of the
 sample has no next open and is skipped. 15m ``next-open`` buys the next same-
 session 15m **open** (last RTH cancelled, same as next-mid).
 
+``hot-cross`` (1d buy-now): first RTH 15m whose **high** reaches resist after
+H2, without waiting for that session's daily close. Fill heuristic ``lerp85``
+is ``rail + 0.85 * (close - rail)`` clamped to the bar. ``rail`` / ``close``
+are bounds. A 15m gap is ``open >= rail`` (not a daily gap).
+
 Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
 and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
-``backtest_channel_touch_h2_break.py``.
+``backtest_channel_touch_h2_break.py``. ``--intraday-trigger hot-cross`` uses
+``purchase_hot_cross_15m``.
 """
 from __future__ import annotations
 
@@ -51,6 +57,17 @@ FILL_MODES_1D = (
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_NEXT_OPEN,
 )
+HOT_CROSS_FILL_LERP85 = "lerp85"
+HOT_CROSS_FILL_RAIL = "rail"
+HOT_CROSS_FILL_CLOSE = "close"
+HOT_CROSS_FILLS = (
+    HOT_CROSS_FILL_LERP85,
+    HOT_CROSS_FILL_RAIL,
+    HOT_CROSS_FILL_CLOSE,
+)
+DEFAULT_HOT_CROSS_FILL = HOT_CROSS_FILL_LERP85
+DEFAULT_HOT_CROSS_LERP = 0.85
+INTRADAY_TRIGGER_HOT_CROSS = "hot-cross"
 
 
 def normalize_fill_mode(raw: Optional[str]) -> str:
@@ -72,16 +89,31 @@ def normalize_fill_mode(raw: Optional[str]) -> str:
     raise ValueError("unknown realistic fill mode: %s" % raw)
 
 
+def normalize_hot_cross_fill(raw: Optional[str]) -> str:
+    text = str(raw or DEFAULT_HOT_CROSS_FILL).strip().lower().replace("_", "-")
+    if text in (HOT_CROSS_FILL_LERP85, "lerp", "0.85", "85"):
+        return HOT_CROSS_FILL_LERP85
+    if text in (HOT_CROSS_FILL_RAIL, "resist", "stop"):
+        return HOT_CROSS_FILL_RAIL
+    if text in (HOT_CROSS_FILL_CLOSE, "signal-close", "bar-close"):
+        return HOT_CROSS_FILL_CLOSE
+    raise ValueError("unknown hot-cross fill: %s" % raw)
+
+
 def needs_15m_purchase_panels(
     timeframe: str,
     *,
     realistic_fill: bool,
     fill_mode: str,
+    intraday_trigger: str = "",
 ) -> bool:
     """True when a 1d book must join IB 15m to price the fill."""
-    if not realistic_fill:
-        return False
     if str(timeframe or "").strip().lower() not in ("1d", "d", "daily"):
+        return False
+    trig = str(intraday_trigger or "").strip().lower().replace("_", "-")
+    if trig == INTRADAY_TRIGGER_HOT_CROSS:
+        return True
+    if not realistic_fill:
         return False
     return normalize_fill_mode(fill_mode) != FILL_MODE_NEXT_OPEN
 
@@ -96,6 +128,7 @@ REASON_BAD_SIGNAL = "bad_signal"
 REASON_PRICE_NOT_PRINTED = "price_not_printed"
 REASON_NO_OPEN_CROSS = "no_open_cross"
 REASON_NO_NEXT_OPEN = "no_next_open"
+REASON_NO_HOT_CROSS = "no_hot_cross"
 
 BarLike = Mapping[str, Any]
 TsLike = Union[datetime, pd.Timestamp, str]
@@ -113,6 +146,11 @@ class PurchaseResult:
     low_to_mid_pct: Optional[float] = None
     chase_pct: Optional[float] = None
     hit_bar_ts: Optional[datetime] = None
+    gap_15m: Optional[bool] = None
+    bar_open: Optional[float] = None
+    bar_high: Optional[float] = None
+    bar_low: Optional[float] = None
+    bar_close: Optional[float] = None
 
 
 def bar_mid(high: float, low: float) -> float:
@@ -237,6 +275,11 @@ def _result(
     low_to_mid: Optional[float] = None,
     chase: Optional[float] = None,
     hit_bar_ts: Optional[datetime] = None,
+    gap_15m: Optional[bool] = None,
+    bar_open: Optional[float] = None,
+    bar_high: Optional[float] = None,
+    bar_low: Optional[float] = None,
+    bar_close: Optional[float] = None,
 ) -> PurchaseResult:
     return PurchaseResult(
         filled=filled,
@@ -249,6 +292,11 @@ def _result(
         low_to_mid_pct=low_to_mid,
         chase_pct=chase,
         hit_bar_ts=hit_bar_ts,
+        gap_15m=gap_15m,
+        bar_open=bar_open,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        bar_close=bar_close,
     )
 
 
@@ -758,6 +806,146 @@ def purchase_open_cross_15m(
             hit_bar_ts=hit_ts,
         )
     return _result(REASON_NO_OPEN_CROSS, signal_px=lvl)
+
+
+def hot_cross_fill_price(
+    rail: float,
+    opened: float,
+    high: float,
+    low: float,
+    close: float,
+    *,
+    fill_mode: str = DEFAULT_HOT_CROSS_FILL,
+    lerp: float = DEFAULT_HOT_CROSS_LERP,
+) -> tuple:
+    """Fill on the 15m bar that first traded through ``rail``.
+
+    Returns ``(fill_px, gap_15m)``. ``gap_15m`` is ``open >= rail``.
+    ``lerp85``: ``rail + lerp * (close - rail)`` when close >= rail, else rail,
+    then clamp to ``[low, high]``. Does not lift a large-gap lerp up to open
+    beyond that clamp (a gap with no lower wick already clamps to open).
+    ``rail``: rail, or open if gapped. ``close``: that 15m close.
+    """
+    mode = normalize_hot_cross_fill(fill_mode)
+    rail_f = float(rail)
+    opened_f = float(opened)
+    high_f = float(high)
+    low_f = float(low)
+    close_f = float(close)
+    lo = min(low_f, high_f)
+    hi = max(low_f, high_f)
+    gap = opened_f >= rail_f
+    if mode == HOT_CROSS_FILL_CLOSE:
+        px = close_f
+    elif mode == HOT_CROSS_FILL_RAIL:
+        px = opened_f if gap else rail_f
+    else:
+        if close_f >= rail_f:
+            px = rail_f + float(lerp) * (close_f - rail_f)
+        else:
+            px = rail_f
+    px = min(max(px, lo), hi)
+    return float(px), bool(gap)
+
+
+def index_rth_15m_by_session(
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    naive_tz: str = "UTC",
+) -> dict:
+    """RTH 15m bars grouped by ET session date (coerce once per symbol)."""
+    keyed = _coerce_15m_bars(bars_15m, naive_tz=naive_tz)
+    out: dict = {}
+    for bar in keyed:
+        out.setdefault(bar["ts"].date(), []).append(bar)
+    return out
+
+
+def _purchase_hot_cross_session_bars(
+    lvl: float,
+    bars: Sequence[BarLike],
+    *,
+    fill_mode: str,
+    lerp: float,
+    naive_tz: str,
+) -> PurchaseResult:
+    mode = normalize_hot_cross_fill(fill_mode)
+    if not bars:
+        return _result(REASON_BAD_SIGNAL, signal_px=lvl)
+    for bar in bars:
+        opened = _px(bar, "open")
+        high = _px(bar, "high")
+        low = _px(bar, "low")
+        close_px = _px(bar, "close")
+        if opened is None or close_px is None or not _hl_ok(high, low):
+            continue
+        if float(high) < lvl:
+            continue
+        fill_px, gap = hot_cross_fill_price(
+            lvl,
+            float(opened),
+            float(high),
+            float(low),
+            float(close_px),
+            fill_mode=mode,
+            lerp=lerp,
+        )
+        hit_ts = bar.get("ts")
+        start = _floor_15m(as_et(hit_ts, naive_tz=naive_tz)) if hit_ts is not None else None
+        return _result(
+            REASON_FILLED,
+            filled=True,
+            fill_px=float(fill_px),
+            signal_px=lvl,
+            exec_bar_ts=start,
+            mid=bar_mid(float(high), float(low)),
+            hit_bar_ts=start,
+            gap_15m=bool(gap),
+            bar_open=float(opened),
+            bar_high=float(high),
+            bar_low=float(low),
+            bar_close=float(close_px),
+        )
+    return _result(REASON_NO_HOT_CROSS, signal_px=lvl)
+
+
+def purchase_hot_cross_15m(
+    resist: float,
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    session_date: Any = None,
+    fill_mode: str = DEFAULT_HOT_CROSS_FILL,
+    lerp: float = DEFAULT_HOT_CROSS_LERP,
+    naive_tz: str = "UTC",
+    session_index: Optional[dict] = None,
+) -> PurchaseResult:
+    """First RTH 15m whose **high** reaches resist; buy-now fill on that bar.
+
+    Does not require a daily close above resist. Last RTH bar is allowed.
+    Pass ``session_index`` from ``index_rth_15m_by_session`` to avoid recoercing.
+    """
+    try:
+        lvl = float(resist)
+    except (TypeError, ValueError):
+        return _result(REASON_BAD_SIGNAL)
+    if lvl != lvl or lvl <= 0:
+        return _result(REASON_BAD_SIGNAL)
+    day = _as_session_date(session_date, naive_tz=naive_tz)
+    if session_index is not None:
+        bars = session_index.get(day, []) if day is not None else []
+        if day is None:
+            bars = [b for rows in session_index.values() for b in rows]
+    else:
+        bars = _coerce_15m_bars(bars_15m, naive_tz=naive_tz)
+        if day is not None:
+            bars = [b for b in bars if b["ts"].date() == day]
+    return _purchase_hot_cross_session_bars(
+        lvl,
+        bars,
+        fill_mode=fill_mode,
+        lerp=lerp,
+        naive_tz=naive_tz,
+    )
 
 
 def exec_fill_15m_after_signal(

@@ -60,15 +60,21 @@ from utils.research.channel_touch_entry_features import (
 )
 from utils.research.realistic_purchaser import (
     DEFAULT_FILL_MODE,
+    DEFAULT_HOT_CROSS_FILL,
     DEFAULT_MAX_LOW_TO_MID_PCT,
     FILL_MODE_NEXT_OPEN,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     FILL_MODES_1D,
+    HOT_CROSS_FILLS,
+    INTRADAY_TRIGGER_HOT_CROSS,
     exec_fill_15m_after_signal,
     exec_fill_daily_with_15m,
     needs_15m_purchase_panels,
     normalize_fill_mode,
+    normalize_hot_cross_fill,
+    index_rth_15m_by_session,
+    purchase_hot_cross_15m,
     purchase_next_daily_open,
     purchase_open_cross_15m,
 )
@@ -665,6 +671,137 @@ def _h2_rail_tag_fills(
     return out
 
 
+def _h2_hot_cross_fills(
+    close: np.ndarray,
+    dates,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    n: int,
+    error_pct: float,
+    wait: int,
+    min_wait: int,
+    df_15m: pd.DataFrame,
+    fill_mode: str,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
+    session_index: Optional[dict] = None,
+) -> List[Tuple]:
+    """Buy-now: first 15m high >= daily resist after H2 wait. No daily-close gate."""
+    wait_n = max(1, int(wait))
+    min_w = max(1, int(min_wait))
+    out: List[Tuple] = []
+    first_i: Optional[int] = None
+    end = min(int(n), int(h2) + 1 + wait_n)
+    sess = session_index if session_index is not None else index_rth_15m_by_session(df_15m)
+    for i in range(int(h2) + min_w, end):
+        if i > 0 and _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            break
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if not np.isfinite(resist) or resist <= 0:
+            continue
+        session = pd.Timestamp(dates[i]).strftime("%Y-%m-%d")
+        got = purchase_hot_cross_15m(
+            resist,
+            df_15m,
+            session_date=session,
+            fill_mode=fill_mode,
+            session_index=sess,
+        )
+        if not got.filled or got.fill_px is None:
+            continue
+        extra = {
+            "gap_15m": bool(got.gap_15m),
+            "fill_15m_open": got.bar_open,
+            "fill_15m_high": got.bar_high,
+            "fill_15m_low": got.bar_low,
+            "fill_15m_close": got.bar_close,
+            "hot_cross_rail": float(resist),
+        }
+        out.append(
+            (i, float(got.fill_px), 3, False, True, False, 0, got.exec_bar_ts, extra)
+        )
+        first_i = int(i)
+        break
+    if first_i is None or not bool(shakeout_breakout):
+        return out
+    inside_bars = 0
+    need = max(1, int(shakeout_breakout_min_inside))
+    tol = float(error_pct) / 100.0
+    for i in range(int(first_i) + 1, end):
+        if _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ) or _close_broke_support(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            break
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if not np.isfinite(resist) or resist <= 0:
+            continue
+        brk_daily = float(close[i]) > resist * (1.0 + tol)
+        if not brk_daily:
+            inside_bars += 1
+        elif inside_bars < need:
+            continue
+        if inside_bars < need:
+            continue
+        session = pd.Timestamp(dates[i]).strftime("%Y-%m-%d")
+        got = purchase_hot_cross_15m(
+            resist,
+            df_15m,
+            session_date=session,
+            fill_mode=fill_mode,
+            session_index=sess,
+        )
+        if not got.filled or got.fill_px is None:
+            continue
+        extra = {
+            "gap_15m": bool(got.gap_15m),
+            "fill_15m_open": got.bar_open,
+            "fill_15m_high": got.bar_high,
+            "fill_15m_low": got.bar_low,
+            "fill_15m_close": got.bar_close,
+            "hot_cross_rail": float(resist),
+        }
+        out.append(
+            (
+                i,
+                float(got.fill_px),
+                3,
+                False,
+                True,
+                True,
+                int(inside_bars),
+                got.exec_bar_ts,
+                extra,
+            )
+        )
+        break
+    return out
+
+
 def _session_date(ts: object) -> pd.Timestamp:
     t = pd.Timestamp(ts)
     if t.tzinfo is not None:
@@ -1156,6 +1293,8 @@ def trades_for_symbol(
     shakeout_breakout_hard_stop: bool = False,
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
+    intraday_trigger: str = "",
+    hot_cross_fill: str = DEFAULT_HOT_CROSS_FILL,
     feature_asof_prior_bar: bool = False,
     realistic_fill: bool = False,
     realistic_fill_mode: str = DEFAULT_FILL_MODE,
@@ -1222,6 +1361,19 @@ def trades_for_symbol(
     use_realistic = bool(realistic_fill)
     fill_mode = normalize_fill_mode(realistic_fill_mode)
     is_15m_bars = bool(hybrid or include_time)
+    hot_cross = (
+        str(intraday_trigger or "").strip().lower().replace("_", "-")
+        == INTRADAY_TRIGGER_HOT_CROSS
+        and mode == "l3_touch"
+        and not hybrid
+    )
+    hot_fill = normalize_hot_cross_fill(hot_cross_fill) if hot_cross else ""
+    if hot_cross:
+        if df_15m is None or df_15m.empty:
+            return []
+        hot_session_index = index_rth_15m_by_session(df_15m)
+    else:
+        hot_session_index = None
 
     pending: List[tuple] = []
     if mode == "l3_touch":
@@ -1308,6 +1460,50 @@ def trades_for_symbol(
                 sslope = float(ch["support_slope"])
                 h2 = int(ch.get("h2_idx", -1))
                 if h2 < 0:
+                    continue
+                if hot_cross:
+                    tags = _h2_hot_cross_fills(
+                        close,
+                        dates,
+                        support_x0=sx0,
+                        support_y0=sy0,
+                        support_slope=sslope,
+                        width=float(ch.get("channel_width") or 0.0),
+                        h2=h2,
+                        n=n,
+                        error_pct=tag_error_pct,
+                        wait=wait,
+                        min_wait=min_wait,
+                        df_15m=df_15m,
+                        fill_mode=hot_fill,
+                        shakeout_breakout=bool(shakeout_breakout),
+                        shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
+                        session_index=hot_session_index,
+                    )
+                    for tag in tags:
+                        i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
+                        is_sh = bool(tag[3]) if len(tag) > 3 else False
+                        is_brk = bool(tag[4]) if len(tag) > 4 else False
+                        is_sbo = bool(tag[5]) if len(tag) > 5 else False
+                        inside_n = int(tag[6]) if len(tag) > 6 else 0
+                        fill_time = tag[7] if len(tag) > 7 else None
+                        extra = tag[8] if len(tag) > 8 else {}
+                        pending.append(
+                            (
+                                ch,
+                                i,
+                                float(fill),
+                                tnum,
+                                i,
+                                i,
+                                is_sh,
+                                is_brk,
+                                is_sbo,
+                                inside_n,
+                                fill_time,
+                                extra,
+                            )
+                        )
                     continue
                 tags = _h2_rail_tag_fills(
                     high,
@@ -1461,6 +1657,7 @@ def trades_for_symbol(
         is_sbo = bool(item[8]) if len(item) > 8 else False
         inside_n = int(item[9]) if len(item) > 9 else 0
         fill_time = item[10] if len(item) > 10 else None
+        extra_fill = item[11] if len(item) > 11 and isinstance(item[11], dict) else {}
         if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
             continue
         if is_sbo and bool(shakeout_breakout_hard_stop):
@@ -1550,6 +1747,7 @@ def trades_for_symbol(
                 )
                 or deferred_channel
                 or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
+                or hot_cross
             ),
         )
         if sim is None:
@@ -1648,6 +1846,18 @@ def trades_for_symbol(
                 "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
                 **({"feature_asof": feat_asof} if feat_asof else {}),
                 **feat_snap,
+                **(
+                    {
+                        "gap_15m": extra_fill.get("gap_15m"),
+                        "fill_15m_open": extra_fill.get("fill_15m_open"),
+                        "fill_15m_high": extra_fill.get("fill_15m_high"),
+                        "fill_15m_low": extra_fill.get("fill_15m_low"),
+                        "fill_15m_close": extra_fill.get("fill_15m_close"),
+                        "hot_cross_rail": extra_fill.get("hot_cross_rail"),
+                    }
+                    if extra_fill
+                    else {}
+                ),
             }
         )
         if fill_time is not None:
@@ -1704,6 +1914,8 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         shakeout_breakout_hard_stop=bool(payload.get("shakeout_breakout_hard_stop", False)),
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
+        intraday_trigger=str(payload.get("intraday_trigger") or ""),
+        hot_cross_fill=str(payload.get("hot_cross_fill") or DEFAULT_HOT_CROSS_FILL),
         feature_asof_prior_bar=bool(payload.get("feature_asof_prior_bar", False)),
         realistic_fill=bool(payload.get("realistic_fill", False)),
         realistic_fill_mode=str(payload.get("realistic_fill_mode") or DEFAULT_FILL_MODE),
@@ -2923,6 +3135,18 @@ def main() -> int:
         "Nightly/pivot unchanged (default off).",
     )
     ap.add_argument(
+        "--intraday-trigger",
+        default="",
+        choices=("", "hot-cross"),
+        help="1d H2 buy-now: first 15m high >= daily resist after wait (no EOD close gate).",
+    )
+    ap.add_argument(
+        "--hot-cross-fill",
+        default=DEFAULT_HOT_CROSS_FILL,
+        choices=HOT_CROSS_FILLS,
+        help="hot-cross fill: lerp85 (default, 85%% rail-to-close), rail, or 15m close.",
+    )
+    ap.add_argument(
         "--feature-asof",
         default="auto",
         choices=("auto", "prior-bar", "entry-bar"),
@@ -3099,10 +3323,14 @@ def main() -> int:
         time.perf_counter() - t_load,
     )
 
-    need_15m_purchase = intraday_fill == "15m" or needs_15m_purchase_panels(
-        str(args.timeframe),
-        realistic_fill=bool(args.realistic_fill),
-        fill_mode=str(args.realistic_fill_mode),
+    need_15m_purchase = (
+        intraday_fill == "15m"
+        or needs_15m_purchase_panels(
+            str(args.timeframe),
+            realistic_fill=bool(args.realistic_fill),
+            fill_mode=str(args.realistic_fill_mode),
+            intraday_trigger=str(args.intraday_trigger or ""),
+        )
     )
     panels_15m: Dict[str, pd.DataFrame] = {}
     n_skip_15m = 0
@@ -3349,6 +3577,8 @@ def main() -> int:
             "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
             "df_15m": panels_15m.get(sym) if need_15m_purchase else None,
             "intraday_fill": intraday_fill,
+            "intraday_trigger": str(args.intraday_trigger or ""),
+            "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
             "feature_asof_prior_bar": bool(use_prior_bar),
             "realistic_fill": bool(args.realistic_fill),
             "realistic_fill_mode": str(args.realistic_fill_mode),

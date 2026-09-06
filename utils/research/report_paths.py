@@ -1,7 +1,7 @@
 """Date-folder layout for ``reports/ascending_channels``.
 
 Timestamped run artifacts go in ``YYYY-MM-DD`` subfolders. Live sidecars
-(watchlist, coverage, alpaca lists, ``current_best``) stay at the folder root.
+(watchlist, coverage, alpaca lists, ``current_best``, ``1d_unrealistic``) stay at the folder root.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ STAMP_RE = re.compile(r"(20\d{6})(?:_(\d{6}))?")
 KEEP_AT_ROOT_NAMES = frozenset(
     {
         "current_best",
+        "1d_unrealistic",
         "alpaca_1d_missing_after_hang.txt",
         "alpaca_1d_need_update.txt",
         "alpaca_1d_symbols.txt",

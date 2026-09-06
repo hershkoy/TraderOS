@@ -19,7 +19,7 @@ Related: [current status](../current_status.md), [channel-touch](channel_touch/R
 
 Phases 5 / 6 / 6c closed. Prefer freeze/productionize Phase 6b `Blend_VT60_BV40` over more Sharpe>1 fishing on the same window.
 
-Active production track is **channel-touch** (daily H2 resist-break nightly + 15m `/hot` research loop). Same-bar rail clip is **unrealistic**, not optimistic. Status: [channel-touch](channel_touch/README.md). Latest digest: [2026-09-05](../daily/2026-09-05.md).
+Active production track is **channel-touch** (daily H2 resist-break nightly + 15m `/hot` research loop). Same-bar rail clip is **unrealistic**, not optimistic. `current_best/` 1d slot is live-executable hot-cross **n=4079 E −0.19 PF 0.94** (losing; the number to beat). Status: [channel-touch](channel_touch/README.md). Latest digest: [2026-09-05](../daily/2026-09-05.md).
 
 ## Harness
 

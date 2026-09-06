@@ -33,15 +33,15 @@ June 12: armed all day; hot most of the session; **not** hot at the 15:45 close 
 
 ## Numbers that are pre-fix
 
-Until next-mid is rescanned with `_as_session_date`:
+Superseded 2026-09-06: honest unique next-mid + shakeout is **n=1986 E +2.24 PF 1.89**. See [rebuild](2026-09-06_channel_touch_next_mid_session_date.md).
+
+Until that rescan, these were the stale HTML / crowding figures:
 
 | Book | n | E | PF |
 |------|---|----|----|
-| Unique next-mid + shakeout (`current_best` HTML) | 1239 | +2.27 | 1.92 |
+| Unique next-mid + shakeout (`1d_unrealistic` HTML) | 1239 | +2.27 | 1.92 |
 | Cap 2/day by wait (crowding) | 933 | +3.01 | 2.25 |
-
-Do not treat those as the honest next-mid book. Do not wire cap-2 or replace HTML until rebuilt.
 
 ## Decision
 
-Code join is fixed. **HTML / crowding / loser-filter CSVs are still the pre-fix scan.** Nightly stays **unrealistic close / rail-clip** fills (never this join).
+Code join is fixed. **2026-09-06 rescan:** unique **n=1986 E +2.24 PF 1.89** (all year buckets +). Nightly stays **unrealistic close / rail-clip** fills (never this join). HTML in `1d_unrealistic/` was not regenerated.

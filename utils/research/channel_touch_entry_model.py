@@ -1017,7 +1017,7 @@ def confidence_size_verdict(stitched: dict, fold_df: pd.DataFrame) -> str:
 
 # Known at a 15m next-mid fill: rails, wait, calendar, extra-vs-parent.
 # Fill-day daily close / RSI / %B / range / SMA distance / same-day volume
-# are not known until the session ends (current_best 1d is next-mid).
+# are not known until the session ends (1d next-mid overlay is research, not current_best).
 HONEST_1D_NEXTMID_FEATURES: Sequence[str] = (
     "channel_pos",
     "room_to_resist_pct",

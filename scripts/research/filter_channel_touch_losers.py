@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression keep/skip filter on the current_best 1d H2 unique-symbol book.
+"""Regression keep/skip filter on the 1d H2 unique-symbol book (unrealistic rail-clip / next-mid overlay; not current_best).
 
 Entry features are already on the trades CSV. Fill-day daily close (RSI, %B,
 close_loc, SMA distance, same-session volume) is a leak for next-mid fills;
@@ -214,7 +214,7 @@ def main() -> int:
             df = _attach_prior_session_spy(df, spy)
 
     base = trade_metrics(pd.to_numeric(df["gain_pct_net"], errors="coerce").to_numpy(dtype=float))
-    print("\n==== current_best unique 1d (all) ====")
+    print("\n==== 1d unique (all; not current_best) ====")
     print(_fmt(base))
     _year_block(df, "all")
 

@@ -92,7 +92,10 @@ def test_migrate_flat_reports_moves_stamped_keeps_live(tmp_path):
     (tmp_path / "channel_touch_15m_watchlist.json").write_text("{}\n", encoding="utf-8")
     current_best = tmp_path / "current_best"
     current_best.mkdir()
-    (current_best / "1d_channel_touch.html").write_text("<html></html>", encoding="utf-8")
+    (current_best / "15m_channel_touch.html").write_text("<html></html>", encoding="utf-8")
+    unrealistic = tmp_path / "1d_unrealistic"
+    unrealistic.mkdir()
+    (unrealistic / "1d_channel_touch.html").write_text("<html></html>", encoding="utf-8")
 
     moved = migrate_flat_reports(tmp_path)
     assert len(moved) == 1
@@ -100,7 +103,8 @@ def test_migrate_flat_reports_moves_stamped_keeps_live(tmp_path):
     assert dest.exists()
     assert not (tmp_path / stamp_name).exists()
     assert (tmp_path / "channel_touch_15m_watchlist.json").exists()
-    assert (current_best / "1d_channel_touch.html").exists()
+    assert (current_best / "15m_channel_touch.html").exists()
+    assert (unrealistic / "1d_channel_touch.html").exists()
 
 
 def test_migrate_flat_reports_uses_mtime_without_stamp(tmp_path):

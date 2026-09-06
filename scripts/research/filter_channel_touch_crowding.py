@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portfolio crowding / max-concurrent on the current_best 1d unique book.
+"""Portfolio crowding / max-concurrent on the 1d unique H2 book (unrealistic rail-clip / next-mid overlay; not current_best).
 
 Pre-registered (not fitted) rules. Gate: kept E and PF beat baseline, 2020-21
 and 2024-26 both stay positive, drop-top-3 PF>1.

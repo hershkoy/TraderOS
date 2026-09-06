@@ -1,7 +1,7 @@
 """Unit tests for close-confirm 15m realistic purchaser (not wired to the runner yet)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -36,6 +36,8 @@ from utils.research.realistic_purchaser import (
     purchase_next_bar_open,
     purchase_next_daily_open,
     purchase_open_cross_15m,
+    purchase_hot_cross_15m,
+    index_rth_15m_by_session,
     signal_time_from_bar,
 )
 
@@ -768,3 +770,110 @@ def test_needs_15m_purchase_panels_skips_next_open():
     assert not needs_15m_purchase_panels(
         "1d", realistic_fill=False, fill_mode=FILL_MODE_NEXT_MID
     )
+    assert needs_15m_purchase_panels(
+        "1d",
+        realistic_fill=False,
+        fill_mode=FILL_MODE_NEXT_MID,
+        intraday_trigger="hot-cross",
+    )
+
+
+def test_hot_cross_rdwr_open_under_lerp85():
+    from utils.research.realistic_purchaser import (
+        REASON_NO_HOT_CROSS,
+        hot_cross_fill_price,
+        purchase_hot_cross_15m,
+    )
+
+    rail = 24.64
+    px, gap = hot_cross_fill_price(rail, 24.35, 25.23, 24.33, 25.05, fill_mode="lerp85")
+    assert gap is False
+    assert px == pytest.approx(24.64 + 0.85 * (25.05 - 24.64))
+    rail_px, _ = hot_cross_fill_price(rail, 24.35, 25.23, 24.33, 25.05, fill_mode="rail")
+    close_px, _ = hot_cross_fill_price(rail, 24.35, 25.23, 24.33, 25.05, fill_mode="close")
+    assert rail_px == pytest.approx(24.64)
+    assert close_px == pytest.approx(25.05)
+
+    bars = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.35,
+                "high": 25.23,
+                "low": 24.33,
+                "close": 25.05,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 13, 9, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 25.20,
+                "high": 25.82,
+                "low": 25.08,
+                "close": 25.65,
+                "volume": 1e4,
+            },
+        ]
+    ).set_index("ts")
+    got = purchase_hot_cross_15m(rail, bars, session_date="2025-06-13", fill_mode="lerp85")
+    assert got.filled
+    assert got.gap_15m is False
+    indexed = index_rth_15m_by_session(bars)
+    got2 = purchase_hot_cross_15m(
+        rail, bars, session_date="2025-06-13", fill_mode="lerp85", session_index=indexed
+    )
+    assert got2.fill_px == pytest.approx(got.fill_px)
+    assert got.fill_px == pytest.approx(24.64 + 0.85 * (25.05 - 24.64))
+    assert got.bar_open == pytest.approx(24.35)
+    miss = purchase_hot_cross_15m(30.0, bars, session_date="2025-06-13")
+    assert not miss.filled
+    assert miss.reason == REASON_NO_HOT_CROSS
+
+
+def test_hot_cross_gap_open_and_lerp_clamp():
+    from utils.research.realistic_purchaser import hot_cross_fill_price, purchase_hot_cross_15m
+
+    rail = 24.64
+    px, gap = hot_cross_fill_price(rail, 24.70, 25.23, 24.70, 25.05, fill_mode="lerp85")
+    assert gap is True
+    assert px == pytest.approx(24.64 + 0.85 * (25.05 - 24.64))
+    open_px, _ = hot_cross_fill_price(rail, 24.70, 25.23, 24.70, 25.05, fill_mode="rail")
+    assert open_px == pytest.approx(24.70)
+
+    big, gap2 = hot_cross_fill_price(rail, 26.0, 26.3, 26.0, 26.2, fill_mode="lerp85")
+    assert gap2 is True
+    assert big == pytest.approx(26.0)
+
+    wick, gap3 = hot_cross_fill_price(rail, 26.0, 26.3, 25.5, 26.2, fill_mode="lerp85")
+    assert gap3 is True
+    assert wick == pytest.approx(24.64 + 0.85 * (26.2 - 24.64))
+    assert wick < 26.0
+    rail_gap, _ = hot_cross_fill_price(rail, 26.0, 26.3, 25.5, 26.2, fill_mode="rail")
+    assert rail_gap == pytest.approx(26.0)
+
+
+def test_hot_cross_close_below_rail_fills_rail():
+    from utils.research.realistic_purchaser import hot_cross_fill_price
+
+    px, gap = hot_cross_fill_price(24.64, 24.35, 24.80, 24.30, 24.50, fill_mode="lerp85")
+    assert gap is False
+    assert px == pytest.approx(24.64)
+
+
+def test_hot_cross_daily_gap_15m_open_under_is_not_gap():
+    from utils.research.realistic_purchaser import purchase_hot_cross_15m
+
+    bars = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.35,
+                "high": 25.23,
+                "low": 24.33,
+                "close": 25.05,
+                "volume": 1e4,
+            }
+        ]
+    ).set_index("ts")
+    got = purchase_hot_cross_15m(24.64, bars, session_date="2025-06-13")
+    assert got.filled
+    assert got.gap_15m is False
