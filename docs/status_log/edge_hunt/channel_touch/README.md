@@ -50,6 +50,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-06 | [1d buy-now hot-cross (15m high >= daily rail)](2026-09-06_channel_touch_1d_15m_trigger.md) |
 | 2026-09-06 | [1d next-mid rebuilt with `_as_session_date`](2026-09-06_channel_touch_next_mid_session_date.md) |
 | 2026-09-06 | [hot-cross into current_best (losing 1d baseline)](2026-09-06_channel_touch_current_best_hot_cross.md) |
+| 2026-09-06 | [Detect-once stop/ATR exit sweep CLI](2026-09-06_channel_touch_exit_sweep.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [realistic purchasing](../../../features/realistic_purchasing.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -78,6 +79,8 @@ Stable HTML: **`current_best/`** is live-executable causal books even if losing 
 venv\Scripts\activate
 set PYTHONPATH=.
 python scripts\research\backtest_channel_touch_trades.py --all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-beyond-width 0.25 --max-entries-per-day 1 --friction-pct 0.25 --workers 4 --load-workers 8 --start 2018-11-01
+python scripts\research\backtest_channel_touch_trades.py --stop-pct-sweep 0.02,0.03,0.04 --workers 4
+python scripts\research\backtest_channel_touch_trades.py --atr-stop-mult-sweep 1,1.5,2 --workers 4
 python scripts\research\analyze_channel_touch_entry_features.py --trades reports\ascending_channels\channel_touch_trades_raw_<stamp>.csv
 python scripts\research\audit_channel_touch_quality.py
 python scripts\research\channel_touch_robustness.py --trades reports\ascending_channels\channel_touch_trades_20260825_014435.csv

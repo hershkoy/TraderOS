@@ -21,6 +21,8 @@ Usage (Windows CMD):
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --symbols GLD
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --all-symbols --workers 4 --load-workers 8 --edge-improve
   venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --preset 15m --symbols GLD,QQQ,AAPL
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --stop-pct-sweep 0.02,0.03,0.04 --workers 4
+  venv\\Scripts\\activate && set PYTHONPATH=. && python scripts\\research\\backtest_channel_touch_trades.py --atr-stop-mult-sweep 1,1.5,2 --workers 4
 """
 from __future__ import annotations
 
@@ -1251,6 +1253,288 @@ def _resolve_entry_i(
     raise ValueError(f"Unknown entry_mode={entry_mode!r}")
 
 
+def _walk_pending_trades(
+    ctx: dict,
+    *,
+    stop_pct: float,
+    trail_pct: float,
+    trail_pct_wide: Optional[float] = None,
+    squeeze_adaptive: bool = False,
+    squeeze_pctile: float = 75.0,
+    squeeze_lookback: int = 100,
+    atr_stop_mult: Optional[float] = None,
+    stop_pct_floor: float = 0.015,
+    stop_pct_ceil: float = 0.06,
+    resist_exit: bool = False,
+    resist_arm_trail: bool = False,
+    peak_trail_mode: str = "off",
+    trail_floor: float = 0.01,
+    trail_decay_per_bar: float = 0.0002,
+    trail_tighten_per_pct: float = 0.0033,
+    trail_pct_tight: Optional[float] = None,
+    squeeze_fade_tighten: bool = False,
+) -> List[dict]:
+    """Occupancy walk + exit sim. ``ctx`` is frozen fills/setups from one detect pass."""
+    pending = ctx["pending"]
+    symbol = ctx["symbol"]
+    sim_high = ctx["sim_high"]
+    sim_low = ctx["sim_low"]
+    sim_close = ctx["sim_close"]
+    sim_dates = ctx["sim_dates"]
+    sim_n = int(ctx["sim_n"])
+    high = ctx["high"]
+    low = ctx["low"]
+    close = ctx["close"]
+    volume = ctx["volume"]
+    atr = ctx["atr"]
+    dates = ctx["dates"]
+    hybrid = bool(ctx["hybrid"])
+    daily_i_map = ctx["daily_i_map"]
+    feat_series = ctx["feat_series"]
+    squeeze_mom = ctx["squeeze_mom"]
+    use_realistic = bool(ctx["use_realistic"])
+    fill_mode = ctx["fill_mode"]
+    is_15m_bars = bool(ctx["is_15m_bars"])
+    hot_cross = bool(ctx["hot_cross"])
+    feature_asof_prior_bar = bool(ctx["feature_asof_prior_bar"])
+    include_time = bool(ctx["include_time"])
+    entry_mode = ctx["entry_mode"]
+    entry_slip_pct = float(ctx["entry_slip_pct"])
+    max_l3_wait_bars = int(ctx["max_l3_wait_bars"])
+    tag_error_pct = float(ctx["tag_error_pct"])
+    shakeout_breakout_hard_stop = bool(ctx["shakeout_breakout_hard_stop"])
+    adv_lookback = int(ctx["adv_lookback"])
+    hold_max = ctx["hold_max"]
+    wide = (
+        float(trail_pct_wide)
+        if bool(squeeze_adaptive) and trail_pct_wide is not None
+        else None
+    )
+    trades: List[dict] = []
+    busy_until = -1
+    last_exit_reason: Optional[str] = None
+    for item in pending:
+        ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i = item[:6]
+        is_shakeout = bool(item[6]) if len(item) > 6 else False
+        is_resist_break = bool(item[7]) if len(item) > 7 else False
+        is_sbo = bool(item[8]) if len(item) > 8 else False
+        inside_n = int(item[9]) if len(item) > 9 else 0
+        fill_time = item[10] if len(item) > 10 else None
+        extra_fill = item[11] if len(item) > 11 and isinstance(item[11], dict) else {}
+        if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
+            continue
+        if is_sbo and bool(shakeout_breakout_hard_stop):
+            if last_exit_reason != "hard_stop":
+                continue
+        sx0 = int(ch["support_x0"])
+        sy0 = float(ch["support_y0"])
+        sslope = float(ch["support_slope"])
+        width = float(ch["channel_width"])
+        orig_entry_i = int(entry_i)
+        if fill_px is not None:
+            lifted = _ensure_fill_not_below_support(
+                sim_high,
+                sim_low,
+                sim_close,
+                fill_i=int(entry_i),
+                fill_px=float(fill_px),
+                support_x0=sx0,
+                support_y0=sy0,
+                support_slope=sslope,
+                width=width,
+                h2=int(ch.get("h2_idx", -1)),
+                n=sim_n,
+                error_pct=tag_error_pct,
+                slip=float(entry_slip_pct),
+                wait=max(1, int(max_l3_wait_bars)),
+                daily_i=daily_i_map if hybrid else None,
+            )
+            if lifted is None:
+                continue
+            entry_i, fill_px, lifted_brk = lifted
+            if lifted_brk:
+                is_resist_break = True
+            if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
+                continue
+        deferred_channel = int(entry_i) != orig_entry_i
+        if hybrid and daily_i_map is not None and 0 <= int(entry_i) < len(daily_i_map):
+            mapped = int(daily_i_map[int(entry_i)])
+            line_i = mapped if mapped >= 0 else int(daily_entry_i)
+        else:
+            line_i = int(entry_i)
+        feat_src = int(t_idx) if use_realistic else int(entry_i)
+        atr_i_idx = max(0, feat_src - 1) if (hybrid or feature_asof_prior_bar or use_realistic) else feat_src
+        if hybrid:
+            atr_i = float(atr[atr_i_idx]) if atr_i_idx < len(atr) else float("nan")
+        else:
+            atr_src_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
+            if use_realistic:
+                atr_src_i = max(0, int(t_idx) - 1) if feature_asof_prior_bar else int(t_idx)
+            atr_i = float(atr[atr_src_i]) if atr_src_i < len(atr) else float("nan")
+        sim = _simulate_trade(
+            sim_high,
+            sim_low,
+            sim_close,
+            sim_dates,
+            entry_i,
+            stop_pct=stop_pct,
+            trail_pct=trail_pct,
+            trail_pct_wide=wide,
+            squeeze_mom=squeeze_mom,
+            squeeze_pctile=squeeze_pctile,
+            squeeze_lookback=squeeze_lookback,
+            atr_at_entry=atr_i if np.isfinite(atr_i) else None,
+            atr_stop_mult=atr_stop_mult,
+            stop_pct_floor=stop_pct_floor,
+            stop_pct_ceil=stop_pct_ceil,
+            support_x0=sx0,
+            support_y0=sy0,
+            support_slope=sslope,
+            channel_width=width,
+            resist_exit=resist_exit and not hybrid,
+            resist_arm_trail=bool(resist_arm_trail),
+            peak_trail_mode=str(peak_trail_mode or "off"),
+            trail_floor=float(trail_floor),
+            trail_decay_per_bar=float(trail_decay_per_bar),
+            trail_tighten_per_pct=float(trail_tighten_per_pct),
+            trail_pct_tight=trail_pct_tight,
+            squeeze_fade_tighten=squeeze_fade_tighten,
+            max_hold_days=hold_max,
+            include_time=include_time,
+            entry_px=fill_px,
+            skip_entry_bar_stop=bool(
+                (
+                    use_realistic
+                    and not is_15m_bars
+                    and fill_mode != FILL_MODE_NEXT_OPEN
+                )
+                or deferred_channel
+                or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
+                or hot_cross
+            ),
+        )
+        if sim is None:
+            continue
+        entry_px = float(sim["buy_price"])
+        atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
+        if hybrid:
+            adv = _adv_20(close, volume, atr_i_idx, lookback=adv_lookback)
+        else:
+            adv_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
+            adv = _adv_20(close, volume, adv_i, lookback=adv_lookback)
+        support_at = _line_at(sy0, sx0, sslope, line_i)
+        resist_at = support_at + width
+        channel_pos = (
+            (entry_px - support_at) / width
+            if width > 0 and np.isfinite(support_at)
+            else float("nan")
+        )
+        room_to_resist_pct = (
+            (resist_at - entry_px) / entry_px * 100.0
+            if entry_px > 0 and np.isfinite(resist_at)
+            else float("nan")
+        )
+        if hybrid:
+            beyond_prior = (
+                max_beyond_width(high, sy0, sx0, sslope, width, sx0, max(sx0, line_i - 1))
+                if line_i > sx0
+                else 0.0
+            )
+            fill_over = float("nan")
+            if width > 0 and np.isfinite(resist_at):
+                fill_over = (float(sim_high[entry_i]) - float(resist_at)) / float(width)
+            beyond = max(
+                float(beyond_prior) if np.isfinite(beyond_prior) else 0.0,
+                float(fill_over) if np.isfinite(fill_over) else 0.0,
+            )
+        else:
+            beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
+        buy_ts = pd.Timestamp(sim_dates[entry_i])
+        try:
+            ch_start_ts = pd.Timestamp(ch["start_date"])
+            ch_end_ts = pd.Timestamp(ch.get("h2_date") or ch["end_date"])
+            span_days = int((ch_end_ts - ch_start_ts).days)
+            age_days = int((buy_ts - ch_start_ts).days)
+        except Exception:
+            span_days = None
+            age_days = None
+        h2_idx = int(ch.get("h2_idx", t_idx))
+        wait_bars = int(t_idx - h2_idx) if (hybrid or use_realistic) else int(entry_i - h2_idx)
+        feat_i = (int(t_idx) - 1 if feature_asof_prior_bar else int(t_idx)) if use_realistic else (
+            entry_i - 1 if feature_asof_prior_bar else entry_i
+        )
+        feat_snap = snapshot_stock_features(feat_series, feat_i) if feat_series is not None else {}
+        feat_asof = None
+        if feat_series is not None and 0 <= feat_i < len(sim_dates):
+            feat_asof = pd.Timestamp(sim_dates[feat_i]).strftime("%Y-%m-%d %H:%M")
+        touch_ts = pd.Timestamp(sim_dates[t_idx]) if 0 <= t_idx < len(sim_dates) else buy_ts
+        touch_px = float(sim_low[t_idx]) if 0 <= t_idx < len(sim_low) else float("nan")
+        trades.append(
+            {
+                "stock": symbol.upper(),
+                "channel_start": ch["start_date"],
+                "channel_end": ch.get("h2_date") or ch["end_date"],
+                "touch_num": touch_num,
+                "touch_date": touch_ts.strftime("%Y-%m-%d"),
+                "touch_price": round(touch_px, 4) if np.isfinite(touch_px) else None,
+                **(
+                    {"touch_time": touch_ts.strftime("%Y-%m-%d %H:%M")}
+                    if include_time
+                    else {}
+                ),
+                **{k: v for k, v in sim.items() if k not in ("entry_i", "exit_i")},
+                "entry_i": sim["entry_i"],
+                "exit_i": sim["exit_i"],
+                "adv_20": round(adv, 2) if np.isfinite(adv) else None,
+                "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
+                **channel_rail_fields(ch, dates, low, include_time=include_time or is_15m_bars),
+                "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
+                "channel_width_pct": ch.get("channel_width_pct"),
+                "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
+                "room_to_resist_pct": (
+                    round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
+                ),
+                "bars_span": ch.get("bars_span"),
+                "entry_mode": entry_mode,
+                "shakeout_rebuy": bool(is_shakeout),
+                "resist_break": bool(is_resist_break),
+                "shakeout_breakout": bool(is_sbo),
+                "shakeout_inside_bars": int(inside_n) if is_sbo else None,
+                "parent_exit_reason": last_exit_reason if is_sbo else None,
+                "wait_bars": wait_bars,
+                "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
+                "channel_span_days": span_days,
+                "channel_age_at_buy_days": age_days,
+                "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
+                "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
+                **({"feature_asof": feat_asof} if feat_asof else {}),
+                **feat_snap,
+                **(
+                    {
+                        "gap_15m": extra_fill.get("gap_15m"),
+                        "fill_15m_open": extra_fill.get("fill_15m_open"),
+                        "fill_15m_high": extra_fill.get("fill_15m_high"),
+                        "fill_15m_low": extra_fill.get("fill_15m_low"),
+                        "fill_15m_close": extra_fill.get("fill_15m_close"),
+                        "hot_cross_rail": extra_fill.get("hot_cross_rail"),
+                    }
+                    if extra_fill
+                    else {}
+                ),
+            }
+        )
+        if fill_time is not None:
+            ts_fill = pd.Timestamp(fill_time)
+            if ts_fill.tzinfo is not None:
+                ts_fill = ts_fill.tz_convert("UTC")
+            else:
+                ts_fill = ts_fill.tz_localize("UTC")
+            trades[-1]["buy_time"] = ts_fill.strftime("%Y-%m-%d %H:%M")
+        busy_until = sim["exit_i"]
+        last_exit_reason = str(sim.get("exit_reason") or "")
+    return trades
+
+
 def trades_for_symbol(
     symbol: str,
     df: pd.DataFrame,
@@ -1301,10 +1585,16 @@ def trades_for_symbol(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     touch_error_pct: Optional[float] = None,
+    exit_variants: Optional[Sequence[Tuple[str, dict]]] = None,
     **channel_kwargs,
-) -> List[dict]:
-    if df is None or df.empty:
+) -> Union[List[dict], Dict[str, List[dict]]]:
+    def _empty():
+        if exit_variants:
+            return {str(n): [] for n, _ in exit_variants}
         return []
+
+    if df is None or df.empty:
+        return _empty()
     out = _normalize_ohlcv_frame(df)
 
     high = out["high"].to_numpy(dtype=float)
@@ -1323,7 +1613,7 @@ def trades_for_symbol(
     hybrid = mode == "l3_touch" and (intraday_fill or "").strip().lower() == "15m"
     if hybrid:
         if df_15m is None or df_15m.empty:
-            return []
+            return _empty()
         m15 = _normalize_ohlcv_frame(df_15m)
         include_time = True
         feature_asof_prior_bar = True
@@ -1370,7 +1660,7 @@ def trades_for_symbol(
     hot_fill = normalize_hot_cross_fill(hot_cross_fill) if hot_cross else ""
     if hot_cross:
         if df_15m is None or df_15m.empty:
-            return []
+            return _empty()
         hot_session_index = index_rth_15m_by_session(df_15m)
     else:
         hot_session_index = None
@@ -1625,9 +1915,6 @@ def trades_for_symbol(
                 pending.append((ch, int(entry_i), None, int(touch_num), int(t_idx), int(entry_i), False, False))
 
     pending.sort(key=lambda t: (int(t[1]), int(t[0].get("h2_idx", 0))))
-    trades: List[dict] = []
-    busy_until = -1
-    last_exit_reason: Optional[str] = None
     if hybrid:
         sim_high = m15_high
         sim_low = m15_low
@@ -1650,226 +1937,80 @@ def trades_for_symbol(
         m15_dates = dates
         daily_i_map = None
 
-    for item in pending:
-        ch, entry_i, fill_px, touch_num, t_idx, daily_entry_i = item[:6]
-        is_shakeout = bool(item[6]) if len(item) > 6 else False
-        is_resist_break = bool(item[7]) if len(item) > 7 else False
-        is_sbo = bool(item[8]) if len(item) > 8 else False
-        inside_n = int(item[9]) if len(item) > 9 else 0
-        fill_time = item[10] if len(item) > 10 else None
-        extra_fill = item[11] if len(item) > 11 and isinstance(item[11], dict) else {}
-        if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
-            continue
-        if is_sbo and bool(shakeout_breakout_hard_stop):
-            if last_exit_reason != "hard_stop":
-                continue
-        sx0 = int(ch["support_x0"])
-        sy0 = float(ch["support_y0"])
-        sslope = float(ch["support_slope"])
-        width = float(ch["channel_width"])
-        orig_entry_i = int(entry_i)
-        if fill_px is not None:
-            lifted = _ensure_fill_not_below_support(
-                sim_high,
-                sim_low,
-                sim_close,
-                fill_i=int(entry_i),
-                fill_px=float(fill_px),
-                support_x0=sx0,
-                support_y0=sy0,
-                support_slope=sslope,
-                width=width,
-                h2=int(ch.get("h2_idx", -1)),
-                n=sim_n,
-                error_pct=tag_error_pct,
-                slip=float(entry_slip_pct),
-                wait=max(1, int(max_l3_wait_bars)),
-                daily_i=daily_i_map if hybrid else None,
-            )
-            if lifted is None:
-                continue
-            entry_i, fill_px, lifted_brk = lifted
-            if lifted_brk:
-                is_resist_break = True
-            if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
-                continue
-        deferred_channel = int(entry_i) != orig_entry_i
-        if hybrid and daily_i_map is not None and 0 <= int(entry_i) < len(daily_i_map):
-            mapped = int(daily_i_map[int(entry_i)])
-            line_i = mapped if mapped >= 0 else int(daily_entry_i)
-        else:
-            line_i = int(entry_i)
-        feat_src = int(t_idx) if use_realistic else int(entry_i)
-        atr_i_idx = max(0, feat_src - 1) if (hybrid or feature_asof_prior_bar or use_realistic) else feat_src
-        if hybrid:
-            atr_i = float(atr[atr_i_idx]) if atr_i_idx < len(atr) else float("nan")
-        else:
-            atr_src_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
-            if use_realistic:
-                atr_src_i = max(0, int(t_idx) - 1) if feature_asof_prior_bar else int(t_idx)
-            atr_i = float(atr[atr_src_i]) if atr_src_i < len(atr) else float("nan")
-        sim = _simulate_trade(
-            sim_high,
-            sim_low,
-            sim_close,
-            sim_dates,
-            entry_i,
-            stop_pct=stop_pct,
-            trail_pct=trail_pct,
-            trail_pct_wide=wide,
-            squeeze_mom=squeeze_mom,
-            squeeze_pctile=squeeze_pctile,
-            squeeze_lookback=squeeze_lookback,
-            atr_at_entry=atr_i if np.isfinite(atr_i) else None,
-            atr_stop_mult=atr_stop_mult,
-            stop_pct_floor=stop_pct_floor,
-            stop_pct_ceil=stop_pct_ceil,
-            support_x0=sx0,
-            support_y0=sy0,
-            support_slope=sslope,
-            channel_width=width,
-            resist_exit=resist_exit and not hybrid,
-            resist_arm_trail=bool(resist_arm_trail),
-            peak_trail_mode=str(peak_trail_mode or "off"),
-            trail_floor=float(trail_floor),
-            trail_decay_per_bar=float(trail_decay_per_bar),
-            trail_tighten_per_pct=float(trail_tighten_per_pct),
-            trail_pct_tight=trail_pct_tight,
-            squeeze_fade_tighten=squeeze_fade_tighten,
-            max_hold_days=hold_max,
-            include_time=include_time,
-            entry_px=fill_px,
-            skip_entry_bar_stop=bool(
-                (
-                    use_realistic
-                    and not is_15m_bars
-                    and fill_mode != FILL_MODE_NEXT_OPEN
-                )
-                or deferred_channel
-                or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
-                or hot_cross
-            ),
-        )
-        if sim is None:
-            continue
-        entry_px = float(sim["buy_price"])
-        atr_pct = (atr_i / entry_px * 100.0) if entry_px > 0 and np.isfinite(atr_i) else float("nan")
-        if hybrid:
-            adv = _adv_20(close, volume, atr_i_idx, lookback=adv_lookback)
-        else:
-            adv_i = max(0, feat_src - 1) if feature_asof_prior_bar else feat_src
-            adv = _adv_20(close, volume, adv_i, lookback=adv_lookback)
-        support_at = _line_at(sy0, sx0, sslope, line_i)
-        resist_at = support_at + width
-        channel_pos = (
-            (entry_px - support_at) / width
-            if width > 0 and np.isfinite(support_at)
-            else float("nan")
-        )
-        room_to_resist_pct = (
-            (resist_at - entry_px) / entry_px * 100.0
-            if entry_px > 0 and np.isfinite(resist_at)
-            else float("nan")
-        )
-        if hybrid:
-            beyond_prior = (
-                max_beyond_width(high, sy0, sx0, sslope, width, sx0, max(sx0, line_i - 1))
-                if line_i > sx0
-                else 0.0
-            )
-            fill_over = float("nan")
-            if width > 0 and np.isfinite(resist_at):
-                fill_over = (float(sim_high[entry_i]) - float(resist_at)) / float(width)
-            beyond = max(
-                float(beyond_prior) if np.isfinite(beyond_prior) else 0.0,
-                float(fill_over) if np.isfinite(fill_over) else 0.0,
-            )
-        else:
-            beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
-        buy_ts = pd.Timestamp(sim_dates[entry_i])
-        try:
-            ch_start_ts = pd.Timestamp(ch["start_date"])
-            ch_end_ts = pd.Timestamp(ch.get("h2_date") or ch["end_date"])
-            span_days = int((ch_end_ts - ch_start_ts).days)
-            age_days = int((buy_ts - ch_start_ts).days)
-        except Exception:
-            span_days = None
-            age_days = None
-        h2_idx = int(ch.get("h2_idx", t_idx))
-        wait_bars = int(t_idx - h2_idx) if (hybrid or use_realistic) else int(entry_i - h2_idx)
-        feat_i = (int(t_idx) - 1 if feature_asof_prior_bar else int(t_idx)) if use_realistic else (
-            entry_i - 1 if feature_asof_prior_bar else entry_i
-        )
-        feat_snap = snapshot_stock_features(feat_series, feat_i) if feat_series is not None else {}
-        feat_asof = None
-        if feat_series is not None and 0 <= feat_i < len(sim_dates):
-            feat_asof = pd.Timestamp(sim_dates[feat_i]).strftime("%Y-%m-%d %H:%M")
-        touch_ts = pd.Timestamp(sim_dates[t_idx]) if 0 <= t_idx < len(sim_dates) else buy_ts
-        touch_px = float(sim_low[t_idx]) if 0 <= t_idx < len(sim_low) else float("nan")
-        trades.append(
-            {
-                "stock": symbol.upper(),
-                "channel_start": ch["start_date"],
-                "channel_end": ch.get("h2_date") or ch["end_date"],
-                "touch_num": touch_num,
-                "touch_date": touch_ts.strftime("%Y-%m-%d"),
-                "touch_price": round(touch_px, 4) if np.isfinite(touch_px) else None,
-                **(
-                    {"touch_time": touch_ts.strftime("%Y-%m-%d %H:%M")}
-                    if include_time
-                    else {}
-                ),
-                **{k: v for k, v in sim.items() if k not in ("entry_i", "exit_i")},
-                "entry_i": sim["entry_i"],
-                "exit_i": sim["exit_i"],
-                "adv_20": round(adv, 2) if np.isfinite(adv) else None,
-                "atr_pct": round(atr_pct, 3) if np.isfinite(atr_pct) else None,
-                **channel_rail_fields(ch, dates, low, include_time=include_time or is_15m_bars),
-                "slope_pct_per_bar": ch.get("slope_pct_per_bar"),
-                "channel_width_pct": ch.get("channel_width_pct"),
-                "channel_pos": round(float(channel_pos), 3) if np.isfinite(channel_pos) else None,
-                "room_to_resist_pct": (
-                    round(float(room_to_resist_pct), 3) if np.isfinite(room_to_resist_pct) else None
-                ),
-                "bars_span": ch.get("bars_span"),
-                "entry_mode": entry_mode,
-                "shakeout_rebuy": bool(is_shakeout),
-                "resist_break": bool(is_resist_break),
-                "shakeout_breakout": bool(is_sbo),
-                "shakeout_inside_bars": int(inside_n) if is_sbo else None,
-                "parent_exit_reason": last_exit_reason if is_sbo else None,
-                "wait_bars": wait_bars,
-                "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
-                "channel_span_days": span_days,
-                "channel_age_at_buy_days": age_days,
-                "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
-                "month": int(buy_ts.month) if pd.notna(buy_ts) else None,
-                **({"feature_asof": feat_asof} if feat_asof else {}),
-                **feat_snap,
-                **(
-                    {
-                        "gap_15m": extra_fill.get("gap_15m"),
-                        "fill_15m_open": extra_fill.get("fill_15m_open"),
-                        "fill_15m_high": extra_fill.get("fill_15m_high"),
-                        "fill_15m_low": extra_fill.get("fill_15m_low"),
-                        "fill_15m_close": extra_fill.get("fill_15m_close"),
-                        "hot_cross_rail": extra_fill.get("hot_cross_rail"),
-                    }
-                    if extra_fill
-                    else {}
-                ),
-            }
-        )
-        if fill_time is not None:
-            ts_fill = pd.Timestamp(fill_time)
-            if ts_fill.tzinfo is not None:
-                ts_fill = ts_fill.tz_convert("UTC")
-            else:
-                ts_fill = ts_fill.tz_localize("UTC")
-            trades[-1]["buy_time"] = ts_fill.strftime("%Y-%m-%d %H:%M")
-        busy_until = sim["exit_i"]
-        last_exit_reason = str(sim.get("exit_reason") or "")
-    return trades
+    ctx = {
+        "pending": pending,
+        "symbol": symbol,
+        "sim_high": sim_high,
+        "sim_low": sim_low,
+        "sim_close": sim_close,
+        "sim_dates": sim_dates,
+        "sim_n": sim_n,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        "atr": atr,
+        "dates": dates,
+        "hybrid": hybrid,
+        "daily_i_map": daily_i_map,
+        "feat_series": feat_series,
+        "squeeze_mom": squeeze_mom,
+        "use_realistic": use_realistic,
+        "fill_mode": fill_mode,
+        "is_15m_bars": is_15m_bars,
+        "hot_cross": hot_cross,
+        "feature_asof_prior_bar": feature_asof_prior_bar,
+        "include_time": include_time,
+        "entry_mode": entry_mode,
+        "entry_slip_pct": entry_slip_pct,
+        "max_l3_wait_bars": max_l3_wait_bars,
+        "tag_error_pct": tag_error_pct,
+        "shakeout_breakout_hard_stop": shakeout_breakout_hard_stop,
+        "adv_lookback": adv_lookback,
+        "hold_max": hold_max,
+    }
+    exit_defaults = {
+        "stop_pct": stop_pct,
+        "trail_pct": trail_pct,
+        "trail_pct_wide": trail_pct_wide,
+        "squeeze_adaptive": bool(squeeze_adaptive),
+        "squeeze_pctile": squeeze_pctile,
+        "squeeze_lookback": squeeze_lookback,
+        "atr_stop_mult": atr_stop_mult,
+        "stop_pct_floor": stop_pct_floor,
+        "stop_pct_ceil": stop_pct_ceil,
+        "resist_exit": bool(resist_exit),
+        "resist_arm_trail": bool(resist_arm_trail),
+        "peak_trail_mode": str(peak_trail_mode or "off"),
+        "trail_floor": trail_floor,
+        "trail_decay_per_bar": trail_decay_per_bar,
+        "trail_tighten_per_pct": trail_tighten_per_pct,
+        "trail_pct_tight": trail_pct_tight,
+        "squeeze_fade_tighten": bool(squeeze_fade_tighten),
+    }
+    if exit_variants:
+        out: Dict[str, List[dict]] = {}
+        for name, overrides in exit_variants:
+            merged = dict(exit_defaults)
+            merged.update(overrides or {})
+            out[str(name)] = _walk_pending_trades(ctx, **merged)
+        return out
+    return _walk_pending_trades(ctx, **exit_defaults)
+
+
+def trades_for_symbol_exit_sweep(
+    symbol: str,
+    df: pd.DataFrame,
+    *,
+    variants: Sequence[Tuple[str, dict]],
+    **kwargs,
+) -> Dict[str, List[dict]]:
+    """Detect setups/fills once, then occupancy-walk each exit variant."""
+    rows = trades_for_symbol(symbol, df, exit_variants=list(variants), **kwargs)
+    if isinstance(rows, dict):
+        return rows
+    name = str(variants[0][0]) if variants else "_"
+    return {name: rows}
 
 
 def _worker_symbol_trades(payload: dict) -> List[dict]:
@@ -1922,6 +2063,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         max_low_to_mid_pct=payload.get("max_low_to_mid_pct", DEFAULT_MAX_LOW_TO_MID_PCT),
         max_chase_pct=payload.get("max_chase_pct"),
         touch_error_pct=payload.get("touch_error_pct"),
+        exit_variants=payload.get("exit_variants"),
         **(payload.get("channel_kwargs") or {}),
     )
 
@@ -2333,6 +2475,53 @@ def _scan_trades(
     return pd.DataFrame(all_trades) if all_trades else pd.DataFrame()
 
 
+def _scan_exit_sweep(
+    panels: Dict[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+    workers: int,
+    base: dict,
+    variants: Sequence[Tuple[str, dict]],
+    panels_15m: Optional[Dict[str, pd.DataFrame]] = None,
+    skip_symbol: str = "SPY",
+) -> Dict[str, List[dict]]:
+    """Detect once per symbol (worker), occupancy-walk each exit variant."""
+    payloads = []
+    extra_15 = panels_15m or {}
+    skip = str(skip_symbol or "SPY").upper()
+    variant_list = [(str(n), dict(ov or {})) for n, ov in variants]
+    for sym in symbols:
+        if sym not in panels or str(sym).upper() == skip:
+            continue
+        payload = {
+            "symbol": sym,
+            "df": panels[sym],
+            **base,
+            "exit_variants": variant_list,
+        }
+        if extra_15:
+            payload["df_15m"] = extra_15.get(sym)
+        payloads.append(payload)
+    raw_by_name: Dict[str, List[dict]] = {name: [] for name, _ in variant_list}
+
+    def _absorb(result: object) -> None:
+        if isinstance(result, dict):
+            for name, rows in result.items():
+                raw_by_name.setdefault(str(name), []).extend(rows or [])
+            return
+        raw_by_name.setdefault("_", []).extend(result or [])  # type: ignore[arg-type]
+
+    if workers and workers > 1 and len(payloads) > 1:
+        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+            futs = [pool.submit(_worker_symbol_trades, p) for p in payloads]
+            for fut in as_completed(futs):
+                _absorb(fut.result())
+    else:
+        for p in payloads:
+            _absorb(_worker_symbol_trades(p))
+    return raw_by_name
+
+
 def _finalize_report_trades(
     trades: pd.DataFrame,
     *,
@@ -2720,6 +2909,202 @@ def run_peak_trail_sweep(
     return summary_df, year_df, raw_by_name
 
 
+def _parse_float_list(
+    raw: str,
+    *,
+    flag: str,
+    min_value: float = 0.0,
+    max_value: float = 1.0,
+) -> List[float]:
+    """Parse unique comma-separated floats in (min_value, max_value]."""
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError(f"{flag}: expected comma-separated floats")
+    out: List[float] = []
+    seen = set()
+    for part in text.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        val = float(p)
+        if not np.isfinite(val) or val <= min_value or val > max_value:
+            raise ValueError(
+                f"{flag}: {val!r} out of range ({min_value} < x <= {max_value}); "
+                f"stop-pct-sweep uses fractions (0.03 = 3%%), not whole percents"
+            )
+        if val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    if not out:
+        raise ValueError(f"{flag}: empty list")
+    return out
+
+
+def _stop_pct_variant_name(p: float) -> str:
+    pct = float(p) * 100.0
+    if abs(pct - round(pct)) < 1e-9:
+        return f"stop_{int(round(pct))}pct"
+    return f"stop_{pct:g}pct"
+
+
+def _atr_k_variant_name(k: float) -> str:
+    return f"atr_k{float(k):g}"
+
+
+def run_exit_param_sweep(
+    panels: Dict[str, pd.DataFrame],
+    spy_df: pd.DataFrame,
+    symbols: Sequence[str],
+    *,
+    variants: Sequence[Tuple[str, dict]],
+    workers: int,
+    base: dict,
+    panels_15m: Optional[Dict[str, pd.DataFrame]] = None,
+    rs_panels: Optional[Dict[str, pd.DataFrame]] = None,
+    bars_per_session: int = 1,
+    friction_pct: float = 0.0,
+    max_entries_per_day: int = 0,
+    require_in_channel: bool = False,
+    max_channel_span_days: Optional[float] = None,
+    max_channel_age_days: Optional[float] = None,
+    max_beyond_width: Optional[float] = None,
+    max_rsi: Optional[float] = None,
+    min_close_loc: Optional[float] = None,
+    min_adv: Optional[float] = None,
+    min_atr_pct: Optional[float] = None,
+    spy_regime: bool = False,
+    geometry_filter: bool = False,
+    entry_features: bool = True,
+    rs_symbol: str = "SPY",
+    need_15m_purchase: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, pd.DataFrame]]:
+    """One OHLCV load + one detect/fill pass per symbol; occupancy walk per exit variant."""
+    extra_15 = panels_15m or {}
+    use_sym: List[str] = []
+    skip = str(rs_symbol or "SPY").upper()
+    n_skip_15m = 0
+    for sym in symbols:
+        if str(sym).upper() == skip:
+            continue
+        if need_15m_purchase:
+            d15 = extra_15.get(sym)
+            if d15 is None or getattr(d15, "empty", True):
+                n_skip_15m += 1
+                continue
+        use_sym.append(sym)
+    if need_15m_purchase:
+        logger.info(
+            "exit sweep: %d symbols with 15m (skipped %d without 15m)",
+            len(use_sym),
+            n_skip_15m,
+        )
+    t_scan = time.perf_counter()
+    lists_by_name = _scan_exit_sweep(
+        panels,
+        symbols=use_sym,
+        workers=workers,
+        base=base,
+        variants=variants,
+        panels_15m=extra_15 if need_15m_purchase else None,
+        skip_symbol=skip,
+    )
+    logger.info("exit sweep detect+walk done in %.1fs", time.perf_counter() - t_scan)
+    rs_src = rs_panels if rs_panels is not None else panels
+    rs_lookbacks = (21, 63, 126) if bool(entry_features) else (63, 126)
+    geo_kwargs = {}
+    if geometry_filter:
+        geo_kwargs.update(
+            dict(
+                max_channel_pos=0.40,
+                min_width_pct=3.0,
+                max_width_pct=35.0,
+                min_slope_pct=0.02,
+                max_slope_pct=0.50,
+            )
+        )
+    summary_rows: List[dict] = []
+    year_frames: List[pd.DataFrame] = []
+    raw_by_name: Dict[str, pd.DataFrame] = {}
+    for name, _ov in variants:
+        raw_rows = lists_by_name.get(str(name)) or []
+        raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
+        raw_by_name[str(name)] = raw
+        if raw.empty:
+            summary_rows.append(
+                {
+                    "scenario": name,
+                    "n_trades": 0,
+                    "expectancy_pct": None,
+                    "profit_factor": None,
+                }
+            )
+            continue
+        raw = enrich_rs(
+            raw,
+            rs_src,
+            spy_df,
+            lookbacks=rs_lookbacks,
+            bars_per_session=int(bars_per_session),
+        )
+        raw_by_name[str(name)] = raw
+        filtered = filter_trades(
+            raw,
+            min_adv=min_adv,
+            min_atr_pct=min_atr_pct,
+            require_in_channel=bool(require_in_channel),
+            max_channel_span_days=max_channel_span_days,
+            max_channel_age_days=max_channel_age_days,
+            require_spy_above_sma=bool(spy_regime),
+            max_beyond_width=max_beyond_width,
+            max_rsi=max_rsi,
+            min_close_loc=min_close_loc,
+            **geo_kwargs,
+        )
+        if max_entries_per_day and max_entries_per_day > 0:
+            filtered = select_same_day_rs(
+                filtered, rs_col="rs_spy_126d", max_per_day=int(max_entries_per_day)
+            )
+        gain_col = "gain_pct"
+        if friction_pct and friction_pct > 0:
+            filtered = apply_friction(filtered, friction_pct)
+            gain_col = "gain_pct_net"
+        s = _summarize(filtered, gain_col=gain_col)
+        drop10 = _drop_top_n_stats(filtered, gain_col=gain_col, n=10)
+        summary_rows.append(
+            {
+                "scenario": name,
+                "n_trades": s["n_trades"],
+                "n_symbols": s["n_symbols"],
+                "expectancy_pct": s["expectancy_pct"],
+                "profit_factor": s["profit_factor"],
+                "median_gain_pct": s.get("median_gain_pct"),
+                "win_rate_pct": s["win_rate_pct"],
+                "avg_hold_days": s["avg_hold_days"],
+                "hard_stop_exits": s.get("hard_stop_exits"),
+                "trail_stop_exits": s.get("trail_stop_exits"),
+                "drop_top10_E": drop10.get("expectancy_pct"),
+                "drop_top10_PF": drop10.get("profit_factor"),
+            }
+        )
+        ydf = summarize_by_year(filtered, gain_col=gain_col)
+        if not ydf.empty:
+            ydf = ydf.copy()
+            ydf.insert(0, "scenario", name)
+            year_frames.append(ydf)
+        logger.info(
+            "exit sweep %s -> raw=%d final=%d E=%s PF=%s",
+            name,
+            len(raw),
+            s["n_trades"],
+            s["expectancy_pct"],
+            s["profit_factor"],
+        )
+    summary_df = pd.DataFrame(summary_rows)
+    year_df = pd.concat(year_frames, ignore_index=True) if year_frames else pd.DataFrame()
+    return summary_df, year_df, raw_by_name
+
+
 REPORT_COLS = [
     "stock",
     "channel_start",
@@ -2865,6 +3250,14 @@ def main() -> int:
         "l3_touch: 3=L3 after H2, 4=L4 after L3 leaves the rail)",
     )
     ap.add_argument("--stop-pct", type=float, default=0.03)
+    ap.add_argument(
+        "--stop-pct-sweep",
+        default="",
+        help="Comma list of fixed stop fractions (e.g. 0.02,0.03,0.04). Load OHLCV once, "
+        "detect setups once per symbol, then occupancy-walk each stop. Disables ATR "
+        "(stop_pct is unused when atr_stop_mult is set). Mutually exclusive with "
+        "--atr-stop-mult-sweep / --edge-v2 / --peak-trail-sweep.",
+    )
     ap.add_argument("--trail-pct", type=float, default=0.10)
     ap.add_argument(
         "--trail-pct-wide",
@@ -3154,6 +3547,13 @@ def main() -> int:
         "entry-bar=fill bar (leaky for wick fills); auto=prior-bar for l3_touch 15m/hybrid.",
     )
     ap.add_argument("--atr-stop-mult", type=float, default=None)
+    ap.add_argument(
+        "--atr-stop-mult-sweep",
+        default="",
+        help="Comma list of ATR k (e.g. 1,1.5,2). Detect once, occupancy-walk each k. "
+        "--stop-pct stays the ATR-off fallback. Mutually exclusive with --stop-pct-sweep / "
+        "--edge-v2 / --peak-trail-sweep.",
+    )
     ap.add_argument("--stop-pct-floor", type=float, default=0.015)
     ap.add_argument("--stop-pct-ceil", type=float, default=0.06)
     ap.add_argument("--resist-exit", action="store_true")
@@ -3255,6 +3655,25 @@ def main() -> int:
             float(args.trail_decay_per_bar),
             float(args.trail_tighten_per_pct),
         )
+
+    stop_sweep_raw = (getattr(args, "stop_pct_sweep", "") or "").strip()
+    atr_sweep_raw = (getattr(args, "atr_stop_mult_sweep", "") or "").strip()
+    n_exclusive = sum(
+        [
+            bool(args.edge_v2),
+            bool(getattr(args, "peak_trail_sweep", False)),
+            bool(stop_sweep_raw),
+            bool(atr_sweep_raw),
+        ]
+    )
+    if n_exclusive > 1:
+        logger.error(
+            "Use only one of --edge-v2, --peak-trail-sweep, --stop-pct-sweep, --atr-stop-mult-sweep"
+        )
+        return 1
+    if atr_sweep_raw and pt_mode != "off":
+        logger.error("--atr-stop-mult-sweep cannot run with peak-trail on (ATR overlays are off)")
+        return 1
 
     apply_daily_long_history_defaults(args)
     if str(args.timeframe) == "1d" and int(args.window_bars) > 0:
@@ -3514,6 +3933,159 @@ def main() -> int:
         summary_txt.write_text("\n".join(lines), encoding="utf-8")
         logger.info("peak-trail sweep -> %s", scenarios_csv)
         print("\nPeak-trail sweep summary:")
+        print(summary_df.to_string(index=False))
+        print("\nYear splits:")
+        print(year_df.to_string(index=False) if not year_df.empty else "(none)")
+        print(f"\nScenarios CSV: {scenarios_csv}")
+        print(f"Years CSV: {year_csv}")
+        print(f"Summary: {summary_txt}")
+        return 0
+
+    if stop_sweep_raw or atr_sweep_raw:
+        try:
+            if stop_sweep_raw:
+                stops = _parse_float_list(
+                    stop_sweep_raw, flag="--stop-pct-sweep", min_value=0.0, max_value=0.5
+                )
+                if args.atr_stop_mult is not None:
+                    logger.warning(
+                        "stop-pct-sweep disables ATR (atr_stop_mult=%s is unused when sweeping fixed stop_pct)",
+                        args.atr_stop_mult,
+                    )
+                variants = [
+                    (_stop_pct_variant_name(p), {"stop_pct": float(p), "atr_stop_mult": None})
+                    for p in stops
+                ]
+                sweep_kind = "stop_pct"
+            else:
+                ks = _parse_float_list(
+                    atr_sweep_raw, flag="--atr-stop-mult-sweep", min_value=0.0, max_value=20.0
+                )
+                variants = [
+                    (_atr_k_variant_name(k), {"atr_stop_mult": float(k)})
+                    for k in ks
+                ]
+                sweep_kind = "atr_k"
+        except ValueError as exc:
+            logger.error("%s", exc)
+            return 1
+        channel_kwargs = {
+            "error_pct": float(args.error_pct),
+            "flat_pct": float(args.flat_pct),
+            "min_bars_apart": int(args.min_bars_apart),
+            "min_intervening_rally_pct": float(args.min_rally_pct),
+            "min_intervening_pullback_pct": float(args.min_pullback_pct),
+            "min_total_rise_pct": float(args.min_total_rise_pct),
+            "max_low_pivots": int(args.max_low_pivots),
+            "causal_h2": not bool(args.no_causal_h2),
+        }
+        window_bars = int(args.window_bars) if int(args.window_bars) > 0 else None
+        window_step = int(args.window_step_bars) if int(args.window_step_bars) > 0 else window_bars
+        base = {
+            "entry_touch": args.entry_touch,
+            "stop_pct": args.stop_pct,
+            "trail_pct": args.trail_pct,
+            "trail_pct_wide": args.trail_pct_wide,
+            "squeeze_adaptive": bool(args.squeeze_adaptive),
+            "squeeze_pctile": args.squeeze_pctile,
+            "squeeze_lookback": args.squeeze_lookback,
+            "pivot_len": args.pivot_len,
+            "entry_mode": str(args.entry_mode),
+            "atr_stop_mult": args.atr_stop_mult,
+            "stop_pct_floor": float(args.stop_pct_floor),
+            "stop_pct_ceil": float(args.stop_pct_ceil),
+            "resist_exit": bool(args.resist_exit),
+            "resist_arm_trail": bool(args.resist_arm_trail) or str(args.peak_trail_mode) != "off",
+            "peak_trail_mode": str(args.peak_trail_mode),
+            "trail_floor": float(args.trail_floor),
+            "trail_decay_per_bar": float(args.trail_decay_per_bar),
+            "trail_tighten_per_pct": float(args.trail_tighten_per_pct),
+            "trail_pct_tight": args.trail_pct_tight,
+            "squeeze_fade_tighten": bool(args.squeeze_fade_tighten),
+            "max_hold_days": args.max_hold_days,
+            "adv_lookback": int(args.adv_lookback),
+            "window_bars": window_bars,
+            "window_step_bars": window_step,
+            "include_time": bool(args.include_time),
+            "entry_features": bool(args.entry_features),
+            "entry_slip_pct": float(args.entry_slip_pct),
+            "max_l3_wait_bars": int(args.max_l3_wait_bars),
+            "min_l3_wait_bars": int(args.min_l3_wait_bars),
+            "shakeout_rebuy_bars": int(args.shakeout_rebuy_bars),
+            "h2_resist_break": bool(args.h2_resist_break),
+            "h2_resist_break_only": bool(args.h2_resist_break_only),
+            "shakeout_breakout": bool(args.shakeout_breakout),
+            "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
+            "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
+            "intraday_fill": intraday_fill,
+            "intraday_trigger": str(args.intraday_trigger or ""),
+            "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
+            "feature_asof_prior_bar": bool(use_prior_bar),
+            "realistic_fill": bool(args.realistic_fill),
+            "realistic_fill_mode": str(args.realistic_fill_mode),
+            "max_low_to_mid_pct": args.max_low_to_mid_pct,
+            "max_chase_pct": args.max_chase_pct,
+            "touch_error_pct": args.touch_error_pct,
+            "channel_kwargs": channel_kwargs,
+        }
+        logger.info(
+            "Exit sweep kind=%s variants=%s detect-once occupancy walk workers=%d",
+            sweep_kind,
+            [n for n, _ in variants],
+            int(args.workers),
+        )
+        summary_df, year_df, _raw_by_name = run_exit_param_sweep(
+            panels,
+            spy_df,
+            symbols,
+            variants=variants,
+            workers=int(args.workers),
+            base=base,
+            panels_15m=panels_15m,
+            rs_panels=rs_panels,
+            bars_per_session=int(rs_bars_per_session),
+            friction_pct=float(args.friction_pct or 0.0),
+            max_entries_per_day=int(args.max_entries_per_day or 0),
+            require_in_channel=bool(args.require_in_channel),
+            max_channel_span_days=args.max_channel_span_days,
+            max_channel_age_days=args.max_channel_age_days,
+            max_beyond_width=args.max_beyond_width,
+            max_rsi=args.max_rsi,
+            min_close_loc=args.min_close_loc,
+            min_adv=args.min_adv,
+            min_atr_pct=args.min_atr_pct,
+            spy_regime=bool(args.spy_regime),
+            geometry_filter=bool(args.geometry_filter),
+            entry_features=bool(args.entry_features),
+            rs_symbol=rs_symbol,
+            need_15m_purchase=bool(need_15m_purchase),
+        )
+        scenarios_csv = args.outdir / f"channel_touch_{sweep_kind}_sweep_{stamp}.csv"
+        year_csv = args.outdir / f"channel_touch_{sweep_kind}_sweep_years_{stamp}.csv"
+        summary_txt = args.outdir / f"channel_touch_{sweep_kind}_sweep_summary_{stamp}.txt"
+        summary_df.to_csv(scenarios_csv, index=False)
+        year_df.to_csv(year_csv, index=False)
+        title = (
+            "Fixed stop_pct sweep (detect once, occupancy walk per stop; ATR off)"
+            if sweep_kind == "stop_pct"
+            else "ATR stop-mult sweep (detect once, occupancy walk per k)"
+        )
+        lines = [
+            title,
+            f"start={args.start} end={args.end} timeframe={args.timeframe} provider={args.provider}",
+            f"entry_mode={args.entry_mode} trail_pct={args.trail_pct} friction_pct={args.friction_pct}",
+            f"atr_stop_mult={args.atr_stop_mult} stop_pct={args.stop_pct}",
+            f"max_entries_per_day={args.max_entries_per_day} require_in_channel={args.require_in_channel}",
+            f"elapsed_sec={time.perf_counter() - t0:.1f}",
+            "",
+            summary_df.to_string(index=False),
+            "",
+            "Year splits:",
+            year_df.to_string(index=False) if not year_df.empty else "(none)",
+        ]
+        summary_txt.write_text("\n".join(lines), encoding="utf-8")
+        logger.info("%s sweep -> %s", sweep_kind, scenarios_csv)
+        print(f"\n{title}:")
         print(summary_df.to_string(index=False))
         print("\nYear splits:")
         print(year_df.to_string(index=False) if not year_df.empty else "(none)")

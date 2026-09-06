@@ -13,11 +13,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from backtest_channel_touch_trades import (
+    _atr_k_variant_name,
+    _parse_float_list,
+    _stop_pct_variant_name,
     enrich_rs,
     filter_trades,
     keep_one_per_symbol_day,
     select_same_day_rs,
     trades_for_symbol,
+    trades_for_symbol_exit_sweep,
 )
 
 
@@ -747,4 +751,86 @@ def test_h2_hot_cross_fills_without_daily_close_above():
     assert is_brk is True
     assert tags[0][8]["gap_15m"] is False
     assert fill == pytest.approx(15.0 + 0.85 * (15.80 - 15.0))
+
+
+def test_parse_float_list_stop_fractions():
+    assert _parse_float_list("0.02,0.03,0.04", flag="--stop-pct-sweep") == [0.02, 0.03, 0.04]
+    assert _parse_float_list("0.03,0.03", flag="--stop-pct-sweep") == [0.03]
+    with pytest.raises(ValueError, match="fractions"):
+        _parse_float_list("3", flag="--stop-pct-sweep")
+    with pytest.raises(ValueError, match="expected"):
+        _parse_float_list("", flag="--stop-pct-sweep")
+    assert _atr_k_variant_name(1.5) == "atr_k1.5"
+    assert _stop_pct_variant_name(0.03) == "stop_3pct"
+    assert _stop_pct_variant_name(0.025) == "stop_2.5pct"
+
+
+def test_exit_sweep_detects_once_and_occupancy_differs_by_stop():
+    df = _occ_ohlcv(80)
+    ch = _occ_setup(df, h2=20, width=8.0)
+
+    def fake_fills(high, low, close, **kwargs):
+        return [
+            (10, 110.0, 3, False, False),
+            (20, 115.0, 3, False, False),
+        ]
+
+    def fake_sim(high, low, close, dates, entry_i, **kwargs):
+        stop = float(kwargs.get("stop_pct") or 0.03)
+        hold = 5 if stop <= 0.021 else 25
+        exit_i = min(int(entry_i) + hold, len(close) - 1)
+        px = float(kwargs.get("entry_px") or close[entry_i])
+        return {
+            "buy_date": dates[entry_i].strftime("%Y-%m-%d"),
+            "buy_price": px,
+            "sell_date": dates[exit_i].strftime("%Y-%m-%d"),
+            "sell_price": float(close[exit_i]),
+            "gain_pct": 1.0,
+            "hold_days": hold,
+            "exit_reason": "hard_stop",
+            "entry_i": int(entry_i),
+            "exit_i": int(exit_i),
+        }
+
+    scan = dict(
+        entry_mode="l3_touch",
+        h2_resist_break=True,
+        entry_features=False,
+        squeeze_adaptive=False,
+        window_bars=None,
+        pivot_len=5,
+        min_l3_wait_bars=1,
+        max_l3_wait_bars=252,
+        atr_stop_mult=None,
+    )
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch]
+    ) as finder, mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ), mock.patch(
+        "backtest_channel_touch_trades._simulate_trade", side_effect=fake_sim
+    ):
+        by_name = trades_for_symbol_exit_sweep(
+            "AAA",
+            df,
+            variants=[
+                ("stop_2pct", {"stop_pct": 0.02, "atr_stop_mult": None}),
+                ("stop_4pct", {"stop_pct": 0.04, "atr_stop_mult": None}),
+            ],
+            **scan,
+        )
+        assert finder.call_count == 1
+
+    assert [r["entry_i"] for r in by_name["stop_2pct"]] == [10, 20]
+    assert [r["entry_i"] for r in by_name["stop_4pct"]] == [10]
+
+    with mock.patch(
+        "backtest_channel_touch_trades.find_h2_l3_setups", return_value=[ch]
+    ), mock.patch(
+        "backtest_channel_touch_trades._h2_rail_tag_fills", side_effect=fake_fills
+    ), mock.patch(
+        "backtest_channel_touch_trades._simulate_trade", side_effect=fake_sim
+    ):
+        once = trades_for_symbol("AAA", df, stop_pct=0.02, **scan)
+    assert [r["entry_i"] for r in once] == [r["entry_i"] for r in by_name["stop_2pct"]]
 

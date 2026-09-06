@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-06):** `current_best/` 1d slot is live-executable buy-now hot-cross (even though it loses): unique span365 **n=4079 E −0.19 PF 0.94** (`1d_hot_cross.html` / `1d_channel_touch.html`). That is the number to beat. 15m keeper stays L3 wait-12 signal-close **n=1744 E +0.13 PF 1.22**. Clip HTML stays in `1d_unrealistic/`. See [hot-cross in current_best](edge_hunt/channel_touch/2026-09-06_channel_touch_current_best_hot_cross.md).
+**Latest (2026-09-06):** Detect-once exit sweep is a CLI option (`--stop-pct-sweep 0.02,0.03,0.04` or `--atr-stop-mult-sweep 1,1.5,2`): one OHLCV load, one detect/fill pass per symbol, occupancy walk per stop. Not a promote. See [exit sweep](edge_hunt/channel_touch/2026-09-06_channel_touch_exit_sweep.md).
+
+**Prior (2026-09-06):** `current_best/` 1d slot is live-executable buy-now hot-cross (even though it loses): unique span365 **n=4079 E −0.19 PF 0.94** (`1d_hot_cross.html` / `1d_channel_touch.html`). That is the number to beat. 15m keeper stays L3 wait-12 signal-close **n=1744 E +0.13 PF 1.22**. Clip HTML stays in `1d_unrealistic/`. See [hot-cross in current_best](edge_hunt/channel_touch/2026-09-06_channel_touch_current_best_hot_cross.md).
 
 **Prior (2026-09-06):** Honest 1d next-mid + shakeout (`_as_session_date`) unique span365 **n=1986 E +2.24 PF 1.89** (pre-fix HTML was n=1239 / +2.27 / 1.92). Cap-2 wait lift to +3.01 / 2.25 was a pre-fix artifact (honest cap-2 n=1395 E +2.29 PF 1.91). Post-EOD overlay, not the `current_best` 1d slot. See [next-mid rebuild](edge_hunt/channel_touch/2026-09-06_channel_touch_next_mid_session_date.md).
 
