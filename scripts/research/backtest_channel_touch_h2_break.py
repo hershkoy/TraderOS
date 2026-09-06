@@ -144,6 +144,71 @@ def _print_hot_cross_gaps(df: pd.DataFrame, *, gain_col: str, friction: float) -
         print(rdwr[cols].sort_values("buy_date").to_string(index=False))
 
 
+def _print_close_cross_mae(df: pd.DataFrame, *, gain_col: str) -> None:
+    if df is None or df.empty:
+        return
+    skip_col = df["skip_reason"].fillna("").astype(str).str.strip() if "skip_reason" in df.columns else pd.Series("", index=df.index)
+    skips = df.loc[skip_col != ""]
+    fills = df.loc[skip_col == ""]
+    print("=== close-cross candidates vs occupancy ===")
+    print(
+        "rows=%d fills=%d skips=%d occupancy=%d end_of_session=%d other_skip=%d"
+        % (
+            len(df),
+            len(fills),
+            len(skips),
+            int((skip_col == "occupancy").sum()),
+            int((skip_col == "end_of_session").sum()),
+            int(((skip_col != "") & (skip_col != "occupancy") & (skip_col != "end_of_session")).sum()),
+        )
+    )
+    cols = [
+        c
+        for c in (
+            "stock",
+            "buy_date",
+            "confirm_time",
+            "tod_et",
+            "buy_time",
+            "buy_price",
+            "skip_reason",
+            "volume_rel_20",
+            "volume_rel_tod",
+            "range_pct",
+            "range_atr",
+            "close_over_rail_pct",
+            "close_over_rail_atr",
+            "open_vs_rail_pct",
+            "session_failed_closes",
+            "slope_pct_per_bar",
+            "rail_rise_since_h2_pct",
+            "channel_width_pct",
+            "wait_bars",
+            "trail_only_gain_pct",
+            "trail_only_exit",
+            "mae_pct",
+            "mae_atr_15m",
+            "mae_atr_1d",
+            gain_col,
+            "exit_reason",
+        )
+        if c in df.columns
+    ]
+    show = df
+    if "stock" in df.columns:
+        rdwr = df[df["stock"].astype(str).str.upper() == "RDWR"]
+        if not rdwr.empty:
+            show = rdwr
+            print("=== RDWR close-cross (confirm + trail MAE; skip rows included) ===")
+        else:
+            print("=== close-cross (confirm + trail MAE; skip rows included) ===")
+    else:
+        print("=== close-cross (confirm + trail MAE; skip rows included) ===")
+    if cols:
+        sort_c = "buy_date" if "buy_date" in show.columns else show.columns[0]
+        print(show[cols].sort_values(sort_c, na_position="last").to_string(index=False))
+
+
 def _fmt(s: dict) -> str:
     return "n=%s E=%s PF=%s WR=%s med=%s hard_stop=%s" % (
         s.get("n_trades"),
@@ -333,14 +398,25 @@ def main() -> int:
     ap.add_argument(
         "--intraday-trigger",
         default="",
-        choices=("", "hot-cross"),
-        help="1d buy-now: first 15m high >= daily resist after wait (no EOD close gate).",
+        choices=("", "hot-cross", "close-cross"),
+        help="1d H2, no EOD close gate: hot-cross = first 15m high>=resist; "
+        "close-cross = first 15m close>resist then next 15m mid.",
     )
     ap.add_argument(
         "--hot-cross-fill",
         default=DEFAULT_HOT_CROSS_FILL,
         choices=HOT_CROSS_FILLS,
         help="hot-cross fill: lerp85 (default), rail, or 15m close.",
+    )
+    ap.add_argument(
+        "--trail-mae",
+        action="store_true",
+        help="Close-cross diagnostic: 15m trail-only 10/18 (no hard stop) plus MAE. Keep skip rows.",
+    )
+    ap.add_argument(
+        "--symbols",
+        default="",
+        help="Comma list (e.g. RDWR). Overrides raw CSV universe; SPY still loaded for RS.",
     )
     args = ap.parse_args()
     t0 = time.perf_counter()
@@ -363,7 +439,11 @@ def main() -> int:
     if keeper_path.exists() and not args.all_symbols:
         keeper = pd.read_csv(keeper_path)
 
-    if args.all_symbols:
+    names_only = [s.strip().upper() for s in str(args.symbols or "").split(",") if s.strip()]
+    if names_only:
+        symbols = sorted(set(names_only) | {"SPY"})
+        logger.info("Named symbols: %s", ",".join(s for s in symbols if s != "SPY"))
+    elif args.all_symbols:
         provider = "IB" if is_15m else "ALPACA"
         tf = "15m" if is_15m else "1d"
         symbols = sorted({s.upper() for s in list_symbols_fast(provider, tf)} | {"SPY"})
@@ -425,6 +505,7 @@ def main() -> int:
     base["shakeout_breakout_hard_stop"] = bool(args.shakeout_breakout_hard_stop)
     base["intraday_trigger"] = str(args.intraday_trigger or "")
     base["hot_cross_fill"] = str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL)
+    base["trail_mae"] = bool(args.trail_mae)
     panels_15m = None
     load_15m = (not is_15m) and needs_15m_purchase_panels(
         "1d",
@@ -454,8 +535,19 @@ def main() -> int:
     if scanned.empty:
         logger.error("No trades")
         return 1
+    skip_mask = (
+        scanned["skip_reason"].fillna("").astype(str).str.strip() != ""
+        if "skip_reason" in scanned.columns
+        else pd.Series(False, index=scanned.index)
+    )
+    if str(args.intraday_trigger or "") == "close-cross":
+        _print_close_cross_mae(scanned, gain_col=gain_col)
+    fills_all = scanned.loc[~skip_mask].copy()
+    if fills_all.empty:
+        logger.error("No filled trades (skips=%d)", int(skip_mask.sum()))
+        return 0 if int(skip_mask.sum()) else 1
     scanned = enrich_rs(
-        scanned, panels, spy_df, lookbacks=(63, 126), bars_per_session=rs_bars
+        fills_all, panels, spy_df, lookbacks=(63, 126), bars_per_session=rs_bars
     )
 
     is_brk = scanned["resist_break"].fillna(False).astype(bool)
@@ -580,6 +672,7 @@ def main() -> int:
         ),
         "intraday_trigger": str(args.intraday_trigger or ""),
         "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
+        "trail_mae": bool(args.trail_mae),
     }
     notes = [
         "Exit: hard stop = entry*(1-stop); trail = peak*(1-trail); fill at max(hard,trail) when low hits",
@@ -590,6 +683,16 @@ def main() -> int:
             "hot-cross buy-now: first 15m high>=resist after wait; fill %s; no daily-close gate"
             % str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL)
         )
+    if str(args.intraday_trigger or "") == "close-cross":
+        notes.append(
+            "close-cross: first 15m close>daily rail after wait; fill next 15m mid; no daily-close gate. "
+            "Not a promote."
+        )
+        if args.trail_mae:
+            notes.append(
+                "trail-mae: second 15m walk stop_pct=1.0 squeeze 10/18; mae is the stop that would "
+                "have survived that path. Diagnostic only."
+            )
     if args.shakeout_breakout:
         notes.append(
             "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "

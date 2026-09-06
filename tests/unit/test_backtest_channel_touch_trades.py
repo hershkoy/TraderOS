@@ -834,3 +834,82 @@ def test_exit_sweep_detects_once_and_occupancy_differs_by_stop():
         once = trades_for_symbol("AAA", df, stop_pct=0.02, **scan)
     assert [r["entry_i"] for r in once] == [r["entry_i"] for r in by_name["stop_2pct"]]
 
+
+def test_close_cross_confirm_features_slope_and_failed_wick():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from backtest_channel_touch_trades import close_cross_confirm_features
+
+    et = ZoneInfo("America/New_York")
+    idx = pd.DatetimeIndex(
+        [
+            datetime(2025, 6, 13, 9, 30, tzinfo=et).astimezone(timezone.utc).replace(tzinfo=None),
+            datetime(2025, 6, 13, 9, 45, tzinfo=et).astimezone(timezone.utc).replace(tzinfo=None),
+        ]
+    )
+    df = pd.DataFrame(
+        {
+            "open": [24.35, 24.80],
+            "high": [25.23, 25.82],
+            "low": [24.33, 24.70],
+            "close": [24.50, 25.71],
+            "volume": [1e4, 2e4],
+        },
+        index=idx,
+    )
+    feats = close_cross_confirm_features(
+        df,
+        1,
+        rail=24.64,
+        slope_pct_per_bar=0.05,
+        wait_bars=10,
+        channel_width=2.0,
+        channel_width_pct=8.0,
+        atr_1d=1.0,
+    )
+    assert feats["tod_et"] == "09:45"
+    assert feats["minutes_from_open"] == 15
+    assert feats["session_bar_i"] == 1
+    assert feats["session_failed_closes"] == 1
+    assert feats["confirm_green"] == 1
+    assert feats["rail_rise_since_h2_pct"] == pytest.approx(0.5)
+    assert feats["width_atr_1d"] == pytest.approx(2.0)
+    assert feats["close_over_rail_pct"] == pytest.approx((25.71 / 24.64 - 1.0) * 100.0, rel=1e-3)
+    assert feats["open_vs_rail_pct"] > 0
+
+
+def test_trail_only_mae_15m_dip_then_run():
+    from backtest_channel_touch_trades import trail_only_mae_15m
+
+    n = 40
+    close = np.full(n, 100.0)
+    high = np.full(n, 101.0)
+    low = np.full(n, 99.5)
+    close[5] = 100.0
+    high[5] = 100.5
+    low[5] = 99.8
+    low[6] = 97.0
+    high[6] = 100.2
+    close[6] = 99.0
+    for i in range(7, 25):
+        close[i] = 100.0 + (i - 6) * 1.5
+        high[i] = close[i] + 0.4
+        low[i] = close[i] - 0.2
+    dates = pd.date_range("2025-06-13 13:30", periods=n, freq="15min")
+    mae = trail_only_mae_15m(
+        high,
+        low,
+        close,
+        dates,
+        5,
+        100.0,
+        atr_15m=1.0,
+        atr_1d=2.0,
+    )
+    assert mae["mae_pct"] == pytest.approx(3.0)
+    assert mae["mae_atr_15m"] == pytest.approx(3.0)
+    assert mae["mae_atr_1d"] == pytest.approx(1.5)
+    assert mae["trail_only_gain_pct"] is not None
+    assert mae["trail_only_exit"] in ("trail_stop", "trail_stop_wide", "eod")
+

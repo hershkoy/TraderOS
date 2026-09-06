@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-06):** Detect-once exit sweep is a CLI option (`--stop-pct-sweep 0.02,0.03,0.04` or `--atr-stop-mult-sweep 1,1.5,2`): one OHLCV load, one detect/fill pass per symbol, occupancy walk per stop. Not a promote. See [exit sweep](edge_hunt/channel_touch/2026-09-06_channel_touch_exit_sweep.md).
+**Latest (2026-09-06):** 1d `--intraday-trigger close-cross` (15m close > daily rail, fill next 15m mid) + `--trail-mae` on RDWR only: 6 fills, Jun-13 never prints (Jun-5 11:15 ET already filled). Diagnostic, not a promote. See [close-cross MAE](edge_hunt/channel_touch/2026-09-06_channel_touch_close_cross_mae.md).
+
+**Prior (2026-09-06):** Detect-once exit sweep is a CLI option (`--stop-pct-sweep 0.02,0.03,0.04` or `--atr-stop-mult-sweep 1,1.5,2`): one OHLCV load, one detect/fill pass per symbol, occupancy walk per stop. Not a promote. See [exit sweep](edge_hunt/channel_touch/2026-09-06_channel_touch_exit_sweep.md).
 
 **Prior (2026-09-06):** `current_best/` 1d slot is live-executable buy-now hot-cross (even though it loses): unique span365 **n=4079 E −0.19 PF 0.94** (`1d_hot_cross.html` / `1d_channel_touch.html`). That is the number to beat. 15m keeper stays L3 wait-12 signal-close **n=1744 E +0.13 PF 1.22**. Clip HTML stays in `1d_unrealistic/`. See [hot-cross in current_best](edge_hunt/channel_touch/2026-09-06_channel_touch_current_best_hot_cross.md).
 

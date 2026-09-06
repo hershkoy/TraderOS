@@ -877,3 +877,78 @@ def test_hot_cross_daily_gap_15m_open_under_is_not_gap():
     got = purchase_hot_cross_15m(24.64, bars, session_date="2025-06-13")
     assert got.filled
     assert got.gap_15m is False
+
+
+def test_close_cross_wick_high_close_below_then_next_mid():
+    from utils.research.realistic_purchaser import (
+        REASON_END_OF_SESSION,
+        REASON_NO_CLOSE_CROSS,
+        purchase_close_cross_15m,
+    )
+
+    rail = 24.64
+    bars = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.35,
+                "high": 25.23,
+                "low": 24.33,
+                "close": 24.50,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 13, 9, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.50,
+                "high": 25.82,
+                "low": 24.40,
+                "close": 25.71,
+                "volume": 2e4,
+            },
+            {
+                "ts": _et(2025, 6, 13, 10, 0).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 25.50,
+                "high": 25.52,
+                "low": 25.48,
+                "close": 25.51,
+                "volume": 1e4,
+            },
+        ]
+    ).set_index("ts")
+    miss_open = purchase_close_cross_15m(
+        rail, bars.iloc[:1], session_date="2025-06-13"
+    )
+    assert not miss_open.filled
+    assert miss_open.reason == REASON_NO_CLOSE_CROSS
+    got = purchase_close_cross_15m(rail, bars, session_date="2025-06-13")
+    assert got.filled
+    assert got.gap_15m is False
+    assert got.bar_close == pytest.approx(25.71)
+    assert got.fill_px == pytest.approx((25.52 + 25.48) / 2.0)
+    last = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 15, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.80,
+                "high": 25.20,
+                "low": 24.70,
+                "close": 25.10,
+                "volume": 1e4,
+            }
+        ]
+    ).set_index("ts")
+    eod = purchase_close_cross_15m(rail, last, session_date="2025-06-13")
+    assert not eod.filled
+    assert eod.reason == REASON_END_OF_SESSION
+    assert eod.bar_close == pytest.approx(25.10)
+
+
+def test_needs_15m_purchase_panels_close_cross():
+    from utils.research.realistic_purchaser import needs_15m_purchase_panels
+
+    assert needs_15m_purchase_panels(
+        "1d",
+        realistic_fill=False,
+        fill_mode=FILL_MODE_NEXT_MID,
+        intraday_trigger="close-cross",
+    )

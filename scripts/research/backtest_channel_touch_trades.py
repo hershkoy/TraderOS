@@ -69,13 +69,16 @@ from utils.research.realistic_purchaser import (
     FILL_MODE_SIGNAL_CLOSE,
     FILL_MODES_1D,
     HOT_CROSS_FILLS,
+    INTRADAY_TRIGGER_CLOSE_CROSS,
     INTRADAY_TRIGGER_HOT_CROSS,
+    INTRADAY_TRIGGERS,
     exec_fill_15m_after_signal,
     exec_fill_daily_with_15m,
     needs_15m_purchase_panels,
     normalize_fill_mode,
     normalize_hot_cross_fill,
     index_rth_15m_by_session,
+    purchase_close_cross_15m,
     purchase_hot_cross_15m,
     purchase_next_daily_open,
     purchase_open_cross_15m,
@@ -804,6 +807,153 @@ def _h2_hot_cross_fills(
     return out
 
 
+def _h2_close_cross_fills(
+    close: np.ndarray,
+    dates,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+    h2: int,
+    n: int,
+    error_pct: float,
+    wait: int,
+    min_wait: int,
+    df_15m: pd.DataFrame,
+    shakeout_breakout: bool = False,
+    shakeout_breakout_min_inside: int = 1,
+    session_index: Optional[dict] = None,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
+    keep_skips: bool = False,
+) -> List[Tuple]:
+    """Close-confirm: first 15m close > daily resist; fill next 15m mid."""
+    wait_n = max(1, int(wait))
+    min_w = max(1, int(min_wait))
+    out: List[Tuple] = []
+    first_i: Optional[int] = None
+    end = min(int(n), int(h2) + 1 + wait_n)
+    sess = session_index if session_index is not None else index_rth_15m_by_session(df_15m)
+
+    def _one(i: int, *, is_sbo: bool, inside_n: int) -> Optional[Tuple]:
+        if i > 0 and _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            return None
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if not np.isfinite(resist) or resist <= 0:
+            return None
+        session = pd.Timestamp(dates[i]).strftime("%Y-%m-%d")
+        got = purchase_close_cross_15m(
+            resist,
+            df_15m,
+            session_date=session,
+            max_low_to_mid_pct=max_low_to_mid_pct,
+            max_chase_pct=max_chase_pct,
+            session_index=sess,
+        )
+        extra = {
+            "gap_15m": bool(got.gap_15m) if got.gap_15m is not None else None,
+            "fill_15m_open": got.bar_open,
+            "fill_15m_high": got.bar_high,
+            "fill_15m_low": got.bar_low,
+            "fill_15m_close": got.bar_close,
+            "hot_cross_rail": float(resist),
+            "confirm_ts": got.hit_bar_ts,
+            "skip_reason": None if got.filled else str(got.reason or ""),
+        }
+        if not got.filled:
+            if not keep_skips or not got.reason or got.reason in (
+                "no_close_cross",
+                "bad_signal",
+            ):
+                return False  # type: ignore[return-value]
+            extra["skip_reason"] = str(got.reason)
+            return (
+                i,
+                None,
+                3,
+                False,
+                True,
+                bool(is_sbo),
+                int(inside_n),
+                got.hit_bar_ts or got.exec_bar_ts,
+                extra,
+            )
+        return (
+            i,
+            float(got.fill_px),
+            3,
+            False,
+            True,
+            bool(is_sbo),
+            int(inside_n),
+            got.exec_bar_ts,
+            extra,
+        )
+
+    for i in range(int(h2) + min_w, end):
+        tag = _one(i, is_sbo=False, inside_n=0)
+        if tag is None:
+            break
+        if tag is False:
+            continue
+        out.append(tag)
+        if tag[1] is not None:
+            first_i = int(tag[0])
+            break
+        # cancelled confirm (15:45 / wild); keep looking later sessions
+    if first_i is None or not bool(shakeout_breakout):
+        return out
+    inside_bars = 0
+    need = max(1, int(shakeout_breakout_min_inside))
+    tol = float(error_pct) / 100.0
+    for i in range(int(first_i) + 1, end):
+        if _close_broke_support(
+            close,
+            i - 1,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ) or _close_broke_support(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            error_pct=error_pct,
+        ):
+            break
+        sup = _line_at(support_y0, support_x0, support_slope, i)
+        resist = float(sup) + float(width or 0.0)
+        if not np.isfinite(resist) or resist <= 0:
+            continue
+        brk_daily = float(close[i]) > resist * (1.0 + tol)
+        if not brk_daily:
+            inside_bars += 1
+        elif inside_bars < need:
+            continue
+        if inside_bars < need:
+            continue
+        tag = _one(i, is_sbo=True, inside_n=int(inside_bars))
+        if tag is None:
+            break
+        if tag is False:
+            continue
+        out.append(tag)
+        if tag[1] is not None:
+            break
+    return out
+
+
 def _session_date(ts: object) -> pd.Timestamp:
     t = pd.Timestamp(ts)
     if t.tzinfo is not None:
@@ -1253,6 +1403,252 @@ def _resolve_entry_i(
     raise ValueError(f"Unknown entry_mode={entry_mode!r}")
 
 
+def _ts_to_frame_i(index: pd.DatetimeIndex, ts: object) -> Optional[int]:
+    if ts is None or index is None or len(index) == 0:
+        return None
+    t = pd.Timestamp(ts)
+    if t.tzinfo is not None:
+        t = t.tz_convert("UTC").tz_localize(None)
+    idx = index
+    if idx.tz is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    try:
+        loc = idx.get_loc(t)
+    except KeyError:
+        try:
+            loc = idx.get_indexer([t], method="nearest")[0]
+        except Exception:
+            return None
+        if loc < 0:
+            return None
+        delta = abs((idx[int(loc)] - t).total_seconds())
+        if delta > 60:
+            return None
+    if isinstance(loc, slice):
+        loc = loc.start
+    if isinstance(loc, (np.ndarray, list)):
+        loc = int(loc[0]) if len(loc) else None
+    return int(loc) if loc is not None else None
+
+
+def _et_clock(ts: object) -> Tuple[str, int]:
+    """America/New_York HH:MM and minutes from 09:30."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    t = t.tz_convert("America/New_York")
+    tod = t.strftime("%H:%M")
+    mins = int(t.hour) * 60 + int(t.minute) - (9 * 60 + 30)
+    return tod, mins
+
+
+def close_cross_confirm_features(
+    df_15m: pd.DataFrame,
+    confirm_i: int,
+    *,
+    rail: float,
+    atr_15m: Optional[np.ndarray] = None,
+    atr_1d: Optional[float] = None,
+    slope_pct_per_bar: Optional[float] = None,
+    wait_bars: Optional[int] = None,
+    channel_width: Optional[float] = None,
+    channel_width_pct: Optional[float] = None,
+) -> dict:
+    """Causal snapshot on the 15m bar that closed above the daily rail."""
+    out: dict = {}
+    if df_15m is None or df_15m.empty or confirm_i < 0 or confirm_i >= len(df_15m):
+        return out
+    ci = int(confirm_i)
+    row = df_15m.iloc[ci]
+    o = float(row["open"]) if "open" in df_15m.columns else float("nan")
+    h = float(row["high"]) if "high" in df_15m.columns else float("nan")
+    l = float(row["low"]) if "low" in df_15m.columns else float("nan")
+    c = float(row["close"]) if "close" in df_15m.columns else float("nan")
+    v = float(row["volume"]) if "volume" in df_15m.columns else float("nan")
+    rail_f = float(rail)
+    rng = (h - l) if np.isfinite(h) and np.isfinite(l) else float("nan")
+    body = abs(c - o) if np.isfinite(c) and np.isfinite(o) else float("nan")
+    upper_wick = (h - max(o, c)) if np.isfinite(h) and np.isfinite(o) and np.isfinite(c) else float("nan")
+    lower_wick = (min(o, c) - l) if np.isfinite(l) and np.isfinite(o) and np.isfinite(c) else float("nan")
+    vol = (
+        df_15m["volume"].astype(float)
+        if "volume" in df_15m.columns
+        else pd.Series(dtype=float)
+    )
+    vol_ma = float(vol.iloc[max(0, ci - 19) : ci + 1].mean()) if len(vol) else float("nan")
+    atr_i = float("nan")
+    if atr_15m is not None and 0 <= ci < len(atr_15m):
+        atr_i = float(atr_15m[ci])
+    atr_prior = float("nan")
+    if atr_15m is not None and ci > 0 and ci - 1 < len(atr_15m):
+        atr_prior = float(atr_15m[ci - 1])
+    tod, mins = _et_clock(df_15m.index[ci])
+    out["tod_et"] = tod
+    out["minutes_from_open"] = int(mins)
+    out["confirm_green"] = 1 if np.isfinite(c) and np.isfinite(o) and c > o else 0
+    if np.isfinite(c) and c > 0 and np.isfinite(rng):
+        out["range_pct"] = round(rng / c * 100.0, 4)
+    if np.isfinite(c) and c > 0 and np.isfinite(body):
+        out["body_pct"] = round(body / c * 100.0, 4)
+    if np.isfinite(rng) and rng > 0 and np.isfinite(body):
+        out["body_frac"] = round(body / rng, 4)
+    if np.isfinite(rng) and rng > 0 and np.isfinite(upper_wick):
+        out["upper_wick_frac"] = round(max(0.0, upper_wick) / rng, 4)
+    if np.isfinite(rng) and rng > 0 and np.isfinite(lower_wick):
+        out["lower_wick_frac"] = round(max(0.0, lower_wick) / rng, 4)
+    if np.isfinite(rng) and rng > 0 and np.isfinite(c) and np.isfinite(l):
+        out["close_loc"] = round((c - l) / rng, 4)
+    if np.isfinite(v) and np.isfinite(vol_ma) and vol_ma > 0:
+        out["volume_rel_20"] = round(v / vol_ma, 4)
+    if np.isfinite(v) and np.isfinite(c) and c > 0:
+        out["dollar_volume"] = round(v * c, 2)
+    if np.isfinite(c) and np.isfinite(rail_f) and rail_f > 0:
+        out["close_over_rail_pct"] = round((c / rail_f - 1.0) * 100.0, 4)
+        if np.isfinite(o):
+            out["open_vs_rail_pct"] = round((o / rail_f - 1.0) * 100.0, 4)
+        if np.isfinite(h):
+            out["high_over_rail_pct"] = round((h / rail_f - 1.0) * 100.0, 4)
+            out["wick_above_rail_pct"] = round(max(0.0, h - max(c, rail_f)) / rail_f * 100.0, 4)
+    atr_use = atr_prior if np.isfinite(atr_prior) else atr_i
+    if np.isfinite(rng) and np.isfinite(atr_use) and atr_use > 0:
+        out["range_atr"] = round(rng / atr_use, 4)
+    if np.isfinite(c) and c > 0 and np.isfinite(atr_use) and atr_use > 0:
+        out["atr_pct_15m"] = round(atr_use / c * 100.0, 4)
+    if np.isfinite(c) and np.isfinite(rail_f) and np.isfinite(atr_use) and atr_use > 0:
+        out["close_over_rail_atr"] = round((c - rail_f) / atr_use, 4)
+        if np.isfinite(h):
+            out["high_over_rail_atr"] = round((h - rail_f) / atr_use, 4)
+    out["atr_15m"] = round(atr_use, 6) if np.isfinite(atr_use) else None
+    atr_d = float(atr_1d) if atr_1d is not None else float("nan")
+    width = float(channel_width) if channel_width is not None else float("nan")
+    if np.isfinite(width) and width > 0 and np.isfinite(atr_d) and atr_d > 0:
+        out["width_atr_1d"] = round(width / atr_d, 4)
+    slope = float(slope_pct_per_bar) if slope_pct_per_bar is not None else float("nan")
+    wait = int(wait_bars) if wait_bars is not None else None
+    if np.isfinite(slope):
+        out["slope_pct_per_bar"] = round(slope, 6)
+        if wait is not None:
+            out["rail_rise_since_h2_pct"] = round(slope * float(wait), 4)
+    width_pct = float(channel_width_pct) if channel_width_pct is not None else float("nan")
+    if np.isfinite(slope) and np.isfinite(width_pct) and width_pct > 0:
+        out["slope_vs_width"] = round(slope / width_pct, 6)
+
+    sess_start = ci
+    sess = _session_date(df_15m.index[ci])
+    while sess_start > 0 and _session_date(df_15m.index[sess_start - 1]) == sess:
+        sess_start -= 1
+    out["session_bar_i"] = int(ci - sess_start)
+    failed = 0
+    sess_hi = float("-inf")
+    sess_lo = float("inf")
+    for j in range(sess_start, ci + 1):
+        hj = float(df_15m.iloc[j]["high"]) if "high" in df_15m.columns else float("nan")
+        lj = float(df_15m.iloc[j]["low"]) if "low" in df_15m.columns else float("nan")
+        cj = float(df_15m.iloc[j]["close"]) if "close" in df_15m.columns else float("nan")
+        if np.isfinite(hj):
+            sess_hi = max(sess_hi, hj)
+        if np.isfinite(lj):
+            sess_lo = min(sess_lo, lj)
+        if j < ci and np.isfinite(hj) and np.isfinite(cj) and np.isfinite(rail_f):
+            if hj >= rail_f and cj <= rail_f:
+                failed += 1
+    out["session_failed_closes"] = int(failed)
+    if sess_hi > float("-inf") and sess_lo < float("inf") and np.isfinite(c) and c > 0:
+        out["session_range_pct"] = round((sess_hi - sess_lo) / c * 100.0, 4)
+        out["confirm_is_session_high"] = 1 if np.isfinite(h) and h >= sess_hi - 1e-12 else 0
+    if ci > 0 and np.isfinite(rail_f) and rail_f > 0 and "close" in df_15m.columns:
+        pc = float(df_15m.iloc[ci - 1]["close"])
+        if np.isfinite(pc):
+            out["prior_15m_close_vs_rail_pct"] = round((pc / rail_f - 1.0) * 100.0, 4)
+
+    if "high" in df_15m.columns and "low" in df_15m.columns and np.isfinite(rng) and rng > 0:
+        prior_rng = (df_15m["high"].astype(float) - df_15m["low"].astype(float)).iloc[max(0, ci - 20) : ci]
+        med = float(prior_rng.median()) if len(prior_rng) else float("nan")
+        if np.isfinite(med) and med > 0:
+            out["range_vs_med20"] = round(rng / med, 4)
+
+    if "volume" in df_15m.columns and np.isfinite(v) and v > 0:
+        tod_vols: List[float] = []
+        for j in range(ci - 1, -1, -1):
+            t2, _ = _et_clock(df_15m.index[j])
+            if t2 != tod:
+                continue
+            vj = float(df_15m.iloc[j]["volume"])
+            if np.isfinite(vj):
+                tod_vols.append(vj)
+            if len(tod_vols) >= 20:
+                break
+        if tod_vols:
+            mean_tod = float(np.mean(tod_vols))
+            if mean_tod > 0:
+                out["volume_rel_tod"] = round(v / mean_tod, 4)
+    return out
+
+
+def trail_only_mae_15m(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    dates: pd.DatetimeIndex,
+    entry_i: int,
+    entry_px: float,
+    *,
+    squeeze_mom: Optional[np.ndarray] = None,
+    trail_pct: float = 0.10,
+    trail_pct_wide: float = 0.18,
+    squeeze_pctile: float = 75.0,
+    squeeze_lookback: int = 100,
+    atr_15m: Optional[float] = None,
+    atr_1d: Optional[float] = None,
+) -> dict:
+    """No hard stop; 10/18 squeeze trail. MAE is the stop needed to realize that gain."""
+    sim = _simulate_trade(
+        high,
+        low,
+        close,
+        dates,
+        int(entry_i),
+        stop_pct=1.0,
+        trail_pct=float(trail_pct),
+        trail_pct_wide=float(trail_pct_wide),
+        squeeze_mom=squeeze_mom,
+        squeeze_pctile=float(squeeze_pctile),
+        squeeze_lookback=int(squeeze_lookback),
+        atr_stop_mult=None,
+        include_time=True,
+        entry_px=float(entry_px),
+        skip_entry_bar_stop=True,
+    )
+    empty = {
+        "trail_only_gain_pct": None,
+        "trail_only_exit": None,
+        "trail_only_hold_bars": None,
+        "mae_pct": None,
+        "mae_atr_15m": None,
+        "mae_atr_1d": None,
+    }
+    if sim is None:
+        return empty
+    exit_i = int(sim["exit_i"])
+    lo = np.asarray(low, dtype=float)
+    sl = lo[int(entry_i) : exit_i + 1]
+    sl = sl[np.isfinite(sl)]
+    min_low = float(np.min(sl)) if sl.size else float("nan")
+    px = float(entry_px)
+    mae_dist = max(0.0, px - min_low) if np.isfinite(min_low) and px > 0 else float("nan")
+    mae_pct = mae_dist / px * 100.0 if np.isfinite(mae_dist) and px > 0 else float("nan")
+    mae_15 = mae_dist / float(atr_15m) if atr_15m and float(atr_15m) > 0 and np.isfinite(mae_dist) else float("nan")
+    mae_d = mae_dist / float(atr_1d) if atr_1d and float(atr_1d) > 0 and np.isfinite(mae_dist) else float("nan")
+    return {
+        "trail_only_gain_pct": sim.get("gain_pct"),
+        "trail_only_exit": sim.get("exit_reason"),
+        "trail_only_hold_bars": sim.get("hold_bars"),
+        "mae_pct": round(mae_pct, 4) if np.isfinite(mae_pct) else None,
+        "mae_atr_15m": round(mae_15, 4) if np.isfinite(mae_15) else None,
+        "mae_atr_1d": round(mae_d, 4) if np.isfinite(mae_d) else None,
+    }
+
+
 def _walk_pending_trades(
     ctx: dict,
     *,
@@ -1296,6 +1692,12 @@ def _walk_pending_trades(
     fill_mode = ctx["fill_mode"]
     is_15m_bars = bool(ctx["is_15m_bars"])
     hot_cross = bool(ctx["hot_cross"])
+    close_cross = bool(ctx.get("close_cross", False))
+    trail_mae = bool(ctx.get("trail_mae", False))
+    df_15m_ctx = ctx.get("df_15m")
+    atr_15m_arr = ctx.get("atr_15m")
+    squeeze_mom_15m = ctx.get("squeeze_mom_15m")
+    feat_series_15m = ctx.get("feat_series_15m")
     feature_asof_prior_bar = bool(ctx["feature_asof_prior_bar"])
     include_time = bool(ctx["include_time"])
     entry_mode = ctx["entry_mode"]
@@ -1321,7 +1723,62 @@ def _walk_pending_trades(
         inside_n = int(item[9]) if len(item) > 9 else 0
         fill_time = item[10] if len(item) > 10 else None
         extra_fill = item[11] if len(item) > 11 and isinstance(item[11], dict) else {}
+        skip_reason = extra_fill.get("skip_reason") if extra_fill else None
+        if skip_reason:
+            if trail_mae:
+                row = {
+                    "stock": symbol.upper(),
+                    "skip_reason": skip_reason,
+                    "resist_break": True,
+                    "entry_i": int(entry_i) if entry_i is not None else None,
+                    **{k: extra_fill.get(k) for k in (
+                        "gap_15m",
+                        "fill_15m_open",
+                        "fill_15m_high",
+                        "fill_15m_low",
+                        "fill_15m_close",
+                        "hot_cross_rail",
+                    )},
+                }
+                confirm_ts = extra_fill.get("confirm_ts")
+                rail = extra_fill.get("hot_cross_rail")
+                if confirm_ts is not None:
+                    tod, mins = _et_clock(confirm_ts)
+                    row["tod_et"] = tod
+                    row["minutes_from_open"] = mins
+                    row["confirm_time"] = tod
+                    if df_15m_ctx is not None:
+                        m15n = _normalize_ohlcv_frame(df_15m_ctx)
+                        ci = _ts_to_frame_i(m15n.index, confirm_ts)
+                        if ci is not None:
+                            row.update(
+                                close_cross_confirm_features(
+                                    m15n,
+                                    int(ci),
+                                    rail=float(rail) if rail is not None else float("nan"),
+                                    atr_15m=atr_15m_arr,
+                                    slope_pct_per_bar=ch.get("slope_pct_per_bar"),
+                                    channel_width=ch.get("channel_width"),
+                                    channel_width_pct=ch.get("channel_width_pct"),
+                                )
+                            )
+                trades.append(row)
+            continue
         if entry_i is None or entry_i <= busy_until or entry_i >= sim_n:
+            if trail_mae and extra_fill and entry_i is not None and entry_i <= busy_until:
+                trades.append(
+                    {
+                        "stock": symbol.upper(),
+                        "skip_reason": "occupancy",
+                        "resist_break": True,
+                        "entry_i": int(entry_i),
+                        "buy_date": pd.Timestamp(sim_dates[int(entry_i)]).strftime("%Y-%m-%d")
+                        if 0 <= int(entry_i) < len(sim_dates)
+                        else None,
+                        "hot_cross_rail": extra_fill.get("hot_cross_rail"),
+                        "fill_15m_close": extra_fill.get("fill_15m_close"),
+                    }
+                )
             continue
         if is_sbo and bool(shakeout_breakout_hard_stop):
             if last_exit_reason != "hard_stop":
@@ -1411,6 +1868,7 @@ def _walk_pending_trades(
                 or deferred_channel
                 or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
                 or hot_cross
+                or close_cross
             ),
         )
         if sim is None:
@@ -1523,6 +1981,55 @@ def _walk_pending_trades(
                 ),
             }
         )
+        if extra_fill:
+            rail = extra_fill.get("hot_cross_rail")
+            confirm_ts = extra_fill.get("confirm_ts")
+            if close_cross and df_15m_ctx is not None and confirm_ts is not None:
+                m15n = _normalize_ohlcv_frame(df_15m_ctx)
+                ci = _ts_to_frame_i(m15n.index, confirm_ts)
+                if ci is not None:
+                    feats = close_cross_confirm_features(
+                        m15n,
+                        int(ci),
+                        rail=float(rail) if rail is not None else float("nan"),
+                        atr_15m=atr_15m_arr,
+                        atr_1d=float(atr_i) if np.isfinite(atr_i) else None,
+                        slope_pct_per_bar=ch.get("slope_pct_per_bar"),
+                        wait_bars=wait_bars,
+                        channel_width=ch.get("channel_width"),
+                        channel_width_pct=ch.get("channel_width_pct"),
+                    )
+                    trades[-1].update(feats)
+                    if extra_fill.get("confirm_ts") is not None:
+                        trades[-1]["confirm_time"] = feats.get("tod_et")
+                    if feat_series_15m is not None:
+                        snap15 = snapshot_stock_features(feat_series_15m, int(ci))
+                        for k in ("rsi_14", "squeeze_mom", "squeeze_mom_rising"):
+                            if k in snap15:
+                                trades[-1][f"cc_{k}"] = snap15[k]
+            if trail_mae and df_15m_ctx is not None and fill_time is not None:
+                m15n = _normalize_ohlcv_frame(df_15m_ctx)
+                fi = _ts_to_frame_i(m15n.index, fill_time)
+                atr_15 = extra_fill.get("atr_15m")
+                if atr_15 is None:
+                    atr_15 = trades[-1].get("atr_15m")
+                atr_d = float(atr_i) if np.isfinite(atr_i) else None
+                if fi is not None:
+                    hi15 = m15n["high"].to_numpy(dtype=float)
+                    lo15 = m15n["low"].to_numpy(dtype=float)
+                    cl15 = m15n["close"].to_numpy(dtype=float)
+                    mae = trail_only_mae_15m(
+                        hi15,
+                        lo15,
+                        cl15,
+                        m15n.index,
+                        int(fi),
+                        float(entry_px),
+                        squeeze_mom=squeeze_mom_15m,
+                        atr_15m=float(atr_15) if atr_15 is not None else None,
+                        atr_1d=atr_d,
+                    )
+                    trades[-1].update(mae)
         if fill_time is not None:
             ts_fill = pd.Timestamp(fill_time)
             if ts_fill.tzinfo is not None:
@@ -1585,6 +2092,7 @@ def trades_for_symbol(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     touch_error_pct: Optional[float] = None,
+    trail_mae: bool = False,
     exit_variants: Optional[Sequence[Tuple[str, dict]]] = None,
     **channel_kwargs,
 ) -> Union[List[dict], Dict[str, List[dict]]]:
@@ -1650,20 +2158,46 @@ def trades_for_symbol(
     )
     use_realistic = bool(realistic_fill)
     fill_mode = normalize_fill_mode(realistic_fill_mode)
-    is_15m_bars = bool(hybrid or include_time)
+    trigger = str(intraday_trigger or "").strip().lower().replace("_", "-")
     hot_cross = (
-        str(intraday_trigger or "").strip().lower().replace("_", "-")
-        == INTRADAY_TRIGGER_HOT_CROSS
+        trigger == INTRADAY_TRIGGER_HOT_CROSS
         and mode == "l3_touch"
         and not hybrid
     )
+    close_cross = (
+        trigger == INTRADAY_TRIGGER_CLOSE_CROSS
+        and mode == "l3_touch"
+        and not hybrid
+    )
+    want_trail_mae = bool(trail_mae)
+    if close_cross:
+        include_time = True
+    is_15m_bars = bool(hybrid or include_time)
     hot_fill = normalize_hot_cross_fill(hot_cross_fill) if hot_cross else ""
-    if hot_cross:
+    if hot_cross or close_cross:
         if df_15m is None or df_15m.empty:
             return _empty()
         hot_session_index = index_rth_15m_by_session(df_15m)
     else:
         hot_session_index = None
+
+    atr_15m_arr = None
+    squeeze_mom_15m = None
+    feat_series_15m = None
+    if (close_cross or want_trail_mae) and df_15m is not None and not df_15m.empty:
+        m15_feat = _normalize_ohlcv_frame(df_15m)
+        hi15 = m15_feat["high"].to_numpy(dtype=float)
+        lo15 = m15_feat["low"].to_numpy(dtype=float)
+        cl15 = m15_feat["close"].to_numpy(dtype=float)
+        atr_15m_arr = _atr(hi15, lo15, cl15, length=atr_len)
+        from indicators.ttm_squeeze import calculate_squeeze_momentum
+
+        mom15 = calculate_squeeze_momentum(m15_feat, lengthKC=20, use_logging=False)
+        squeeze_mom_15m = mom15.to_numpy(dtype=float)
+        if entry_features:
+            feat_series_15m = stock_entry_feature_series(
+                m15_feat, squeeze_mom=squeeze_mom_15m
+            )
 
     pending: List[tuple] = []
     if mode == "l3_touch":
@@ -1751,25 +2285,47 @@ def trades_for_symbol(
                 h2 = int(ch.get("h2_idx", -1))
                 if h2 < 0:
                     continue
-                if hot_cross:
-                    tags = _h2_hot_cross_fills(
-                        close,
-                        dates,
-                        support_x0=sx0,
-                        support_y0=sy0,
-                        support_slope=sslope,
-                        width=float(ch.get("channel_width") or 0.0),
-                        h2=h2,
-                        n=n,
-                        error_pct=tag_error_pct,
-                        wait=wait,
-                        min_wait=min_wait,
-                        df_15m=df_15m,
-                        fill_mode=hot_fill,
-                        shakeout_breakout=bool(shakeout_breakout),
-                        shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
-                        session_index=hot_session_index,
-                    )
+                if hot_cross or close_cross:
+                    if close_cross:
+                        tags = _h2_close_cross_fills(
+                            close,
+                            dates,
+                            support_x0=sx0,
+                            support_y0=sy0,
+                            support_slope=sslope,
+                            width=float(ch.get("channel_width") or 0.0),
+                            h2=h2,
+                            n=n,
+                            error_pct=tag_error_pct,
+                            wait=wait,
+                            min_wait=min_wait,
+                            df_15m=df_15m,
+                            shakeout_breakout=bool(shakeout_breakout),
+                            shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
+                            session_index=hot_session_index,
+                            max_low_to_mid_pct=max_low_to_mid_pct,
+                            max_chase_pct=max_chase_pct,
+                            keep_skips=want_trail_mae,
+                        )
+                    else:
+                        tags = _h2_hot_cross_fills(
+                            close,
+                            dates,
+                            support_x0=sx0,
+                            support_y0=sy0,
+                            support_slope=sslope,
+                            width=float(ch.get("channel_width") or 0.0),
+                            h2=h2,
+                            n=n,
+                            error_pct=tag_error_pct,
+                            wait=wait,
+                            min_wait=min_wait,
+                            df_15m=df_15m,
+                            fill_mode=hot_fill,
+                            shakeout_breakout=bool(shakeout_breakout),
+                            shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
+                            session_index=hot_session_index,
+                        )
                     for tag in tags:
                         i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
                         is_sh = bool(tag[3]) if len(tag) > 3 else False
@@ -1782,7 +2338,7 @@ def trades_for_symbol(
                             (
                                 ch,
                                 i,
-                                float(fill),
+                                float(fill) if fill is not None else None,
                                 tnum,
                                 i,
                                 i,
@@ -1959,6 +2515,12 @@ def trades_for_symbol(
         "fill_mode": fill_mode,
         "is_15m_bars": is_15m_bars,
         "hot_cross": hot_cross,
+        "close_cross": close_cross,
+        "trail_mae": want_trail_mae,
+        "df_15m": df_15m,
+        "atr_15m": atr_15m_arr,
+        "squeeze_mom_15m": squeeze_mom_15m,
+        "feat_series_15m": feat_series_15m,
         "feature_asof_prior_bar": feature_asof_prior_bar,
         "include_time": include_time,
         "entry_mode": entry_mode,
@@ -2063,6 +2625,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         max_low_to_mid_pct=payload.get("max_low_to_mid_pct", DEFAULT_MAX_LOW_TO_MID_PCT),
         max_chase_pct=payload.get("max_chase_pct"),
         touch_error_pct=payload.get("touch_error_pct"),
+        trail_mae=bool(payload.get("trail_mae", False)),
         exit_variants=payload.get("exit_variants"),
         **(payload.get("channel_kwargs") or {}),
     )
@@ -3530,14 +4093,21 @@ def main() -> int:
     ap.add_argument(
         "--intraday-trigger",
         default="",
-        choices=("", "hot-cross"),
-        help="1d H2 buy-now: first 15m high >= daily resist after wait (no EOD close gate).",
+        choices=("", "hot-cross", "close-cross"),
+        help="1d H2, no EOD close gate: hot-cross = first 15m high>=resist (buy-now); "
+        "close-cross = first 15m close>resist, fill next 15m mid.",
     )
     ap.add_argument(
         "--hot-cross-fill",
         default=DEFAULT_HOT_CROSS_FILL,
         choices=HOT_CROSS_FILLS,
         help="hot-cross fill: lerp85 (default, 85%% rail-to-close), rail, or 15m close.",
+    )
+    ap.add_argument(
+        "--trail-mae",
+        action="store_true",
+        help="Close-cross diagnostic: second 15m walk with 10/18 squeeze trail and no hard stop; "
+        "record trail-only gain plus mae_pct / mae_atr. Keep skip/occupancy rows. Not a book.",
     )
     ap.add_argument(
         "--feature-asof",
@@ -4026,6 +4596,7 @@ def main() -> int:
             "max_low_to_mid_pct": args.max_low_to_mid_pct,
             "max_chase_pct": args.max_chase_pct,
             "touch_error_pct": args.touch_error_pct,
+            "trail_mae": bool(getattr(args, "trail_mae", False)),
             "channel_kwargs": channel_kwargs,
         }
         logger.info(
@@ -4157,6 +4728,7 @@ def main() -> int:
             "max_low_to_mid_pct": args.max_low_to_mid_pct,
             "max_chase_pct": args.max_chase_pct,
             "touch_error_pct": args.touch_error_pct,
+            "trail_mae": bool(getattr(args, "trail_mae", False)),
             "channel_kwargs": channel_kwargs,
         }
         for sym in symbols

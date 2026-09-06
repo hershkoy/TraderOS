@@ -27,10 +27,15 @@ H2, without waiting for that session's daily close. Fill heuristic ``lerp85``
 is ``rail + 0.85 * (close - rail)`` clamped to the bar. ``rail`` / ``close``
 are bounds. A 15m gap is ``open >= rail`` (not a daily gap).
 
+``close-cross`` (1d close-confirm): first RTH 15m whose **close** is above
+resist. Fill is the **next** same-session 15m mid (``purchase_after_close_signal``).
+Last RTH confirm (15:45) is cancelled (no overnight). Does not wait for the
+daily close.
+
 Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
 and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
 ``backtest_channel_touch_h2_break.py``. ``--intraday-trigger hot-cross`` uses
-``purchase_hot_cross_15m``.
+``purchase_hot_cross_15m``; ``close-cross`` uses ``purchase_close_cross_15m``.
 """
 from __future__ import annotations
 
@@ -68,6 +73,8 @@ HOT_CROSS_FILLS = (
 DEFAULT_HOT_CROSS_FILL = HOT_CROSS_FILL_LERP85
 DEFAULT_HOT_CROSS_LERP = 0.85
 INTRADAY_TRIGGER_HOT_CROSS = "hot-cross"
+INTRADAY_TRIGGER_CLOSE_CROSS = "close-cross"
+INTRADAY_TRIGGERS = (INTRADAY_TRIGGER_HOT_CROSS, INTRADAY_TRIGGER_CLOSE_CROSS)
 
 
 def normalize_fill_mode(raw: Optional[str]) -> str:
@@ -111,7 +118,7 @@ def needs_15m_purchase_panels(
     if str(timeframe or "").strip().lower() not in ("1d", "d", "daily"):
         return False
     trig = str(intraday_trigger or "").strip().lower().replace("_", "-")
-    if trig == INTRADAY_TRIGGER_HOT_CROSS:
+    if trig in INTRADAY_TRIGGERS:
         return True
     if not realistic_fill:
         return False
@@ -129,6 +136,7 @@ REASON_PRICE_NOT_PRINTED = "price_not_printed"
 REASON_NO_OPEN_CROSS = "no_open_cross"
 REASON_NO_NEXT_OPEN = "no_next_open"
 REASON_NO_HOT_CROSS = "no_hot_cross"
+REASON_NO_CLOSE_CROSS = "no_close_cross"
 
 BarLike = Mapping[str, Any]
 TsLike = Union[datetime, pd.Timestamp, str]
@@ -946,6 +954,108 @@ def purchase_hot_cross_15m(
         lerp=lerp,
         naive_tz=naive_tz,
     )
+
+
+def _session_bars(
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    session_date: Any = None,
+    naive_tz: str = "UTC",
+    session_index: Optional[dict] = None,
+) -> List[dict]:
+    day = _as_session_date(session_date, naive_tz=naive_tz)
+    if session_index is not None:
+        bars = session_index.get(day, []) if day is not None else []
+        if day is None:
+            bars = [b for rows in session_index.values() for b in rows]
+        return list(bars)
+    bars = _coerce_15m_bars(bars_15m, naive_tz=naive_tz)
+    if day is not None:
+        bars = [b for b in bars if b["ts"].date() == day]
+    return bars
+
+
+def purchase_close_cross_15m(
+    resist: float,
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    session_date: Any = None,
+    max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
+    max_chase_pct: Optional[float] = None,
+    naive_tz: str = "UTC",
+    session_index: Optional[dict] = None,
+) -> PurchaseResult:
+    """First RTH 15m whose **close** is above resist; fill next same-session mid.
+
+    Does not wait for a daily close. Last RTH confirm (15:45) cancels
+    (``end_of_session``). A high through the rail with close still below is not
+    a signal (unlike hot-cross).
+    """
+    try:
+        lvl = float(resist)
+    except (TypeError, ValueError):
+        return _result(REASON_BAD_SIGNAL)
+    if lvl != lvl or lvl <= 0:
+        return _result(REASON_BAD_SIGNAL)
+    bars = _session_bars(
+        bars_15m,
+        session_date=session_date,
+        naive_tz=naive_tz,
+        session_index=session_index,
+    )
+    if not bars:
+        return _result(REASON_BAD_SIGNAL, signal_px=lvl)
+    for i, bar in enumerate(bars):
+        close_px = _px(bar, "close")
+        opened = _px(bar, "open")
+        high = _px(bar, "high")
+        low = _px(bar, "low")
+        if close_px is None or opened is None or not _hl_ok(high, low):
+            continue
+        if float(close_px) <= lvl:
+            continue
+        next_bar = bars[i + 1] if i + 1 < len(bars) else None
+        inner = purchase_after_close_signal(
+            bar,
+            next_bar,
+            max_low_to_mid_pct=max_low_to_mid_pct,
+            max_chase_pct=max_chase_pct,
+            naive_tz=naive_tz,
+        )
+        hit_ts = bar.get("ts")
+        start = _floor_15m(as_et(hit_ts, naive_tz=naive_tz)) if hit_ts is not None else None
+        gap = float(opened) >= lvl
+        if not inner.filled:
+            return _result(
+                inner.reason,
+                signal_px=lvl,
+                signal_time=inner.signal_time,
+                exec_bar_ts=inner.exec_bar_ts,
+                hit_bar_ts=start,
+                gap_15m=bool(gap),
+                bar_open=float(opened),
+                bar_high=float(high),
+                bar_low=float(low),
+                bar_close=float(close_px),
+            )
+        return _result(
+            REASON_FILLED,
+            filled=True,
+            fill_px=float(inner.fill_px) if inner.fill_px is not None else None,
+            signal_time=inner.signal_time,
+            signal_px=lvl,
+            exec_bar_ts=inner.exec_bar_ts,
+            mid=inner.mid,
+            low_to_mid=inner.low_to_mid_pct,
+            chase=inner.chase_pct,
+            hit_bar_ts=start,
+            gap_15m=bool(gap),
+            bar_open=float(opened),
+            bar_high=float(high),
+            bar_low=float(low),
+            bar_close=float(close_px),
+        )
+    return _result(REASON_NO_CLOSE_CROSS, signal_px=lvl)
 
 
 def exec_fill_15m_after_signal(
