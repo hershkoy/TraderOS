@@ -1585,6 +1585,49 @@ def close_cross_confirm_features(
     return out
 
 
+def _volume_rising(
+    volume: Optional[np.ndarray],
+    i: int,
+    lookback: int = 20,
+) -> bool:
+    """Completed-bar volume above the prior lookback mean (causal)."""
+    if volume is None or i <= 0 or i >= len(volume):
+        return False
+    v = float(volume[i])
+    start = max(0, int(i) - int(lookback))
+    prior = np.asarray(volume[start:i], dtype=float)
+    prior = prior[np.isfinite(prior)]
+    if prior.size == 0:
+        return False
+    ma = float(np.mean(prior))
+    return np.isfinite(v) and ma > 0 and v > ma
+
+
+def _dist_as_pct_atr(
+    dist: float,
+    entry_px: float,
+    atr_15m: Optional[float],
+    atr_1d: Optional[float],
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    px = float(entry_px)
+    d = float(dist) if np.isfinite(dist) else float("nan")
+    pct = d / px * 100.0 if np.isfinite(d) and px > 0 else float("nan")
+    a15 = (
+        d / float(atr_15m)
+        if atr_15m is not None and float(atr_15m) > 0 and np.isfinite(d)
+        else float("nan")
+    )
+    a1d = (
+        d / float(atr_1d)
+        if atr_1d is not None and float(atr_1d) > 0 and np.isfinite(d)
+        else float("nan")
+    )
+    def _r(x):
+        return round(float(x), 4) if np.isfinite(x) else None
+
+    return _r(pct), _r(a15), _r(a1d)
+
+
 def trail_only_mae_15m(
     high: np.ndarray,
     low: np.ndarray,
@@ -1593,6 +1636,7 @@ def trail_only_mae_15m(
     entry_i: int,
     entry_px: float,
     *,
+    volume: Optional[np.ndarray] = None,
     squeeze_mom: Optional[np.ndarray] = None,
     trail_pct: float = 0.10,
     trail_pct_wide: float = 0.18,
@@ -1601,52 +1645,182 @@ def trail_only_mae_15m(
     atr_15m: Optional[float] = None,
     atr_1d: Optional[float] = None,
 ) -> dict:
-    """No hard stop; 10/18 squeeze trail. MAE is the stop needed to realize that gain."""
-    sim = _simulate_trade(
-        high,
-        low,
-        close,
-        dates,
-        int(entry_i),
-        stop_pct=1.0,
-        trail_pct=float(trail_pct),
-        trail_pct_wide=float(trail_pct_wide),
-        squeeze_mom=squeeze_mom,
-        squeeze_pctile=float(squeeze_pctile),
-        squeeze_lookback=int(squeeze_lookback),
-        atr_stop_mult=None,
-        include_time=True,
-        entry_px=float(entry_px),
-        skip_entry_bar_stop=True,
-    )
+    """No hard stop. 10% trail, 18% when 15m volume is rising (else squeeze if no volume).
+
+    ``max_profit_*`` is MFE (peak high vs entry) while the trail kept the trade open.
+    ``mae_*`` is the stop needed to reach that peak (min low from fill through the MFE bar).
+    ``trail_only_gain_pct`` is the realized trail-exit P&L (gives back the trail width).
+    """
     empty = {
-        "trail_only_gain_pct": None,
-        "trail_only_exit": None,
-        "trail_only_hold_bars": None,
+        "max_profit_pct": None,
+        "max_profit_atr_15m": None,
+        "max_profit_atr_1d": None,
         "mae_pct": None,
         "mae_atr_15m": None,
         "mae_atr_1d": None,
+        "trail_only_gain_pct": None,
+        "trail_only_exit": None,
+        "trail_only_hold_bars": None,
+        "trail_wide_used": False,
+        "peak_price": None,
+        "mae_low": None,
     }
-    if sim is None:
+    n = len(close)
+    ei = int(entry_i)
+    px = float(entry_px)
+    if ei < 0 or ei >= n or not np.isfinite(px) or px <= 0:
         return empty
-    exit_i = int(sim["exit_i"])
-    lo = np.asarray(low, dtype=float)
-    sl = lo[int(entry_i) : exit_i + 1]
+    hi_a = np.asarray(high, dtype=float)
+    lo_a = np.asarray(low, dtype=float)
+    cl_a = np.asarray(close, dtype=float)
+    vol_a = np.asarray(volume, dtype=float) if volume is not None else None
+    sq = np.asarray(squeeze_mom, dtype=float) if squeeze_mom is not None else None
+    peak = px
+    mfe_high = px
+    mfe_i = ei
+    if np.isfinite(hi_a[ei]) and hi_a[ei] > mfe_high:
+        mfe_high = float(hi_a[ei])
+        peak = max(peak, mfe_high)
+        mfe_i = ei
+    exit_i = n - 1
+    exit_px = float(cl_a[exit_i]) if np.isfinite(cl_a[exit_i]) else px
+    exit_reason = "eod"
+    used_wide = False
+    wide = float(trail_pct_wide)
+    base_tr = float(trail_pct)
+
+    def _squeeze_wide(i: int) -> bool:
+        if sq is None or i >= len(sq) or i < 0:
+            return False
+        mom = float(sq[i])
+        mom_prev = float(sq[i - 1]) if i > 0 else float("nan")
+        if not (np.isfinite(mom) and mom > 0 and (not np.isfinite(mom_prev) or mom >= mom_prev)):
+            return False
+        start = max(0, i - int(squeeze_lookback) + 1)
+        window = sq[start : i + 1]
+        window = window[np.isfinite(window)]
+        if len(window) < 20:
+            return False
+        thr = float(np.nanpercentile(window, float(squeeze_pctile)))
+        return mom >= thr
+
+    for i in range(ei + 1, n):
+        hi = float(hi_a[i]) if i < len(hi_a) else float("nan")
+        lo = float(lo_a[i]) if i < len(lo_a) else float("nan")
+        cl = float(cl_a[i]) if i < len(cl_a) else float("nan")
+        if np.isfinite(hi):
+            if hi > peak:
+                peak = hi
+            if hi > mfe_high:
+                mfe_high = hi
+                mfe_i = i
+        if vol_a is not None:
+            rising = _volume_rising(vol_a, i)
+        else:
+            rising = _squeeze_wide(i)
+        if rising:
+            used_wide = True
+        trail_use = wide if rising else base_tr
+        trail_stop = peak * (1.0 - trail_use)
+        if np.isfinite(lo) and lo <= trail_stop:
+            exit_i = i
+            exit_px = float(trail_stop)
+            exit_reason = "trail_stop_wide" if rising else "trail_stop"
+            break
+        exit_i = i
+        if np.isfinite(cl):
+            exit_px = cl
+        exit_reason = "eod"
+
+    end_mae = int(mfe_i) + 1
+    if int(mfe_i) == int(exit_i) and str(exit_reason).startswith("trail"):
+        end_mae = int(mfe_i)
+    sl = lo_a[ei : max(ei + 1, end_mae)]
     sl = sl[np.isfinite(sl)]
     min_low = float(np.min(sl)) if sl.size else float("nan")
-    px = float(entry_px)
-    mae_dist = max(0.0, px - min_low) if np.isfinite(min_low) and px > 0 else float("nan")
-    mae_pct = mae_dist / px * 100.0 if np.isfinite(mae_dist) and px > 0 else float("nan")
-    mae_15 = mae_dist / float(atr_15m) if atr_15m and float(atr_15m) > 0 and np.isfinite(mae_dist) else float("nan")
-    mae_d = mae_dist / float(atr_1d) if atr_1d and float(atr_1d) > 0 and np.isfinite(mae_dist) else float("nan")
+    mfe_dist = max(0.0, float(mfe_high) - px) if np.isfinite(mfe_high) else float("nan")
+    mae_dist = max(0.0, px - min_low) if np.isfinite(min_low) else float("nan")
+    mp_pct, mp_a15, mp_a1d = _dist_as_pct_atr(mfe_dist, px, atr_15m, atr_1d)
+    mae_pct, mae_a15, mae_a1d = _dist_as_pct_atr(mae_dist, px, atr_15m, atr_1d)
+    trail_gain = (float(exit_px) / px - 1.0) * 100.0 if np.isfinite(exit_px) and px > 0 else float("nan")
+    hold = int(exit_i - ei)
     return {
-        "trail_only_gain_pct": sim.get("gain_pct"),
-        "trail_only_exit": sim.get("exit_reason"),
-        "trail_only_hold_bars": sim.get("hold_bars"),
-        "mae_pct": round(mae_pct, 4) if np.isfinite(mae_pct) else None,
-        "mae_atr_15m": round(mae_15, 4) if np.isfinite(mae_15) else None,
-        "mae_atr_1d": round(mae_d, 4) if np.isfinite(mae_d) else None,
+        "max_profit_pct": mp_pct,
+        "max_profit_atr_15m": mp_a15,
+        "max_profit_atr_1d": mp_a1d,
+        "mae_pct": mae_pct,
+        "mae_atr_15m": mae_a15,
+        "mae_atr_1d": mae_a1d,
+        "trail_only_gain_pct": round(float(trail_gain), 2) if np.isfinite(trail_gain) else None,
+        "trail_only_exit": exit_reason,
+        "trail_only_hold_bars": hold,
+        "trail_wide_used": bool(used_wide),
+        "peak_price": round(float(mfe_high), 4) if np.isfinite(mfe_high) else None,
+        "mae_low": round(float(min_low), 4) if np.isfinite(min_low) else None,
     }
+
+
+CLOSE_CROSS_MAE_REPORT_COLS: Tuple[str, ...] = (
+    "stock",
+    "buy_date",
+    "confirm_time",
+    "tod_et",
+    "buy_time",
+    "buy_price",
+    "skip_reason",
+    "hot_cross_rail",
+    "volume_rel_20",
+    "volume_rel_tod",
+    "dollar_volume",
+    "range_pct",
+    "range_atr",
+    "range_vs_med20",
+    "body_frac",
+    "close_loc",
+    "confirm_green",
+    "gap_15m",
+    "open_vs_rail_pct",
+    "close_over_rail_pct",
+    "close_over_rail_atr",
+    "high_over_rail_pct",
+    "wick_above_rail_pct",
+    "session_bar_i",
+    "session_failed_closes",
+    "session_range_pct",
+    "minutes_from_open",
+    "slope_pct_per_bar",
+    "rail_rise_since_h2_pct",
+    "slope_vs_width",
+    "channel_width_pct",
+    "width_atr_1d",
+    "wait_bars",
+    "cc_rsi_14",
+    "cc_squeeze_mom",
+    "cc_squeeze_mom_rising",
+    "atr_15m",
+    "atr_pct_15m",
+    "max_profit_pct",
+    "max_profit_atr_15m",
+    "max_profit_atr_1d",
+    "mae_pct",
+    "mae_atr_15m",
+    "mae_atr_1d",
+    "peak_price",
+    "mae_low",
+    "trail_only_gain_pct",
+    "trail_only_exit",
+    "trail_only_hold_bars",
+    "trail_wide_used",
+)
+
+
+def close_cross_mae_report_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Stable column order for the close-cross feature + MFE/MAE CSV."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=list(CLOSE_CROSS_MAE_REPORT_COLS))
+    cols = [c for c in CLOSE_CROSS_MAE_REPORT_COLS if c in df.columns]
+    extra = [c for c in df.columns if c not in cols]
+    return df.loc[:, cols + extra].copy()
 
 
 def _walk_pending_trades(
@@ -2025,6 +2199,9 @@ def _walk_pending_trades(
                         m15n.index,
                         int(fi),
                         float(entry_px),
+                        volume=m15n["volume"].to_numpy(dtype=float)
+                        if "volume" in m15n.columns
+                        else None,
                         squeeze_mom=squeeze_mom_15m,
                         atr_15m=float(atr_15) if atr_15 is not None else None,
                         atr_1d=atr_d,
@@ -4106,8 +4283,9 @@ def main() -> int:
     ap.add_argument(
         "--trail-mae",
         action="store_true",
-        help="Close-cross diagnostic: second 15m walk with 10/18 squeeze trail and no hard stop; "
-        "record trail-only gain plus mae_pct / mae_atr. Keep skip/occupancy rows. Not a book.",
+        help="Close-cross diagnostic: 15m 10%% trail, 18%% when volume > prior 20-bar mean; "
+        "no hard stop. CSV: features, max_profit (MFE while trail held) and mae (stop to "
+        "reach that peak) in pct and ATR. Keep skip/occupancy rows. Not a book.",
     )
     ap.add_argument(
         "--feature-asof",

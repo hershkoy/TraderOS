@@ -910,6 +910,81 @@ def test_trail_only_mae_15m_dip_then_run():
     assert mae["mae_pct"] == pytest.approx(3.0)
     assert mae["mae_atr_15m"] == pytest.approx(3.0)
     assert mae["mae_atr_1d"] == pytest.approx(1.5)
+    assert mae["max_profit_pct"] is not None and mae["max_profit_pct"] > 3.0
     assert mae["trail_only_gain_pct"] is not None
     assert mae["trail_only_exit"] in ("trail_stop", "trail_stop_wide", "eod")
+
+
+def test_trail_mae_stop_to_reach_peak_matches_tv_boxes():
+    """Dip 4.84% then peak +20.42%; MAE is the dip, max_profit is the peak."""
+    from backtest_channel_touch_trades import trail_only_mae_15m
+
+    n = 40
+    close = np.full(n, 100.0)
+    high = np.full(n, 100.4)
+    low = np.full(n, 99.8)
+    vol = np.full(n, 1000.0)
+    close[5] = 100.0
+    high[5] = 100.2
+    low[5] = 99.9
+    for i in range(6, 16):
+        low[i] = 95.16
+        high[i] = 99.5
+        close[i] = 96.0
+    for i in range(16, 29):
+        close[i] = 100.0 + (i - 15) * 1.4
+        high[i] = close[i] + 0.2
+        low[i] = close[i] - 0.2
+    high[29] = 120.42
+    close[29] = 120.0
+    low[29] = 119.0
+    low[30] = 108.0
+    high[30] = 120.0
+    close[30] = 108.5
+    dates = pd.date_range("2025-06-13 13:30", periods=n, freq="15min")
+    mae = trail_only_mae_15m(
+        high,
+        low,
+        close,
+        dates,
+        5,
+        100.0,
+        volume=vol,
+        atr_15m=1.0,
+        atr_1d=2.0,
+    )
+    assert mae["mae_pct"] == pytest.approx(4.84, abs=0.02)
+    assert mae["max_profit_pct"] == pytest.approx(20.42, abs=0.02)
+    assert mae["mae_atr_15m"] == pytest.approx(4.84, abs=0.02)
+    assert mae["max_profit_atr_1d"] == pytest.approx(10.21, abs=0.02)
+    assert mae["trail_only_exit"] == "trail_stop"
+
+
+def test_trail_mae_volume_rising_uses_18pct():
+    from backtest_channel_touch_trades import trail_only_mae_15m
+
+    n = 20
+    close = np.full(n, 100.0)
+    high = np.full(n, 101.0)
+    low = np.full(n, 99.5)
+    vol = np.full(n, 100.0)
+    close[2] = 100.0
+    high[2] = 100.5
+    low[2] = 99.8
+    high[3] = 112.0
+    close[3] = 111.0
+    low[3] = 110.0
+    vol[4:] = 500.0
+    high[4] = 112.0
+    low[4] = 99.5
+    close[4] = 100.0
+    dates = pd.date_range("2025-06-13 13:30", periods=n, freq="15min")
+    quiet = trail_only_mae_15m(
+        high, low, close, dates, 2, 100.0, volume=np.full(n, 100.0)
+    )
+    wide = trail_only_mae_15m(high, low, close, dates, 2, 100.0, volume=vol)
+    assert quiet["trail_only_exit"] == "trail_stop"
+    assert wide["trail_only_exit"] in ("trail_stop_wide", "eod")
+    assert wide["max_profit_pct"] == pytest.approx(12.0, abs=0.05)
+
 

@@ -29,6 +29,7 @@ from backtest_channel_touch_trades import (  # noqa: E402
     _scan_trades,
     _summarize,
     apply_friction,
+    close_cross_mae_report_frame,
     enrich_rs,
     filter_trades,
     select_same_day_rs,
@@ -184,11 +185,15 @@ def _print_close_cross_mae(df: pd.DataFrame, *, gain_col: str) -> None:
             "rail_rise_since_h2_pct",
             "channel_width_pct",
             "wait_bars",
-            "trail_only_gain_pct",
-            "trail_only_exit",
+            "max_profit_pct",
+            "max_profit_atr_15m",
+            "max_profit_atr_1d",
             "mae_pct",
             "mae_atr_15m",
             "mae_atr_1d",
+            "trail_only_gain_pct",
+            "trail_only_exit",
+            "trail_wide_used",
             gain_col,
             "exit_reason",
         )
@@ -339,7 +344,12 @@ def main() -> int:
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
     ap.add_argument("--friction-pct", type=float, default=None)
-    ap.add_argument("--n-symbols", type=int, default=300)
+    ap.add_argument(
+        "--n-symbols",
+        type=int,
+        default=300,
+        help="Cap unique names from the raw CSV (plus SPY). 1d close-cross MAE and 15m both honor this.",
+    )
     ap.add_argument(
         "--all-symbols",
         action="store_true",
@@ -411,7 +421,8 @@ def main() -> int:
     ap.add_argument(
         "--trail-mae",
         action="store_true",
-        help="Close-cross diagnostic: 15m trail-only 10/18 (no hard stop) plus MAE. Keep skip rows.",
+        help="Close-cross diagnostic: 15m 10%% trail, 18%% if volume rising; no hard stop. "
+        "Writes feature CSV with max_profit (MFE) and mae (stop to that peak) in pct and ATR.",
     )
     ap.add_argument(
         "--symbols",
@@ -451,8 +462,10 @@ def main() -> int:
     else:
         raw = pd.read_csv(raw_path)
         symbols = sorted(set(raw["stock"].astype(str).str.upper()) | {"SPY"})
-        if is_15m and int(args.n_symbols) > 0:
-            names = [s for s in symbols if s != "SPY"]
+        names = [s for s in symbols if s != "SPY"]
+        if int(args.n_symbols) > 0:
+            rest = [s for s in names if s != "RDWR"]
+            names = ["RDWR"] + rest
             if len(names) > int(args.n_symbols):
                 names = names[: int(args.n_symbols)]
             symbols = sorted(set(names) | {"SPY"})
@@ -535,6 +548,7 @@ def main() -> int:
     if scanned.empty:
         logger.error("No trades")
         return 1
+    mae_rows = scanned.copy()
     skip_mask = (
         scanned["skip_reason"].fillna("").astype(str).str.strip() != ""
         if "skip_reason" in scanned.columns
@@ -543,6 +557,17 @@ def main() -> int:
     if str(args.intraday_trigger or "") == "close-cross":
         _print_close_cross_mae(scanned, gain_col=gain_col)
     fills_all = scanned.loc[~skip_mask].copy()
+    mae_report_path = None
+    if bool(args.trail_mae) and str(args.intraday_trigger or "") == "close-cross":
+        outdir_mae = dated_outdir()
+        stamp_mae = datetime.now().strftime("%Y%m%d_%H%M%S")
+        mae_report_path = outdir_mae / (
+            "channel_touch_close_cross_mae_features_%s.csv" % stamp_mae
+        )
+        close_cross_mae_report_frame(mae_rows).to_csv(mae_report_path, index=False)
+        logger.info("Wrote MAE feature CSV %s", mae_report_path)
+        print("=== close-cross MAE feature CSV ===")
+        print(str(mae_report_path))
     if fills_all.empty:
         logger.error("No filled trades (skips=%d)", int(skip_mask.sum()))
         return 0 if int(skip_mask.sum()) else 1
@@ -690,8 +715,9 @@ def main() -> int:
         )
         if args.trail_mae:
             notes.append(
-                "trail-mae: second 15m walk stop_pct=1.0 squeeze 10/18; mae is the stop that would "
-                "have survived that path. Diagnostic only."
+                "trail-mae: 15m 10% trail, 18% when volume > prior 20-bar mean; no hard stop. "
+                "max_profit is MFE while the trail held; mae is the stop to reach that peak "
+                "(pct and ATR). Diagnostic only."
             )
     if args.shakeout_breakout:
         notes.append(
