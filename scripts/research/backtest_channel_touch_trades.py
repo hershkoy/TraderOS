@@ -64,6 +64,7 @@ from utils.research.realistic_purchaser import (
     DEFAULT_FILL_MODE,
     DEFAULT_HOT_CROSS_FILL,
     DEFAULT_MAX_LOW_TO_MID_PCT,
+    FILL_MODE_NEXT_MID,
     FILL_MODE_NEXT_OPEN,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
@@ -827,14 +828,16 @@ def _h2_close_cross_fills(
     max_low_to_mid_pct: Optional[float] = DEFAULT_MAX_LOW_TO_MID_PCT,
     max_chase_pct: Optional[float] = None,
     keep_skips: bool = False,
+    fill_mode: str = FILL_MODE_NEXT_MID,
 ) -> List[Tuple]:
-    """Close-confirm: first 15m close > daily resist; fill next 15m mid."""
+    """Close-confirm: first 15m close > daily resist; fill by ``fill_mode``."""
     wait_n = max(1, int(wait))
     min_w = max(1, int(min_wait))
     out: List[Tuple] = []
     first_i: Optional[int] = None
     end = min(int(n), int(h2) + 1 + wait_n)
     sess = session_index if session_index is not None else index_rth_15m_by_session(df_15m)
+    mode = normalize_fill_mode(fill_mode)
 
     def _one(i: int, *, is_sbo: bool, inside_n: int) -> Optional[Tuple]:
         if i > 0 and _close_broke_support(
@@ -858,6 +861,7 @@ def _h2_close_cross_fills(
             max_low_to_mid_pct=max_low_to_mid_pct,
             max_chase_pct=max_chase_pct,
             session_index=sess,
+            fill_mode=mode,
         )
         extra = {
             "gap_15m": bool(got.gap_15m) if got.gap_15m is not None else None,
@@ -895,7 +899,7 @@ def _h2_close_cross_fills(
             True,
             bool(is_sbo),
             int(inside_n),
-            got.exec_bar_ts,
+            got.exec_bar_ts if mode != FILL_MODE_SIGNAL_CLOSE else (got.hit_bar_ts or got.exec_bar_ts),
             extra,
         )
 
@@ -1794,6 +1798,8 @@ CLOSE_CROSS_MAE_REPORT_COLS: Tuple[str, ...] = (
     "channel_width_pct",
     "width_atr_1d",
     "wait_bars",
+    "formation_beyond_width",
+    "max_beyond_width",
     "cc_rsi_14",
     "cc_squeeze_mom",
     "cc_squeeze_mom_rising",
@@ -2081,6 +2087,10 @@ def _walk_pending_trades(
             )
         else:
             beyond = max_beyond_width(high, sy0, sx0, sslope, width, sx0, entry_i)
+        h2_idx = int(ch.get("h2_idx", t_idx))
+        formation_beyond = max_beyond_width(
+            high, sy0, sx0, sslope, width, sx0, max(sx0, h2_idx)
+        )
         buy_ts = pd.Timestamp(sim_dates[entry_i])
         try:
             ch_start_ts = pd.Timestamp(ch["start_date"])
@@ -2090,7 +2100,6 @@ def _walk_pending_trades(
         except Exception:
             span_days = None
             age_days = None
-        h2_idx = int(ch.get("h2_idx", t_idx))
         wait_bars = int(t_idx - h2_idx) if (hybrid or use_realistic) else int(entry_i - h2_idx)
         feat_i = (int(t_idx) - 1 if feature_asof_prior_bar else int(t_idx)) if use_realistic else (
             entry_i - 1 if feature_asof_prior_bar else entry_i
@@ -2135,6 +2144,9 @@ def _walk_pending_trades(
                 "parent_exit_reason": last_exit_reason if is_sbo else None,
                 "wait_bars": wait_bars,
                 "max_beyond_width": round(float(beyond), 4) if np.isfinite(beyond) else None,
+                "formation_beyond_width": (
+                    round(float(formation_beyond), 4) if np.isfinite(formation_beyond) else None
+                ),
                 "channel_span_days": span_days,
                 "channel_age_at_buy_days": age_days,
                 "dow": int(buy_ts.dayofweek) if pd.notna(buy_ts) else None,
@@ -2483,6 +2495,7 @@ def trades_for_symbol(
                             max_low_to_mid_pct=max_low_to_mid_pct,
                             max_chase_pct=max_chase_pct,
                             keep_skips=want_trail_mae,
+                            fill_mode=fill_mode if use_realistic else FILL_MODE_NEXT_MID,
                         )
                     else:
                         tags = _h2_hot_cross_fills(
@@ -2945,6 +2958,7 @@ def filter_trades(
     max_channel_age_days: Optional[float] = None,
     require_in_channel: bool = False,
     max_beyond_width: Optional[float] = None,
+    max_formation_beyond_width: Optional[float] = None,
     max_rsi: Optional[float] = None,
     min_close_loc: Optional[float] = None,
 ) -> pd.DataFrame:
@@ -2996,6 +3010,8 @@ def filter_trades(
         m &= out["channel_age_at_buy_days"].fillna(1e9) <= float(max_channel_age_days)
     if max_beyond_width is not None and "max_beyond_width" in out.columns:
         m &= out["max_beyond_width"].fillna(999) <= float(max_beyond_width)
+    if max_formation_beyond_width is not None and "formation_beyond_width" in out.columns:
+        m &= out["formation_beyond_width"].fillna(999) <= float(max_formation_beyond_width)
     if max_rsi is not None and "rsi_14" in out.columns:
         m &= out["rsi_14"].fillna(999) <= float(max_rsi)
     if min_close_loc is not None and "close_loc" in out.columns:
@@ -3709,6 +3725,7 @@ def run_exit_param_sweep(
     max_channel_span_days: Optional[float] = None,
     max_channel_age_days: Optional[float] = None,
     max_beyond_width: Optional[float] = None,
+    max_formation_beyond_width: Optional[float] = None,
     max_rsi: Optional[float] = None,
     min_close_loc: Optional[float] = None,
     min_adv: Optional[float] = None,
@@ -3797,6 +3814,7 @@ def run_exit_param_sweep(
             max_channel_age_days=max_channel_age_days,
             require_spy_above_sma=bool(spy_regime),
             max_beyond_width=max_beyond_width,
+            max_formation_beyond_width=max_formation_beyond_width,
             max_rsi=max_rsi,
             min_close_loc=min_close_loc,
             **geo_kwargs,
@@ -3892,6 +3910,7 @@ REPORT_COLS = [
     "wait_bars",
     "rs_spy_21d",
     "max_beyond_width",
+    "formation_beyond_width",
     "channel_span_days",
     "channel_age_at_buy_days",
 ]
@@ -4119,6 +4138,14 @@ def main() -> int:
         "through entry exceeds this (0=no pierce; 1=one extra channel above)",
     )
     ap.add_argument(
+        "--max-formation-beyond-width",
+        type=float,
+        default=None,
+        help="Reject trades whose max (high-resist)/width from L1 through H2 "
+        "(formation only, not post-H2 chase) exceeds this. Kills wide 'channels' "
+        "that spiked far above the eventual parallel before H2 (e.g. ADM 2021).",
+    )
+    ap.add_argument(
         "--beyond-width-sweep",
         default="0,0.25,0.5,1.0",
         help="Comma list of max-beyond-width caps to A/B after in-channel/span (empty=skip). "
@@ -4272,7 +4299,8 @@ def main() -> int:
         default="",
         choices=("", "hot-cross", "close-cross"),
         help="1d H2, no EOD close gate: hot-cross = first 15m high>=resist (buy-now); "
-        "close-cross = first 15m close>resist, fill next 15m mid.",
+        "close-cross = first 15m close>resist, fill via --realistic-fill-mode "
+        "(signal-close=confirm close; next-mid/next-open=next bar).",
     )
     ap.add_argument(
         "--hot-cross-fill",
@@ -4799,6 +4827,7 @@ def main() -> int:
             max_channel_span_days=args.max_channel_span_days,
             max_channel_age_days=args.max_channel_age_days,
             max_beyond_width=args.max_beyond_width,
+            max_formation_beyond_width=args.max_formation_beyond_width,
             max_rsi=args.max_rsi,
             min_close_loc=args.min_close_loc,
             min_adv=args.min_adv,
@@ -4993,6 +5022,7 @@ def main() -> int:
         max_channel_age_days=args.max_channel_age_days,
         require_spy_above_sma=bool(args.spy_regime),
         max_beyond_width=args.max_beyond_width,
+        max_formation_beyond_width=args.max_formation_beyond_width,
         max_rsi=args.max_rsi,
         min_close_loc=args.min_close_loc,
         **geo_kwargs,
@@ -5042,7 +5072,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} shakeout_breakout={bool(args.shakeout_breakout)} shakeout_breakout_min_inside={args.shakeout_breakout_min_inside} shakeout_breakout_hard_stop={bool(args.shakeout_breakout_hard_stop)} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_formation_beyond_width={args.max_formation_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} shakeout_breakout={bool(args.shakeout_breakout)} shakeout_breakout_min_inside={args.shakeout_breakout_min_inside} shakeout_breakout_hard_stop={bool(args.shakeout_breakout_hard_stop)} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         "no_buy_below_channel=True (re-entry through support or resist-break)",
         f"realistic_fill={bool(args.realistic_fill)} realistic_fill_mode={args.realistic_fill_mode}",

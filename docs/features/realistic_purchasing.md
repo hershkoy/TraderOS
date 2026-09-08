@@ -157,7 +157,18 @@ IB **5m** is being ingested for a tighter clock later (`docs/features/ib_5m_back
 
 **2026-09-06 full-universe A0 (lerp85 + shakeout, unique span365):** **n=4079 E −0.19 PF 0.94**. Gap splits stay ~PF 0.92–0.95. RDWR 2025-06-13 is absent (already in a trade from the 2025-06-05 rail poke). **Do not promote.** This is the `current_best/` 1d slot (`1d_hot_cross.html`) — the number to beat. Nightly stays the clip. Write-up: [hot-cross](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_15m_trigger.md).
 
-`--intraday-trigger close-cross` waits for a 15m **close** above the daily rail, then buys the **next** 15m mid (15:45 confirm cancels). Not buy-now; not `current_best`. RDWR microscope + `--trail-mae`: [close-cross MAE](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_close_cross_mae.md).
+`--intraday-trigger close-cross` waits for a 15m **close** above the daily rail.
+Fill follows `--realistic-fill-mode`: **`signal-close`** buys that confirm bar's
+close (last RTH allowed); **`next-mid`** / **`next-open`** buy the next
+same-session mid/open (15:45 confirm cancels). Not buy-now; not `current_best`.
+Formation hygiene: `--max-formation-beyond-width 0.25` drops L1→H2 overshoots
+(ADM 2021-11-23). Full unique confirm-close + form + span365 **n=1947 E +0.24 PF 1.07**
+(2022-23 fails) — **no promote.** See [close-confirm formation](../status_log/edge_hunt/channel_touch/2026-09-07_channel_touch_h2_close_confirm_formation.md).
+RDWR microscope + `--trail-mae` next-mid: [close-cross MAE](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_close_cross_mae.md).
+
+```bat
+python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --shakeout-breakout --intraday-trigger close-cross --realistic-fill --realistic-fill-mode signal-close --max-formation-beyond-width 0.25 --workers 4 --load-workers 8
+```
 
 ---
 

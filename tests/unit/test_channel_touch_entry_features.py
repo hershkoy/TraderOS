@@ -53,6 +53,18 @@ def test_filter_max_beyond_width():
     assert set(out["stock"]) == {"AAA", "CCC"}
 
 
+def test_filter_max_formation_beyond_width():
+    df = pd.DataFrame(
+        [
+            {"stock": "ADM", "formation_beyond_width": 1.88, "channel_pos": 0.9},
+            {"stock": "OK", "formation_beyond_width": 0.1, "channel_pos": 0.5},
+            {"stock": "EDGE", "formation_beyond_width": 0.25, "channel_pos": 0.5},
+        ]
+    )
+    out = filter_trades(df, max_formation_beyond_width=0.25)
+    assert set(out["stock"]) == {"OK", "EDGE"}
+
+
 def test_stock_features_sma_distance():
     n = 60
     close = np.arange(1.0, n + 1.0)

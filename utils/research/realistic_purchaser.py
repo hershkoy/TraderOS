@@ -28,9 +28,9 @@ is ``rail + 0.85 * (close - rail)`` clamped to the bar. ``rail`` / ``close``
 are bounds. A 15m gap is ``open >= rail`` (not a daily gap).
 
 ``close-cross`` (1d close-confirm): first RTH 15m whose **close** is above
-resist. Fill is the **next** same-session 15m mid (``purchase_after_close_signal``).
-Last RTH confirm (15:45) is cancelled (no overnight). Does not wait for the
-daily close.
+resist. Fill follows ``fill_mode``: ``signal-close`` buys that confirm bar's
+close (last RTH allowed); ``next-mid`` / ``next-open`` buy the next same-session
+15m mid/open (15:45 confirm cancels). Does not wait for the daily close.
 
 Optional ``max_chase_pct`` is off by default. Hooked via ``--realistic-fill``
 and ``--realistic-fill-mode`` in ``backtest_channel_touch_trades.py`` /
@@ -984,12 +984,16 @@ def purchase_close_cross_15m(
     max_chase_pct: Optional[float] = None,
     naive_tz: str = "UTC",
     session_index: Optional[dict] = None,
+    fill_mode: str = FILL_MODE_NEXT_MID,
 ) -> PurchaseResult:
-    """First RTH 15m whose **close** is above resist; fill next same-session mid.
+    """First RTH 15m whose **close** is above resist; fill by ``fill_mode``.
 
-    Does not wait for a daily close. Last RTH confirm (15:45) cancels
-    (``end_of_session``). A high through the rail with close still below is not
-    a signal (unlike hot-cross).
+    Does not wait for a daily close. A high through the rail with close still
+    below is not a signal (unlike hot-cross).
+
+    ``signal-close``: buy the confirm bar close (last RTH allowed).
+    ``next-mid`` / ``next-open``: buy the next same-session mid/open; 15:45
+    confirm cancels (``end_of_session``). Default remains ``next-mid``.
     """
     try:
         lvl = float(resist)
@@ -997,6 +1001,7 @@ def purchase_close_cross_15m(
         return _result(REASON_BAD_SIGNAL)
     if lvl != lvl or lvl <= 0:
         return _result(REASON_BAD_SIGNAL)
+    mode = normalize_fill_mode(fill_mode)
     bars = _session_bars(
         bars_15m,
         session_date=session_date,
@@ -1015,13 +1020,18 @@ def purchase_close_cross_15m(
         if float(close_px) <= lvl:
             continue
         next_bar = bars[i + 1] if i + 1 < len(bars) else None
-        inner = purchase_after_close_signal(
-            bar,
-            next_bar,
-            max_low_to_mid_pct=max_low_to_mid_pct,
-            max_chase_pct=max_chase_pct,
-            naive_tz=naive_tz,
-        )
+        if mode in (FILL_MODE_SIGNAL_CLOSE, FILL_MODE_OPEN_CROSS):
+            inner = purchase_at_signal_close(bar, naive_tz=naive_tz)
+        elif mode == FILL_MODE_NEXT_OPEN:
+            inner = purchase_next_bar_open(bar, next_bar, naive_tz=naive_tz)
+        else:
+            inner = purchase_after_close_signal(
+                bar,
+                next_bar,
+                max_low_to_mid_pct=max_low_to_mid_pct,
+                max_chase_pct=max_chase_pct,
+                naive_tz=naive_tz,
+            )
         hit_ts = bar.get("ts")
         start = _floor_15m(as_et(hit_ts, naive_tz=naive_tz)) if hit_ts is not None else None
         gap = float(opened) >= lvl

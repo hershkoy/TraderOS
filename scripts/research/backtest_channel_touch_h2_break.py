@@ -410,13 +410,21 @@ def main() -> int:
         default="",
         choices=("", "hot-cross", "close-cross"),
         help="1d H2, no EOD close gate: hot-cross = first 15m high>=resist; "
-        "close-cross = first 15m close>resist then next 15m mid.",
+        "close-cross = first 15m close>resist then fill by --realistic-fill-mode "
+        "(signal-close = confirm bar close; next-mid/next-open = next bar).",
     )
     ap.add_argument(
         "--hot-cross-fill",
         default=DEFAULT_HOT_CROSS_FILL,
         choices=HOT_CROSS_FILLS,
         help="hot-cross fill: lerp85 (default), rail, or 15m close.",
+    )
+    ap.add_argument(
+        "--max-formation-beyond-width",
+        type=float,
+        default=None,
+        help="Reject H2 setups whose max (high-resist)/width from L1 through H2 "
+        "exceeds this (formation containment; detector unchanged).",
     )
     ap.add_argument(
         "--trail-mae",
@@ -558,15 +566,15 @@ def main() -> int:
         _print_close_cross_mae(scanned, gain_col=gain_col)
     fills_all = scanned.loc[~skip_mask].copy()
     mae_report_path = None
-    if bool(args.trail_mae) and str(args.intraday_trigger or "") == "close-cross":
+    if str(args.intraday_trigger or "") == "close-cross":
         outdir_mae = dated_outdir()
         stamp_mae = datetime.now().strftime("%Y%m%d_%H%M%S")
         mae_report_path = outdir_mae / (
-            "channel_touch_close_cross_mae_features_%s.csv" % stamp_mae
+            "channel_touch_close_cross_features_%s.csv" % stamp_mae
         )
         close_cross_mae_report_frame(mae_rows).to_csv(mae_report_path, index=False)
-        logger.info("Wrote MAE feature CSV %s", mae_report_path)
-        print("=== close-cross MAE feature CSV ===")
+        logger.info("Wrote close-cross feature CSV %s", mae_report_path)
+        print("=== close-cross feature CSV ===")
         print(str(mae_report_path))
     if fills_all.empty:
         logger.error("No filled trades (skips=%d)", int(skip_mask.sum()))
@@ -579,10 +587,25 @@ def main() -> int:
     l3 = scanned.loc[~is_brk].copy()
     brk = scanned.loc[is_brk].copy()
     l3_q = filter_trades(l3, **l3_filters)
-    brk_span = filter_trades(brk, max_channel_span_days=span_cap) if not brk.empty else brk
+    form_cap = args.max_formation_beyond_width
+    brk_span = (
+        filter_trades(
+            brk,
+            max_channel_span_days=span_cap,
+            max_formation_beyond_width=form_cap,
+        )
+        if not brk.empty
+        else brk
+    )
+    brk_form = (
+        filter_trades(brk, max_formation_beyond_width=form_cap)
+        if (not brk.empty and form_cap is not None)
+        else brk
+    )
     l3_q = _net(l3_q, friction)
     brk_n = _net(brk, friction)
     brk_span_n = _net(brk_span, friction)
+    brk_form_n = _net(brk_form, friction)
 
     if not keeper.empty:
         keeper_n = _net(keeper, friction)
@@ -594,6 +617,15 @@ def main() -> int:
     print(_fmt(_summarize(brk_n, gain_col=gain_col)))
     if not brk_n.empty:
         print(summarize_by_year(brk_n, gain_col=gain_col, buckets=YEAR_BUCKETS).to_string(index=False))
+    if form_cap is not None:
+        print("=== resist-break + formation_beyond<=%.2f (no span) ===" % float(form_cap))
+        print(_fmt(_summarize(brk_form_n, gain_col=gain_col)))
+        if not brk_form_n.empty:
+            print(
+                summarize_by_year(brk_form_n, gain_col=gain_col, buckets=YEAR_BUCKETS).to_string(
+                    index=False
+                )
+            )
     print("=== resist-break + span<=%s ===" % span_label)
     print(_fmt(_summarize(brk_span_n, gain_col=gain_col)))
     if not brk_span_n.empty:
@@ -697,6 +729,7 @@ def main() -> int:
         ),
         "intraday_trigger": str(args.intraday_trigger or ""),
         "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
+        "max_formation_beyond_width": args.max_formation_beyond_width,
         "trail_mae": bool(args.trail_mae),
     }
     notes = [
@@ -710,8 +743,9 @@ def main() -> int:
         )
     if str(args.intraday_trigger or "") == "close-cross":
         notes.append(
-            "close-cross: first 15m close>daily rail after wait; fill next 15m mid; no daily-close gate. "
+            "close-cross: first 15m close>daily rail after wait; fill=%s; no daily-close gate. "
             "Not a promote."
+            % str(args.realistic_fill_mode or "next-mid")
         )
         if args.trail_mae:
             notes.append(
@@ -719,6 +753,11 @@ def main() -> int:
                 "max_profit is MFE while the trail held; mae is the stop to reach that peak "
                 "(pct and ATR). Diagnostic only."
             )
+    if args.max_formation_beyond_width is not None:
+        notes.append(
+            "formation containment: max (high-resist)/width from L1 through H2 <= %.2f"
+            % float(args.max_formation_beyond_width)
+        )
     if args.shakeout_breakout:
         notes.append(
             "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "

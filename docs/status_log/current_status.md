@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-07):** Close-cross MAE ridge (year split, train < 2023) on 50 then 300 names: confirm-bar features do not beat unconstrained 10/18 trail as a stop (300 holdout trail n=712 E +1.28 PF 1.33 vs ridge stop E −0.11 PF 0.97). No promote. See [MAE ridge](edge_hunt/channel_touch/2026-09-07_channel_touch_close_cross_mae_ridge.md).
+**Latest (2026-09-07):** H2 close-confirm (15m close > daily rail, fill confirm close) + formation containment ≤0.25: full unique span365 **n=1947 E +0.24 PF 1.07** (2022-23 fails). Slightly above hot-cross −0.19/0.94; **no promote.** ADM Nov-23 dropped (formation_beyond 1.88). See [close-confirm formation](edge_hunt/channel_touch/2026-09-07_channel_touch_h2_close_confirm_formation.md).
+
+**Prior (2026-09-07):** Close-cross MAE ridge (year split, train < 2023) on 50 then 300 names: confirm-bar features do not beat unconstrained 10/18 trail as a stop (300 holdout trail n=712 E +1.28 PF 1.33 vs ridge stop E −0.11 PF 0.97). No promote. See [MAE ridge](edge_hunt/channel_touch/2026-09-07_channel_touch_close_cross_mae_ridge.md).
 
 **Prior (2026-09-06):** 1d `--intraday-trigger close-cross` (15m close > daily rail, fill next 15m mid) + `--trail-mae` on RDWR only: 6 fills, Jun-13 never prints (Jun-5 11:15 ET already filled). Diagnostic, not a promote. See [close-cross MAE](edge_hunt/channel_touch/2026-09-06_channel_touch_close_cross_mae.md).
 

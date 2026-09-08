@@ -31,6 +31,7 @@ FEATURE_COLS: Sequence[str] = (
     "squeeze_mom",
     "squeeze_mom_rising",
     "max_beyond_width",
+    "formation_beyond_width",
     "channel_span_days",
     "channel_age_at_buy_days",
     "dow",
