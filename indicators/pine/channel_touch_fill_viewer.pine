@@ -33,7 +33,41 @@ showTable    = input.bool(true, "Info table", group = gVis)
 var array<line> drawnLines = array.new_line()
 var array<label> drawnLabs = array.new_label()
 var array<linefill> drawnFills = array.new_linefill()
-var table info = table.new(position.top_right, 2, 10, bgcolor = color.new(#111111, 10), border_width = 1, border_color = color.new(#ffffff, 70))
+// top_left: top_right sits under the watchlist and looks like "no rails / no status"
+var table info = table.new(position.top_left, 2, 10, bgcolor = color.new(#111111, 10), border_width = 1, border_color = color.new(#ffffff, 70))
+
+// Oldest / newest loaded bar times (within max_bars_back).
+f_first_bar_time() =>
+    int t0 = int(na)
+    lim = math.min(bar_index, 4999)
+    if lim >= 0
+        t0 := time[lim]
+    t0
+
+// Project channel segment onto loaded bars so 1d JSON still shows on 15m.
+// mode: exact | clipped | projected
+f_project_seg(int tL1, float yL1, float slopeMs, int tRightWanted, int tFirst, int tLast) =>
+    int tLeft = tL1
+    int tRight = tRightWanted
+    string mode = "exact"
+    if na(tFirst) or na(tLast) or tLast <= tFirst
+        float yL = yL1
+        float yR = yL1 + slopeMs * (tRightWanted - tL1)
+        [tLeft, yL, tRight, yR, mode]
+    else
+        // Ideal clip to loaded window
+        tLeft := math.max(tL1, tFirst)
+        tRight := math.min(tRightWanted, tLast)
+        if tRight <= tLeft
+            // Entire trade outside loaded history: still draw across what is on chart
+            tLeft := tFirst
+            tRight := tLast
+            mode := "projected"
+        else if tLeft > tL1 or tRight < tRightWanted
+            mode := "clipped"
+        float yL = yL1 + slopeMs * (tLeft - tL1)
+        float yR = yL1 + slopeMs * (tRight - tL1)
+        [tLeft, yL, tRight, yR, mode]
 
 f_clear() =>
     nF = array.size(drawnFills)
@@ -52,21 +86,6 @@ f_clear() =>
             label.delete(array.get(drawnLabs, i))
         array.clear(drawnLabs)
 
-f_lab(int t, float y, string txt, string sty, color bg) =>
-    lab = label.new(t, y, txt, xloc = xloc.bar_time, style = sty, color = bg, textcolor = color.white, size = size.tiny)
-    array.push(drawnLabs, lab)
-
-f_draw(int t1, float y1, int t2, float y2, float width, string tag) =>
-    f_clear()
-    lnBot = line.new(t1, y1, t2, y2, xloc = xloc.bar_time, extend = extend.none, color = supportColor, width = 2)
-    lnTop = line.new(t1, y1 + width, t2, y2 + width, xloc = xloc.bar_time, extend = extend.none, color = resistColor, width = 2)
-    array.push(drawnLines, lnBot)
-    array.push(drawnLines, lnTop)
-    array.push(drawnFills, linefill.new(lnBot, lnTop, fillColor))
-    if tag != ""
-        labFill = label.new(t2, y2 + width, tag, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(resistColor, 10), textcolor = color.white, size = size.small)
-        array.push(drawnLabs, labFill)
-
 f_asof_off(int ts) =>
     found = int(na)
     lim = math.min(bar_index, 4999)
@@ -79,6 +98,49 @@ f_asof_off(int ts) =>
                 found := i
                 break
     found
+
+f_lab(int t, float y, string txt, string sty, color bg) =>
+    // Snap off-history times onto the nearest loaded bar so labels still show on 15m.
+    int off = f_asof_off(t)
+    int tFirst = f_first_bar_time()
+    if na(off) and not na(tFirst) and t < tFirst
+        off := f_asof_off(tFirst)
+    if na(off) and t > time
+        off := 0
+    if na(off)
+        lab = label.new(t, y, txt, xloc = xloc.bar_time, style = sty, color = bg, textcolor = color.white, size = size.tiny)
+        array.push(drawnLabs, lab)
+    else
+        lab = label.new(bar_index - off, y, txt, xloc = xloc.bar_index, style = sty, color = bg, textcolor = color.white, size = size.tiny)
+        array.push(drawnLabs, lab)
+
+f_draw(int t1, float y1, int t2, float y2, float width, string tag) =>
+    f_clear()
+    int o1 = f_asof_off(t1)
+    int o2 = f_asof_off(t2)
+    // bar_index is reliable; bar_time endpoints before/between bars often draw nothing on TV.
+    if not na(o1) and not na(o2) and o1 >= o2
+        int x1 = bar_index - o1
+        int x2 = bar_index - o2
+        if x2 <= x1
+            x2 := x1 + 1
+        lnBot = line.new(x1, y1, x2, y2, xloc = xloc.bar_index, extend = extend.right, color = supportColor, width = 2)
+        lnTop = line.new(x1, y1 + width, x2, y2 + width, xloc = xloc.bar_index, extend = extend.right, color = resistColor, width = 2)
+        array.push(drawnLines, lnBot)
+        array.push(drawnLines, lnTop)
+        array.push(drawnFills, linefill.new(lnBot, lnTop, fillColor))
+        if tag != ""
+            labFill = label.new(x2, y2 + width, tag, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(resistColor, 10), textcolor = color.white, size = size.small)
+            array.push(drawnLabs, labFill)
+    else
+        lnBot = line.new(t1, y1, t2, y2, xloc = xloc.bar_time, extend = extend.right, color = supportColor, width = 2)
+        lnTop = line.new(t1, y1 + width, t2, y2 + width, xloc = xloc.bar_time, extend = extend.right, color = resistColor, width = 2)
+        array.push(drawnLines, lnBot)
+        array.push(drawnLines, lnTop)
+        array.push(drawnFills, linefill.new(lnBot, lnTop, fillColor))
+        if tag != ""
+            labFill = label.new(t2, y2 + width, tag, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(resistColor, 10), textcolor = color.white, size = size.small)
+            array.push(drawnLabs, labFill)
 
 f_same_day(int t1, int t2) =>
     year(t1) == year(t2) and month(t1) == month(t2) and dayofmonth(t1) == dayofmonth(t2)
@@ -136,7 +198,8 @@ f_jraw(string src, string key) =>
         else
             int j = i
             int endn = i
-            for k = 0 to 28
+            // ms timestamps are 13 digits; allow headroom for decimals/sign
+            for k = 0 to 40
                 if j >= n
                     break
                 string c = str.substring(src, j, j + 1)
@@ -177,6 +240,34 @@ f_ms(string src, string msKey, string tKey) =>
         ms := f_iso_ms(f_jstr(src, tKey))
     ms
 
+// Every bar: project sloping rails from JSON/Manual onto this timeframe (1d JSON works on 15m).
+jsonSrcPlot = f_norm_json(channelJsonIn)
+useJsonPlot = str.length(jsonSrcPlot) >= 20 and str.contains(jsonSrcPlot, '"l1p"')
+float railSup = na
+float railRes = na
+if useJsonPlot
+    l1pP = f_jnum(jsonSrcPlot, "l1p")
+    l2pP = f_jnum(jsonSrcPlot, "l2p")
+    wP = f_jnum(jsonSrcPlot, "w")
+    tL1P = f_ms(jsonSrcPlot, "l1_ms", "l1t")
+    tL2P = f_ms(jsonSrcPlot, "l2_ms", "l2t")
+    symP = f_jstr(jsonSrcPlot, "sym")
+    tickerPlotOk = true
+    if not na(symP)
+        tickerPlotOk := str.upper(symP) == str.upper(syminfo.ticker)
+    if tickerPlotOk and not na(l1pP) and not na(l2pP) and not na(wP) and wP > 0 and not na(tL1P) and not na(tL2P) and tL2P != tL1P
+        slopeP = (l2pP - l1pP) / (tL2P - tL1P)
+        railSup := l1pP + slopeP * (time - tL1P)
+        railRes := railSup + wP
+else if drawMode == "Manual rails" and pL1 > 0 and pL2 > 0 and widthIn > 0 and tL2 != tL1
+    slopeP = (pL2 - pL1) / (tL2 - tL1)
+    railSup := pL1 + slopeP * (time - tL1)
+    railRes := railSup + widthIn
+
+pSup = plot(railSup, "CTF support", color = supportColor, linewidth = 2)
+pRes = plot(railRes, "CTF resist", color = resistColor, linewidth = 2)
+fill(pSup, pRes, color = fillColor, title = "CTF channel")
+
 if barstate.islast
     jsonSrc = f_norm_json(channelJsonIn)
     useJson = str.length(jsonSrc) >= 20 and str.contains(jsonSrc, '"l1p"')
@@ -201,41 +292,61 @@ if barstate.islast
         tickerOk = true
         if not na(symJ)
             tickerOk := str.upper(symJ) == str.upper(syminfo.ticker)
-        if na(l1p) or na(l2p) or na(widthJ) or widthJ <= 0 or na(tL1j) or na(tL2j) or tL2j == tL1j
+        if not tickerOk
+            f_clear()
+            f_tbl("json", fillTxtJ, "wrong symbol", "err", "-", "-", "-", "-", "JSON sym=" + symJ, "Switch chart to " + symJ)
+            if dbgLog
+                log.info("CTF json: chart={0} json sym={1}", syminfo.ticker, symJ)
+        else if na(l1p) or na(l2p) or na(widthJ) or widthJ <= 0 or na(tL1j) or na(tL2j) or tL2j == tL1j
             f_clear()
             f_tbl("json", fillTxtJ, "bad JSON", "err", "-", "-", "-", "-", "Need l1p l2p w l1_ms l2_ms fill_ms", "Copy from HTML Channel i")
             if dbgLog
                 log.info("CTF json: missing rails")
         else
             slopeMs = (l2p - l1p) / (tL2j - tL1j)
-            tRight = fillUse
+            tRightWanted = fillUse
             if not na(tExj)
-                tRight := math.max(fillUse, tExj)
-            yRight = l1p + slopeMs * (tRight - tL1j)
+                tRightWanted := math.max(fillUse, tExj)
+            tFirst = f_first_bar_time()
+            tLast = time
+            [tLeft, yLeft, tRight, yRight, projMode] = f_project_seg(tL1j, l1p, slopeMs, tRightWanted, tFirst, tLast)
             yFill = l1p + slopeMs * (fillUse - tL1j)
-            f_draw(tL1j, l1p, tRight, yRight, widthJ, "")
-            f_lab(tL1j, l1p, "L1", label.style_label_up, supportColor)
-            f_lab(tL2j, l2p, "L2", label.style_label_up, supportColor)
-            if not na(h2Use)
-                f_lab(h2Use, l1p + slopeMs * (h2Use - tL1j) + widthJ, "H2", label.style_label_down, resistColor)
-            if not na(enp)
-                f_lab(fillUse, enp, "BUY " + str.tostring(enp, "#.00"), label.style_label_up, supportColor)
+            f_draw(tLeft, yLeft, tRight, yRight, widthJ, "")
+            // Pivot labels only when that stamp lands on loaded bars (or snaps to edge).
+            if projMode != "projected"
+                if tL1j >= tLeft
+                    f_lab(tL1j, l1p, "L1", label.style_label_up, supportColor)
+                else
+                    f_lab(tLeft, yLeft, "L1(clip)", label.style_label_up, supportColor)
+                if tL2j >= tLeft and tL2j <= tRight
+                    f_lab(tL2j, l2p, "L2", label.style_label_up, supportColor)
+                if not na(h2Use) and h2Use >= tLeft and h2Use <= tRight
+                    f_lab(h2Use, l1p + slopeMs * (h2Use - tL1j) + widthJ, "H2", label.style_label_down, resistColor)
             else
-                f_lab(fillUse, yFill + widthJ, "FILL", label.style_label_left, color.new(resistColor, 10))
+                f_lab(tLeft, yLeft, "rail(proj)", label.style_label_up, supportColor)
+            // BUY/SELL: snap onto chart even when fill is older than loaded 15m.
+            if not na(enp)
+                f_lab(fillUse, enp, (projMode == "projected" ? "BUY off-chart " : "BUY ") + str.tostring(enp, "#.00"), label.style_label_up, supportColor)
+            else
+                f_lab(fillUse, yFill + widthJ, projMode == "projected" ? "FILL off-chart" : "FILL", label.style_label_left, color.new(resistColor, 10))
             if not na(tExj) and not na(exp)
-                f_lab(tExj, exp, "SELL " + str.tostring(exp, "#.00"), label.style_label_down, resistColor)
-            waitEst = int(math.round((fillUse - h2Use) / (15 * 60 * 1000.0)))
+                f_lab(tExj, exp, (projMode == "projected" ? "SELL off-chart " : "SELL ") + str.tostring(exp, "#.00"), label.style_label_down, resistColor)
+            barMs = math.max(1, timeframe.in_seconds() * 1000)
+            waitEst = int(math.round((fillUse - h2Use) / float(barMs)))
             noteJ = (na(srcJ) ? "html json" : srcJ)
             if not na(enp)
                 noteJ := noteJ + " BUY " + str.tostring(enp, "#.00")
             if not na(exp)
                 noteJ := noteJ + " SELL " + str.tostring(exp, "#.00")
-            if not tickerOk
-                noteJ := noteJ + " ticker " + symJ
-            howJ = tickerOk ? "CTF JSON paste" : "JSON sym=" + symJ + " chart=" + syminfo.ticker
-            f_tbl("json", fillTxtJ, tickerOk ? "drawn" : "drawn (symbol?)", tickerOk ? "ok" : "err", str.tostring(yFill, "#.00"), str.tostring(yFill + widthJ, "#.00"), str.tostring(widthJ, "#.000"), str.tostring(waitEst) + " bars (H2 to fill)", noteJ, howJ)
+            if projMode == "projected"
+                noteJ := noteJ + " rails projected onto loaded " + timeframe.period
+            else if projMode == "clipped"
+                noteJ := noteJ + " L1/fill clipped to chart history"
+            statusJ = projMode == "exact" ? "drawn" : (projMode == "clipped" ? "drawn (clipped)" : "drawn (projected)")
+            howJ = "CTF JSON paste"
+            f_tbl("json", fillTxtJ, statusJ, "ok", str.tostring(yFill, "#.00"), str.tostring(yFill + widthJ, "#.00"), str.tostring(widthJ, "#.000"), str.tostring(waitEst) + " bars (H2 to fill)", noteJ, howJ)
             if dbgLog
-                log.info("CTF json fill={0} support={1} resist={2} sym={3}", fillTxtJ, yFill, yFill + widthJ, na(symJ) ? "-" : symJ)
+                log.info("CTF json fill={0} support={1} resist={2} sym={3} mode={4}", fillTxtJ, yFill, yFill + widthJ, na(symJ) ? "-" : symJ, projMode)
     else if str.length(jsonSrc) >= 2
         f_clear()
         f_tbl("json", fillTxt, "bad JSON", "err", "-", "-", "-", "-", "Need keys l1p l2p w", "Copy from HTML Channel i")
@@ -250,14 +361,24 @@ if barstate.islast
         else
             slopeMs = (pL2 - pL1) / (tL2 - tL1)
             yFill = pL1 + slopeMs * (fillTimeIn - tL1)
-            f_draw(tL1, pL1, fillTimeIn, yFill, widthIn, "FILL")
-            f_lab(tL1, pL1, "L1", label.style_label_up, supportColor)
-            f_lab(tL2, pL2, "L2", label.style_label_up, supportColor)
-            f_lab(tH2, pL1 + slopeMs * (tH2 - tL1) + widthIn, "H2", label.style_label_down, resistColor)
-            waitEst = int(math.round((fillTimeIn - tH2) / (15 * 60 * 1000.0)))
-            f_tbl("manual 15m H5", fillTxt, "drawn", "ok", str.tostring(yFill, "#.00"), str.tostring(yFill + widthIn, "#.00"), str.tostring(widthIn, "#.000"), str.tostring(waitEst) + " bars (H2 to fill)", "HTML rails, not a live scan", "CTD stays for /hot overlay")
+            tFirst = f_first_bar_time()
+            [tLeft, yLeft, tRight, yRight, projMode] = f_project_seg(tL1, pL1, slopeMs, fillTimeIn, tFirst, time)
+            f_draw(tLeft, yLeft, tRight, yRight, widthIn, "")
+            if projMode != "projected"
+                f_lab(tL1, pL1, "L1", label.style_label_up, supportColor)
+                f_lab(tL2, pL2, "L2", label.style_label_up, supportColor)
+                f_lab(tH2, pL1 + slopeMs * (tH2 - tL1) + widthIn, "H2", label.style_label_down, resistColor)
+                f_lab(fillTimeIn, yFill + widthIn, "FILL", label.style_label_left, color.new(resistColor, 10))
+            else
+                f_lab(tLeft, yLeft, "rail(proj)", label.style_label_up, supportColor)
+                f_lab(fillTimeIn, yFill + widthIn, "FILL off-chart", label.style_label_left, color.new(resistColor, 10))
+            barMs = math.max(1, timeframe.in_seconds() * 1000)
+            waitEst = int(math.round((fillTimeIn - tH2) / float(barMs)))
+            statusM = projMode == "exact" ? "drawn" : (projMode == "clipped" ? "drawn (clipped)" : "drawn (projected)")
+            noteM = projMode == "projected" ? "rails projected onto loaded " + timeframe.period : "HTML rails, not a live scan"
+            f_tbl("manual 15m H5", fillTxt, statusM, "ok", str.tostring(yFill, "#.00"), str.tostring(yFill + widthIn, "#.00"), str.tostring(widthIn, "#.000"), str.tostring(waitEst) + " bars (H2 to fill)", noteM, "CTD stays for /hot overlay")
             if dbgLog
-                log.info("CTF manual fill={0} support={1} resist={2}", fillTxt, yFill, yFill + widthIn)
+                log.info("CTF manual fill={0} support={1} resist={2} mode={3}", fillTxt, yFill, yFill + widthIn, projMode)
     else
         asofOff = f_asof_off(fillTimeIn)
         if na(asofOff)

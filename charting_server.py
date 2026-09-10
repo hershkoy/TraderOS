@@ -2,11 +2,14 @@
 Charting Server for Backtrader Data
 A Flask-based web server that provides charting capabilities for symbols in the data folder.
 """
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
 import json
+import queue
+import threading
+import time
 from datetime import datetime, timedelta
 import argparse
 import os
@@ -25,6 +28,11 @@ from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, 
 
 app = Flask(__name__)
 CORS(app)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+_SYMBOLS_CACHE = {"ts": 0.0, "symbols": []}
+_SYMBOLS_TTL_SEC = 600.0
+_DB_LOCK = threading.Lock()
 
 # Available indicators
 INDICATORS = {
@@ -43,217 +51,305 @@ INDICATORS = {
 
 @app.route('/')
 def index():
-    """Main charting interface"""
-    symbols = DataAggregator.get_available_symbols()
-    return render_template('index.html', symbols=symbols, indicators=INDICATORS)
+    """Main charting interface. Symbol list loads async so the page is not blocked."""
+    return render_template('index.html', symbols=[], indicators=INDICATORS)
 
 @app.route('/api/symbols')
 def get_symbols():
-    """Get available symbols"""
-    symbols = DataAggregator.get_available_symbols()
+    """Get available symbols (optional ?q= prefix/substring filter)."""
+    symbols = _chart_symbols()
+    q = (request.args.get("q") or "").strip()
+    if q:
+        from utils.charting.channel_overlay import filter_symbols
+
+        symbols = filter_symbols(q, symbols)
     return jsonify(symbols)
 
-@app.route('/api/timeframes/<symbol>')
+
+def _chart_symbols():
+    """Fast symbol list: ticker_universe + memory cache (not DISTINCT on market_data)."""
+    now = time.time()
+    cached = _SYMBOLS_CACHE.get("symbols") or []
+    if cached and (now - float(_SYMBOLS_CACHE.get("ts") or 0)) < _SYMBOLS_TTL_SEC:
+        return list(cached)
+    symbols = []
+    try:
+        from utils.db.timescaledb_client import get_timescaledb_client
+
+        client = get_timescaledb_client()
+        with _DB_LOCK:
+            if client.ensure_connection():
+                cursor = client.connection.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT DISTINCT symbol FROM ticker_universe "
+                        "WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY symbol"
+                    )
+                    symbols = [row[0] for row in cursor.fetchall() if row and row[0]]
+                finally:
+                    cursor.close()
+    except Exception as exc:
+        print("chart symbols from ticker_universe failed: %s" % exc)
+        symbols = []
+    if symbols:
+        _SYMBOLS_CACHE["ts"] = now
+        _SYMBOLS_CACHE["symbols"] = symbols
+    return symbols
+
+
+def _progress(cb, pct, msg):
+    if cb is None:
+        return
+    try:
+        cb(int(pct), str(msg))
+    except Exception:
+        pass
+
+
+def _build_chart_payload(symbol, timeframe, around, before, after, indicators_raw, progress=None):
+    """Return (payload_dict, http_status)."""
+    from utils.charting.ohlcv_window import load_ohlcv_window
+
+    _progress(progress, 6, "Connecting to TimescaleDB")
+    with _DB_LOCK:
+        win = load_ohlcv_window(
+            symbol,
+            timeframe,
+            around=around,
+            before=before,
+            after=after,
+            progress=progress,
+        )
+    df = win["df"]
+    if df is None or df.empty:
+        return (
+            {"error": "No data found for %s at %s" % (symbol, timeframe)},
+            404,
+        )
+
+    _progress(progress, 82, "Preparing %s bars" % len(df))
+    df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
+    if df_clean.empty:
+        return (
+            {"error": "No valid data available for %s at %s after cleaning" % (symbol, timeframe)},
+            404,
+        )
+    df = df_clean
+
+    chart_data = {
+        "datetime": df.index.strftime("%Y-%m-%d %H:%M:%S").tolist(),
+        "open": df["open"].tolist() if "open" in df.columns else [],
+        "high": df["high"].tolist() if "high" in df.columns else [],
+        "low": df["low"].tolist() if "low" in df.columns else [],
+        "close": df["close"].tolist() if "close" in df.columns else [],
+        "volume": df["volume"].tolist() if "volume" in df.columns else [],
+    }
+
+    indicator_data = {}
+    indicator_list = []
+    if indicators_raw:
+        try:
+            indicator_list = json.loads(indicators_raw)
+        except json.JSONDecodeError as e:
+            print("ERROR: Invalid indicators JSON: %s" % e)
+            indicator_list = []
+
+    if indicator_list:
+        _progress(progress, 90, "Calculating indicators")
+        for indicator_config in indicator_list:
+            indicator_name = indicator_config["name"]
+            params = indicator_config.get("params", {})
+            if indicator_name not in INDICATORS:
+                continue
+            try:
+                if indicator_name == "SMA":
+                    result = SMA(df["close"], params.get("period", 20))
+                    indicator_data["SMA_%s" % params.get("period", 20)] = result.tolist()
+                elif indicator_name == "EMA":
+                    result = EMA(df["close"], params.get("period", 20))
+                    indicator_data["EMA_%s" % params.get("period", 20)] = result.tolist()
+                elif indicator_name == "WMA":
+                    result = WMA(df["close"], params.get("period", 20))
+                    indicator_data["WMA_%s" % params.get("period", 20)] = result.tolist()
+                elif indicator_name == "RSI":
+                    result = RSI(df["close"], params.get("period", 14))
+                    indicator_data["RSI_%s" % params.get("period", 14)] = result.tolist()
+                elif indicator_name == "MACD":
+                    result = MACD(
+                        df["close"],
+                        params.get("fast", 12),
+                        params.get("slow", 26),
+                        params.get("signal", 9),
+                    )
+                    indicator_data["MACD_line"] = result["macd"].tolist()
+                    indicator_data["MACD_signal"] = result["signal"].tolist()
+                    indicator_data["MACD_histogram"] = result["histogram"].tolist()
+                elif indicator_name == "Stochastic":
+                    result = Stochastic(
+                        df["high"],
+                        df["low"],
+                        df["close"],
+                        params.get("k_period", 14),
+                        params.get("d_period", 3),
+                    )
+                    indicator_data["Stoch_K"] = result["k"].tolist()
+                    indicator_data["Stoch_D"] = result["d"].tolist()
+                elif indicator_name == "Volume":
+                    result = Volume(df["volume"])
+                    indicator_data["Volume"] = result.tolist()
+                elif indicator_name == "OBV":
+                    result = OBV(df["close"], df["volume"])
+                    indicator_data["OBV"] = result.tolist()
+                elif indicator_name == "VWAP":
+                    result = VWAP(df["high"], df["low"], df["close"], df["volume"])
+                    indicator_data["VWAP"] = result.tolist()
+                elif indicator_name == "BollingerBands":
+                    result = BollingerBands(
+                        df["close"],
+                        params.get("period", 20),
+                        params.get("std_dev", 2),
+                    )
+                    indicator_data["BB_upper"] = result["upper"].tolist()
+                    indicator_data["BB_middle"] = result["middle"].tolist()
+                    indicator_data["BB_lower"] = result["lower"].tolist()
+                elif indicator_name == "ATR":
+                    result = ATR(
+                        df["high"],
+                        df["low"],
+                        df["close"],
+                        params.get("period", 14),
+                    )
+                    indicator_data["ATR"] = result.tolist()
+            except Exception as e:
+                print("ERROR calculating %s: %s" % (indicator_name, e))
+                continue
+
+    _progress(progress, 100, "Ready (%s bars)" % len(chart_data["datetime"]))
+    return (
+        {
+            "chart_data": chart_data,
+            "indicators": indicator_data,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "has_more_before": bool(win.get("has_more_before")),
+            "has_more_after": bool(win.get("has_more_after")),
+            "n_bars": len(chart_data["datetime"]),
+        },
+        200,
+    )
+
+
+@app.route("/api/timeframes/<symbol>")
 def get_timeframes(symbol):
     """Get available timeframes for a symbol"""
-    timeframes = DataAggregator.get_available_timeframes(symbol)
+    with _DB_LOCK:
+        timeframes = DataAggregator.get_available_timeframes(symbol)
     return jsonify(timeframes)
 
-@app.route('/api/data')
+
+@app.route("/api/data")
 def get_data():
-    """Get chart data with indicators"""
-    symbol = request.args.get('symbol')
-    timeframe = request.args.get('timeframe', '1h')
-    indicators = request.args.get('indicators', '[]')
-    
+    """Get chart data with indicators (bar window, not full history)."""
+    symbol = request.args.get("symbol")
+    timeframe = request.args.get("timeframe", "1h")
+    indicators = request.args.get("indicators", "[]")
+    around = request.args.get("around", "") or ""
+    stream = str(request.args.get("stream", "")).lower() in ("1", "true", "yes")
+    from utils.charting.ohlcv_window import DEFAULT_AFTER, DEFAULT_BEFORE, clamp_pad
+
+    before = clamp_pad(request.args.get("before", DEFAULT_BEFORE), DEFAULT_BEFORE)
+    after = clamp_pad(request.args.get("after", DEFAULT_AFTER), DEFAULT_AFTER)
+
     if not symbol:
-        return jsonify({'error': 'Symbol is required'}), 400
-    
-    try:
-        # Load data
-        print(f"Loading data for {symbol} at {timeframe}")
-        df = DataAggregator.get_data(symbol, timeframe)
-        if df is None:
-            print(f"ERROR: No data found for {symbol} at {timeframe}")
-            return jsonify({'error': f'No data found for {symbol} at {timeframe}'}), 404
-        
-        # Data validation and debugging
-        print(f"Data loaded successfully:")
-        print(f"  Shape: {df.shape}")
-        print(f"  Columns: {df.columns.tolist()}")
-        print(f"  Index type: {type(df.index)}")
-        print(f"  Date range: {df.index.min()} to {df.index.max()}")
-        
-        # Check if DataFrame is empty
-        if df.empty:
-            print(f"ERROR: DataFrame is empty after loading data")
-            return jsonify({'error': f'No data available for {symbol} at {timeframe}'}), 404
-        
-        print(f"  Sample data:")
-        print(f"    First row: {df.iloc[0].to_dict()}")
-        print(f"    Last row: {df.iloc[-1].to_dict()}")
-        
-        # Check for NaN values in the data
-        nan_counts = df.isna().sum()
-        if nan_counts.any():
-            print(f"WARNING: Found NaN values in data:")
-            print(f"  {nan_counts.to_dict()}")
-        
-        # Check for infinite values
-        inf_counts = np.isinf(df.select_dtypes(include=[np.number])).sum()
-        if inf_counts.any():
-            print(f"WARNING: Found infinite values in data:")
-            print(f"  {inf_counts.to_dict()}")
-        
-        # Clean the data by removing NaN and infinite values
-        original_len = len(df)
-        print(f"Original data length: {original_len}")
-        print(f"Data types: {df.dtypes.to_dict()}")
-        
-        # Replace infinite values with NaN first
-        df_clean = df.replace([np.inf, -np.inf], np.nan)
-        inf_replaced = original_len - len(df_clean.dropna())
-        print(f"Replaced {inf_replaced} infinite values with NaN")
-        
-        # Now drop NaN values
-        df_clean = df_clean.dropna()
-        final_len = len(df_clean)
-        print(f"After dropping NaN values: {final_len} rows")
-        
-        if final_len < original_len:
-            print(f"WARNING: Removed {original_len - final_len} rows with NaN/infinite values")
-            df = df_clean
-        else:
-            print(f"Data cleaning: no rows removed")
-        
-        # Check again if DataFrame is empty after cleaning
-        if df.empty:
-            print(f"ERROR: DataFrame is empty after cleaning")
-            print(f"Original data sample:")
-            print(f"  First few rows: {df.head() if not df.empty else 'Empty'}")
-            print(f"  Data info: {df.info() if not df.empty else 'Empty'}")
-            return jsonify({'error': f'No valid data available for {symbol} at {timeframe} after cleaning'}), 404
-        
-        # Prepare OHLCV data
-        chart_data = {
-            'datetime': df.index.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-            'open': df['open'].tolist() if 'open' in df.columns else [],
-            'high': df['high'].tolist() if 'high' in df.columns else [],
-            'low': df['low'].tolist() if 'low' in df.columns else [],
-            'close': df['close'].tolist() if 'close' in df.columns else [],
-            'volume': df['volume'].tolist() if 'volume' in df.columns else []
-        }
-        
-        # Validate chart data
-        print(f"Chart data prepared:")
-        print(f"  Datetime points: {len(chart_data['datetime'])}")
-        print(f"  Open points: {len(chart_data['open'])}")
-        print(f"  Close points: {len(chart_data['close'])}")
-        print(f"  Sample datetime: {chart_data['datetime'][:3]}")
-        print(f"  Sample open: {chart_data['open'][:3]}")
-        print(f"  Sample close: {chart_data['close'][:3]}")
-        
-        # Calculate indicators
-        indicator_data = {}
-        if indicators:
+        return jsonify({"error": "Symbol is required"}), 400
+
+    print(
+        "Loading window for %s %s around=%s before=%s after=%s stream=%s"
+        % (symbol, timeframe, around or "(latest)", before, after, stream)
+    )
+
+    if not stream:
+        try:
+            payload, status = _build_chart_payload(
+                symbol, timeframe, around, before, after, indicators
+            )
+            return jsonify(payload), status
+        except Exception as e:
+            print("ERROR in get_data: %s" % e)
+            import traceback
+
+            print("Traceback: %s" % traceback.format_exc())
+            return jsonify({"error": str(e)}), 500
+
+    def generate():
+        q = queue.Queue()
+
+        def progress(pct, msg):
+            q.put({"type": "progress", "pct": int(pct), "msg": str(msg)})
+
+        def work():
             try:
-                indicator_list = json.loads(indicators)
-                print(f"Processing {len(indicator_list)} indicators: {[ind['name'] for ind in indicator_list]}")
-            except json.JSONDecodeError as e:
-                print(f"ERROR: Invalid indicators JSON: {e}")
-                indicator_list = []
-            
-            for indicator_config in indicator_list:
-                indicator_name = indicator_config['name']
-                params = indicator_config.get('params', {})
-                
-                print(f"Calculating {indicator_name} with params: {params}")
-                
-                if indicator_name not in INDICATORS:
-                    print(f"WARNING: Unknown indicator '{indicator_name}', skipping")
-                    continue
-                
-                try:
-                    if indicator_name == 'SMA':
-                        result = SMA(df['close'], params.get('period', 20))
-                        print(f"  SMA calculated: {len(result)} values, NaN count: {result.isna().sum()}")
-                        indicator_data[f'SMA_{params.get("period", 20)}'] = result.tolist()
-                    
-                    elif indicator_name == 'EMA':
-                        result = EMA(df['close'], params.get('period', 20))
-                        indicator_data[f'EMA_{params.get("period", 20)}'] = result.tolist()
-                    
-                    elif indicator_name == 'WMA':
-                        result = WMA(df['close'], params.get('period', 20))
-                        indicator_data[f'WMA_{params.get("period", 20)}'] = result.tolist()
-                    
-                    elif indicator_name == 'RSI':
-                        result = RSI(df['close'], params.get('period', 14))
-                        indicator_data[f'RSI_{params.get("period", 14)}'] = result.tolist()
-                    
-                    elif indicator_name == 'MACD':
-                        result = MACD(df['close'], 
-                                    params.get('fast', 12), 
-                                    params.get('slow', 26), 
-                                    params.get('signal', 9))
-                        indicator_data['MACD_line'] = result['macd'].tolist()
-                        indicator_data['MACD_signal'] = result['signal'].tolist()
-                        indicator_data['MACD_histogram'] = result['histogram'].tolist()
-                    
-                    elif indicator_name == 'Stochastic':
-                        result = Stochastic(df['high'], df['low'], df['close'],
-                                          params.get('k_period', 14),
-                                          params.get('d_period', 3))
-                        indicator_data['Stoch_K'] = result['k'].tolist()
-                        indicator_data['Stoch_D'] = result['d'].tolist()
-                    
-                    elif indicator_name == 'Volume':
-                        result = Volume(df['volume'])
-                        indicator_data['Volume'] = result.tolist()
-                    
-                    elif indicator_name == 'OBV':
-                        result = OBV(df['close'], df['volume'])
-                        indicator_data['OBV'] = result.tolist()
-                    
-                    elif indicator_name == 'VWAP':
-                        result = VWAP(df['high'], df['low'], df['close'], df['volume'])
-                        indicator_data['VWAP'] = result.tolist()
-                    
-                    elif indicator_name == 'BollingerBands':
-                        result = BollingerBands(df['close'], 
-                                              params.get('period', 20),
-                                              params.get('std_dev', 2))
-                        indicator_data['BB_upper'] = result['upper'].tolist()
-                        indicator_data['BB_middle'] = result['middle'].tolist()
-                        indicator_data['BB_lower'] = result['lower'].tolist()
-                    
-                    elif indicator_name == 'ATR':
-                        result = ATR(df['high'], df['low'], df['close'],
-                                   params.get('period', 14))
-                        indicator_data['ATR'] = result.tolist()
-                
-                except Exception as e:
-                    print(f"ERROR calculating {indicator_name}: {e}")
-                    import traceback
-                    print(f"  Traceback: {traceback.format_exc()}")
-                    continue
-        else:
-            print("No indicators requested")
-        
-        print(f"Returning response with {len(chart_data['datetime'])} data points and {len(indicator_data)} indicators")
-        
-        return jsonify({
-            'chart_data': chart_data,
-            'indicators': indicator_data,
-            'symbol': symbol,
-            'timeframe': timeframe
-        })
-    
-    except Exception as e:
-        print(f"ERROR in get_data: {e}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+                payload, status = _build_chart_payload(
+                    symbol,
+                    timeframe,
+                    around,
+                    before,
+                    after,
+                    indicators,
+                    progress=progress,
+                )
+                if status != 200:
+                    q.put({"type": "error", "error": payload.get("error") or "Chart load failed"})
+                else:
+                    q.put({"type": "result", "data": payload})
+            except Exception as exc:
+                q.put({"type": "error", "error": str(exc)})
+            finally:
+                q.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield json.dumps(item, default=str) + "\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/goto-spec")
+def api_goto_spec():
+    """Parse a pasted report/CTF clock into UTC-naive match keys."""
+    q = request.args.get("q") or ""
+    try:
+        from utils.charting.channel_overlay import parse_goto_query
+
+        return jsonify(parse_goto_query(q))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/channel-overlay", methods=["POST"])
+def api_channel_overlay():
+    """Normalize pasted /hot CTF Channel JSON for Plotly rails."""
+    body = request.get_json(silent=True) or {}
+    text = body.get("text")
+    if text is None:
+        text = body.get("json", body.get("channel", body.get("ch", "")))
+    try:
+        from utils.charting.channel_overlay import parse_channel_overlay
+
+        return jsonify(parse_channel_overlay(text))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
 
 @app.route('/api/indicators')
 def get_indicators():

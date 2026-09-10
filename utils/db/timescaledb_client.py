@@ -8,6 +8,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from pathlib import Path
 import os
+import threading
 from typing import Optional, List, Dict, Any
 import logging
 
@@ -27,6 +28,7 @@ class TimescaleDBClient:
         self.user = user
         self.password = password
         self.connection = None
+        self._lock = threading.Lock()
         
     def connect(self):
         """Establish database connection"""
@@ -404,6 +406,112 @@ class TimescaleDBClient:
         finally:
             if cursor:
                 cursor.close()
+
+    def get_market_data_window(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        around: Optional[datetime] = None,
+        before: int = 50,
+        after: int = 50,
+        before_ts: Optional[datetime] = None,
+        after_ts: Optional[datetime] = None,
+        provider: Optional[str] = None,
+    ) -> Optional[pd.DataFrame]:
+        """Load a bar-count window (not a calendar span) from market_data.
+
+        around: center timestamp (inclusive on the left query).
+        before_ts: exclusive cursor, return `before` bars strictly earlier.
+        after_ts: exclusive cursor, return `after` bars strictly later.
+        If none of those are set, return the latest (before+after) bars.
+        """
+        if not self.ensure_connection():
+            logger.error("No database connection")
+            return None
+        before_n = max(0, int(before))
+        after_n = max(0, int(after))
+        cursor = None
+        locked = False
+        try:
+            lock = getattr(self, "_lock", None)
+            if lock is not None:
+                lock.acquire()
+                locked = True
+            cursor = self.connection.cursor()
+            where = "symbol = %s AND timeframe = %s"
+            params_base: List[Any] = [symbol.upper(), timeframe]
+            if provider:
+                where += " AND provider = %s"
+                params_base.append(provider.upper())
+            select = (
+                "SELECT ts, symbol, provider, timeframe, open, high, low, close, "
+                "volume, created_at FROM market_data WHERE "
+            ) + where
+
+            def _run(sql: str, params: List[Any]) -> list:
+                cursor.execute(sql, params)
+                return cursor.fetchall()
+
+            rows: list
+            if before_ts is not None:
+                sql = (
+                    "SELECT * FROM (" + select + " AND ts < %s ORDER BY ts DESC LIMIT %s"
+                    ") w ORDER BY ts"
+                )
+                rows = _run(sql, params_base + [before_ts, before_n])
+            elif after_ts is not None:
+                sql = select + " AND ts > %s ORDER BY ts ASC LIMIT %s"
+                rows = _run(sql, params_base + [after_ts, after_n])
+            elif around is not None:
+                left_sql = (
+                    "SELECT * FROM (" + select + " AND ts <= %s ORDER BY ts DESC LIMIT %s"
+                    ") a"
+                )
+                right_sql = (
+                    "SELECT * FROM (" + select + " AND ts > %s ORDER BY ts ASC LIMIT %s"
+                    ") b"
+                )
+                left = _run(left_sql, params_base + [around, before_n + 1])
+                right = _run(right_sql, params_base + [around, after_n]) if after_n else []
+                rows = list(left) + list(right)
+            else:
+                limit_n = max(1, before_n + after_n)
+                sql = (
+                    "SELECT * FROM (" + select + " ORDER BY ts DESC LIMIT %s"
+                    ") w ORDER BY ts"
+                )
+                rows = _run(sql, params_base + [limit_n])
+
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(
+                rows,
+                columns=[
+                    "ts",
+                    "symbol",
+                    "provider",
+                    "timeframe",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "created_at",
+                ],
+            )
+            df["timestamp"] = pd.to_datetime(df["ts"], utc=True)
+            if "ts" in df.columns:
+                df = df.sort_values("ts").drop_duplicates(subset=["ts"], keep="last")
+            return df
+        except Exception as e:
+            logger.error("Failed to retrieve market data window: %s" % e)
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+            if locked:
+                self._lock.release()
 
     def get_ohlcv_batch(
         self,

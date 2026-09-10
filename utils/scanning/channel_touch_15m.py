@@ -444,12 +444,25 @@ def armed_rows_for_symbol(
             over_prior = float("nan")
         h2_ts = dates[h2]
         asof_ts = dates[asof_i_hist]
+        l1_i = int(ch.get("l1_idx", ch["support_x0"]))
+        l2_i = int(ch.get("l2_idx", -1))
+        l1_ts = dates[l1_i] if 0 <= l1_i < len(dates) else None
+        l2_ts = dates[l2_i] if 0 <= l2_i < len(dates) else None
+        l2_px = None
+        if l2_i >= 0:
+            l2_px = float(ch["support_y0"]) + float(ch["support_slope"]) * float(
+                l2_i - int(ch["support_x0"])
+            )
         row = {
             "stock": str(symbol).upper(),
             "status": status,
             "as_of": asof_ts.strftime("%Y-%m-%d %H:%M:%S"),
             "h2_time": h2_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            "channel_start": ch.get("start_date"),
+            "channel_start": (
+                l1_ts.strftime("%Y-%m-%d %H:%M:%S")
+                if l1_ts is not None
+                else ch.get("start_date")
+            ),
             "channel_end": ch.get("h2_date") or ch.get("end_date"),
             "channel_span_days": span,
             "wait_bars": st.get("wait_bars"),
@@ -469,6 +482,12 @@ def armed_rows_for_symbol(
             "channel_width": float(ch["channel_width"]),
             "h2_idx": h2,
             "as_of_i": asof_i_hist,
+            # Ephemeral CTF rails (not in CANDIDATE_COLUMNS; used before DB write /
+            # when rows are built in-process). API rebuilds from support_* after load.
+            "l1_time": l1_ts.strftime("%Y-%m-%d %H:%M:%S") if l1_ts is not None else None,
+            "l1_price": float(ch["support_y0"]),
+            "l2_time": l2_ts.strftime("%Y-%m-%d %H:%M:%S") if l2_ts is not None else None,
+            "l2_price": round(l2_px, 6) if l2_px is not None and np.isfinite(l2_px) else None,
         }
         rows.append(row)
     if not rows:

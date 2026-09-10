@@ -218,6 +218,45 @@
         tr.sell-now { background: #fff5f5; }
         .stop-ok { color: #276749; font-weight: 600; }
         .stop-hit { color: #c53030; font-weight: 700; }
+        td.ch-cell { text-align: center; width: 44px; }
+        .ch-info {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 1px solid #a0aec0;
+            color: #718096;
+            font-size: 12px;
+            font-style: italic;
+            font-weight: 700;
+            cursor: pointer;
+            background: transparent;
+            line-height: 1;
+            padding: 0;
+        }
+        .ch-info:hover { border-color: #5a67d8; color: #5a67d8; }
+        .ch-info.copied {
+            border-color: #276749;
+            color: #276749;
+            font-style: normal;
+            background: #c6f6d5;
+        }
+        #copy-toast {
+            position: fixed;
+            bottom: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1a202c;
+            color: #fff;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            display: none;
+            z-index: 40;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        }
     </style>
 </head>
 <body>
@@ -317,6 +356,7 @@
                 <thead>
                     <tr>
                         <th data-key="stock">Symbol</th>
+                        <th title="Channel JSON (CTF paste)">Channel</th>
                         <th data-key="timeframe">Detector</th>
                         <th data-key="status">Status</th>
                         <th data-key="hot">Hot</th>
@@ -330,7 +370,7 @@
                     </tr>
                 </thead>
                 <tbody id="rows">
-                    <tr><td colspan="11" class="empty">Loading...</td></tr>
+                    <tr><td colspan="12" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -356,12 +396,14 @@
             </table>
         </div>
     </div>
+    <div id="copy-toast" role="status" aria-live="polite"></div>
     <script>
         const POLL_MS = 5000;
         const WS_PATH = '/ws/hot-candidates';
         const PRICE_WS_PORT = {{ price_ws_port|default(5001)|int }};
         const FILL_SEEN_KEY = 'hotCandidates.seenFills';
         const SELL_SEEN_KEY = 'hotCandidates.seenSells';
+        const CTF_COPIED_KEY = 'hotCandidates.ctfCopied';
         const FETCH_OPTS = { cache: 'no-store' };
         let saveTimer = null;
         let loading = false;
@@ -405,6 +447,114 @@
         let lastData = null;
         let activeTab = 'candidates';
         const EXCHANGE_TZ = 'America/New_York';
+        let copyToastTimer = null;
+
+        function loadCtfCopied() {
+            try {
+                const raw = localStorage.getItem(CTF_COPIED_KEY);
+                if (!raw) return {};
+                const obj = JSON.parse(raw);
+                return (obj && typeof obj === 'object') ? obj : {};
+            } catch (err) {
+                return {};
+            }
+        }
+
+        function saveCtfCopied(map) {
+            try {
+                localStorage.setItem(CTF_COPIED_KEY, JSON.stringify(map));
+            } catch (err) {}
+        }
+
+        let ctfCopied = loadCtfCopied();
+
+        function chFingerprint(ch) {
+            if (!ch) return '';
+            if (ch.fp) return String(ch.fp);
+            return [
+                ch.sym || '',
+                ch.src || '',
+                ch.l1t || '',
+                ch.l1p || '',
+                ch.l2t || '',
+                ch.l2p || '',
+                ch.w || '',
+                ch.h2t || ''
+            ].join('|');
+        }
+
+        function showCopyToast(msg) {
+            const el = document.getElementById('copy-toast');
+            if (!el) return;
+            el.textContent = msg;
+            el.style.display = 'block';
+            if (copyToastTimer) clearTimeout(copyToastTimer);
+            copyToastTimer = setTimeout(function() {
+                el.style.display = 'none';
+            }, 2200);
+        }
+
+        function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text);
+            }
+            return new Promise(function(resolve, reject) {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                try {
+                    const ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    if (ok) resolve();
+                    else reject(new Error('copy failed'));
+                } catch (err) {
+                    document.body.removeChild(ta);
+                    reject(err);
+                }
+            });
+        }
+
+        function markChannelCopied(fp, btn) {
+            if (!fp) return;
+            ctfCopied[fp] = true;
+            saveCtfCopied(ctfCopied);
+            if (btn) {
+                btn.classList.add('copied');
+                btn.textContent = '\u2713';
+                btn.title = 'Copied (channel unchanged). New rails for this symbol reset the icon.';
+            }
+        }
+
+        function copyChannelJson(ch, btn) {
+            if (!ch) return;
+            const text = JSON.stringify(ch);
+            const fp = chFingerprint(ch);
+            copyText(text).then(function() {
+                markChannelCopied(fp, btn);
+                showCopyToast('Copied channel JSON — paste on Charts (Channel JSON) or CTF');
+            }).catch(function() {
+                showCopyToast('Copy failed — try again');
+            });
+        }
+
+        function channelCell(ch) {
+            if (!ch) return '<td class="ch-cell"></td>';
+            const fp = chFingerprint(ch);
+            const copied = !!(fp && ctfCopied[fp]);
+            const label = copied ? '\u2713' : 'i';
+            const cls = copied ? 'ch-info copied' : 'ch-info';
+            const title = copied
+                ? 'Copied (channel unchanged). New rails for this symbol reset the icon.'
+                : 'Copy channel JSON for Charts or CTF';
+            const payload = encodeURIComponent(JSON.stringify(ch));
+            return '<td class="ch-cell"><button type="button" class="' + cls +
+                '" data-copy-ch="' + payload + '" data-ch-fp="' + encodeURIComponent(fp) +
+                '" title="' + title + '">' + label + '</button></td>';
+        }
 
         function tzMode() {
             const el = document.getElementById('tz-filter');
@@ -742,7 +892,7 @@
         function renderRows(rows) {
             const tbody = document.getElementById('rows');
             if (!rows || !rows.length) {
-                tbody.innerHTML = '<tr><td colspan="11" class="empty">No candidates. Run the 15m watchlist and/or nightly 1d scan.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12" class="empty">No candidates. Run the 15m watchlist and/or nightly 1d scan.</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(function(r) {
@@ -761,6 +911,7 @@
                         '" data-bought-tf="' + tf + '">Bought</button>';
                 return '<tr>' +
                     '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +
+                    channelCell(r.ch) +
                     '<td><span class="pill ' + tfClass + '">' + tf + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
@@ -1050,6 +1201,17 @@
         }
 
         document.getElementById('rows').addEventListener('click', function(ev) {
+            const chBtn = ev.target.closest('[data-copy-ch]');
+            if (chBtn) {
+                ev.preventDefault();
+                try {
+                    const ch = JSON.parse(decodeURIComponent(chBtn.getAttribute('data-copy-ch') || ''));
+                    copyChannelJson(ch, chBtn);
+                } catch (err) {
+                    showCopyToast('Invalid channel JSON');
+                }
+                return;
+            }
             const btn = ev.target.closest('[data-bought-stock]');
             if (!btn) return;
             ev.preventDefault();

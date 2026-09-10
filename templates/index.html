@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Backtrader Charting Server</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <style>
@@ -61,9 +61,14 @@
 
         .controls {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 15px;
             align-items: end;
+        }
+
+        .controls.channel-row {
+            grid-template-columns: 1fr auto auto;
+            margin-top: 14px;
         }
 
         .control-group {
@@ -117,7 +122,70 @@
             display: grid;
             grid-template-columns: 300px 1fr;
             gap: 20px;
-            height: calc(100vh - 200px);
+            height: calc(100vh - 320px);
+            min-height: 480px;
+        }
+
+        .symbol-combo {
+            position: relative;
+        }
+
+        .symbol-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            z-index: 30;
+            background: #fff;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            max-height: 240px;
+            overflow-y: auto;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+        }
+
+        .symbol-dropdown button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .symbol-dropdown button:hover,
+        .symbol-dropdown button.active {
+            background: #edf2f7;
+        }
+
+        .channel-json {
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 12px;
+            width: 100%;
+            min-height: 56px;
+            resize: vertical;
+            padding: 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+        }
+
+        .channel-json:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn.secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .btn.secondary:hover {
+            box-shadow: 0 8px 25px rgba(74, 85, 104, 0.15);
         }
 
         .sidebar {
@@ -137,6 +205,10 @@
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
             position: relative;
         }
+
+        #chart.axis-zoom-y { cursor: ns-resize; }
+        #chart.axis-zoom-x { cursor: ew-resize; }
+        #chart.axis-zooming { user-select: none; touch-action: none; }
 
         .indicator-section {
             margin-bottom: 25px;
@@ -201,11 +273,59 @@
 
         .loading {
             position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 1.2em;
-            color: #667eea;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(247, 250, 252, 0.82);
+            z-index: 5;
+        }
+        .loading-card {
+            min-width: 280px;
+            max-width: 420px;
+            padding: 22px 26px;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+            text-align: center;
+        }
+        .loading-title {
+            font-size: 1.05em;
+            color: #4c51bf;
+            font-weight: 600;
+        }
+        .loading-status {
+            margin-top: 8px;
+            font-size: 0.92em;
+            color: #4a5568;
+            min-height: 2.4em;
+        }
+        .loading-track {
+            margin-top: 14px;
+            height: 8px;
+            background: #edf2f7;
+            border-radius: 99px;
+            overflow: hidden;
+        }
+        .loading-bar {
+            height: 100%;
+            width: 18%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 99px;
+            transition: width 0.25s ease;
+        }
+        .loading-bar.indet {
+            width: 40%;
+            animation: loading-slide 1.2s ease-in-out infinite;
+        }
+        @keyframes loading-slide {
+            0% { transform: translateX(-120%); }
+            100% { transform: translateX(280%); }
+        }
+        .loading-elapsed {
+            margin-top: 10px;
+            font-size: 0.82em;
+            color: #718096;
         }
 
         .error {
@@ -231,7 +351,8 @@
                 grid-template-columns: 1fr;
             }
             
-            .controls {
+            .controls,
+            .controls.channel-row {
                 grid-template-columns: 1fr;
             }
         }
@@ -246,14 +367,13 @@
                 <a href="/hot">Hot candidates</a>
             </div>
             <div class="controls">
-                <div class="control-group">
-                    <label for="symbol">Symbol</label>
-                    <select id="symbol">
-                        <option value="">Select Symbol</option>
-                        {% for symbol in symbols %}
-                        <option value="{{ symbol }}">{{ symbol }}</option>
-                        {% endfor %}
-                    </select>
+                <div class="control-group symbol-combo">
+                    <label for="symbol-input">Symbol</label>
+                    <input id="symbol-input" type="text" autocomplete="off" spellcheck="false"
+                           placeholder="Type to filter..." aria-autocomplete="list"
+                           aria-controls="symbol-list" aria-expanded="false">
+                    <input type="hidden" id="symbol" value="">
+                    <div id="symbol-list" class="symbol-dropdown" hidden role="listbox"></div>
                 </div>
                 <div class="control-group">
                     <label for="timeframe">Timeframe</label>
@@ -270,8 +390,32 @@
                     </select>
                 </div>
                 <div class="control-group">
+                    <label for="goto-date">Go to date / date-time</label>
+                    <input id="goto-date" type="text" autocomplete="off"
+                           placeholder="2025-06-13 09:45">
+                </div>
+                <div class="control-group">
                     <label>&nbsp;</label>
-                    <button class="btn" onclick="loadChart()">Load Chart</button>
+                    <button class="btn secondary" type="button" onclick="gotoDate()">Go</button>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn" type="button" onclick="loadChart()">Load Chart</button>
+                </div>
+            </div>
+            <div class="controls channel-row">
+                <div class="control-group">
+                    <label for="channel-json">Channel JSON (paste from /hot)</label>
+                    <textarea id="channel-json" class="channel-json" rows="2"
+                              placeholder='{"v":1,"sym":"RDWR","l1p":...,"l2p":...,"w":...}'></textarea>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn" type="button" onclick="drawChannel()">Draw channel</button>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn secondary" type="button" onclick="clearChannel()">Clear</button>
                 </div>
             </div>
         </div>
@@ -303,14 +447,153 @@
 
             <div class="chart-container">
                 <div id="chart"></div>
-                <div id="loading" class="loading" style="display: none;">Loading chart data...</div>
+                <div id="loading" class="loading" style="display: none;">
+                    <div class="loading-card">
+                        <div class="loading-title">Loading chart data</div>
+                        <div id="loading-status" class="loading-status">Starting...</div>
+                        <div class="loading-track">
+                            <div id="loading-bar" class="loading-bar indet"></div>
+                        </div>
+                        <div id="loading-elapsed" class="loading-elapsed">0s elapsed</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        let ALL_SYMBOLS = {{ symbols | tojson }};
+        const OVERLAY_NAMES = { support: 'Support', resist: 'Resist', marks: 'Channel marks' };
         let selectedIndicators = [];
         let currentChart = null;
+        let lastChartData = null;
+        let lastOverlay = null;
+        let pendingOverlay = null;
+        let symbolHi = -1;
+        const VIEW_PAD = 50;
+        let fetchingMore = false;
+        let restoringView = false;
+        let savedView = null;
+        let loadingTimer = null;
+        let loadingStartedAt = 0;
+        let loadingGotProgress = false;
+        let chartAbort = null;
+        const EDGE_FETCH_ONLY_ON_X_ZOOM_OUT = true;
+        const CHART_DEBUG = true;
+
+        function chartLog(event, detail) {
+            if (!CHART_DEBUG) return;
+            try {
+                if (detail === undefined) console.log('[charts]', event);
+                else console.log('[charts]', event, detail);
+            } catch (err) {}
+        }
+
+        function getSymbol() {
+            const hidden = document.getElementById('symbol');
+            const typed = document.getElementById('symbol-input');
+            const fromHidden = (hidden && hidden.value) ? hidden.value.trim() : '';
+            const fromTyped = (typed && typed.value) ? typed.value.trim() : '';
+            return (fromHidden || fromTyped).toUpperCase();
+        }
+
+        function setSymbol(sym, loadTf) {
+            const name = String(sym || '').trim().toUpperCase();
+            document.getElementById('symbol').value = name;
+            document.getElementById('symbol-input').value = name;
+            hideSymbolList();
+            if (name && loadTf !== false) {
+                return loadTimeframes(name);
+            }
+            return Promise.resolve();
+        }
+
+        function filteredSymbols(query) {
+            const q = String(query || '').trim().toUpperCase();
+            const uniq = [];
+            const seen = {};
+            (ALL_SYMBOLS || []).forEach(function(s) {
+                const name = String(s || '').trim();
+                if (!name) return;
+                const key = name.toUpperCase();
+                if (seen[key]) return;
+                seen[key] = true;
+                uniq.push(name);
+            });
+            if (!q) return uniq.slice(0, 40);
+            const starts = [];
+            const contains = [];
+            uniq.forEach(function(s) {
+                const u = s.toUpperCase();
+                if (u.startsWith(q)) starts.push(s);
+                else if (u.indexOf(q) !== -1) contains.push(s);
+            });
+            return starts.concat(contains).slice(0, 40);
+        }
+
+        function hideSymbolList() {
+            const box = document.getElementById('symbol-list');
+            box.hidden = true;
+            box.innerHTML = '';
+            symbolHi = -1;
+            document.getElementById('symbol-input').setAttribute('aria-expanded', 'false');
+        }
+
+        function showSymbolList(query) {
+            const box = document.getElementById('symbol-list');
+            const matches = filteredSymbols(query);
+            box.innerHTML = '';
+            if (!matches.length) {
+                hideSymbolList();
+                return;
+            }
+            matches.forEach(function(s, i) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.setAttribute('role', 'option');
+                btn.textContent = s;
+                btn.addEventListener('mousedown', function(ev) {
+                    ev.preventDefault();
+                    setSymbol(s);
+                });
+                if (i === symbolHi) btn.classList.add('active');
+                box.appendChild(btn);
+            });
+            box.hidden = false;
+            document.getElementById('symbol-input').setAttribute('aria-expanded', 'true');
+        }
+
+        function moveSymbolHi(delta) {
+            const box = document.getElementById('symbol-list');
+            const items = box.querySelectorAll('button');
+            if (!items.length) return;
+            symbolHi = (symbolHi + delta + items.length) % items.length;
+            items.forEach(function(el, i) {
+                el.classList.toggle('active', i === symbolHi);
+                if (i === symbolHi) el.scrollIntoView({ block: 'nearest' });
+            });
+        }
+
+        function pickHighlightedSymbol() {
+            const box = document.getElementById('symbol-list');
+            const items = box.querySelectorAll('button');
+            if (items.length && symbolHi >= 0 && items[symbolHi]) {
+                setSymbol(items[symbolHi].textContent);
+                return true;
+            }
+            const typed = (document.getElementById('symbol-input').value || '').trim();
+            const matches = filteredSymbols(typed);
+            if (matches.length) {
+                const exact = matches.find(function(s) { return s.toUpperCase() === typed.toUpperCase(); });
+                setSymbol(exact || matches[0]);
+                return true;
+            }
+            if (typed) {
+                setSymbol(typed);
+                return true;
+            }
+            return false;
+        }
 
         async function loadTimeframes(symbol) {
             try {
@@ -337,20 +620,69 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Load available timeframes when symbol changes
-            document.getElementById('symbol').addEventListener('change', function() {
-                const symbol = this.value;
-                if (symbol) {
-                    loadTimeframes(symbol);
+            const input = document.getElementById('symbol-input');
+            input.addEventListener('input', function() {
+                document.getElementById('symbol').value = '';
+                symbolHi = 0;
+                showSymbolList(this.value);
+            });
+            input.addEventListener('focus', function() {
+                showSymbolList(this.value);
+            });
+            input.addEventListener('keydown', function(ev) {
+                if (ev.key === 'ArrowDown') {
+                    ev.preventDefault();
+                    if (document.getElementById('symbol-list').hidden) showSymbolList(this.value);
+                    moveSymbolHi(1);
+                } else if (ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    moveSymbolHi(-1);
+                } else if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    pickHighlightedSymbol();
+                    loadChart();
+                } else if (ev.key === 'Escape') {
+                    hideSymbolList();
                 }
             });
+            input.addEventListener('blur', function() {
+                setTimeout(hideSymbolList, 120);
+            });
+
+            const gotoInput = document.getElementById('goto-date');
+            gotoInput.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    gotoDate();
+                }
+            });
+            gotoInput.addEventListener('paste', function() {
+                setTimeout(gotoDate, 0);
+            });
+
+            const chBox = document.getElementById('channel-json');
+            chBox.addEventListener('paste', function() {
+                setTimeout(function() {
+                    const text = chBox.value || '';
+                    if (text.indexOf('"l1p"') !== -1) drawChannel();
+                }, 0);
+            });
+            chBox.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+                    ev.preventDefault();
+                    drawChannel();
+                }
+            });
+
+            fetch('/api/symbols').then(function(r) { return r.json(); }).then(function(list) {
+                if (Array.isArray(list)) ALL_SYMBOLS = list;
+            }).catch(function() {});
+
             const params = new URLSearchParams(window.location.search);
             const presetSymbol = params.get('symbol');
             const presetTf = params.get('timeframe');
             if (presetSymbol) {
-                const sel = document.getElementById('symbol');
-                sel.value = presetSymbol;
-                loadTimeframes(presetSymbol).then(function() {
+                setSymbol(presetSymbol).then(function() {
                     const tfSel = document.getElementById('timeframe');
                     const want = presetTf || '15m';
                     if (Array.from(tfSel.options).some(o => o.value === want)) {
@@ -390,41 +722,157 @@
             }
         }
 
-        async function loadChart() {
-            const symbol = document.getElementById('symbol').value;
+        async function fetchChartData(qs, onProgress, signal) {
+            const response = await fetch('/api/data?' + qs.toString(), signal ? { signal: signal } : {});
+            const ctype = (response.headers.get('content-type') || '').toLowerCase();
+            if (ctype.indexOf('ndjson') === -1 && ctype.indexOf('json') !== -1) {
+                const data = await response.json();
+                if (!response.ok && data && data.error) throw new Error(data.error);
+                return data;
+            }
+            if (!response.body || !response.body.getReader) {
+                const text = await response.text();
+                return JSON.parse(text);
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            let result = null;
+            let err = null;
+            while (true) {
+                const chunk = await reader.read();
+                if (chunk.done) break;
+                buf += decoder.decode(chunk.value, {stream: true});
+                let nl;
+                while ((nl = buf.indexOf('\n')) !== -1) {
+                    const line = buf.slice(0, nl).trim();
+                    buf = buf.slice(nl + 1);
+                    if (!line) continue;
+                    const ev = JSON.parse(line);
+                    if (ev.type === 'progress') {
+                        if (onProgress) onProgress(ev);
+                    } else if (ev.type === 'result') {
+                        result = ev.data || ev;
+                    } else if (ev.type === 'error') {
+                        err = ev.error || 'Chart load failed';
+                    } else if (ev.chart_data) {
+                        result = ev;
+                    }
+                }
+            }
+            const tail = buf.trim();
+            if (tail) {
+                const ev = JSON.parse(tail);
+                if (ev.type === 'progress' && onProgress) onProgress(ev);
+                else if (ev.type === 'result') result = ev.data || ev;
+                else if (ev.type === 'error') err = ev.error || 'Chart load failed';
+                else if (ev.chart_data) result = ev;
+            }
+            if (err) throw new Error(err);
+            if (!result) throw new Error('Empty chart response');
+            return result;
+        }
+
+        async function loadChart(opts) {
+            opts = opts || {};
+            if (!document.getElementById('symbol').value) {
+                pickHighlightedSymbol();
+            }
+            const symbol = getSymbol();
             const timeframe = document.getElementById('timeframe').value;
             
             if (!symbol) {
                 showError('Please select a symbol');
                 return;
             }
+            document.getElementById('symbol').value = symbol;
+            document.getElementById('symbol-input').value = symbol;
+
+            const around = opts.around != null
+                ? String(opts.around)
+                : (document.getElementById('goto-date').value || '').trim();
+            const before = opts.before != null ? opts.before : VIEW_PAD;
+            const after = opts.after != null ? opts.after : VIEW_PAD;
+            if (opts.keepView) savedView = opts.view || captureView();
+            chartLog('loadChart', {
+                keepView: !!opts.keepView,
+                around: around,
+                before: before,
+                after: after,
+                saved: savedView && { x0: savedView.x0, x1: savedView.x1, i0: savedView.i0, i1: savedView.i1 }
+            });
+
+            if (chartAbort) {
+                try { chartAbort.abort(); } catch (err) {}
+            }
+            chartAbort = new AbortController();
+            const signal = chartAbort.signal;
             
-            showLoading(true);
+            const loadLabel = around
+                ? (symbol + ' ' + timeframe + ' around ' + around)
+                : (symbol + ' ' + timeframe);
+            if (!opts.keepView) {
+                showLoading(true, { status: 'Requesting ' + loadLabel });
+            }
             
             try {
-                const response = await fetch(`/api/data?symbol=${symbol}&timeframe=${timeframe}&indicators=${JSON.stringify(selectedIndicators)}`);
-                const data = await response.json();
+                const qs = new URLSearchParams({
+                    symbol: symbol,
+                    timeframe: timeframe,
+                    indicators: JSON.stringify(selectedIndicators),
+                    before: String(before),
+                    after: String(after),
+                    stream: '1'
+                });
+                if (around) qs.set('around', around);
+                const data = await fetchChartData(qs, function(ev) {
+                    if (!opts.keepView) setLoadingProgress(ev.pct, ev.msg);
+                }, signal);
                 
                 if (data.error) {
                     showError(data.error);
                     return;
                 }
                 
-                renderChart(data);
-                showSuccess(`Chart loaded for ${symbol} (${timeframe})`);
+                renderChart(data, opts.keepView ? savedView : null);
+                const overlay = pendingOverlay || lastOverlay;
+                pendingOverlay = null;
+                let drewRails = false;
+                if (overlay && (!overlay.sym || overlay.sym === String(data.symbol).toUpperCase())) {
+                    applyChannelOverlay(overlay);
+                    drewRails = true;
+                }
+                if (!opts.keepView) {
+                    showSuccess(drewRails
+                        ? `Chart loaded for ${symbol} (${timeframe}) with channel rails`
+                        : `Chart loaded for ${symbol} (${timeframe})`);
+                }
                 
             } catch (error) {
+                if (error && error.name === 'AbortError') return;
                 showError('Error loading chart data: ' + error.message);
             } finally {
                 showLoading(false);
             }
         }
 
-        function renderChart(data) {
+        function renderChart(data, view) {
             const chartData = data.chart_data;
             const indicators = data.indicators;
+            const tf = data.timeframe || document.getElementById('timeframe').value;
+            const etLabels = (chartData.datetime || []).map(function(s) { return formatBarTick(s, tf); });
+            const xKeep = view ? xRangeFromView(view, chartData.datetime) : null;
+            const yKeep = view && view.y && view.y.length === 2 ? view.y : null;
+            chartLog('renderChart', {
+                n: (chartData.datetime || []).length,
+                keepView: !!view,
+                x0: view && view.x0,
+                x1: view && view.x1,
+                xKeep: xKeep
+            });
+            const ticks = categoryTicks(chartData.datetime, tf, 8);
             
-            // Prepare candlestick data
+            // Prepare candlestick data (category x = equal bar spacing, no overnight gaps)
             const candlestick = {
                 x: chartData.datetime,
                 open: chartData.open,
@@ -433,6 +881,8 @@
                 close: chartData.close,
                 type: 'candlestick',
                 name: 'OHLC',
+                customdata: etLabels,
+                hovertemplate: '%{customdata}<br>O %{open}<br>H %{high}<br>L %{low}<br>C %{close}<extra></extra>',
                 decreasing: {line: {color: '#ff4444'}},
                 increasing: {line: {color: '#44ff44'}}
             };
@@ -499,13 +949,23 @@
             
             const layout = {
                 title: `${data.symbol} - ${data.timeframe}`,
+                margin: { l: 48, r: 72, t: 48, b: 64 },
                 xaxis: {
                     title: 'Date',
-                    rangeslider: {visible: false}
+                    type: 'category',
+                    rangeslider: {visible: false},
+                    tickmode: 'array',
+                    tickvals: ticks.tickvals,
+                    ticktext: ticks.ticktext,
+                    tickangle: 0,
+                    range: xKeep || undefined,
+                    autorange: !xKeep
                 },
                 yaxis: {
                     title: 'Price',
-                    side: 'right'
+                    side: 'right',
+                    range: yKeep || undefined,
+                    autorange: !yKeep
                 },
                 yaxis2: {
                     title: 'MACD',
@@ -535,12 +995,661 @@
                 }
             };
             
-            Plotly.newPlot('chart', traces, layout, {responsive: true});
+            Plotly.newPlot('chart', traces, layout, {responsive: true, displaylogo: false});
+            lastChartData = data;
+            currentChart = document.getElementById('chart');
+            currentChart._chartReady = false;
+            bindAxisZoom(currentChart);
+            if (view && xKeep) restoreView(view);
+            requestAnimationFrame(function() {
+                if (view && xKeep) restoreView(view);
+                if (currentChart) currentChart._chartReady = true;
+                chartLog('renderChart.ready', {
+                    range: currentChart && currentChart._fullLayout && currentChart._fullLayout.xaxis
+                        ? currentChart._fullLayout.xaxis.range
+                        : null
+                });
+            });
         }
 
-        function showLoading(show) {
+        let axisDrag = null;
+        let axisZoomRaf = 0;
+        let axisZoomPending = null;
+
+        function axisLinearRange(ax) {
+            if (!ax || !ax.range || ax.range.length < 2) return null;
+            let lo = ax.r2l ? ax.r2l(ax.range[0]) : Number(ax.range[0]);
+            let hi = ax.r2l ? ax.r2l(ax.range[1]) : Number(ax.range[1]);
+            if (!isFinite(lo)) lo = Number(ax.range[0]);
+            if (!isFinite(hi)) hi = Number(ax.range[1]);
+            if (!isFinite(lo) || !isFinite(hi) || hi === lo) return null;
+            return [lo, hi];
+        }
+
+        function scaleRange(lo, hi, factor, minSpan) {
+            const mid = (lo + hi) / 2;
+            let span = Math.abs(hi - lo) * factor;
+            if (minSpan && span < minSpan) span = minSpan;
+            return [mid - span / 2, mid + span / 2];
+        }
+
+        function clampLinearRange(lo, hi, boundLo, boundHi) {
+            if (!isFinite(boundLo) || !isFinite(boundHi) || boundHi <= boundLo) return [lo, hi];
+            const maxSpan = boundHi - boundLo;
+            let span = hi - lo;
+            if (span >= maxSpan) return [boundLo, boundHi];
+            if (lo < boundLo) return [boundLo, boundLo + span];
+            if (hi > boundHi) return [boundHi - span, boundHi];
+            return [lo, hi];
+        }
+
+        function dataXBounds(ax) {
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            if (!xs || xs.length < 2) return [0, 1];
+            if (ax && ax.d2l) {
+                const a = ax.d2l(xs[0]);
+                const b = ax.d2l(xs[xs.length - 1]);
+                if (isFinite(a) && isFinite(b)) return a < b ? [a, b] : [b, a];
+            }
+            return [0, xs.length - 1];
+        }
+
+        function dataYBounds() {
+            const d = lastChartData && lastChartData.chart_data;
+            if (!d || !d.low || !d.high) return null;
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (let i = 0; i < d.low.length; i++) {
+                const a = Number(d.low[i]);
+                const b = Number(d.high[i]);
+                if (isFinite(a)) lo = Math.min(lo, a);
+                if (isFinite(b)) hi = Math.max(hi, b);
+            }
+            if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return null;
+            const pad = (hi - lo) * 0.15;
+            return [lo - pad, hi + pad];
+        }
+
+        function axisHit(gd, clientX, clientY) {
+            const layout = gd._fullLayout;
+            if (!layout || !layout.xaxis || !layout.yaxis) return null;
+            const xa = layout.xaxis;
+            const ya = layout.yaxis;
+            if (xa._offset == null || ya._offset == null) return null;
+            const rect = gd.getBoundingClientRect();
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+            const plotL = xa._offset;
+            const plotT = ya._offset;
+            const plotR = xa._offset + xa._length;
+            const plotB = ya._offset + ya._length;
+            const yPad = 22;
+            const xPad = 22;
+            if (x >= plotR - yPad && x <= rect.width && y >= plotT && y <= plotB + 8) return 'y';
+            if (y >= plotB - xPad && y <= rect.height && x >= plotL && x <= plotR + 8) return 'x';
+            return null;
+        }
+
+        function setAxisCursor(gd, hit) {
+            gd.classList.toggle('axis-zoom-y', hit === 'y');
+            gd.classList.toggle('axis-zoom-x', hit === 'x');
+        }
+
+        function flushAxisZoom(gd) {
+            axisZoomRaf = 0;
+            if (!axisZoomPending) return;
+            const update = axisZoomPending;
+            axisZoomPending = null;
+            Plotly.relayout(gd, update);
+        }
+
+        function queueAxisZoom(gd, update) {
+            axisZoomPending = Object.assign(axisZoomPending || {}, update);
+            if (!axisZoomRaf) {
+                axisZoomRaf = requestAnimationFrame(function() { flushAxisZoom(gd); });
+            }
+        }
+
+        function onAxisPointerDown(e) {
+            if (e.button != null && e.button !== 0) return;
+            const gd = currentChart;
+            if (!gd || !gd._fullLayout) return;
+            const hit = axisHit(gd, e.clientX, e.clientY);
+            if (!hit) return;
+            const xa = gd._fullLayout.xaxis;
+            const ya = gd._fullLayout.yaxis;
+            const xRange = axisLinearRange(xa);
+            const yRange = axisLinearRange(ya);
+            if (hit === 'x' && !xRange) return;
+            if (hit === 'y' && !yRange) return;
+            e.preventDefault();
+            e.stopPropagation();
+            axisDrag = {
+                axis: hit,
+                x0: e.clientX,
+                y0: e.clientY,
+                xRange: xRange,
+                yRange: yRange,
+                xLen: Math.max(xa._length || 1, 1),
+                yLen: Math.max(ya._length || 1, 1)
+            };
+            chartLog('axis-down', {
+                axis: hit,
+                xRange: xRange && [round3(xRange[0]), round3(xRange[1])],
+                xSpan: xRange ? round3(xRange[1] - xRange[0]) : null
+            });
+            gd.classList.add('axis-zooming');
+            setAxisCursor(gd, hit);
+            if (gd.setPointerCapture && e.pointerId != null) {
+                try { gd.setPointerCapture(e.pointerId); } catch (err) {}
+            }
+        }
+
+        function onAxisPointerMove(e) {
+            const gd = currentChart;
+            if (!gd) return;
+            if (!axisDrag) {
+                setAxisCursor(gd, axisHit(gd, e.clientX, e.clientY));
+                return;
+            }
+            e.preventDefault();
+            const xa = gd._fullLayout && gd._fullLayout.xaxis;
+            const ya = gd._fullLayout && gd._fullLayout.yaxis;
+            if (axisDrag.axis === 'y' && ya) {
+                const dy = e.clientY - axisDrag.y0;
+                const factor = Math.exp(dy / axisDrag.yLen * 1.8);
+                const mid = (axisDrag.yRange[0] + axisDrag.yRange[1]) / 2;
+                const minSpan = Math.max(Math.abs(mid) * 1e-4, 1e-6);
+                let next = scaleRange(axisDrag.yRange[0], axisDrag.yRange[1], factor, minSpan);
+                const bounds = dataYBounds();
+                if (bounds) {
+                    const maxSpan = (bounds[1] - bounds[0]) * 8;
+                    if (next[1] - next[0] > maxSpan) {
+                        next = scaleRange(axisDrag.yRange[0], axisDrag.yRange[1], maxSpan / (axisDrag.yRange[1] - axisDrag.yRange[0]), minSpan);
+                    }
+                }
+                const lo = ya.l2r ? ya.l2r(next[0]) : next[0];
+                const hi = ya.l2r ? ya.l2r(next[1]) : next[1];
+                queueAxisZoom(gd, { 'yaxis.range': [lo, hi], 'yaxis.autorange': false });
+            } else if (axisDrag.axis === 'x' && xa) {
+                const next = xLinearFromDrag(axisDrag, e.clientX);
+                if (next) {
+                    axisDrag.lastLinear = next;
+                    queueAxisZoom(gd, { 'xaxis.range': [next[0], next[1]], 'xaxis.autorange': false });
+                }
+            }
+            axisDrag.lastX = e.clientX;
+            axisDrag.lastY = e.clientY;
+        }
+
+        function onAxisPointerUp(e) {
+            const gd = currentChart;
+            const drag = axisDrag;
+            if (axisZoomRaf && gd) flushAxisZoom(gd);
+            axisDrag = null;
+            if (gd) gd.classList.remove('axis-zooming');
+            if (!EDGE_FETCH_ONLY_ON_X_ZOOM_OUT || !drag || drag.axis !== 'x') return;
+            const x1 = (drag.lastX != null) ? drag.lastX : ((e && e.clientX != null) ? e.clientX : drag.x0);
+            const zoomedOut = (x1 - drag.x0) > 10;
+            const next = drag.lastLinear || xLinearFromDrag(drag, x1);
+            const view = next ? viewFromLinearX(next[0], next[1]) : captureView();
+            chartLog('x-zoom-up', {
+                zoomedOut: zoomedOut,
+                start: drag.xRange,
+                next: next,
+                spanBars: next ? (next[1] - next[0]) : null,
+                view: view && { x0: view.x0, x1: view.x1, i0: view.i0, i1: view.i1 }
+            });
+            if (zoomedOut) maybeFetchMore(next, view);
+        }
+
+        function bindAxisZoom(gd) {
+            if (!gd || gd._axisZoomBound) return;
+            gd._axisZoomBound = true;
+            gd.addEventListener('pointerdown', onAxisPointerDown, true);
+            gd.addEventListener('mousedown', function(e) {
+                if (axisHit(gd, e.clientX, e.clientY)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+            }, true);
+            gd.addEventListener('pointermove', onAxisPointerMove);
+            gd.addEventListener('pointerup', onAxisPointerUp);
+            gd.addEventListener('pointercancel', onAxisPointerUp);
+            gd.addEventListener('lostpointercapture', onAxisPointerUp);
+            gd.addEventListener('mouseleave', function() {
+                if (!axisDrag) setAxisCursor(gd, null);
+            });
+        }
+
+        function chartTsMs(s) {
+            if (!s) return NaN;
+            const t = String(s).trim().replace(' ', 'T');
+            if (/Z$/i.test(t) || /[+-]\d{2}:?\d{2}$/.test(t)) return Date.parse(t);
+            return Date.parse(t + 'Z');
+        }
+
+        function formatBarTick(utcNaive, tf) {
+            const ms = chartTsMs(utcNaive);
+            if (!isFinite(ms)) return String(utcNaive || '');
+            const daily = (tf === '1d' || tf === '1w' || tf === '1M');
+            const opts = {
+                timeZone: 'America/New_York',
+                month: 'short',
+                day: 'numeric'
+            };
+            if (daily) opts.year = 'numeric';
+            else {
+                opts.hour = '2-digit';
+                opts.minute = '2-digit';
+                opts.hour12 = false;
+            }
+            return new Intl.DateTimeFormat('en-US', opts).format(new Date(ms));
+        }
+
+        function categoryTicks(xs, tf, maxTicks) {
+            const out = { tickvals: [], ticktext: [] };
+            if (!xs || !xs.length) return out;
+            const n = xs.length;
+            const step = Math.max(1, Math.floor(n / Math.max(maxTicks || 8, 1)));
+            for (let i = 0; i < n; i += step) {
+                out.tickvals.push(xs[i]);
+                out.ticktext.push(formatBarTick(xs[i], tf));
+            }
+            if (out.tickvals[out.tickvals.length - 1] !== xs[n - 1]) {
+                out.tickvals.push(xs[n - 1]);
+                out.ticktext.push(formatBarTick(xs[n - 1], tf));
+            }
+            return out;
+        }
+
+        function round3(v) {
+            const n = Number(v);
+            return isFinite(n) ? Math.round(n * 1000) / 1000 : n;
+        }
+
+        function xLinearFromDrag(drag, clientX) {
+            if (!drag || !drag.xRange) return null;
+            const x1 = (clientX != null) ? clientX : (drag.lastX != null ? drag.lastX : drag.x0);
+            const dx = x1 - drag.x0;
+            const factor = Math.exp(dx / Math.max(drag.xLen, 1) * 1.8);
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const xb = xs && xs.length > 1 ? [0, xs.length - 1] : [0, 1];
+            const minSpan = Math.max((xb[1] - xb[0]) / Math.max((xs && xs.length ? xs.length - 1 : 1), 1) * 4, 1);
+            let next = scaleRange(drag.xRange[0], drag.xRange[1], factor, minSpan);
+            next = clampLinearRange(next[0], next[1], xb[0], xb[1]);
+            return next;
+        }
+
+        function viewFromLinearX(lo, hi) {
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const gd = currentChart;
+            const ya = gd && gd._fullLayout && gd._fullLayout.yaxis;
+            const y = ya && ya.range ? [Number(ya.range[0]), Number(ya.range[1])] : null;
+            if (!xs || !xs.length || !isFinite(lo) || !isFinite(hi)) return { x0: null, x1: null, y: y };
+            const a = Math.max(0, Math.min(xs.length - 1, Math.round(Math.min(lo, hi))));
+            const b = Math.max(0, Math.min(xs.length - 1, Math.round(Math.max(lo, hi))));
+            return { x0: xs[a], x1: xs[b], i0: a, i1: b, n: xs.length, y: y };
+        }
+
+        function xRangeFromView(view, xs) {
+            if (!view || !xs || !xs.length) return null;
+            let i0 = -1;
+            let i1 = -1;
+            if (view.x0) i0 = xs.indexOf(view.x0);
+            if (view.x1) i1 = xs.indexOf(view.x1);
+            if (i0 < 0 && view.x0) i0 = xs.indexOf(snapCategory(xs, view.x0));
+            if (i1 < 0 && view.x1) i1 = xs.indexOf(snapCategory(xs, view.x1));
+            if (i0 < 0 && view.i0 != null && view.n) {
+                i0 = Math.max(0, Math.min(xs.length - 1, Math.round(view.i0 + (xs.length - view.n))));
+            }
+            if (i1 < 0 && view.i1 != null) {
+                i1 = Math.max(0, Math.min(xs.length - 1, Math.round(view.i1 + (xs.length - (view.n || xs.length)))));
+            }
+            if (i0 < 0 || i1 < 0) return null;
+            if (i1 < i0) {
+                const t = i0;
+                i0 = i1;
+                i1 = t;
+            }
+            return [i0 - 0.5, i1 + 0.5];
+        }
+
+        function linearToCategory(ax, xs, linear) {
+            if (!xs || !xs.length) return null;
+            if (ax && ax.l2r) {
+                const v = ax.l2r(linear);
+                if (typeof v === 'string' && xs.indexOf(v) !== -1) return v;
+            }
+            const i = Math.max(0, Math.min(xs.length - 1, Math.round(Number(linear))));
+            return xs[i];
+        }
+
+        function snapCategory(xs, label) {
+            if (!xs || !xs.length) return label;
+            if (xs.indexOf(label) !== -1) return label;
+            const t = chartTsMs(label);
+            if (!isFinite(t)) return xs[0];
+            let best = 0;
+            let bestD = Infinity;
+            for (let i = 0; i < xs.length; i++) {
+                const d = Math.abs(chartTsMs(xs[i]) - t);
+                if (d < bestD) {
+                    bestD = d;
+                    best = i;
+                }
+            }
+            return xs[best];
+        }
+
+        function captureView() {
+            const gd = currentChart;
+            if (!gd || !gd._fullLayout || !gd._fullLayout.xaxis || !lastChartData) return null;
+            const xs = lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const xa = gd._fullLayout.xaxis;
+            const ya = gd._fullLayout.yaxis;
+            const r = axisLinearRange(xa);
+            const view = r ? viewFromLinearX(r[0], r[1]) : { x0: null, x1: null, y: null };
+            if (!(view.y) && ya && ya.range) view.y = [Number(ya.range[0]), Number(ya.range[1])];
+            chartLog('captureView', {
+                linear: r && [round3(r[0]), round3(r[1])],
+                span: r ? round3(r[1] - r[0]) : null,
+                x0: view.x0,
+                x1: view.x1,
+                i0: view.i0,
+                i1: view.i1,
+                n: xs && xs.length
+            });
+            return view;
+        }
+
+        function restoreView(view) {
+            const gd = currentChart;
+            if (!gd || !view) return;
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const upd = {};
+            const xRange = xRangeFromView(view, xs);
+            if (xRange) {
+                upd['xaxis.range'] = xRange;
+                upd['xaxis.autorange'] = false;
+            }
+            if (view.y && view.y.length === 2 && isFinite(view.y[0]) && isFinite(view.y[1])) {
+                upd['yaxis.range'] = view.y;
+                upd['yaxis.autorange'] = false;
+            }
+            chartLog('restoreView', {
+                x0: view.x0,
+                x1: view.x1,
+                xRange: xRange,
+                n: xs && xs.length
+            });
+            if (!Object.keys(upd).length) return;
+            restoringView = true;
+            try {
+                Plotly.relayout(gd, upd);
+            } finally {
+                restoringView = false;
+            }
+        }
+
+        function maybeFetchMore(linear, view) {
+            if (fetchingMore || restoringView || axisDrag) return;
+            if (!lastChartData || !currentChart || !currentChart._fullLayout) return;
+            const n = (lastChartData.chart_data.datetime || []).length;
+            if (n < 2) return;
+            const r = linear || axisLinearRange(currentChart._fullLayout.xaxis);
+            if (!r) return;
+            const span = Math.max(n - 1, 1);
+            const nearLeft = r[0] <= 3;
+            const nearRight = r[1] >= span - 3;
+            chartLog('maybeFetchMore', {
+                n: n,
+                linear: [round3(r[0]), round3(r[1])],
+                nearLeft: nearLeft,
+                nearRight: nearRight,
+                hasBefore: !!lastChartData.has_more_before,
+                hasAfter: !!lastChartData.has_more_after
+            });
+            if (nearLeft && lastChartData.has_more_before) {
+                extendWindow('left', view);
+            } else if (nearRight && lastChartData.has_more_after) {
+                extendWindow('right', view);
+            }
+        }
+
+        async function extendWindow(side, view) {
+            if (fetchingMore || !lastChartData) return;
+            const xs = lastChartData.chart_data.datetime;
+            const n = xs.length;
+            if (!n) return;
+            const keep = view || captureView();
+            fetchingMore = true;
+            const mid = xs[Math.floor(n / 2)];
+            let before = Math.floor(n / 2);
+            let after = n - before - 1;
+            if (side === 'left') before += VIEW_PAD;
+            else after += VIEW_PAD;
+            chartLog('extendWindow', {
+                side: side,
+                n: n,
+                around: mid,
+                before: before,
+                after: after,
+                keep: keep && { x0: keep.x0, x1: keep.x1, i0: keep.i0, i1: keep.i1 }
+            });
+            try {
+                await loadChart({
+                    around: mid,
+                    before: before,
+                    after: after,
+                    keepView: true,
+                    view: keep
+                });
+            } finally {
+                fetchingMore = false;
+            }
+        }
+
+        async function gotoDate(query, opts) {
+            const silent = opts && opts.silent;
+            const q = (query != null ? String(query) : document.getElementById('goto-date').value || '').trim();
+            if (!q) {
+                if (!silent) showError('Paste a date or date-time first');
+                return;
+            }
+            let around = q;
+            try {
+                const response = await fetch('/api/goto-spec?q=' + encodeURIComponent(q));
+                const spec = await response.json();
+                if (spec.error) {
+                    if (!silent) showError(spec.error);
+                    return;
+                }
+                if (spec.candidates && spec.candidates.length) {
+                    around = spec.candidates[spec.candidates.length - 1];
+                } else if (spec.date) {
+                    around = spec.date;
+                }
+            } catch (err) {
+                if (!silent) showError('Could not parse date / date-time');
+                return;
+            }
+            if (!document.getElementById('goto-date').value) {
+                document.getElementById('goto-date').value = q;
+            }
+            await loadChart({ around: around, before: VIEW_PAD, after: VIEW_PAD });
+        }
+
+        function railY(overlay, tsMs) {
+            const slope = (overlay.l2p - overlay.l1p) / (overlay.l2_ms - overlay.l1_ms);
+            return overlay.l1p + slope * (tsMs - overlay.l1_ms);
+        }
+
+        function overlayTraceIndices(gd) {
+            const names = [OVERLAY_NAMES.support, OVERLAY_NAMES.resist, OVERLAY_NAMES.marks];
+            const inds = [];
+            (gd.data || []).forEach(function(tr, i) {
+                if (names.indexOf(tr.name) !== -1) inds.push(i);
+            });
+            return inds;
+        }
+
+        function applyChannelOverlay(overlay) {
+            if (!lastChartData || !overlay) return;
+            const gd = document.getElementById('chart');
+            const drop = overlayTraceIndices(gd);
+            if (drop.length) Plotly.deleteTraces(gd, drop);
+            const xs = lastChartData.chart_data.datetime;
+            const t0 = chartTsMs(xs[0]);
+            const t1 = chartTsMs(xs[xs.length - 1]);
+            const y0 = railY(overlay, t0);
+            const y1 = railY(overlay, t1);
+            const w = overlay.w;
+            const traces = [
+                {
+                    x: [xs[0], xs[xs.length - 1]],
+                    y: [y0, y1],
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: OVERLAY_NAMES.support,
+                    line: { color: '#26a69a', width: 2 }
+                },
+                {
+                    x: [xs[0], xs[xs.length - 1]],
+                    y: [y0 + w, y1 + w],
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: OVERLAY_NAMES.resist,
+                    line: { color: '#ef5350', width: 2 },
+                    fill: 'tonexty',
+                    fillcolor: 'rgba(38, 166, 154, 0.12)'
+                }
+            ];
+            const mx = [];
+            const my = [];
+            const mt = [];
+            const mc = [];
+            function addMark(utc, y, label, color) {
+                if (!utc || y == null || !isFinite(y)) return;
+                mx.push(utc);
+                my.push(y);
+                mt.push(label);
+                mc.push(color);
+            }
+            addMark(overlay.l1_utc, overlay.l1p, 'L1', '#26a69a');
+            addMark(overlay.l2_utc, overlay.l2p, 'L2', '#26a69a');
+            if (overlay.h2_utc) {
+                addMark(overlay.h2_utc, railY(overlay, overlay.h2_ms) + w, 'H2', '#ef5350');
+            }
+            if (overlay.enp != null && overlay.en_utc) {
+                addMark(overlay.en_utc, overlay.enp, 'BUY', '#2b6cb0');
+            } else if (overlay.enp != null && overlay.fill_utc) {
+                addMark(overlay.fill_utc, overlay.enp, 'BUY', '#2b6cb0');
+            }
+            if (overlay.exp != null && overlay.ex_utc) {
+                addMark(overlay.ex_utc, overlay.exp, 'SELL', '#9b2c2c');
+            }
+            if (mx.length) {
+                traces.push({
+                    x: mx,
+                    y: my,
+                    text: mt,
+                    type: 'scatter',
+                    mode: 'markers+text',
+                    name: OVERLAY_NAMES.marks,
+                    textposition: 'top center',
+                    marker: { size: 9, color: mc },
+                    textfont: { size: 10, color: '#4a5568' }
+                });
+            }
+            Plotly.addTraces(gd, traces);
+            lastOverlay = overlay;
+        }
+
+        async function drawChannel() {
+            const text = (document.getElementById('channel-json').value || '').trim();
+            if (!text) {
+                showError('Paste Channel JSON from /hot first');
+                return;
+            }
+            let overlay;
+            try {
+                const response = await fetch('/api/channel-overlay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text })
+                });
+                overlay = await response.json();
+                if (overlay.error) {
+                    showError(overlay.error);
+                    return;
+                }
+            } catch (err) {
+                showError('Could not parse Channel JSON');
+                return;
+            }
+            lastOverlay = overlay;
+            pendingOverlay = overlay;
+            const want = overlay.sym;
+            if (want) await setSymbol(want);
+            const around = overlay.goto || overlay.fill_utc || overlay.l2_utc || '';
+            await loadChart({ around: around, before: VIEW_PAD, after: VIEW_PAD });
+        }
+
+        function clearChannel() {
+            lastOverlay = null;
+            pendingOverlay = null;
+            const gd = document.getElementById('chart');
+            const drop = overlayTraceIndices(gd);
+            if (drop.length) Plotly.deleteTraces(gd, drop);
+            showSuccess('Cleared channel overlay');
+        }
+
+        function setLoadingProgress(pct, msg) {
+            loadingGotProgress = true;
+            const status = document.getElementById('loading-status');
+            const bar = document.getElementById('loading-bar');
+            if (status && msg) status.textContent = msg;
+            if (bar && pct != null && isFinite(Number(pct))) {
+                bar.classList.remove('indet');
+                bar.style.width = Math.max(2, Math.min(100, Number(pct))) + '%';
+            }
+        }
+
+        function showLoading(show, meta) {
             const loading = document.getElementById('loading');
-            loading.style.display = show ? 'block' : 'none';
+            if (!show) {
+                if (loadingTimer) {
+                    clearInterval(loadingTimer);
+                    loadingTimer = null;
+                }
+                loading.style.display = 'none';
+                return;
+            }
+            loadingGotProgress = false;
+            loadingStartedAt = Date.now();
+            loading.style.display = 'flex';
+            const status = document.getElementById('loading-status');
+            const bar = document.getElementById('loading-bar');
+            const elapsed = document.getElementById('loading-elapsed');
+            if (status) status.textContent = (meta && meta.status) || 'Starting...';
+            if (bar) {
+                bar.classList.add('indet');
+                bar.style.width = '40%';
+            }
+            function tick() {
+                const s = Math.max(0, Math.floor((Date.now() - loadingStartedAt) / 1000));
+                if (elapsed) elapsed.textContent = s + 's elapsed';
+                if (loadingGotProgress || !status) return;
+                if (s >= 12) {
+                    status.textContent = 'Still working (' + s + 's). Fetching a bar window from TimescaleDB...';
+                } else if (s >= 3) {
+                    status.textContent = 'Waiting for the server...';
+                }
+            }
+            tick();
+            if (loadingTimer) clearInterval(loadingTimer);
+            loadingTimer = setInterval(tick, 250);
         }
 
         function showError(message) {

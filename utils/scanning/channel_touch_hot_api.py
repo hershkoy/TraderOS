@@ -24,6 +24,7 @@ from utils.scanning.channel_touch_bought import (
     sync_bought_prices,
     tag_candidates_bought,
 )
+from utils.scanning.channel_touch_ctf import attach_channel_json
 from utils.scanning.channel_touch_feed_status import build_feeds, feeds_fingerprint
 from utils.scanning.channel_touch_candidates_store import (
     ChannelTouchCandidatesStore,
@@ -411,6 +412,7 @@ def candidates_payload(
     n_armed = sum(1 for r in rows if r.get("status") == "armed")
     for item in ordered:
         item["h5_fill"] = is_strategy_fill(item)
+    attach_channel_json(ordered)
     n_armed_15m = sum(
         1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "15m") == "15m"
     )
