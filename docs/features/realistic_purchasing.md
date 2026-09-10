@@ -6,6 +6,8 @@ Code: `utils/research/realistic_purchaser.py`. Flags: `--realistic-fill` and `--
 
 This is a **research fill**. The nightly scanner (`scripts/scanners/channel_touch_nightly.py`) still uses the **unrealistic** daily rail clip (not this purchaser). Occupancy and ATR/trail **exits** stay on the strategy timeframe (daily bars for 1d, 15m bars for 15m) even when the entry is priced from 15m.
 
+**`--realistic-fill` on 1d does not make the book live.** After a daily close-above-resist, buying that same session's 15m close / mid / open-cross is a lookback. **Avoid those as strategies** ([Do not use](#do-not-use-1d-post-eod-lookbacks)). The 15m L3 keeper and 1d `--intraday-trigger hot-cross` are the causal clocks.
+
 ---
 
 ## What belongs in `current_best/`
@@ -22,15 +24,32 @@ The detector on the **clip** book fires on the **daily close** above resistance.
 | File | What it is |
 |------|------------|
 | `1d_channel_touch.html` / `1d_h2_resist_break.html` | Nightly H2 resist-break + shakeout visualization. Entry is the clip (or a next-mid overlay still keyed off that clip). |
+| `1d_h2_signal_close.html` | 1d `--realistic-fill-mode signal-close` lookback (2026-09-09 unique **n=2794 E +2.48 PF 1.99**). Same class as the clip. **Do not use.** |
 | `1d_l3_touch.html` | Retired L3 support-tag keeper |
 | `1d_keeper_plus_h2_resist_break.html` | Research L3 + H2 sleeve |
 
-`--realistic-fill` on **1d** (next-mid / open-cross / next-open) is a research overlay, not the `current_best` 1d slot:
+Hot-cross is in `current_best/` because it is live-executable, not because it clears the clip book's E/PF. Grade the next 1d idea against **n=4079 E −0.19 PF 0.94**, not against clip n=4558 E +2.62 PF 2.10, and not against 1d signal-close n=2794 E +2.48 PF 1.99.
 
-- **next-mid** still starts from the unrealistic rail **X**, then blends with a 15m mid. The 2026-09-05 HTML (n=1239) joined the **wrong 15m session** until `_as_session_date`. Honest rebuild **n=1986 E +2.24 PF 1.89**. CTF stamps midnight UTC, so the BUY still sits on the daily wick (RDWR **24.64** was the wrong-session blend; honest Friday wild-cancels). Not `current_best`.
-- **open-cross** / **next-open** lost the E/PF gate vs the rail-clip keeper — not promoted. Nightly stays the clip.
+---
 
-Hot-cross is in `current_best/` because it is live-executable, not because it clears the clip book's E/PF. Grade the next 1d idea against **n=4079 E −0.19 PF 0.94**, not against clip n=4558 E +2.62 PF 2.10.
+## Do not use: 1d post-EOD lookbacks
+
+If the detector waits for that session's **daily close** above resist, any fill on **that same session** is unrealistic. At 16:00 ET you know the close printed; you cannot go back and buy a 15m close, a rail, or a mid from earlier that day. Occupancy still walks **daily** bars and skips the fill-day stop (`skip_entry_bar_stop`), so the book also misses same-day adverse excursion.
+
+**Avoid these as strategy candidates.** Do not promote, wire to `/hot` or nightly, rescan for “better” filters, or grade live ideas against their E/PF. The numbers look good because the fill is earlier than the information.
+
+| Book | Why it is a lookback | Do not treat as |
+|------|----------------------|-----------------|
+| Daily rail clip (`_limit_fill_at_support`) | Buy rail/wick on the signal daily bar. | Live fill. Nightly still clips for the watchlist only. |
+| 1d `--realistic-fill-mode signal-close` (no `--intraday-trigger`) | First RTH 15m whose `[low, high]` contains rail **X**; buy that 15m **close**. Confirm is still the daily close. HTML List of trades is **calendar dates only** (no `buy_time` / `sell_time`; CTF BUY at midnight UTC). Dated report: `reports/ascending_channels/2026-09-09/channel_touch_tv_report_interactive_fric0.25_1d_h2_signal_close_span365_shakeout_20260909_013839.html`. | Realistic. Unique **n=2794 E +2.48 PF 1.99**. |
+| 1d `next-mid` | Same **X**, then `(X + next_15m_mid) / 2`. The 2026-09-05 HTML (n=1239) joined the **wrong 15m session** until `_as_session_date`. Honest rebuild **n=1986 E +2.24 PF 1.89**. CTF still sits on the daily wick. | Live fill. |
+| 1d `open-cross` without `--intraday-trigger` | First 15m **open** above resist on the **signal** day, fill that bar's close. Still needs the daily close first. | Live fill. Lost E/PF vs clip besides the lookback. |
+
+`--intraday-trigger hot-cross` / `close-cross` do **not** wait for that session's daily close. Those are a different clock (see below). **15m** `signal-close` is also different: the detector *is* the completed 15m, so buying that close is causal (15m keeper).
+
+1d `next-open` (EOD then next-session MOO) is live-executable and still **not** promoted (lost E/PF vs clip). It is not a same-session lookback.
+
+**`next-open-mid`** is the same clock with a 15m fill: buy the **mid** of the next session's 09:30 ET 15m. Live after the daily close. Compare vs the next-mid lookback: `reports/ascending_channels/1d_unrealistic/next_open_mid_compare.csv`. Do not promote unless it beats hot-cross **n=4079 E −0.19 PF 0.94**.
 
 ---
 
@@ -53,7 +72,7 @@ The **detector** always uses **close** to fire:
 - 1d H2 resist-break: daily **close** above resistance after H2.
 - 15m H5 / L3: completed 15m **close** (above resist, or a from-above support tag on that bar).
 
-`--realistic-fill` does **not** change that signal. It only changes **where you buy** after the signal exists.
+`--realistic-fill` does **not** change that signal. It only changes **where you buy** after the signal exists. On **1d** without `--intraday-trigger`, that reprice is still a same-session lookback — **do not use it as a strategy** (see above).
 
 ### Without `--realistic-fill` (unrealistic)
 
@@ -71,25 +90,28 @@ CTF stamps `fill` at midnight UTC, so the BUY sits on the **daily** candle at **
 
 Four modes (`--realistic-fill-mode`):
 
-| Mode | 15m strategy | 1d strategy |
-|------|----------------|------------------------------------------|
-| **`signal-close`** (CLI default) | Buy the **close** of the signal 15m. Last RTH bar is allowed. | First 15m whose range **contains daily X**; buy that 15m **close**. Last RTH print is allowed. |
-| **`next-mid`** | Buy the **next** same-session 15m **mid** `(high+low)/2`. Last RTH (15:45) is cancelled. Wild-bar cancel if `(mid-low)/mid > 0.5%`. | First 15m that printed X; fill `(X + next_15m_mid) / 2`. Same EOD / wild cancel. |
-| **`open-cross`** | Same as `signal-close` (native 15m already has a completed bar). | First 15m whose **open** is already above resist; buy that bar's **close**. Last RTH allowed. Skip if no 15m opens above resist. |
-| **`next-open`** | Next same-session 15m **open** (last RTH cancelled). | Next **daily** session **open** after the EOD close. No IB 15m join. Last bar of the sample is skipped. |
+| Mode | 15m strategy (causal) | 1d strategy **without** `--intraday-trigger` |
+|------|----------------|----------------|
+| **`signal-close`** (CLI default) | Buy the **close** of the signal 15m. Last RTH bar is allowed. **Keeper.** | **Unrealistic lookback. Do not use.** First 15m whose range **contains daily X**; buy that 15m **close**. Confirm is still the daily close at 16:00 ET. |
+| **`next-mid`** | Buy the **next** same-session 15m **mid** `(high+low)/2`. Last RTH (15:45) is cancelled. Wild-bar cancel if `(mid-low)/mid > 0.5%`. | **Unrealistic lookback. Do not use.** First 15m that printed X; fill `(X + next_15m_mid) / 2`. Same EOD / wild cancel. |
+| **`open-cross`** | Same as `signal-close` (native 15m already has a completed bar). | **Unrealistic lookback. Do not use.** First 15m whose **open** is already above resist on the signal day; buy that bar's **close**. |
+| **`next-open`** | Next same-session 15m **open** (last RTH cancelled). | Next **daily** session **open** after the EOD close. No IB 15m join. Live-executable MOO; **not** promoted. |
+| **`next-open-mid`** | Same as 15m `next-open` (next 15m mid is a different mode). | Next session **09:30 ET 15m mid**. Needs IB 15m. Live-executable. **Not** promoted until it beats hot-cross. |
 
 **Open** is used as a fill gate in **1d `open-cross`** and as the fill price in **`next-open`**. Close/mid modes still buy a close or a next-bar mid.
 
-Live-plausible reading:
+Live-plausible reading applies to **15m** native fills and to `--intraday-trigger` / 1d `next-open` only — **not** to 1d same-session lookbacks:
 
-- **Close fill:** the bar finished; you can work the close (or MOC-style) once you see it.
-- **Next-mid:** you confirmed at T's close (which is T+1's open) and assume you get the next 15m's midpoint. Cancels when there is no next RTH bar.
-- **Open-cross (1d):** you see a 15m **open already through** the rail, wait for that 15m to **close**, buy the close. You do not buy a bar that opened below.
-- **Next-open (1d):** EOD close confirms; buy the **next session open** (MOO). Occupancy and ATR/trail start on that next daily bar; same-day stop after the open is allowed.
+- **15m close fill:** that 15m finished; you can work the close once you see it. This is the 15m L3 keeper, not the 1d overlay.
+- **15m next-mid:** you confirmed at T's close (which is T+1's open) and assume you get the next 15m's midpoint. Cancels when there is no next RTH bar.
+- **1d next-open:** EOD close confirms; buy the **next session open** (MOO). Occupancy and ATR/trail start on that next daily bar. Research only; lost the gate.
+- **1d `--intraday-trigger close-cross`:** first 15m **close** above the daily rail (no EOD wait). Fill follows `--realistic-fill-mode` on that 15m. Research only; **no promote.**
 
 ---
 
 ## How a 1d strategy prices from 15m bars
+
+This join exists to **measure** the lookback. It is **not** a live path. Do not use 1d `signal-close` / `next-mid` / `open-cross` (no `--intraday-trigger`) as strategy candidates.
 
 The daily book still **scans daily OHLCV** (Alpaca 1d, IB prefix for history). When `--realistic-fill` is on and `--timeframe 1d`, modes other than **`next-open`** also load **IB 15m** (`load_ohlcv_many(..., timeframe="15m", provider="IB")`). Names with no IB 15m are skipped (no prior-day fallback). **`next-open`** uses the next daily bar's **open** and keeps the full daily universe.
 
@@ -99,17 +121,17 @@ Per daily signal:
 2. Keep only RTH 15m starts that session (`09:30` through `15:45` ET, weekdays).
 3. Reprice:
 
-**`signal-close`** — walk 15m until `[low, high]` contains X. Fill = that bar's **close**.
+**`signal-close`** — walk 15m until `[low, high]` contains X. Fill = that bar's **close**. **Avoid.**
 
-**`next-mid`** — same first print of X. If the next same-session 15m exists and is not wild, fill = `(X + next_mid) / 2`. A 15:45 print of X has no window and is dropped.
+**`next-mid`** — same first print of X. If the next same-session 15m exists and is not wild, fill = `(X + next_mid) / 2`. A 15:45 print of X has no window and is dropped. **Avoid.**
 
-**`open-cross`** — ignore X. Walk until **open > resist** (resist from the daily rails at that session). Fill = that 15m **close**. Gap-through days that never open above resist are skipped.
+**`open-cross`** — ignore X. Walk until **open > resist** (resist from the daily rails at that session). Fill = that 15m **close**. Gap-through days that never open above resist are skipped. **Avoid** unless `--intraday-trigger` removed the EOD gate (still not promoted).
 
 **`next-open`** — skip 15m. Fill = next daily session **open**. `buy_date` is that next session. Skip if there is no next bar.
 
-`buy_time` is that 15m bar (UTC). `buy_date` stays the calendar session (occupancy / unique-symbol-per-day key). Exits still walk **daily** highs/lows/closes.
+The 1d signal-close HTML does **not** record `buy_time` / `sell_time` (`exec_fill_daily_with_15m` returns a price only). List of trades is `buy_date` / `sell_date`. CTF stamps midnight UTC on the daily candle. Exits still walk **daily** highs/lows/closes and skip the fill-day stop.
 
-Same RDWR day: 09:30 ET 15m O **24.37** is skipped (`open-cross` requires open already above resist). First open above is 09:45 ET O 25.19; fill that bar's close **25.71**. That is the workable gap-through purchase. The HTML CTF BUY 24.64 is the unrealistic daily clip.
+Same RDWR day: 09:30 ET 15m O **24.37** is skipped (`open-cross` requires open already above resist). First open above is 09:45 ET O 25.19; fill that bar's close **25.71**. That price is what you could have worked **if** you were buying on the 15m clock without waiting for the daily close (`--intraday-trigger`). After an EOD daily confirm it is still a lookback. The clip HTML CTF BUY 24.64 is the rail on the daily wick.
 
 Do not convert the daily index to New York for the 15m join. Pass the calendar date (`YYYY-MM-DD` from the daily stamp at midnight).
 
@@ -124,7 +146,7 @@ The strategy **is** 15m. No extra join.
 - **`next-mid`:** fill on T+1 at mid. The 15:45–16:00 bar cannot fill (confirm at 16:00 has no RTH window; do not roll overnight).
 - **`next-open`:** fill on T+1 at that 15m **open**. Same last-RTH cancel.
 
-`next-mid` can print a BUY **mid-channel** that never tagged the rail (GOOGL 2025-11-18: tag at 10:00 ET close 280.79, next mid 281.63). That is why 15m L3 `current_best` uses **signal-close**, not next-mid. 1d next-mid never earned that slot — the overlay still keys off the daily rail clip.
+`next-mid` can print a BUY **mid-channel** that never tagged the rail (GOOGL 2025-11-18: tag at 10:00 ET close 280.79, next mid 281.63). That is why 15m L3 `current_best` uses **signal-close**, not next-mid. Do not copy that 15m keeper onto **1d** `signal-close`: the 1d overlay still keys off the daily rail clip after EOD and is a lookback (**n=2794 E +2.48 PF 1.99** — avoid).
 
 Optional `--max-chase-pct` (off by default) caps how far the exec price may run vs the signal. `--max-low-to-mid-pct` (default 0.5%) applies to **next-mid** only.
 
@@ -132,14 +154,16 @@ Optional `--max-chase-pct` (off by default) caps how far the exec price may run 
 
 ## What is live vs research
 
-| Book | Fill |
-|------|------|
-| Nightly 1d H2 (`channel_touch_nightly`) | Unrealistic **daily rail clip** (not this purchaser) |
-| `current_best/1d_hot_cross.html` / `1d_channel_touch.html` | Buy-now hot-cross lerp85 unique **n=4079 E −0.19 PF 0.94**. Live-executable. **The 1d number to beat.** Not promoted. |
-| `1d_unrealistic/1d_channel_touch.html` | Same clip, or next-mid overlay still keyed off that clip (HTML n=1239 **pre-`_as_session_date`**; honest rebuild unique **n=1986 E +2.24 PF 1.89**). |
-| `current_best/15m_channel_touch.html` (L3 wait-12) | `--realistic-fill` **signal-close** (live-executable completed 15m) |
-| 1d `open-cross` | Research switch; **not** promoted; not `current_best` |
-| 1d `next-open` | Research switch (EOD then MOO); **not** promoted; not `current_best` |
+| Book | Fill | Use? |
+|------|------|------|
+| Nightly 1d H2 (`channel_touch_nightly`) | Unrealistic **daily rail clip** (not this purchaser) | Watchlist only. Not a live fill. |
+| `current_best/1d_hot_cross.html` / `1d_channel_touch.html` | Buy-now hot-cross lerp85 unique **n=4079 E −0.19 PF 0.94**. Live-executable. **The 1d number to beat.** | Causal baseline. **Do not promote.** |
+| `1d_unrealistic/1d_h2_signal_close.html` | 1d `signal-close` lookback unique **n=2794 E +2.48 PF 1.99** | **Avoid.** |
+| `1d_unrealistic/1d_channel_touch.html` | Clip, or next-mid overlay still keyed off that clip (HTML n=1239 **pre-`_as_session_date`**; honest rebuild unique **n=1986 E +2.24 PF 1.89**) | **Avoid** as a strategy. |
+| `current_best/15m_channel_touch.html` (L3 wait-12) | `--realistic-fill` **signal-close** (live-executable completed 15m) | 15m keeper. |
+| 1d `open-cross` without `--intraday-trigger` | Same-session lookback | **Avoid.** |
+| 1d `next-open` | EOD then MOO | Live-executable; **not** promoted. |
+| 1d `next-open-mid` | EOD then next session 09:30 ET 15m mid | Live-executable; **not** promoted until it beats hot-cross. |
 
 `--intraday-trigger hot-cross` is not a post-EOD reprice. Daily H2 arms from prior completed bars; the first RTH 15m whose high reaches resist is the buy-now bar (Alpaca last on `/hot` is the live analog). Fill on that 15m:
 
@@ -180,15 +204,14 @@ set PYTHONPATH=.
 
 python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --intraday-trigger hot-cross --hot-cross-fill lerp85 --shakeout-breakout --workers 4 --load-workers 8
 
-python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --realistic-fill --realistic-fill-mode next-mid --shakeout-breakout --workers 4 --load-workers 8
-
-python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --realistic-fill --realistic-fill-mode open-cross --shakeout-breakout --workers 4 --load-workers 8
-
 python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --realistic-fill --realistic-fill-mode next-open --shakeout-breakout --workers 4 --load-workers 8
-python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --shakeout-breakout --touch-error-pct 0 --workers 4 --load-workers 8
+
+python scripts\research\compare_1d_next_open_mid.py
 
 python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --entry-mode l3_touch --min-l3-wait-bars 12 --realistic-fill --touch-error-pct 0 --workers 4 --load-workers 8
 ```
+
+Do **not** run 1d `--realistic-fill-mode signal-close` / `next-mid` / `open-cross` without `--intraday-trigger` as a strategy hunt. Those commands still exist on the backtester for diagnostics; their E/PF is not a candidate. The clip-only command (`--shakeout-breakout --touch-error-pct 0` with no `--realistic-fill`) is the nightly visualization, not a live book.
 
 ---
 

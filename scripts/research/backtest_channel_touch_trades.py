@@ -66,6 +66,7 @@ from utils.research.realistic_purchaser import (
     DEFAULT_MAX_LOW_TO_MID_PCT,
     FILL_MODE_NEXT_MID,
     FILL_MODE_NEXT_OPEN,
+    FILL_MODE_NEXT_OPEN_MID,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     FILL_MODES_1D,
@@ -82,6 +83,7 @@ from utils.research.realistic_purchaser import (
     purchase_close_cross_15m,
     purchase_hot_cross_15m,
     purchase_next_daily_open,
+    purchase_next_session_open_mid,
     purchase_open_cross_15m,
 )
 from utils.research.channel_touch_scale import PRESET_15M, apply_daily_long_history_defaults, overlay_preset
@@ -2043,7 +2045,7 @@ def _walk_pending_trades(
                 (
                     use_realistic
                     and not is_15m_bars
-                    and fill_mode != FILL_MODE_NEXT_OPEN
+                    and fill_mode not in (FILL_MODE_NEXT_OPEN, FILL_MODE_NEXT_OPEN_MID)
                 )
                 or deferred_channel
                 or (use_realistic and is_15m_bars and fill_mode == FILL_MODE_SIGNAL_CLOSE)
@@ -2586,6 +2588,20 @@ def trades_for_symbol(
                             i, fill_px = adj
                         elif fill_mode == FILL_MODE_NEXT_OPEN:
                             got = purchase_next_daily_open(out, signal_i)
+                            if not got.filled or got.fill_px is None:
+                                continue
+                            i = int(signal_i) + 1
+                            if i >= n:
+                                continue
+                            fill_px = float(got.fill_px)
+                            fill_time = got.exec_bar_ts
+                        elif fill_mode == FILL_MODE_NEXT_OPEN_MID:
+                            got = purchase_next_session_open_mid(
+                                df_15m,
+                                signal_session_date=pd.Timestamp(dates[signal_i]).strftime(
+                                    "%Y-%m-%d"
+                                ),
+                            )
                             if not got.filled or got.fill_px is None:
                                 continue
                             i = int(signal_i) + 1
@@ -4246,7 +4262,8 @@ def main() -> int:
         "pass --realistic-fill-mode next-mid for the old next-bar mid. "
         "1d default is the 15m close that printed X; next-mid blends X with the following 15m mid; "
         "open-cross fills at the close of the first 15m that opens above resist; "
-        "next-open fills at the next session open (no 15m join).",
+        "next-open fills at the next session open (no 15m join); "
+        "next-open-mid fills at the next session 09:30 ET 15m mid.",
     )
     ap.add_argument(
         "--realistic-fill-mode",
@@ -4255,7 +4272,8 @@ def main() -> int:
         help="When --realistic-fill: signal-close (default) fills at the touch bar close; "
         "next-mid keeps the previous next-bar mid purchaser; "
         "open-cross (1d) waits for a 15m open above resist and buys that bar's close; "
-        "next-open (1d) buys the next session open after the EOD close signal.",
+        "next-open (1d) buys the next session open after the EOD close signal; "
+        "next-open-mid (1d) buys the next session 09:30 ET 15m mid.",
     )
     ap.add_argument(
         "--max-low-to-mid-pct",

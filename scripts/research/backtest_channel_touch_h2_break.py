@@ -363,7 +363,7 @@ def main() -> int:
         action="store_true",
         help="Use realistic purchase prices. Default 15m fill is signal-bar close; "
         "--realistic-fill-mode next-mid restores next-bar mid. 1d next-open buys the "
-        "next session open (no 15m).",
+        "next session open (no 15m). next-open-mid buys the next session 09:30 15m mid.",
     )
     ap.add_argument(
         "--realistic-fill-mode",
@@ -371,7 +371,8 @@ def main() -> int:
         default="signal-close",
         help="When --realistic-fill: signal-close (default), next-mid (kept), "
         "open-cross (1d: first 15m open above resist, fill at that bar close), "
-        "or next-open (1d: next session open after the EOD close).",
+        "next-open (1d: next session open after the EOD close), "
+        "or next-open-mid (1d: next session 09:30 ET 15m mid).",
     )
     ap.add_argument(
         "--touch-error-pct",
@@ -762,6 +763,11 @@ def main() -> int:
         notes.append(
             "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "
             "(any-closed unless --shakeout-breakout-hard-stop)"
+        )
+    if bool(args.realistic_fill) and str(args.realistic_fill_mode) == "next-open-mid":
+        notes.append(
+            "next-open-mid: EOD daily close-above-resist, then buy mid of next session "
+            "09:30 ET 15m. Live-executable. Same-day stop on the fill daily bar is allowed."
         )
     if not brk.empty:
         tag = "15m_" if is_15m else ""

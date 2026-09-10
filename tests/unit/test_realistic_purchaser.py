@@ -11,6 +11,7 @@ from utils.research.realistic_purchaser import (
     DEFAULT_MAX_LOW_TO_MID_PCT,
     FILL_MODE_NEXT_MID,
     FILL_MODE_NEXT_OPEN,
+    FILL_MODE_NEXT_OPEN_MID,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_SIGNAL_CLOSE,
     REASON_BAD_OHLC,
@@ -24,6 +25,7 @@ from utils.research.realistic_purchaser import (
     REASON_OVERNIGHT,
     REASON_PRICE_NOT_PRINTED,
     REASON_WILD_RANGE,
+    as_et,
     bar_contains_price,
     bar_mid,
     expected_exec_bar_start,
@@ -35,6 +37,7 @@ from utils.research.realistic_purchaser import (
     purchase_at_signal_index,
     purchase_next_bar_open,
     purchase_next_daily_open,
+    purchase_next_session_open_mid,
     purchase_open_cross_15m,
     purchase_hot_cross_15m,
     index_rth_15m_by_session,
@@ -747,6 +750,54 @@ def test_next_daily_open_fills_next_session_open():
     assert last.reason == REASON_NO_NEXT_OPEN
 
 
+def test_next_session_open_mid_is_0930_mid_not_same_session():
+    bars = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.35,
+                "high": 25.23,
+                "low": 24.33,
+                "close": 25.05,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 13, 15, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 26.40,
+                "high": 26.70,
+                "low": 26.20,
+                "close": 26.58,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 16, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 27.20,
+                "high": 27.50,
+                "low": 27.00,
+                "close": 27.36,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 16, 9, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 27.40,
+                "high": 27.80,
+                "low": 27.30,
+                "close": 27.50,
+                "volume": 1e4,
+            },
+        ]
+    ).set_index("ts")
+    got = purchase_next_session_open_mid(bars, signal_session_date="2025-06-13")
+    assert got.filled
+    assert got.fill_px == pytest.approx((27.50 + 27.00) / 2.0)
+    assert as_et(got.exec_bar_ts).hour == 9
+    assert as_et(got.exec_bar_ts).minute == 30
+    assert as_et(got.exec_bar_ts).date().isoformat() == "2025-06-16"
+    same_day = purchase_next_session_open_mid(bars.iloc[:2], signal_session_date="2025-06-13")
+    assert not same_day.filled
+    assert same_day.reason == REASON_NO_NEXT_OPEN
+
+
 def test_next_bar_open_uses_next_15m_open_not_mid():
     sig = _bar(_et(2025, 6, 10, 9, 30), 39.15, 39.98, 38.75, 39.38)
     nxt = _bar(_et(2025, 6, 10, 9, 45), 39.50, 40.10, 39.40, 39.90)
@@ -766,6 +817,9 @@ def test_needs_15m_purchase_panels_skips_next_open():
     )
     assert not needs_15m_purchase_panels(
         "1d", realistic_fill=True, fill_mode=FILL_MODE_NEXT_OPEN
+    )
+    assert needs_15m_purchase_panels(
+        "1d", realistic_fill=True, fill_mode=FILL_MODE_NEXT_OPEN_MID
     )
     assert not needs_15m_purchase_panels(
         "1d", realistic_fill=False, fill_mode=FILL_MODE_NEXT_MID

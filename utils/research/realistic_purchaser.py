@@ -22,6 +22,11 @@ session's open** (MOO after an EOD scan). No IB 15m join. Last bar of the
 sample has no next open and is skipped. 15m ``next-open`` buys the next same-
 session 15m **open** (last RTH cancelled, same as next-mid).
 
+``next-open-mid`` (1d): same EOD signal, then buy the **mid** of the next
+session's first RTH 15m (09:30 ET). Needs IB 15m. Names with no next-session
+09:30 print are skipped. Live-executable: you know the daily close at 16:00
+ET and work the next open bar's midpoint.
+
 ``hot-cross`` (1d buy-now): first RTH 15m whose **high** reaches resist after
 H2, without waiting for that session's daily close. Fill heuristic ``lerp85``
 is ``rail + 0.85 * (close - rail)`` clamped to the bar. ``rail`` / ``close``
@@ -55,12 +60,14 @@ FILL_MODE_SIGNAL_CLOSE = "signal-close"
 FILL_MODE_NEXT_MID = "next-mid"
 FILL_MODE_OPEN_CROSS = "open-cross"
 FILL_MODE_NEXT_OPEN = "next-open"
+FILL_MODE_NEXT_OPEN_MID = "next-open-mid"
 DEFAULT_FILL_MODE = FILL_MODE_SIGNAL_CLOSE
 FILL_MODES_1D = (
     FILL_MODE_SIGNAL_CLOSE,
     FILL_MODE_NEXT_MID,
     FILL_MODE_OPEN_CROSS,
     FILL_MODE_NEXT_OPEN,
+    FILL_MODE_NEXT_OPEN_MID,
 )
 HOT_CROSS_FILL_LERP85 = "lerp85"
 HOT_CROSS_FILL_RAIL = "rail"
@@ -85,6 +92,13 @@ def normalize_fill_mode(raw: Optional[str]) -> str:
         return FILL_MODE_SIGNAL_CLOSE
     if text in (FILL_MODE_OPEN_CROSS, "opencross", "open-confirm", "openconfirm"):
         return FILL_MODE_OPEN_CROSS
+    if text in (
+        FILL_MODE_NEXT_OPEN_MID,
+        "nextopenmid",
+        "next-open-15m-mid",
+        "next-session-open-mid",
+    ):
+        return FILL_MODE_NEXT_OPEN_MID
     if text in (
         FILL_MODE_NEXT_OPEN,
         "nextopen",
@@ -522,6 +536,70 @@ def purchase_next_daily_open(
         signal_px=sig_c,
         exec_bar_ts=exec_ts,
         hit_bar_ts=exec_ts,
+    )
+
+
+def _rth_open_15m_bar(bars: Sequence[BarLike]) -> Optional[dict]:
+    """First 09:30 ET RTH 15m, else the first RTH bar of the session."""
+    if not bars:
+        return None
+    for bar in bars:
+        ts = bar.get("ts")
+        if ts is None:
+            continue
+        et = as_et(ts)
+        if et.hour == 9 and et.minute == 30:
+            return dict(bar)
+    return dict(bars[0])
+
+
+def purchase_next_session_open_mid(
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    signal_session_date: Any = None,
+    naive_tz: str = "UTC",
+    session_index: Optional[dict] = None,
+) -> PurchaseResult:
+    """1d EOD close-confirm: buy mid of the next session's 09:30 ET 15m.
+
+    Signal date is the daily bar's US cash session. Fill is the next RTH
+    session's opening 15m midpoint. No wild-bar cancel: the open bar is the
+    executable window. Skip when there is no later RTH 15m session.
+    """
+    day = _as_session_date(signal_session_date, naive_tz=naive_tz)
+    if day is None:
+        return _result(REASON_BAD_SIGNAL)
+    indexed = session_index if session_index is not None else index_rth_15m_by_session(
+        bars_15m, naive_tz=naive_tz
+    )
+    later = [d for d in indexed.keys() if d > day]
+    if not later:
+        return _result(REASON_NO_NEXT_OPEN)
+    nxt = min(later)
+    hit = _rth_open_15m_bar(indexed.get(nxt) or [])
+    if hit is None:
+        return _result(REASON_NO_NEXT_OPEN)
+    high = _px(hit, "high")
+    low = _px(hit, "low")
+    if not _hl_ok(high, low):
+        return _result(REASON_BAD_OHLC)
+    mid = bar_mid(float(high), float(low))
+    if mid != mid or mid <= 0:
+        return _result(REASON_BAD_OHLC)
+    hit_ts = hit.get("ts")
+    start = _floor_15m(as_et(hit_ts, naive_tz=naive_tz)) if hit_ts is not None else None
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=float(mid),
+        exec_bar_ts=start,
+        mid=mid,
+        low_to_mid=low_to_mid_pct(float(high), float(low)),
+        hit_bar_ts=start,
+        bar_open=_px(hit, "open"),
+        bar_high=float(high),
+        bar_low=float(low),
+        bar_close=_px(hit, "close"),
     )
 
 
