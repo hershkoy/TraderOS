@@ -635,11 +635,33 @@
         const EDGE_FETCH_ONLY_ON_X_ZOOM_OUT = true;
         const CHART_DEBUG = true;
 
+        function jsonForLog(value) {
+            const seen = new WeakSet();
+            try {
+                return JSON.stringify(value, function(key, v) {
+                    if (v === undefined) return null;
+                    if (typeof v === 'number' && !isFinite(v)) return String(v);
+                    if (typeof v === 'bigint') return String(v);
+                    if (v && typeof v === 'object') {
+                        if (Object.prototype.toString.call(v) === '[object Date]') {
+                            return v.toISOString();
+                        }
+                        if (seen.has(v)) return '[Circular]';
+                        seen.add(v);
+                        if (ArrayBuffer.isView(v)) return Array.from(v);
+                    }
+                    return v;
+                });
+            } catch (err) {
+                return String(value);
+            }
+        }
+
         function chartLog(event, detail) {
             if (!CHART_DEBUG) return;
             try {
-                if (detail === undefined) console.log('[charts]', event);
-                else console.log('[charts]', event, detail);
+                if (detail === undefined) console.log('[charts] ' + event);
+                else console.log('[charts] ' + event + ' ' + jsonForLog(detail));
             } catch (err) {}
         }
 
@@ -840,6 +862,15 @@
                 }
             });
 
+            const indList = document.getElementById('indicators-list');
+            if (indList) {
+                indList.addEventListener('change', function(ev) {
+                    const item = ev.target && ev.target.closest('.indicator-item');
+                    if (!item || !item.classList.contains('selected')) return;
+                    if (lastChartData) reloadChartKeepView();
+                });
+            }
+
             fetch('/api/symbols').then(function(r) { return r.json(); }).then(function(list) {
                 if (Array.isArray(list)) ALL_SYMBOLS = list;
             }).catch(function() {});
@@ -884,6 +915,19 @@
             });
         }
 
+        function reloadChartKeepView() {
+            if (!lastChartData || !lastChartData.chart_data) return;
+            const xs = lastChartData.chart_data.datetime || [];
+            if (!xs.length) {
+                loadChart();
+                return;
+            }
+            const around = xs[Math.floor(xs.length / 2)];
+            const before = Math.floor(xs.length / 2);
+            const after = xs.length - before - 1;
+            loadChart({ keepView: true, around: around, before: before, after: after });
+        }
+
         function toggleIndicator(indicatorName) {
             const indicatorItem = event.currentTarget;
             const paramsDiv = document.getElementById(`params-${indicatorName}`);
@@ -902,6 +946,7 @@
                     params: readIndicatorParams(indicatorName)
                 });
             }
+            if (lastChartData) reloadChartKeepView();
         }
 
         async function fetchChartData(qs, onProgress, signal) {
@@ -1191,57 +1236,67 @@
         }
 
         function pushAaaOverlayTraces(traces, xs, aaa) {
-            const line = function(y, name, color, dash, showLeg) {
+            const line = function(y, name, color, dash, width, showLeg) {
                 return {
                     x: xs,
                     y: y,
                     type: 'scatter',
                     mode: 'lines',
                     name: name,
+                    xaxis: 'x',
+                    yaxis: 'y',
                     hovertemplate: name + ': %{y:.4f}<extra></extra>',
-                    line: {color: color, width: 1, dash: dash || 'solid', shape: 'hv'},
+                    line: {color: color, width: width || 2, dash: dash || 'solid'},
                     connectgaps: false,
                     showlegend: !!showLeg
                 };
             };
             const ob = '#ff5252';
             const os = '#00897b';
-            const mid = '#ffa500';
+            const midCol = '#ffa500';
             const gp = 'rgba(223,164,87,0.85)';
-            traces.push(line(aaa.high2, 'Overbought Ext', ob, 'dot', false));
-            traces.push(Object.assign(line(aaa.high, 'Overbought', ob, 'solid', true), {
+            traces.push(line(aaa.high2, 'Overbought Ext', ob, 'dot', 1, true));
+            traces.push(Object.assign(line(aaa.high, 'Overbought', ob, 'solid', 2, true), {
                 fill: 'tonexty',
-                fillcolor: 'rgba(255,82,82,0.06)'
+                fillcolor: 'rgba(255,82,82,0.12)'
             }));
-            traces.push(Object.assign(line(aaa.low, 'Oversold', os, 'solid', true), {
+            traces.push(Object.assign(line(aaa.low, 'Oversold', os, 'solid', 2, true), {
                 fill: 'tonexty',
-                fillcolor: 'rgba(120,123,134,0.05)'
+                fillcolor: 'rgba(120,123,134,0.10)'
             }));
-            traces.push(Object.assign(line(aaa.low2, 'Oversold Ext', os, 'dot', false), {
+            traces.push(Object.assign(line(aaa.low2, 'Oversold Ext', os, 'dot', 1, true), {
                 fill: 'tonexty',
-                fillcolor: 'rgba(0,137,123,0.06)'
+                fillcolor: 'rgba(0,137,123,0.12)'
             }));
-            traces.push(line(aaa.mid, 'AAA Mid', mid, 'dot', true));
+            traces.push(line(aaa.mid, 'AAA Mid', midCol, 'dot', 2, true));
             if (!aaa.show_gp) return;
             const gpFill = function(y, name) {
-                return Object.assign(line(y, name, gp, 'solid', false), {
+                return Object.assign(line(y, name, gp, 'solid', 1, false), {
                     fill: 'tonexty',
                     fillcolor: 'rgba(223,164,87,0.19)'
                 });
             };
-            traces.push(line(aaa.gp_high1, 'GP High 1', gp, 'solid', false));
+            traces.push(line(aaa.gp_high1, 'GP High 1', gp, 'solid', 1, false));
             traces.push(gpFill(aaa.gp_high2, 'GP High 2'));
-            traces.push(line(aaa.gp_low1, 'GP Low 1', gp, 'solid', false));
+            traces.push(line(aaa.gp_low1, 'GP Low 1', gp, 'solid', 1, false));
             traces.push(gpFill(aaa.gp_low2, 'GP Low 2'));
-            traces.push(line(aaa.gp_high3, 'GP High 3', gp, 'solid', false));
+            traces.push(line(aaa.gp_high3, 'GP High 3', gp, 'solid', 1, false));
             traces.push(gpFill(aaa.gp_high4, 'GP High 4'));
-            traces.push(line(aaa.gp_low3, 'GP Low 3', gp, 'solid', false));
+            traces.push(line(aaa.gp_low3, 'GP Low 3', gp, 'solid', 1, false));
             traces.push(gpFill(aaa.gp_low4, 'GP Low 4'));
         }
 
         function renderChart(data, view) {
             const chartData = data.chart_data;
-            const indicators = data.indicators;
+            const indicators = data.indicators || {};
+            chartLog('indicators', {
+                names: Object.keys(indicators),
+                aaa: !!(indicators.AAA && indicators.AAA.mid),
+                aaa_n: indicators.AAA && indicators.AAA.mid ? indicators.AAA.mid.length : 0,
+                aaa_high_finite: indicators.AAA && indicators.AAA.high
+                    ? indicators.AAA.high.filter(function(v) { return v != null; }).length
+                    : 0
+            });
             const tf = data.timeframe || document.getElementById('timeframe').value;
             const etLabels = (chartData.datetime || []).map(function(s) { return formatBarTick(s, tf); });
             const xKeep = view ? xRangeFromView(view, chartData.datetime) : null;

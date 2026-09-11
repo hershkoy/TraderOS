@@ -6,6 +6,7 @@ import pandas as pd
 
 from indicators.atr_anchored_range import (
     atr_anchored_range,
+    htf_unique_bars_needed,
     normalize_atr_tf,
     normalize_mode,
     overlay_payload,
@@ -22,6 +23,19 @@ def test_normalize_mode_and_tf():
     assert normalize_atr_tf("1D") == "1d"
     assert normalize_atr_tf("1W") == "1w"
     assert normalize_atr_tf("1M") == "1M"
+
+
+def test_htf_unique_bars_needed_covers_span_plus_atr_warmup():
+    first = pd.Timestamp("2025-04-10 13:30:00", tz="UTC")
+    last = pd.Timestamp("2025-07-29 19:45:00", tz="UTC")
+    need = htf_unique_bars_needed(first, last, 20, "1d")
+    span_days = (last.normalize() - first.normalize()).days + 1
+    assert need >= 20 + span_days
+    short = htf_unique_bars_needed(
+        pd.Timestamp("2025-06-26"), pd.Timestamp("2025-07-02"), 20, "1d"
+    )
+    assert short < need
+    assert htf_unique_bars_needed(None, last, 20, "1d") >= 60
 
 
 def test_session_ord_intraday_uses_ny_date():

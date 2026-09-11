@@ -24,6 +24,7 @@ if str(RESEARCH) not in sys.path:
     sys.path.insert(0, str(RESEARCH))
 
 from find_ascending_channels import (  # noqa: E402
+    _dedupe_h2_setups,
     _remap_setup_indices,
     find_h2_l3_setups,
     find_h2_l3_setups_windowed,
@@ -152,7 +153,7 @@ class WindowedSetupCache:
                 break
             start += step
         out.sort(key=lambda c: (int(c.get("support_x0", 0)), int(c.get("bars_span", 0))))
-        return out
+        return _dedupe_h2_setups(out)
 
 
 def last_bar_fills(

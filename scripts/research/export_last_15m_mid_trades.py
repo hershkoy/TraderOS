@@ -1,6 +1,7 @@
 """Build trades CSV + summary from last_15m_open_mid_compare.csv for the TV HTML report."""
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -56,8 +57,13 @@ def _profit_factor(gains: pd.Series) -> float:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cmp = pd.read_csv(COMPARE)
-    src = pd.read_csv(SOURCE)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--compare", type=Path, default=COMPARE)
+    ap.add_argument("--before", type=Path, default=SOURCE)
+    ap.add_argument("--outdir", type=Path, default=None)
+    args = ap.parse_args()
+    cmp = pd.read_csv(args.compare)
+    src = pd.read_csv(args.before)
     matched = cmp[cmp["row_kind"] == "matched"].copy()
     skipped = cmp[cmp["row_kind"] == "before_skipped"]
     src["stock"] = src["stock"].astype(str).str.upper()
@@ -100,7 +106,8 @@ def main() -> int:
                 rec[col] = row[col]
         rows.append(rec)
     trades = pd.DataFrame(rows)
-    dated = dated_outdir()
+    dated = Path(args.outdir) if args.outdir is not None else dated_outdir()
+    dated.mkdir(parents=True, exist_ok=True)
     trades_path = dated / TRADES_NAME
     trades.to_csv(trades_path, index=False)
     g = pd.to_numeric(trades["gain_pct"], errors="coerce")
@@ -109,7 +116,7 @@ def main() -> int:
         "H2 resistance-break unique-symbol/day (span<=365)",
         "realistic_fill=True",
         "fill=last RTH 15m mid if that bar opened above the rail",
-        "Note: Before book is 2026-09-09 unique signal-close (lookback). Sells kept.",
+        "Note: Before book is unique signal-close (lookback). Sells kept.",
         "Note: Open of last 15m known 15:45 ET; mid known 16:00 with the daily close.",
         "Note: Occupancy not re-walked.",
         "",

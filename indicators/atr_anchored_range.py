@@ -77,6 +77,31 @@ def _utc_naive(ts: Any) -> pd.Timestamp:
     return t
 
 
+def htf_unique_bars_needed(
+    first: Any, last: Any, period: int, atr_tf: Any = "1d"
+) -> int:
+    """Unique HTF bars to fetch: ATR warmup plus the loaded chart span.
+
+    A fixed 60-bar lookback from the last candle is not enough after zoom-out
+    preload (2000 15m bars is ~3 months; ATR(20) warmup sits on top of that).
+    """
+    period_n = max(1, int(period))
+    warmup = period_n + 5
+    span_days = 0
+    if first is not None and last is not None:
+        a = _as_utc(first)
+        b = _as_utc(last)
+        if b < a:
+            a, b = b, a
+        span_days = max(0, int((b - a).days) + 1)
+    tf = normalize_atr_tf(atr_tf)
+    if tf == "1w":
+        return warmup * 6 + span_days + 10
+    if tf == "1M":
+        return warmup * 23 + span_days + 10
+    return max(warmup + span_days + 10, warmup + 40)
+
+
 def _session_date(ts: Any, *, intraday: bool) -> date:
     if intraday:
         return _as_utc(ts).tz_convert(SESSION_TZ).date()

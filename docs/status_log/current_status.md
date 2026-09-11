@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-07**
+Last updated: **2026-09-11**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -59,7 +59,11 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-07):** H2 close-confirm (15m close > daily rail, fill confirm close) + formation containment ≤0.25: full unique span365 **n=1947 E +0.24 PF 1.07** (2022-23 fails). Slightly above hot-cross −0.19/0.94; **no promote.** ADM Nov-23 dropped (formation_beyond 1.88). See [close-confirm formation](edge_hunt/channel_touch/2026-09-07_channel_touch_h2_close_confirm_formation.md).
+**Latest (2026-09-11):** Rebuilt last-15m HTML after the LAUR detector fix. Unique signal-close span365 **n=2310 E +2.50 PF 2.03**. Last-15m + 15m N+1 mid **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). LAUR 2021 fill is 2021-09-10 @ 16.82 (Mar-4 rails); Oct 28 gone. HTML: `…165800.html`. **No promote.** See [LAUR false shakeout](edge_hunt/channel_touch/2026-09-11_laur_false_shakeout.md).
+
+**Prior (2026-09-11):** Last-15m-open-mid kept-sell was the daily same-bar stop clip (WVE 2023-12-06 buy 6.85 / next-day 6.0254). Realistic sells, occupancy not re-walked: **15m N→N+1 mid n=2779 E +0.35 PF 1.11** (fric0.25 E +0.10 PF 1.03); **daily-close → next 09:30 15m mid n=2778 E +0.47 PF 1.14** (fric0.25 E +0.22 PF 1.06). vs kept-sell n=2779 E +0.96 PF 1.29. 2022-23 fails. **No promote.** See [realistic sells](edge_hunt/channel_touch/2026-09-11_channel_touch_last_15m_realistic_sells.md).
+
+**Prior (2026-09-07):** H2 close-confirm (15m close > daily rail, fill confirm close) + formation containment ≤0.25: full unique span365 **n=1947 E +0.24 PF 1.07** (2022-23 fails). Slightly above hot-cross −0.19/0.94; **no promote.** ADM Nov-23 dropped (formation_beyond 1.88). See [close-confirm formation](edge_hunt/channel_touch/2026-09-07_channel_touch_h2_close_confirm_formation.md).
 
 **Prior (2026-09-07):** Close-cross MAE ridge (year split, train < 2023) on 50 then 300 names: confirm-bar features do not beat unconstrained 10/18 trail as a stop (300 holdout trail n=712 E +1.28 PF 1.33 vs ridge stop E −0.11 PF 0.97). No promote. See [MAE ridge](edge_hunt/channel_touch/2026-09-07_channel_touch_close_cross_mae_ridge.md).
 

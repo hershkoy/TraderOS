@@ -510,6 +510,8 @@ def find_h2_l3_setups(
     from the last ``max_low_pivots`` lows *before L2* (later window lows must
     not evict the pair). Later confirmed highs must not refit width / retarget
     H2 (full-series look-ahead). Set False to reproduce the old batch.
+    Pair enumeration can arm several L1-L2 lines at the same H2 bar; the
+    return list keeps one structure per H2 (latest L2, then earliest L1).
     ``find_channels`` v1 is unchanged.
     """
     if df is None or df.empty or len(df) < pivot_len * 4 + 40:
@@ -622,7 +624,55 @@ def find_h2_l3_setups(
                 }
             )
 
-    return results
+    return _dedupe_h2_setups(results)
+
+
+def _dedupe_h2_setups(results: Sequence[dict]) -> List[dict]:
+    """Keep one L1-L2 pair per H2 bar (classical: one structure completes at H2).
+
+    Prefer the latest L2 (the swing low immediately before H2), then the
+    earliest L1 (longest valid support), then the tightest width. LAUR 2021
+    armed four pairs at 2021-06-11; the earlier L2 filled Sept 9 and occupancy
+    skipped the later pair's first close-above.
+    """
+    leftover: List[dict] = []
+    best: Dict[int, dict] = {}
+    order: List[int] = []
+    for ch in results:
+        try:
+            h2 = int(ch.get("h2_idx", -1))
+        except (TypeError, ValueError):
+            leftover.append(ch)
+            continue
+        if h2 < 0:
+            leftover.append(ch)
+            continue
+        try:
+            l2 = int(ch.get("l2_idx", -1))
+            l1 = int(ch.get("l1_idx", ch.get("support_x0", -1)))
+            width = float(ch.get("channel_width") or 0.0)
+        except (TypeError, ValueError):
+            leftover.append(ch)
+            continue
+        prev = best.get(h2)
+        if prev is None:
+            best[h2] = ch
+            order.append(h2)
+            continue
+        try:
+            pl2 = int(prev.get("l2_idx", -1))
+            pl1 = int(prev.get("l1_idx", prev.get("support_x0", -1)))
+            pw = float(prev.get("channel_width") or 0.0)
+        except (TypeError, ValueError):
+            best[h2] = ch
+            continue
+        cand = (l2, -l1, -width)
+        old = (pl2, -pl1, -pw)
+        if cand > old:
+            best[h2] = ch
+    out = leftover + [best[h] for h in order]
+    out.sort(key=lambda c: (int(c.get("support_x0", 0) or 0), int(c.get("bars_span", 0) or 0)))
+    return out
 
 
 def _remap_setup_indices(ch: dict, offset: int) -> dict:
@@ -704,8 +754,10 @@ def find_h2_l3_setups_windowed(
     step_bars: int,
     **kwargs,
 ) -> List[dict]:
-    return _windowed_finder(
-        df, find_h2_l3_setups, window_bars=window_bars, step_bars=step_bars, **kwargs
+    return _dedupe_h2_setups(
+        _windowed_finder(
+            df, find_h2_l3_setups, window_bars=window_bars, step_bars=step_bars, **kwargs
+        )
     )
 
 

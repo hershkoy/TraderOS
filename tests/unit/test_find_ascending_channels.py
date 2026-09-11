@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "research"))
 
 from find_ascending_channels import (  # noqa: E402
     _arm_h2,
+    _dedupe_h2_setups,
     find_channels,
     find_channels_windowed,
 )
@@ -108,3 +109,19 @@ def test_causal_h2_ignores_later_after_highs():
     assert causal[2] == first[2] == 55
     assert abs(causal[0] - first[0]) < 1e-9
     assert leaky is not None
+
+
+def test_dedupe_h2_setups_keeps_latest_l2_then_earliest_l1():
+    rows = [
+        {"h2_idx": 100, "l2_idx": 50, "l1_idx": 10, "support_x0": 10, "channel_width": 2.0, "bars_span": 90},
+        {"h2_idx": 100, "l2_idx": 80, "l1_idx": 40, "support_x0": 40, "channel_width": 1.9, "bars_span": 60},
+        {"h2_idx": 100, "l2_idx": 80, "l1_idx": 10, "support_x0": 10, "channel_width": 1.97, "bars_span": 90},
+        {"h2_idx": 200, "l2_idx": 150, "l1_idx": 120, "support_x0": 120, "channel_width": 3.0, "bars_span": 80},
+    ]
+    out = _dedupe_h2_setups(rows)
+    by_h2 = {int(r["h2_idx"]): r for r in out}
+    assert set(by_h2) == {100, 200}
+    kept = by_h2[100]
+    assert kept["l2_idx"] == 80
+    assert kept["l1_idx"] == 10
+    assert by_h2[200]["l1_idx"] == 120

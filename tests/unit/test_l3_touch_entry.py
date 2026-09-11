@@ -905,6 +905,38 @@ def test_shakeout_breakout_skips_if_never_inside():
     assert len(tags) == 1 and tags[0][0] == 22
 
 
+def test_shakeout_breakout_skips_if_close_still_above_rail():
+    """LAUR 2021-10-27: close above the rail but inside error_pct is not inside."""
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    for i in range(23, 50):
+        _resist_break_bar(high, low, close, i, y0, slope, width)
+    i = 30
+    resist = y0 + slope * i + width
+    close[i] = resist * 1.01
+    high[i] = close[i] + 0.05
+    low[i] = resist - 0.05
+    extra = _shakeout_breakout_fill(
+        high,
+        low,
+        close,
+        support_x0=0,
+        support_y0=y0,
+        support_slope=slope,
+        width=width,
+        first_i=22,
+        h2=12,
+        n=len(high),
+        error_pct=1.2,
+        slip=0.001,
+        wait=80,
+        min_inside_bars=1,
+    )
+    assert extra is None
+    tags = _h2_rail_tag_fills(high, low, close, shakeout_breakout=True, **_h2_break_kw(len(high)))
+    assert len(tags) == 1 and tags[0][0] == 22
+
+
 def test_shakeout_breakout_cancels_if_support_broken():
     y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
     _resist_break_bar(high, low, close, 22, y0, slope, width)

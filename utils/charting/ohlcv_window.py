@@ -169,6 +169,93 @@ def _fetch_window_df(client, symbol: str, timeframe: str, around_ts, before_n: i
     return _to_ohlcv(raw)
 
 
+UNIQUE_OHLCV_SELECT = (
+    "SELECT DISTINCT ON (ts) ts, open, high, low, close, volume "
+    "FROM market_data WHERE symbol = %s AND timeframe = %s"
+)
+
+
+def fetch_unique_ohlcv_window(
+    symbol: str,
+    timeframe: str,
+    *,
+    around: Optional[pd.Timestamp] = None,
+    before: int = 80,
+    after: int = 5,
+) -> pd.DataFrame:
+    """Bar-count window with one row per ts (latest ingest wins).
+
+    get_market_data_window LIMITs raw rows, so duplicate nightly ingests can
+    shrink a 100-bar request to a handful of unique sessions. ATR warmup needs
+    unique HTF bars.
+    """
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    before_n = max(0, int(before))
+    after_n = max(0, int(after))
+    around_ts = around
+    if around_ts is not None:
+        around_ts = pd.Timestamp(around_ts)
+        if around_ts.tzinfo is None:
+            around_ts = around_ts.tz_localize("UTC")
+        else:
+            around_ts = around_ts.tz_convert("UTC")
+    try:
+        from utils.db.timescaledb_client import get_timescaledb_client
+
+        client = get_timescaledb_client()
+        if not client.ensure_connection():
+            return empty
+        lock = getattr(client, "_lock", None)
+        locked = False
+        cursor = None
+        try:
+            if lock is not None:
+                lock.acquire()
+                locked = True
+            cursor = client.connection.cursor()
+            base = [str(symbol).upper(), str(timeframe)]
+            rows: list = []
+            if around_ts is None:
+                sql = (
+                    "SELECT * FROM (" + UNIQUE_OHLCV_SELECT
+                    + " ORDER BY ts DESC, created_at DESC NULLS LAST LIMIT %s) u ORDER BY ts"
+                )
+                cursor.execute(sql, base + [max(1, before_n + after_n)])
+                rows = cursor.fetchall()
+            else:
+                around_dt = around_ts.to_pydatetime()
+                left_sql = (
+                    UNIQUE_OHLCV_SELECT
+                    + " AND ts <= %s ORDER BY ts DESC, created_at DESC NULLS LAST LIMIT %s"
+                )
+                cursor.execute(left_sql, base + [around_dt, before_n + 1])
+                left = cursor.fetchall()
+                right: list = []
+                if after_n:
+                    right_sql = (
+                        UNIQUE_OHLCV_SELECT
+                        + " AND ts > %s ORDER BY ts ASC, created_at DESC NULLS LAST LIMIT %s"
+                    )
+                    cursor.execute(right_sql, base + [around_dt, after_n])
+                    right = cursor.fetchall()
+                rows = list(left) + list(right)
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if locked and lock is not None:
+                lock.release()
+    except Exception as exc:
+        logger.warning(
+            "fetch_unique_ohlcv_window failed for %s %s: %s", symbol, timeframe, exc
+        )
+        return empty
+    if not rows:
+        return empty
+    raw = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    raw["timestamp"] = pd.to_datetime(raw["ts"], utc=True)
+    return _to_ohlcv(raw)
+
+
 def load_ohlcv_window(
     symbol: str,
     timeframe: str,

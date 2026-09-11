@@ -396,6 +396,49 @@ def _close_broke_support(
     return float(close[i]) < float(sup) * (1.0 - float(error_pct) / 100.0)
 
 
+def _channel_resist(
+    i: int,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+) -> Optional[float]:
+    sup = _line_at(support_y0, support_x0, support_slope, i)
+    if not np.isfinite(sup) or sup <= 0:
+        return None
+    resist = float(sup) + float(width or 0.0)
+    if not np.isfinite(resist) or resist <= 0:
+        return None
+    return float(resist)
+
+
+def _closed_at_or_below_resist(
+    close: np.ndarray,
+    i: int,
+    *,
+    support_x0: int,
+    support_y0: float,
+    support_slope: float,
+    width: float,
+) -> bool:
+    """True if bar ``i`` closed at or below the resistance rail.
+
+    Breakout ``error_pct`` must not count a close still above the rail as
+    inside (LAUR 2021-10-27: +1.0% over the rail was treated as a shakeout).
+    """
+    resist = _channel_resist(
+        i,
+        support_x0=support_x0,
+        support_y0=support_y0,
+        support_slope=support_slope,
+        width=width,
+    )
+    if resist is None or i < 0 or i >= len(close):
+        return False
+    return float(close[i]) <= float(resist)
+
+
 def _shakeout_rebuy_fill(
     high: np.ndarray,
     low: np.ndarray,
@@ -478,11 +521,12 @@ def _shakeout_breakout_fill(
 ) -> Optional[Tuple[int, float, int]]:
     """After a first H2 resist-break, wait for a shakeout then the next breakout.
 
-    Shakeout = closes back inside the channel (not a resist-break close, not
-    through support). Then fill the next close above resistance at the rail
-    (+slip). Support close-through cancels. Consecutive bars still above
-    resistance are the same breakout and do not refill. Window is remaining
-    ``wait`` bars after H2. Returns ``(i, fill, inside_bars)``.
+    Shakeout = close back at or below the resistance rail (not through
+    support). A close still above the rail, even inside ``error_pct``, is the
+    same breakout and does not refill. Then fill the next close that clears
+    resistance by ``error_pct`` at the rail (+slip). Support close-through
+    cancels. Window is remaining ``wait`` bars after H2. Returns
+    ``(i, fill, inside_bars)``.
     """
     wait_n = max(1, int(wait))
     need = max(1, int(min_inside_bars))
@@ -511,15 +555,28 @@ def _shakeout_breakout_fill(
             error_pct=error_pct,
         ):
             return None
-        sup = _line_at(support_y0, support_x0, support_slope, i)
-        resist = float(sup) + float(width or 0.0)
-        if not np.isfinite(resist) or resist <= 0:
+        resist = _channel_resist(
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        )
+        if resist is None:
             continue
-        brk = float(close[i]) > resist * (1.0 + tol)
-        if not brk:
+        if _closed_at_or_below_resist(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        ):
             inside_bars += 1
             continue
         if inside_bars < need:
+            continue
+        if float(close[i]) <= resist * (1.0 + tol):
             continue
         fill = _limit_fill_at_support(resist, float(low[i]), float(high[i]), slip)
         if fill is None:
@@ -764,16 +821,28 @@ def _h2_hot_cross_fills(
             error_pct=error_pct,
         ):
             break
-        sup = _line_at(support_y0, support_x0, support_slope, i)
-        resist = float(sup) + float(width or 0.0)
-        if not np.isfinite(resist) or resist <= 0:
+        resist = _channel_resist(
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        )
+        if resist is None:
             continue
-        brk_daily = float(close[i]) > resist * (1.0 + tol)
-        if not brk_daily:
+        if _closed_at_or_below_resist(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        ):
             inside_bars += 1
-        elif inside_bars < need:
             continue
         if inside_bars < need:
+            continue
+        if float(close[i]) <= resist * (1.0 + tol):
             continue
         session = pd.Timestamp(dates[i]).strftime("%Y-%m-%d")
         got = purchase_hot_cross_15m(
@@ -938,16 +1007,28 @@ def _h2_close_cross_fills(
             error_pct=error_pct,
         ):
             break
-        sup = _line_at(support_y0, support_x0, support_slope, i)
-        resist = float(sup) + float(width or 0.0)
-        if not np.isfinite(resist) or resist <= 0:
+        resist = _channel_resist(
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        )
+        if resist is None:
             continue
-        brk_daily = float(close[i]) > resist * (1.0 + tol)
-        if not brk_daily:
+        if _closed_at_or_below_resist(
+            close,
+            i,
+            support_x0=support_x0,
+            support_y0=support_y0,
+            support_slope=support_slope,
+            width=width,
+        ):
             inside_bars += 1
-        elif inside_bars < need:
             continue
         if inside_bars < need:
+            continue
+        if float(close[i]) <= resist * (1.0 + tol):
             continue
         tag = _one(i, is_sbo=True, inside_n=int(inside_bars))
         if tag is None:

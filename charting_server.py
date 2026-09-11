@@ -27,6 +27,7 @@ except ImportError:
 from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, BollingerBands, ATR
 from indicators.atr_anchored_range import (
     atr_anchored_range,
+    htf_unique_bars_needed,
     normalize_atr_tf,
     overlay_payload,
 )
@@ -157,26 +158,31 @@ def _as_bool(value, default=False):
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _load_atr_htf_df(symbol, atr_tf, around_ts, period):
-    """Extra HTF bars so session ATR has warmup beyond the visible window."""
-    from utils.charting.ohlcv_window import clamp_pad, load_ohlcv_window
+def _load_atr_htf_df(symbol, atr_tf, around_ts, period, chart_start=None):
+    """Extra unique HTF bars so session ATR has warmup beyond the visible window."""
+    from utils.charting.ohlcv_window import fetch_unique_ohlcv_window
 
-    pad = clamp_pad(max(int(period) + 80, 100), 100)
-    around = ""
-    if around_ts is not None:
-        ts = pd.Timestamp(around_ts)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert("UTC").tz_localize(None)
-        around = ts.strftime("%Y-%m-%d %H:%M:%S")
+    src_tf = "1d" if atr_tf in ("1w", "1M") else atr_tf
+    src_need = htf_unique_bars_needed(chart_start, around_ts, period, atr_tf)
     with _DB_LOCK:
-        win = load_ohlcv_window(
+        df = fetch_unique_ohlcv_window(
             symbol,
-            atr_tf,
-            around=around,
-            before=pad,
-            after=max(20, min(pad, 80)),
+            src_tf,
+            around=around_ts,
+            before=src_need,
+            after=8,
         )
-    return win.get("df")
+    if df is None or df.empty:
+        return df
+    if atr_tf in ("1w", "1M"):
+        try:
+            from utils.data.data_aggregator import DataAggregator
+        except ImportError:
+            from utils.data_aggregator import DataAggregator
+
+        agg = DataAggregator.aggregate_data(df, atr_tf)
+        return agg if agg is not None else df
+    return df
 
 
 def _build_chart_payload(symbol, timeframe, around, before, after, indicators_raw, progress=None):
@@ -301,7 +307,11 @@ def _build_chart_payload(symbol, timeframe, around, before, after, indicators_ra
                     if atr_tf != chart_tf:
                         try:
                             atr_df = _load_atr_htf_df(
-                                symbol, atr_tf, df.index[-1], period
+                                symbol,
+                                atr_tf,
+                                df.index[-1],
+                                period,
+                                chart_start=df.index[0],
                             )
                         except Exception as exc:
                             print("ATR HTF load failed for %s %s: %s" % (symbol, atr_tf, exc))

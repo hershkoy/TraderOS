@@ -146,6 +146,9 @@ def test_charts_page_controls_and_overlay_api():
     assert "fetchChartData" in html
     assert "EDGE_FETCH_ONLY_ON_X_ZOOM_OUT" in html
     assert "CHART_DEBUG" in html
+    assert "jsonForLog" in html
+    assert "JSON.stringify" in html
+    assert "console.log('[charts] ' + event + ' ' + jsonForLog(detail))" in html
     assert "xRangeFromView" in html
     assert "xLinearFromDrag" in html
     assert "[charts]" in html
@@ -154,6 +157,10 @@ def test_charts_page_controls_and_overlay_api():
     assert "pushAaaOverlayTraces" in html
     assert "readIndicatorParams" in html
     assert "syncSelectedIndicatorParams" in html
+    assert "reloadChartKeepView" in html
+    assert "if (lastChartData) reloadChartKeepView();" in html
+    assert "shape: 'hv'" not in html
+    assert "yaxis: 'y'" in html
     assert "Prior Close" in html
     assert "Golden pocket" in html
     assert 'id="ATRAnchoredRange-mode"' in html

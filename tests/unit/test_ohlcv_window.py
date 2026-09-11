@@ -67,3 +67,9 @@ def test_candidate_source_timeframes_exact_then_smaller():
 def test_scale_pads_15m_to_1h():
     assert _scale_pads("15m", "1h", 50, 50) == (200, 200)
 
+
+def test_unique_ohlcv_sql_dedupes_by_ts():
+    from utils.charting.ohlcv_window import UNIQUE_OHLCV_SELECT
+
+    assert "DISTINCT ON (ts)" in UNIQUE_OHLCV_SELECT
+
