@@ -52,7 +52,14 @@ INDICATORS = {
 @app.route('/')
 def index():
     """Main charting interface. Symbol list loads async so the page is not blocked."""
-    return render_template('index.html', symbols=[], indicators=INDICATORS)
+    from utils.charting.ohlcv_window import MAX_PAD as CHART_MAX_PAD
+
+    return render_template(
+        'index.html',
+        symbols=[],
+        indicators=INDICATORS,
+        max_pad=CHART_MAX_PAD,
+    )
 
 @app.route('/api/symbols')
 def get_symbols():

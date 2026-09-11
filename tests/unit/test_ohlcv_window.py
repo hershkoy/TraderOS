@@ -44,7 +44,8 @@ def test_parse_around_date_only_end_of_utc_day():
 
 def test_clamp_pad_caps():
     assert clamp_pad("50", 50) == 50
-    assert clamp_pad("9999", 50) == 500
+    assert clamp_pad("1000", 50) == 1000
+    assert clamp_pad("9999", 50) == 1000
     assert clamp_pad("nope", 50) == 50
     assert clamp_pad(-3, 50) == 0
 

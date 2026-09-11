@@ -11,7 +11,7 @@ ProgressFn = Optional[Callable[[int, str], None]]
 
 DEFAULT_BEFORE = 50
 DEFAULT_AFTER = 50
-MAX_PAD = 500
+MAX_PAD = 1000
 TF_MINUTES = {
     "1m": 1,
     "5m": 5,

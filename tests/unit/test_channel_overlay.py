@@ -38,6 +38,13 @@ def test_parse_goto_iso_z_stays_utc():
     assert spec["date_only"] is False
 
 
+def test_parse_goto_datetime_local_naive_tries_et():
+    spec = parse_goto_query("2025-06-13T09:30")
+    assert spec["date_only"] is False
+    assert "2025-06-13 09:30:00" in spec["candidates"]
+    assert "2025-06-13 13:30:00" in spec["candidates"]
+
+
 def test_parse_goto_strips_et_suffix():
     spec = parse_goto_query("2025-06-13 09:30 ET")
     assert "2025-06-13 13:30:00" in spec["candidates"]
@@ -103,13 +110,21 @@ def test_charts_page_controls_and_overlay_api():
     html = client.get("/").get_data(as_text=True)
     assert 'id="symbol-input"' in html
     assert 'id="goto-date"' in html
+    assert 'id="goto-picker"' in html
+    assert 'type="datetime-local"' in html
+    assert "openGotoPicker" in html
+    assert "showPicker" in html
+    assert "gotoDateOrPick" in html
     assert 'id="channel-json"' in html
     assert "Draw channel" in html
     assert "bindAxisZoom" in html
     assert "axis-zoom-y" in html
     assert "type: 'category'" in html
     assert "VIEW_PAD = 50" in html
-    assert "PRELOAD_PAD = 200" in html
+    assert "PRELOAD_PAD = 400" in html
+    assert "nextWindowPads" in html
+    assert "const MAX_PAD = 1000" in html
+    assert "extendWindow('both'" in html
     assert "schedulePreload" in html
     assert "runPreload" in html
     assert "background: isBg" in html

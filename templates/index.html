@@ -82,7 +82,7 @@
             color: #4a5568;
         }
 
-        .control-group select, .control-group input {
+        .control-group select, .control-group input:not(#goto-picker) {
             padding: 10px;
             border: 2px solid #e2e8f0;
             border-radius: 8px;
@@ -90,10 +90,63 @@
             transition: all 0.3s ease;
         }
 
-        .control-group select:focus, .control-group input:focus {
+        .control-group select:focus, .control-group input:not(#goto-picker):focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .control-group.goto-group {
+            min-width: 240px;
+        }
+
+        .goto-wrap {
+            position: relative;
+            display: flex;
+            align-items: stretch;
+        }
+
+        .goto-wrap #goto-date {
+            flex: 1;
+            min-width: 0;
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+        }
+
+        .goto-pick-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            flex: 0 0 42px;
+            padding: 0;
+            border: 2px solid #e2e8f0;
+            border-left: none;
+            border-radius: 0 8px 8px 0;
+            background: #f7fafc;
+            color: #4a5568;
+            cursor: pointer;
+        }
+
+        .goto-pick-btn:hover,
+        .goto-pick-btn:focus {
+            outline: none;
+            background: #edf2f7;
+            color: #5a67d8;
+            border-color: #667eea;
+        }
+
+        #goto-picker {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            pointer-events: none;
         }
 
         .btn {
@@ -389,14 +442,29 @@
                         <option value="1M">1 Month</option>
                     </select>
                 </div>
-                <div class="control-group">
-                    <label for="goto-date">Go to date / date-time</label>
-                    <input id="goto-date" type="text" autocomplete="off"
-                           placeholder="2025-06-13 09:45">
+                <div class="control-group goto-group">
+                    <label for="goto-date" title="America/New_York RTH. Paste a report clock or pick.">Go to date / date-time</label>
+                    <div class="goto-wrap">
+                        <input id="goto-date" type="text" autocomplete="off"
+                               placeholder="2025-06-13 09:45"
+                               title="America/New_York RTH">
+                        <button class="goto-pick-btn" type="button" id="goto-pick-btn"
+                                title="Pick date and time" aria-label="Pick date and time"
+                                onclick="openGotoPicker()">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <rect x="3" y="5" width="18" height="16" rx="2" fill="none"
+                                      stroke="currentColor" stroke-width="2"></rect>
+                                <path d="M3 10h18" fill="none" stroke="currentColor" stroke-width="2"></path>
+                                <path d="M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2"></path>
+                            </svg>
+                        </button>
+                        <input id="goto-picker" type="datetime-local" step="60" tabindex="-1"
+                               aria-hidden="true">
+                    </div>
                 </div>
                 <div class="control-group">
                     <label>&nbsp;</label>
-                    <button class="btn secondary" type="button" onclick="gotoDate()">Go</button>
+                    <button class="btn secondary" type="button" onclick="gotoDateOrPick()">Go</button>
                 </div>
                 <div class="control-group">
                     <label>&nbsp;</label>
@@ -471,7 +539,8 @@
         let pendingOverlay = null;
         let symbolHi = -1;
         const VIEW_PAD = 50;
-        const PRELOAD_PAD = 200;
+        const PRELOAD_PAD = 400;
+        const MAX_PAD = {{ max_pad | default(1000) | int }};
         let fetchingMore = false;
         let restoringView = false;
         let savedView = null;
@@ -655,15 +724,27 @@
             });
 
             const gotoInput = document.getElementById('goto-date');
+            const gotoPicker = document.getElementById('goto-picker');
             gotoInput.addEventListener('keydown', function(ev) {
                 if (ev.key === 'Enter') {
                     ev.preventDefault();
                     gotoDate();
                 }
             });
-            gotoInput.addEventListener('paste', function() {
-                setTimeout(gotoDate, 0);
+            gotoInput.addEventListener('input', syncGotoPickerFromText);
+            gotoInput.addEventListener('paste', function(ev) {
+                const clip = (ev.clipboardData && ev.clipboardData.getData('text')) || '';
+                if (clip && applyGotoClipboard(clip)) {
+                    ev.preventDefault();
+                    gotoDate();
+                    return;
+                }
+                setTimeout(function() {
+                    syncGotoPickerFromText();
+                    gotoDate();
+                }, 0);
             });
+            gotoPicker.addEventListener('change', applyGotoPicker);
 
             const chBox = document.getElementById('channel-json');
             chBox.addEventListener('paste', function() {
@@ -792,23 +873,42 @@
             if (had && reason) chartLog('preload.cancel', { reason: reason });
         }
 
+        function nextWindowPads(data) {
+            const xs = data && data.chart_data && data.chart_data.datetime;
+            const n = xs ? xs.length : 0;
+            if (n < 2) return null;
+            let before = Math.floor(n / 2);
+            let after = n - before - 1;
+            const growL = !!data.has_more_before && before < MAX_PAD;
+            const growR = !!data.has_more_after && after < MAX_PAD;
+            if (!growL && !growR) return null;
+            if (growL) before = Math.min(MAX_PAD, before + PRELOAD_PAD);
+            if (growR) after = Math.min(MAX_PAD, after + PRELOAD_PAD);
+            if (before + after + 1 <= n) return null;
+            return {
+                around: xs[Math.floor(n / 2)],
+                before: before,
+                after: after,
+                n: n
+            };
+        }
+
         function schedulePreload(data) {
-            if (!data || !data.chart_data) return;
-            const xs = data.chart_data.datetime || [];
-            const n = xs.length;
-            if (n < 2 || n >= PRELOAD_PAD * 2 + 1) return;
-            if (!data.has_more_before && !data.has_more_after) return;
+            const pads = nextWindowPads(data);
+            if (!pads) return;
             const job = {
                 gen: preloadGen,
                 symbol: String(data.symbol || getSymbol()).toUpperCase(),
                 timeframe: data.timeframe || document.getElementById('timeframe').value,
-                around: xs[Math.floor(n / 2)]
+                around: pads.around,
+                before: pads.before,
+                after: pads.after
             };
             chartLog('schedulePreload', {
-                n: n,
+                n: pads.n,
                 around: job.around,
-                before: PRELOAD_PAD,
-                after: PRELOAD_PAD
+                before: job.before,
+                after: job.after
             });
             if (preloadTimer) clearTimeout(preloadTimer);
             preloadTimer = setTimeout(function() {
@@ -826,23 +926,27 @@
             }
             if (!lastChartData || !lastChartData.chart_data) return;
             if (String(lastChartData.symbol || '').toUpperCase() !== job.symbol) return;
+            const pads = nextWindowPads(lastChartData);
+            if (!pads) return;
+            const before = job.before != null ? job.before : pads.before;
+            const after = job.after != null ? job.after : pads.after;
+            const around = job.around || pads.around;
             const n = (lastChartData.chart_data.datetime || []).length;
-            if (n >= PRELOAD_PAD * 2 + 1) return;
-            if (!lastChartData.has_more_before && !lastChartData.has_more_after) return;
+            if (before + after + 1 <= n) return;
             chartLog('runPreload', {
-                around: job.around,
+                around: around,
                 n: n,
-                before: PRELOAD_PAD,
-                after: PRELOAD_PAD
+                before: before,
+                after: after
             });
             preloadInFlight = true;
             fetchingMore = true;
             preloadAbort = new AbortController();
             try {
                 await loadChart({
-                    around: job.around,
-                    before: PRELOAD_PAD,
-                    after: PRELOAD_PAD,
+                    around: around,
+                    before: before,
+                    after: after,
                     keepView: true,
                     view: captureView(),
                     background: true
@@ -885,9 +989,11 @@
             });
 
             if (!isBg) {
-                cancelPreload('user-load');
-                if (chartAbort) {
-                    try { chartAbort.abort(); } catch (err) {}
+                if (!opts.keepView) {
+                    cancelPreload('user-load');
+                    if (chartAbort) {
+                        try { chartAbort.abort(); } catch (err) {}
+                    }
                 }
                 chartAbort = new AbortController();
             }
@@ -942,7 +1048,7 @@
                         ? `Chart loaded for ${symbol} (${timeframe}) with channel rails`
                         : `Chart loaded for ${symbol} (${timeframe})`);
                 }
-                if (!isBg) schedulePreload(data);
+                schedulePreload(data);
                 
             } catch (error) {
                 if (error && error.name === 'AbortError') return;
@@ -1513,9 +1619,13 @@
                 preloadCovers: preloadCovers
             });
             if (preloadCovers) return;
-            if (nearLeft && lastChartData.has_more_before) {
+            const needLeft = nearLeft && lastChartData.has_more_before;
+            const needRight = nearRight && lastChartData.has_more_after;
+            if (needLeft && needRight) {
+                extendWindow('both', view);
+            } else if (needLeft) {
                 extendWindow('left', view);
-            } else if (nearRight && lastChartData.has_more_after) {
+            } else if (needRight) {
                 extendWindow('right', view);
             }
         }
@@ -1531,8 +1641,13 @@
             const mid = xs[Math.floor(n / 2)];
             let before = Math.floor(n / 2);
             let after = n - before - 1;
-            if (side === 'left') before += VIEW_PAD;
-            else after += VIEW_PAD;
+            if (side === 'left' || side === 'both') before = Math.min(MAX_PAD, before + PRELOAD_PAD);
+            if (side === 'right' || side === 'both') after = Math.min(MAX_PAD, after + PRELOAD_PAD);
+            if (before + after + 1 <= n) {
+                fetchingMore = false;
+                chartLog('extendWindow.noop', { side: side, n: n, before: before, after: after });
+                return;
+            }
             chartLog('extendWindow', {
                 side: side,
                 n: n,
@@ -1554,11 +1669,74 @@
             }
         }
 
+        function gotoPickerValueFromText(text) {
+            const raw = String(text || '').trim().replace(
+                /\s+(ET|EDT|EST|NY|RTH|UTC|GMT)\s*$/i, ''
+            );
+            const m = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+            if (!m) return '';
+            if (!m[2]) return m[1] + 'T00:00';
+            return m[1] + 'T' + m[2] + ':' + m[3];
+        }
+
+        function gotoTextFromPicker(val) {
+            if (!val) return '';
+            const s = String(val).replace('T', ' ');
+            return s.length >= 16 ? s.slice(0, 16) : s;
+        }
+
+        function syncGotoPickerFromText() {
+            const input = document.getElementById('goto-date');
+            const picker = document.getElementById('goto-picker');
+            if (!input || !picker) return;
+            const next = gotoPickerValueFromText(input.value);
+            if (next && picker.value !== next) picker.value = next;
+        }
+
+        function applyGotoClipboard(text) {
+            const raw = String(text || '').trim();
+            if (!raw) return false;
+            const pickerVal = gotoPickerValueFromText(raw);
+            document.getElementById('goto-date').value = raw.replace(/\s+/g, ' ');
+            if (pickerVal) document.getElementById('goto-picker').value = pickerVal;
+            return true;
+        }
+
+        function applyGotoPicker() {
+            const picker = document.getElementById('goto-picker');
+            const input = document.getElementById('goto-date');
+            if (!picker || !input || !picker.value) return;
+            input.value = gotoTextFromPicker(picker.value);
+            gotoDate();
+        }
+
+        function openGotoPicker() {
+            const picker = document.getElementById('goto-picker');
+            if (!picker) return;
+            syncGotoPickerFromText();
+            if (typeof picker.showPicker === 'function') {
+                try {
+                    picker.showPicker();
+                    return;
+                } catch (err) {}
+            }
+            picker.focus();
+        }
+
+        function gotoDateOrPick() {
+            const q = (document.getElementById('goto-date').value || '').trim();
+            if (!q) {
+                openGotoPicker();
+                return;
+            }
+            gotoDate();
+        }
+
         async function gotoDate(query, opts) {
             const silent = opts && opts.silent;
             const q = (query != null ? String(query) : document.getElementById('goto-date').value || '').trim();
             if (!q) {
-                if (!silent) showError('Paste a date or date-time first');
+                if (!silent) openGotoPicker();
                 return;
             }
             let around = q;
@@ -1581,6 +1759,7 @@
             if (!document.getElementById('goto-date').value) {
                 document.getElementById('goto-date').value = q;
             }
+            syncGotoPickerFromText();
             await loadChart({ around: around, before: VIEW_PAD, after: VIEW_PAD });
         }
 
