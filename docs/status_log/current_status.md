@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-11**
+Last updated: **2026-09-12**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-11):** Last-15m volume-delta / geometry overlays on the 2297-trade 15m-next-mid book. Overlay A (Evening Doji Star or 2 seller sessions) n=2297 E +0.46 PF 1.19 geo 1.30 vs +0.27 / 1.09 / 1.10 — clips winner $ (−2129 vs loser +2569); 2022-23 still −0.27 / 0.90. Form 0.25 skip hurts (E +0.13). Pos 1.25/1.50 mild. Delayed 2nd-close 13 fills E −2.82. AMPL's crash is a gap; textbook doji/seller rules do not fire first. **No promote.** See [volume geometry](edge_hunt/channel_touch/2026-09-11_last_15m_volume_geometry.md).
+**Latest (2026-09-12):** Isolated follow-ups on the same 2297 last-15m + 15m N+1 mid book. Doji-only (70 fills) is flat (E +0.26 PF 1.08 geo 1.10). Failed-breakout (1451 fills) catches AMPL/VST but clips winner $ (−3457 vs loser +3256) and drops E/geo. Session-OHLC 2× seller-55% (1543 fills) lifts geo to 1.18 but wrecks winners the same way overlay A did; AMPL still missed; 2022-23 still −0.14 / 0.94. Occupancy not re-walked. **No promote.** See [follow-up overlays](edge_hunt/channel_touch/2026-09-12_last_15m_followup_overlays.md).
+
+**Prior (2026-09-11):** Last-15m volume-delta / geometry overlays on the 2297-trade 15m-next-mid book. Overlay A (Evening Doji Star or 2 seller sessions) n=2297 E +0.46 PF 1.19 geo 1.30 vs +0.27 / 1.09 / 1.10 — clips winner $ (−2129 vs loser +2569); 2022-23 still −0.27 / 0.90. Form 0.25 skip hurts (E +0.13). Pos 1.25/1.50 mild. Delayed 2nd-close 13 fills E −2.82. AMPL's crash is a gap; textbook doji/seller rules do not fire first. **No promote.** See [volume geometry](edge_hunt/channel_touch/2026-09-11_last_15m_volume_geometry.md).
 
 **Prior (2026-09-11):** Rebuilt last-15m HTML after the LAUR detector fix. Unique signal-close span365 **n=2310 E +2.50 PF 2.03**. Last-15m + 15m N+1 mid **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). LAUR 2021 fill is 2021-09-10 @ 16.82 (Mar-4 rails); Oct 28 gone. HTML: `…165800.html`. **No promote.** See [LAUR false shakeout](edge_hunt/channel_touch/2026-09-11_laur_false_shakeout.md).
 

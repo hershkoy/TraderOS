@@ -176,3 +176,92 @@ def test_delayed_second_close_after_pullback():
     assert got is not None
     assert got["buy_date"] == "2023-07-24"
     assert got["buy_price"] == pytest.approx(bar_mid(21.2, 20.6))
+
+
+def test_doji_only_does_not_use_seller():
+    fill = _et(2024, 2, 9, 15, 45)
+    by_day = {
+        fill.date(): [_bar(fill, 13.0, 14.2, 13.0, 14.1, 200.0)],
+        _et(2024, 2, 12, 15, 45).date(): [
+            _bar(_et(2024, 2, 12, 15, 45), 14.0, 14.1, 13.5, 13.55, 150.0)
+        ],
+        _et(2024, 2, 13, 15, 45).date(): [
+            _bar(_et(2024, 2, 13, 15, 45), 13.5, 13.6, 13.0, 13.05, 150.0)
+        ],
+        _et(2024, 2, 14, 9, 30).date(): [
+            _bar(_et(2024, 2, 14, 9, 30), 13.0, 13.2, 12.9, 13.05, 80.0)
+        ],
+        _et(2024, 2, 21, 9, 45).date(): [
+            _bar(_et(2024, 2, 21, 9, 45), 11.1, 11.3, 11.0, 11.15, 200.0)
+        ],
+    }
+    row = pd.Series(
+        {
+            "buy_price": 14.17,
+            "buy_time": fill,
+            "buy_date": "2024-02-09",
+            "sell_price": 11.15,
+            "sell_time": _et(2024, 2, 21, 9, 45),
+            "sell_date": "2024-02-21",
+            "exit_reason": "hard_stop",
+            "gain_pct": -21.3,
+        }
+    )
+    seller = apply_early_exit(
+        row, by_day, enable_doji=False, enable_seller=True, enable_failed_breakout=False
+    )
+    doji_only = apply_early_exit(
+        row, by_day, enable_doji=True, enable_seller=False, enable_failed_breakout=False
+    )
+    assert seller.used_overlay is True
+    assert seller.exit_reason == "seller_sessions"
+    assert seller.seller_day is not None
+    assert doji_only.used_overlay is False
+    assert doji_only.seller_day is None
+    assert doji_only.gain_pct == pytest.approx(-21.3)
+
+
+def test_failed_breakout_exits_on_first_close_at_or_below_resist():
+    fill = _et(2023, 7, 20, 15, 45)
+    by_day = {
+        fill.date(): [_bar(fill, 22.0, 23.5, 21.8, 23.2, 100.0)],
+        _et(2023, 7, 21, 15, 45).date(): [
+            _bar(_et(2023, 7, 21, 9, 30), 22.0, 22.1, 21.4, 21.6, 80.0),
+            _bar(_et(2023, 7, 21, 15, 45), 21.6, 21.8, 19.8, 20.50, 80.0),
+        ],
+        _et(2023, 7, 24, 9, 30).date(): [
+            _bar(_et(2023, 7, 24, 9, 30), 20.9, 21.2, 20.6, 20.8, 70.0),
+        ],
+        _et(2023, 8, 1, 9, 45).date(): [
+            _bar(_et(2023, 8, 1, 9, 45), 18.0, 18.2, 17.6, 17.8, 90.0),
+        ],
+    }
+    row = pd.Series(
+        {
+            "buy_price": 23.24,
+            "buy_time": fill,
+            "buy_date": "2023-07-20",
+            "sell_price": 17.80,
+            "sell_time": _et(2023, 8, 1, 9, 45),
+            "sell_date": "2023-08-01",
+            "exit_reason": "hard_stop",
+            "gain_pct": -23.4,
+            "channel_width": 4.92,
+            "channel_pos": 1.492,
+            "slope_pct_per_bar": 0.0,
+            "l1_price": 12.27,
+        }
+    )
+    got = apply_early_exit(
+        row,
+        by_day,
+        enable_doji=False,
+        enable_seller=False,
+        enable_failed_breakout=True,
+    )
+    assert got.failed_breakout_day.isoformat() == "2023-07-21"
+    assert got.used_overlay is True
+    assert got.exit_reason == "failed_breakout"
+    assert got.sell_ts == _et(2023, 7, 24, 9, 30)
+    assert got.sell_px == pytest.approx(bar_mid(21.2, 20.6))
+    assert got.gain_pct > -23.0

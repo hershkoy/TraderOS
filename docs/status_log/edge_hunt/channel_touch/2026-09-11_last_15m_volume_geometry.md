@@ -54,3 +54,5 @@ python scripts\research\overlay_last_15m_volume_geometry.py --workers 8 --delaye
 ```
 
 Artifacts: `reports/ascending_channels/2026-09-11/last_15m_overlay_A_early_exit.csv`, `last_15m_overlay_B_skip_summary.csv`, `last_15m_overlay_C_delayed.csv`.
+
+Follow-ups (doji-only / failed-breakout / session-OHLC seller): [2026-09-12](2026-09-12_last_15m_followup_overlays.md). **No promote.**

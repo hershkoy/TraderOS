@@ -27,6 +27,7 @@ from utils.research.realistic_exits import (
 from utils.research.realistic_purchaser import as_et, bar_mid
 from utils.research.session_volume_delta import (
     SessionDelta,
+    VOLUME_MODE_15M_SUM,
     consecutive_seller_sessions,
     sessions_from_by_day,
 )
@@ -39,6 +40,7 @@ SELLER_PCT_MIN = 55.0
 SELLER_N = 2
 EXIT_DOJI_STAR = "doji_star"
 EXIT_SELLER_SESSIONS = "seller_sessions"
+EXIT_FAILED_BREAKOUT = "failed_breakout"
 MIN_YEAR_N = 30
 BLUNT_WINNER_FRAC = 0.35
 BLUNT_DOLLAR_RATIO = 0.50
@@ -132,7 +134,28 @@ class EarlyExitResult:
     decision_ts: Optional[datetime]
     doji_day: Optional[date]
     seller_day: Optional[date]
+    failed_breakout_day: Optional[date]
     gain_pct: float
+
+
+def find_failed_breakout_day(
+    row: pd.Series,
+    sessions: Sequence[SessionDelta],
+    *,
+    fill_day: date,
+    until_day: Optional[date] = None,
+) -> Optional[date]:
+    """First post-fill session whose close is at/below the projected resist rail."""
+    after = [s for s in sessions if s.session_date > fill_day]
+    if until_day is not None:
+        after = [s for s in after if s.session_date <= until_day]
+    for i, sess in enumerate(after):
+        resist = _resist_at_offset(row, bars_after_fill=i + 1)
+        if resist is None:
+            return None
+        if float(sess.close) <= resist + 1e-12:
+            return sess.session_date
+    return None
 
 
 def apply_early_exit(
@@ -141,6 +164,10 @@ def apply_early_exit(
     *,
     require_gap: bool = True,
     seller_pct_min: float = SELLER_PCT_MIN,
+    enable_doji: bool = True,
+    enable_seller: bool = True,
+    enable_failed_breakout: bool = False,
+    volume_mode: str = VOLUME_MODE_15M_SUM,
 ) -> EarlyExitResult:
     """Keep the book's ATR/trail exit unless an overlay fill is strictly earlier."""
     entry_px = float(row["buy_price"])
@@ -161,26 +188,43 @@ def apply_early_exit(
         decision_ts=None,
         doji_day=None,
         seller_day=None,
+        failed_breakout_day=None,
         gain_pct=float(orig_gain),
     )
     if fill_day is None or not by_day:
         return empty
-    sessions = sessions_from_by_day(by_day)
-    doji_day = find_evening_doji_star(
-        sessions, fill_day=fill_day, require_gap=require_gap, until_day=until_day
+    sessions = sessions_from_by_day(by_day, volume_mode=volume_mode)
+    doji_day = (
+        find_evening_doji_star(
+            sessions, fill_day=fill_day, require_gap=require_gap, until_day=until_day
+        )
+        if enable_doji
+        else None
     )
-    seller_day = consecutive_seller_sessions(
-        sessions,
-        fill_day=fill_day,
-        seller_pct_min=seller_pct_min,
-        n_needed=SELLER_N,
-        until_day=until_day,
+    seller_day = (
+        consecutive_seller_sessions(
+            sessions,
+            fill_day=fill_day,
+            seller_pct_min=seller_pct_min,
+            n_needed=SELLER_N,
+            until_day=until_day,
+        )
+        if enable_seller
+        else None
+    )
+    fail_day = (
+        find_failed_breakout_day(
+            row, sessions, fill_day=fill_day, until_day=until_day
+        )
+        if enable_failed_breakout
+        else None
     )
     bars = flatten_rth_sessions(by_day)
     candidates: List[Tuple[datetime, float, str, datetime]] = []
     for day, reason in (
         (doji_day, EXIT_DOJI_STAR),
         (seller_day, EXIT_SELLER_SESSIONS),
+        (fail_day, EXIT_FAILED_BREAKOUT),
     ):
         if day is None:
             continue
@@ -192,43 +236,61 @@ def apply_early_exit(
         if exec_et is None:
             continue
         candidates.append((exec_et, px, reason, dec_ts))
-    if not candidates:
+
+    def _keep(
+        *,
+        used: bool,
+        reason: str,
+        px: float,
+        sell_ts: Optional[datetime],
+        decision_ts: Optional[datetime],
+        gain: float,
+    ) -> EarlyExitResult:
         return EarlyExitResult(
-            used_overlay=False,
-            exit_reason=orig_reason,
-            sell_px=orig_px,
-            sell_ts=orig_ts,
-            decision_ts=None,
+            used_overlay=used,
+            exit_reason=reason,
+            sell_px=px,
+            sell_ts=sell_ts,
+            decision_ts=decision_ts,
             doji_day=doji_day,
             seller_day=seller_day,
-            gain_pct=float(orig_gain),
+            failed_breakout_day=fail_day,
+            gain_pct=float(gain),
         )
-    # Prefer the earlier fill; doji_star wins ties (more specific).
+
+    if not candidates:
+        return _keep(
+            used=False,
+            reason=orig_reason,
+            px=orig_px,
+            sell_ts=orig_ts,
+            decision_ts=None,
+            gain=orig_gain,
+        )
+    # Prefer the earlier fill; doji_star, then failed_breakout, then seller.
+    rank = {EXIT_DOJI_STAR: 0, EXIT_FAILED_BREAKOUT: 1, EXIT_SELLER_SESSIONS: 2}
+
     def _key(item: Tuple[datetime, float, str, datetime]) -> Tuple[datetime, int]:
-        return (item[0], 0 if item[2] == EXIT_DOJI_STAR else 1)
+        return (item[0], rank.get(item[2], 9))
 
     exec_et, px, reason, dec_ts = min(candidates, key=_key)
     if orig_ts is not None and exec_et >= orig_ts:
-        return EarlyExitResult(
-            used_overlay=False,
-            exit_reason=orig_reason,
-            sell_px=orig_px,
+        return _keep(
+            used=False,
+            reason=orig_reason,
+            px=orig_px,
             sell_ts=orig_ts,
             decision_ts=None,
-            doji_day=doji_day,
-            seller_day=seller_day,
-            gain_pct=float(orig_gain),
+            gain=orig_gain,
         )
     gain = (px / entry_px - 1.0) * 100.0
-    return EarlyExitResult(
-        used_overlay=True,
-        exit_reason=reason,
-        sell_px=float(px),
+    return _keep(
+        used=True,
+        reason=reason,
+        px=float(px),
         sell_ts=exec_et,
         decision_ts=dec_ts,
-        doji_day=doji_day,
-        seller_day=seller_day,
-        gain_pct=float(gain),
+        gain=gain,
     )
 
 

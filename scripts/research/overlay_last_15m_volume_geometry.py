@@ -8,6 +8,7 @@ Usage (Windows CMD):
   set PYTHONPATH=.
   python scripts\\research\\overlay_last_15m_volume_geometry.py --symbols AMPL,VST,TARS
   python scripts\\research\\overlay_last_15m_volume_geometry.py --workers 8
+  python scripts\\research\\overlay_last_15m_volume_geometry.py --followups --workers 8
 """
 from __future__ import annotations
 
@@ -30,6 +31,9 @@ from backtest_channel_touch_trades import YEAR_BUCKETS, summarize_by_year  # noq
 from compare_1d_last_15m_realistic_sells import build_hold_session_index  # noqa: E402
 from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
 from utils.research.last_15m_volume_geometry import (  # noqa: E402
+    EXIT_DOJI_STAR,
+    EXIT_FAILED_BREAKOUT,
+    EXIT_SELLER_SESSIONS,
     FORM_CAP,
     FRICTION_PCT,
     POS_CAPS,
@@ -43,9 +47,13 @@ from utils.research.last_15m_volume_geometry import (  # noqa: E402
     winner_cut_skip,
 )
 from utils.research.report_paths import dated_outdir  # noqa: E402
-from utils.research.session_volume_delta import sessions_from_by_day  # noqa: E402
+from utils.research.session_volume_delta import (  # noqa: E402
+    VOLUME_MODE_15M_SUM,
+    VOLUME_MODE_SESSION_OHLC,
+    consecutive_seller_sessions,
+    sessions_from_by_day,
+)
 from utils.research.evening_doji_star import find_evening_doji_star  # noqa: E402
-from utils.research.session_volume_delta import consecutive_seller_sessions  # noqa: E402
 
 LOG = logging.getLogger("overlay_last_15m_vol")
 
@@ -119,16 +127,26 @@ def _smoke_print(row: pd.Series, by_day: dict, *, require_gap: bool) -> None:
     seller = consecutive_seller_sessions(
         sessions, fill_day=fill_day, until_day=until_day
     )
-    print("  doji_gap=%s doji_nongap=%s seller2=%s" % (doji, doji_ng, seller))
-    print("  session  date        o      h      l      c   buy%  sell%")
+    seller_ohlc = consecutive_seller_sessions(
+        sessions_from_by_day(by_day, volume_mode=VOLUME_MODE_SESSION_OHLC),
+        fill_day=fill_day,
+        until_day=until_day,
+    )
+    print("  doji_gap=%s doji_nongap=%s seller2_15m=%s seller2_ohlc=%s" % (
+        doji, doji_ng, seller, seller_ohlc
+    ))
+    print("  session  date        o      h      l      c   buy%  sell%  ohlc_buy%  ohlc_sell%")
+    sessions_ohlc = sessions_from_by_day(by_day, volume_mode=VOLUME_MODE_SESSION_OHLC)
+    ohlc_by_day = {s.session_date: s for s in sessions_ohlc}
     for sess in sessions:
         if fill_day is not None and sess.session_date < fill_day:
             continue
         sell_d = row.get("sell_date")
         if sell_d and str(sess.session_date) > str(sell_d)[:10]:
             continue
+        ohlc = ohlc_by_day.get(sess.session_date)
         print(
-            "  sess %s %6.2f %6.2f %6.2f %6.2f %5.1f %5.1f"
+            "  sess %s %6.2f %6.2f %6.2f %6.2f %5.1f %5.1f %9.1f %10.1f"
             % (
                 sess.session_date.isoformat(),
                 sess.open,
@@ -137,8 +155,88 @@ def _smoke_print(row: pd.Series, by_day: dict, *, require_gap: bool) -> None:
                 sess.close,
                 sess.buy_pct,
                 sess.sell_pct,
+                ohlc.buy_pct if ohlc is not None else float("nan"),
+                ohlc.sell_pct if ohlc is not None else float("nan"),
             )
         )
+
+
+def _run_early_overlay(
+    trades: pd.DataFrame,
+    indexed: dict,
+    *,
+    label: str,
+    require_gap: bool,
+    enable_doji: bool,
+    enable_seller: bool,
+    enable_failed_breakout: bool,
+    volume_mode: str,
+    baseline_gain: pd.Series,
+) -> dict:
+    rows: List[dict] = []
+    overlay_gain = []
+    for _, row in trades.iterrows():
+        by_day = indexed.get(str(row["stock"]).upper()) or {}
+        got = apply_early_exit(
+            row,
+            by_day,
+            require_gap=require_gap,
+            enable_doji=enable_doji,
+            enable_seller=enable_seller,
+            enable_failed_breakout=enable_failed_breakout,
+            volume_mode=volume_mode,
+        )
+        overlay_gain.append(got.gain_pct)
+        rows.append(
+            {
+                "stock": str(row["stock"]).upper(),
+                "buy_date": str(row.get("buy_date") or ""),
+                "gain_before": float(row["gain_pct"]),
+                "gain_after": got.gain_pct,
+                "used_overlay": got.used_overlay,
+                "exit_reason_after": got.exit_reason,
+                "doji_day": got.doji_day.isoformat() if got.doji_day else "",
+                "seller_day": got.seller_day.isoformat() if got.seller_day else "",
+                "failed_breakout_day": (
+                    got.failed_breakout_day.isoformat() if got.failed_breakout_day else ""
+                ),
+                "sell_px_after": round(got.sell_px, 4),
+            }
+        )
+    a_df = pd.DataFrame(rows)
+    g = pd.Series(overlay_gain, index=trades.index)
+    years = summarize_by_year(
+        trades.assign(gain_pct_ov=g), gain_col="gain_pct_ov", buckets=YEAR_BUCKETS
+    )
+    cut = winner_cut_early_exit(baseline_gain, g)
+    cut["n_overlay_used"] = int(a_df["used_overlay"].sum())
+    cut["n_cut_earlier"] = int(a_df["used_overlay"].sum())
+    n_doji = int((a_df["exit_reason_after"] == EXIT_DOJI_STAR).sum())
+    n_seller = int((a_df["exit_reason_after"] == EXIT_SELLER_SESSIONS).sum())
+    n_fail = int((a_df["exit_reason_after"] == EXIT_FAILED_BREAKOUT).sum())
+    _log_stats(label, g, years)
+    _print_cut(label + " winner-cut", cut)
+    _print_years(years)
+    LOG.info(
+        "%s fills doji_star=%d seller_sessions=%d failed_breakout=%d used=%d",
+        label,
+        n_doji,
+        n_seller,
+        n_fail,
+        int(a_df["used_overlay"].sum()),
+    )
+    return {
+        "label": label,
+        "df": a_df,
+        "gains": g,
+        "years": years,
+        "cut": cut,
+        "n_doji": n_doji,
+        "n_seller": n_seller,
+        "n_fail": n_fail,
+        "stats": book_stats(g),
+        "geo_year_pf": geom_mean_year_pf(years),
+    }
 
 
 def main() -> int:
@@ -151,6 +249,11 @@ def main() -> int:
     ap.add_argument("--symbols", type=str, default="", help="Optional comma list (smoke)")
     ap.add_argument("--no-require-gap", action="store_true", help="Evening star without a true gap-up")
     ap.add_argument("--delayed-second-close", action="store_true", help="Force overlay C even if B is not blunt")
+    ap.add_argument(
+        "--followups",
+        action="store_true",
+        help="Skip A/B/C; run isolated doji-only, failed-breakout, and session-OHLC seller overlays",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -177,41 +280,43 @@ def main() -> int:
     )
     _log_stats("baseline_fric0.25", net0, years0n)
 
-    # Overlay B does not need 15m.
+    followups = bool(args.followups)
     b_rows: List[dict] = []
     b_blunt: Dict[str, bool] = {}
-    b_combos: List[tuple] = [
-        (None, 1.25),
-        (None, 1.50),
-        (FORM_CAP, None),
-        (FORM_CAP, 1.25),
-        (FORM_CAP, 1.50),
-    ]
-    for form_cap, pos_cap in b_combos:
-        keep = skip_mask(trades, max_formation_beyond=form_cap, max_channel_pos=pos_cap)
-        part = trades.loc[keep].copy()
-        g = pd.to_numeric(part["gain_pct"], errors="coerce")
-        years = summarize_by_year(part, gain_col="gain_pct", buckets=YEAR_BUCKETS)
-        cut = winner_cut_skip(baseline_gain, keep)
-        label = "B"
-        if form_cap is not None:
-            label += "_form%.2f" % form_cap
-        if pos_cap is not None:
-            label += "_pos%.2f" % pos_cap
-        _log_stats(label, g, years)
-        _print_cut(label + " winner-cut", cut)
-        _print_years(years)
-        b_blunt[label] = bool(cut["blunt"])
-        b_rows.append(
-            {
-                "overlay": label,
-                "form_cap": form_cap,
-                "pos_cap": pos_cap,
-                **book_stats(g),
-                "geo_year_pf": geom_mean_year_pf(years),
-                **{("cut_" + k): v for k, v in cut.items()},
-            }
-        )
+    if not followups:
+        # Overlay B does not need 15m.
+        b_combos: List[tuple] = [
+            (None, 1.25),
+            (None, 1.50),
+            (FORM_CAP, None),
+            (FORM_CAP, 1.25),
+            (FORM_CAP, 1.50),
+        ]
+        for form_cap, pos_cap in b_combos:
+            keep = skip_mask(trades, max_formation_beyond=form_cap, max_channel_pos=pos_cap)
+            part = trades.loc[keep].copy()
+            g = pd.to_numeric(part["gain_pct"], errors="coerce")
+            years = summarize_by_year(part, gain_col="gain_pct", buckets=YEAR_BUCKETS)
+            cut = winner_cut_skip(baseline_gain, keep)
+            label = "B"
+            if form_cap is not None:
+                label += "_form%.2f" % form_cap
+            if pos_cap is not None:
+                label += "_pos%.2f" % pos_cap
+            _log_stats(label, g, years)
+            _print_cut(label + " winner-cut", cut)
+            _print_years(years)
+            b_blunt[label] = bool(cut["blunt"])
+            b_rows.append(
+                {
+                    "overlay": label,
+                    "form_cap": form_cap,
+                    "pos_cap": pos_cap,
+                    **book_stats(g),
+                    "geo_year_pf": geom_mean_year_pf(years),
+                    **{("cut_" + k): v for k, v in cut.items()},
+                }
+            )
 
     symbols = sorted({str(s).upper() for s in trades["stock"].tolist()})
     buy_min = pd.to_datetime(trades["buy_date"], errors="coerce").min() - timedelta(
@@ -250,39 +355,96 @@ def main() -> int:
         for _, row in trades.iterrows():
             _smoke_print(row, indexed.get(str(row["stock"]).upper()) or {}, require_gap=require_gap)
 
-    a_rows: List[dict] = []
-    overlay_gain = []
-    for _, row in trades.iterrows():
-        by_day = indexed.get(str(row["stock"]).upper()) or {}
-        got = apply_early_exit(row, by_day, require_gap=require_gap)
-        overlay_gain.append(got.gain_pct)
-        a_rows.append(
+    outdir = Path(args.outdir) if args.outdir is not None else dated_outdir()
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    if followups:
+        specs = [
             {
-                "stock": str(row["stock"]).upper(),
-                "buy_date": str(row.get("buy_date") or ""),
-                "gain_before": float(row["gain_pct"]),
-                "gain_after": got.gain_pct,
-                "used_overlay": got.used_overlay,
-                "exit_reason_after": got.exit_reason,
-                "doji_day": got.doji_day.isoformat() if got.doji_day else "",
-                "seller_day": got.seller_day.isoformat() if got.seller_day else "",
-                "sell_px_after": round(got.sell_px, 4),
-            }
-        )
-    a_df = pd.DataFrame(a_rows)
-    g_a = pd.Series(overlay_gain, index=trades.index)
-    years_a = summarize_by_year(
-        trades.assign(gain_pct_a=g_a), gain_col="gain_pct_a", buckets=YEAR_BUCKETS
+                "label": "F1_doji_only",
+                "enable_doji": True,
+                "enable_seller": False,
+                "enable_failed_breakout": False,
+                "volume_mode": VOLUME_MODE_15M_SUM,
+                "csv": "last_15m_overlay_F1_doji_only.csv",
+            },
+            {
+                "label": "F2_failed_breakout",
+                "enable_doji": False,
+                "enable_seller": False,
+                "enable_failed_breakout": True,
+                "volume_mode": VOLUME_MODE_15M_SUM,
+                "csv": "last_15m_overlay_F2_failed_breakout.csv",
+            },
+            {
+                "label": "F3_seller_session_ohlc",
+                "enable_doji": False,
+                "enable_seller": True,
+                "enable_failed_breakout": False,
+                "volume_mode": VOLUME_MODE_SESSION_OHLC,
+                "csv": "last_15m_overlay_F3_seller_session_ohlc.csv",
+            },
+        ]
+        summary_lines = [
+            "last-15m follow-up overlays (same-list, occupancy not re-walked)",
+            "trades=%s" % args.trades,
+            "n=%d" % len(trades),
+            "require_gap=%s" % require_gap,
+            "baseline geo_year_PF=%s" % geom_mean_year_pf(years0),
+        ]
+        for spec in specs:
+            got = _run_early_overlay(
+                trades,
+                indexed,
+                label=spec["label"],
+                require_gap=require_gap,
+                enable_doji=spec["enable_doji"],
+                enable_seller=spec["enable_seller"],
+                enable_failed_breakout=spec["enable_failed_breakout"],
+                volume_mode=spec["volume_mode"],
+                baseline_gain=baseline_gain,
+            )
+            path = outdir / spec["csv"]
+            got["df"].to_csv(path, index=False)
+            LOG.info("Wrote %s", path)
+            st = got["stats"]
+            summary_lines.append(
+                "%s n=%s E=%s PF=%s geo=%s used=%s doji=%s seller=%s fail=%s cut=%s"
+                % (
+                    spec["label"],
+                    st.get("n"),
+                    st.get("expectancy_pct"),
+                    st.get("profit_factor"),
+                    got["geo_year_pf"],
+                    got["cut"].get("n_overlay_used"),
+                    got["n_doji"],
+                    got["n_seller"],
+                    got["n_fail"],
+                    got["cut"],
+                )
+            )
+        sum_path = outdir / "last_15m_overlay_followups_summary.txt"
+        sum_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+        print("out:", outdir)
+        LOG.info("Wrote %s", sum_path)
+        return 0
+
+    got_a = _run_early_overlay(
+        trades,
+        indexed,
+        label="A_early_exit",
+        require_gap=require_gap,
+        enable_doji=True,
+        enable_seller=True,
+        enable_failed_breakout=False,
+        volume_mode=VOLUME_MODE_15M_SUM,
+        baseline_gain=baseline_gain,
     )
-    cut_a = winner_cut_early_exit(baseline_gain, g_a)
-    cut_a["n_overlay_used"] = int(a_df["used_overlay"].sum())
-    cut_a["n_cut_earlier"] = int(a_df["used_overlay"].sum())
-    _log_stats("A_early_exit", g_a, years_a)
-    _print_cut("A winner-cut", cut_a)
-    _print_years(years_a)
-    n_doji = int((a_df["exit_reason_after"] == "doji_star").sum())
-    n_seller = int((a_df["exit_reason_after"] == "seller_sessions").sum())
-    LOG.info("A overlay fills doji_star=%d seller_sessions=%d used=%d", n_doji, n_seller, int(a_df["used_overlay"].sum()))
+    a_df = got_a["df"]
+    n_doji = got_a["n_doji"]
+    n_seller = got_a["n_seller"]
+    cut_a = got_a["cut"]
+    years_a = got_a["years"]
 
     # Overlay C if B pos caps are blunt (or forced).
     pos_blunt = any(b_blunt.get("B_pos%.2f" % c, False) for c in POS_CAPS)
@@ -324,8 +486,6 @@ def main() -> int:
     else:
         LOG.info("Skipping overlay C (B pos caps not blunt)")
 
-    outdir = Path(args.outdir) if args.outdir is not None else dated_outdir()
-    outdir.mkdir(parents=True, exist_ok=True)
     a_path = outdir / "last_15m_overlay_A_early_exit.csv"
     a_df.to_csv(a_path, index=False)
     b_path = outdir / "last_15m_overlay_B_skip_summary.csv"

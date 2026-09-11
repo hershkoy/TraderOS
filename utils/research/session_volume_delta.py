@@ -10,6 +10,18 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 MIN_TICK = 1e-4
+VOLUME_MODE_15M_SUM = "15m_sum"
+VOLUME_MODE_SESSION_OHLC = "session_ohlc"
+VOLUME_MODES = (VOLUME_MODE_15M_SUM, VOLUME_MODE_SESSION_OHLC)
+
+
+def normalize_volume_mode(raw: Optional[str]) -> str:
+    text = str(raw or VOLUME_MODE_15M_SUM).strip().lower().replace("-", "_")
+    if text in (VOLUME_MODE_15M_SUM, "sum", "15m"):
+        return VOLUME_MODE_15M_SUM
+    if text in (VOLUME_MODE_SESSION_OHLC, "session", "daily", "ohlc", "session_bar"):
+        return VOLUME_MODE_SESSION_OHLC
+    raise ValueError("unknown volume mode: %s" % raw)
 
 
 @dataclass(frozen=True)
@@ -85,8 +97,15 @@ def session_volume_delta(
     bars: Sequence[Dict[str, Any]],
     *,
     min_tick: float = MIN_TICK,
+    volume_mode: str = VOLUME_MODE_15M_SUM,
 ) -> Optional[SessionDelta]:
-    """Sum 15m buy/sell over one RTH session; OHLC is first/max/min/last."""
+    """RTH session OHLC plus buy/sell.
+
+    ``15m_sum``: split each 15m bar then sum (default).
+    ``session_ohlc``: one split on the day's range using summed volume (daily
+    Volume Delta pane).
+    """
+    mode = normalize_volume_mode(volume_mode)
     if not bars:
         return None
     ordered = list(bars)
@@ -133,6 +152,10 @@ def session_volume_delta(
         vol_sum += max(v, 0.0)
     if first_o is None or last_c is None or hi is None or lo is None or sess_day is None:
         return None
+    if mode == VOLUME_MODE_SESSION_OHLC:
+        d = bar_volume_delta(hi, lo, last_c, vol_sum, min_tick=min_tick)
+        buy_sum = d.buy_volume
+        sell_sum = d.sell_volume
     total = buy_sum + sell_sum
     if total > 0:
         buy_pct = (buy_sum / total) * 100.0
@@ -159,11 +182,16 @@ def sessions_from_by_day(
     by_day: Dict[date, Sequence[Dict[str, Any]]],
     *,
     min_tick: float = MIN_TICK,
+    volume_mode: str = VOLUME_MODE_15M_SUM,
 ) -> List[SessionDelta]:
     """Chronological RTH sessions from ``index_rth_15m_by_session`` output."""
     out: List[SessionDelta] = []
     for day in sorted(by_day.keys()):
-        sess = session_volume_delta(list(by_day.get(day) or []), min_tick=min_tick)
+        sess = session_volume_delta(
+            list(by_day.get(day) or []),
+            min_tick=min_tick,
+            volume_mode=volume_mode,
+        )
         if sess is not None:
             out.append(sess)
     return out

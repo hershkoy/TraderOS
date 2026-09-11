@@ -57,6 +57,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-11 | [Last-15m realistic sells (15m N+1 mid vs EOD next-open mid)](2026-09-11_channel_touch_last_15m_realistic_sells.md) |
 | 2026-09-11 | [LAUR false shakeout (rail inside, one H2 pair)](2026-09-11_laur_false_shakeout.md) |
 | 2026-09-11 | [Last-15m volume-delta / geometry overlays](2026-09-11_last_15m_volume_geometry.md) |
+| 2026-09-12 | [Last-15m follow-up overlays (doji-only / failed-breakout / session-OHLC)](2026-09-12_last_15m_followup_overlays.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [realistic purchasing](../../../features/realistic_purchasing.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
@@ -73,6 +74,7 @@ Stable HTML: **`current_best/`** is live-executable causal books even if losing 
 - **1d hot-cross buy-now (2026-09-06):** `--intraday-trigger hot-cross` `--hot-cross-fill lerp85` — first 15m high >= daily rail after wait, no EOD close. Unique span365 + shakeout **n=4079 E −0.19 PF 0.94** (parent 3328 / extras 751; ~60% hard-stop; 2022-23 E −0.90). RDWR 2025-06-13 never prints (occupancy from 2025-06-05 10:30 ET rail poke 24.42). **No promote.** **`current_best/` 1d slot** (`1d_hot_cross.html`) — the number to beat. Nightly stays clip. See [hot-cross](2026-09-06_channel_touch_1d_15m_trigger.md) and [current_best copy](2026-09-06_channel_touch_current_best_hot_cross.md).
 - **1d close-cross + trail MAE (2026-09-06):** `--intraday-trigger close-cross` `--trail-mae`. First 15m **close** > daily rail, fill next 15m mid. RDWR-only: 6 fills; 2025-06-13 never prints (Jun-5 11:15 ET). **No promote.** See [close-cross MAE](2026-09-06_channel_touch_close_cross_mae.md).
 - **Close-cross MAE ridge (2026-09-07):** year-split ridge (train < 2023) from confirm features to `mae_pct` then a padded stop. 50-name holdout and 300-name holdout both **lose E/PF vs trail-only** (300 trail n=712 E +1.28 PF 1.33 vs re-grid stop E −0.11 PF 0.97). **No promote.** See [MAE ridge](2026-09-07_channel_touch_close_cross_mae_ridge.md).
+- **Last-15m follow-up overlays (2026-09-12):** Isolated doji-only (70 fills, geo flat), failed-breakout (1451 fills, AMPL/VST hit but winner $ −3457), session-OHLC seller (1543 fills, geo 1.18, AMPL still missed, winner $ wrecked). Occupancy not re-walked. **No promote.** See [follow-ups](2026-09-12_last_15m_followup_overlays.md).
 - **Last-15m volume-delta / geometry (2026-09-11):** Same-list overlays on last-15m + 15m N+1 mid n=2297. Early-exit (doji or 2 seller sessions) E +0.46 PF 1.19 geo 1.30 vs +0.27 / 1.09 but clips winner $ and 2022-23 still fails. Form 0.25 skip hurts. Pos 1.25/1.50 mild. Delayed 2nd-close 13 fills E −2.82. AMPL gap is not caught. **No promote.** See [volume geometry](2026-09-11_last_15m_volume_geometry.md).
 - **Last-15m realistic sells (2026-09-11):** kept-sell n=2779 E +0.96 PF 1.29 was the daily same-bar clip. **15m N→N+1 mid n=2779 E +0.35 PF 1.11**; **daily-close → next 09:30 mid n=2778 E +0.47 PF 1.14**. Occupancy not re-walked. **No promote.** See [realistic sells](2026-09-11_channel_touch_last_15m_realistic_sells.md).
 - **H2 close-confirm + formation containment (2026-09-07):** `--intraday-trigger close-cross` `--realistic-fill-mode signal-close` (buy confirm 15m close) + `--max-formation-beyond-width 0.25`. Full unique span365 **n=1947 E +0.24 PF 1.07** (2022-23 fails). Beats hot-cross −0.19/0.94 slightly; **no promote.** ADM Nov-23 formation_beyond 1.88 dropped. See [close-confirm formation](2026-09-07_channel_touch_h2_close_confirm_formation.md).
@@ -122,6 +124,7 @@ python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --reali
 python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --shakeout-breakout --realistic-fill --realistic-fill-mode next-open --workers 4 --load-workers 8
 python scripts\research\compare_1d_last_15m_realistic_sells.py
 python scripts\research\overlay_last_15m_volume_geometry.py --workers 8 --delayed-second-close
+python scripts\research\overlay_last_15m_volume_geometry.py --followups --workers 8
 python hot_price_server.py
 python scripts\pipeline\hot_price_service.py install-task
 ```
