@@ -471,6 +471,7 @@
         let pendingOverlay = null;
         let symbolHi = -1;
         const VIEW_PAD = 50;
+        const PRELOAD_PAD = 200;
         let fetchingMore = false;
         let restoringView = false;
         let savedView = null;
@@ -478,6 +479,10 @@
         let loadingStartedAt = 0;
         let loadingGotProgress = false;
         let chartAbort = null;
+        let preloadAbort = null;
+        let preloadTimer = null;
+        let preloadGen = 0;
+        let preloadInFlight = false;
         const EDGE_FETCH_ONLY_ON_X_ZOOM_OUT = true;
         const CHART_DEBUG = true;
 
@@ -773,8 +778,84 @@
             return result;
         }
 
+        function cancelPreload(reason) {
+            const had = !!(preloadTimer || preloadInFlight || preloadAbort);
+            preloadGen += 1;
+            if (preloadTimer) {
+                clearTimeout(preloadTimer);
+                preloadTimer = null;
+            }
+            if (preloadAbort) {
+                try { preloadAbort.abort(); } catch (err) {}
+                preloadAbort = null;
+            }
+            if (had && reason) chartLog('preload.cancel', { reason: reason });
+        }
+
+        function schedulePreload(data) {
+            if (!data || !data.chart_data) return;
+            const xs = data.chart_data.datetime || [];
+            const n = xs.length;
+            if (n < 2 || n >= PRELOAD_PAD * 2 + 1) return;
+            if (!data.has_more_before && !data.has_more_after) return;
+            const job = {
+                gen: preloadGen,
+                symbol: String(data.symbol || getSymbol()).toUpperCase(),
+                timeframe: data.timeframe || document.getElementById('timeframe').value,
+                around: xs[Math.floor(n / 2)]
+            };
+            chartLog('schedulePreload', {
+                n: n,
+                around: job.around,
+                before: PRELOAD_PAD,
+                after: PRELOAD_PAD
+            });
+            if (preloadTimer) clearTimeout(preloadTimer);
+            preloadTimer = setTimeout(function() {
+                preloadTimer = null;
+                runPreload(job);
+            }, 80);
+        }
+
+        async function runPreload(job) {
+            if (!job || job.gen !== preloadGen) return;
+            if (axisDrag || fetchingMore || restoringView) {
+                if (job.gen !== preloadGen) return;
+                preloadTimer = setTimeout(function() { runPreload(job); }, 400);
+                return;
+            }
+            if (!lastChartData || !lastChartData.chart_data) return;
+            if (String(lastChartData.symbol || '').toUpperCase() !== job.symbol) return;
+            const n = (lastChartData.chart_data.datetime || []).length;
+            if (n >= PRELOAD_PAD * 2 + 1) return;
+            if (!lastChartData.has_more_before && !lastChartData.has_more_after) return;
+            chartLog('runPreload', {
+                around: job.around,
+                n: n,
+                before: PRELOAD_PAD,
+                after: PRELOAD_PAD
+            });
+            preloadInFlight = true;
+            fetchingMore = true;
+            preloadAbort = new AbortController();
+            try {
+                await loadChart({
+                    around: job.around,
+                    before: PRELOAD_PAD,
+                    after: PRELOAD_PAD,
+                    keepView: true,
+                    view: captureView(),
+                    background: true
+                });
+            } finally {
+                preloadInFlight = false;
+                fetchingMore = false;
+            }
+        }
+
         async function loadChart(opts) {
             opts = opts || {};
+            const isBg = !!opts.background;
             if (!document.getElementById('symbol').value) {
                 pickHighlightedSymbol();
             }
@@ -782,7 +863,7 @@
             const timeframe = document.getElementById('timeframe').value;
             
             if (!symbol) {
-                showError('Please select a symbol');
+                if (!isBg) showError('Please select a symbol');
                 return;
             }
             document.getElementById('symbol').value = symbol;
@@ -796,22 +877,28 @@
             if (opts.keepView) savedView = opts.view || captureView();
             chartLog('loadChart', {
                 keepView: !!opts.keepView,
+                background: isBg,
                 around: around,
                 before: before,
                 after: after,
                 saved: savedView && { x0: savedView.x0, x1: savedView.x1, i0: savedView.i0, i1: savedView.i1 }
             });
 
-            if (chartAbort) {
-                try { chartAbort.abort(); } catch (err) {}
+            if (!isBg) {
+                cancelPreload('user-load');
+                if (chartAbort) {
+                    try { chartAbort.abort(); } catch (err) {}
+                }
+                chartAbort = new AbortController();
             }
-            chartAbort = new AbortController();
-            const signal = chartAbort.signal;
+            const signal = isBg
+                ? (preloadAbort && preloadAbort.signal)
+                : chartAbort.signal;
             
             const loadLabel = around
                 ? (symbol + ' ' + timeframe + ' around ' + around)
                 : (symbol + ' ' + timeframe);
-            if (!opts.keepView) {
+            if (!opts.keepView && !isBg) {
                 showLoading(true, { status: 'Requesting ' + loadLabel });
             }
             
@@ -821,17 +908,25 @@
                     timeframe: timeframe,
                     indicators: JSON.stringify(selectedIndicators),
                     before: String(before),
-                    after: String(after),
-                    stream: '1'
+                    after: String(after)
                 });
+                if (!isBg) qs.set('stream', '1');
                 if (around) qs.set('around', around);
                 const data = await fetchChartData(qs, function(ev) {
-                    if (!opts.keepView) setLoadingProgress(ev.pct, ev.msg);
+                    if (!opts.keepView && !isBg) setLoadingProgress(ev.pct, ev.msg);
                 }, signal);
                 
                 if (data.error) {
-                    showError(data.error);
+                    if (!isBg) showError(data.error);
                     return;
+                }
+                if (isBg && signal && signal.aborted) return;
+                if (isBg && String(data.symbol || '').toUpperCase() !== String(getSymbol()).toUpperCase()) return;
+                if (isBg) {
+                    while (axisDrag) {
+                        await new Promise(function(resolve) { setTimeout(resolve, 80); });
+                        if (signal && signal.aborted) return;
+                    }
                 }
                 
                 renderChart(data, opts.keepView ? savedView : null);
@@ -842,17 +937,22 @@
                     applyChannelOverlay(overlay);
                     drewRails = true;
                 }
-                if (!opts.keepView) {
+                if (!opts.keepView && !isBg) {
                     showSuccess(drewRails
                         ? `Chart loaded for ${symbol} (${timeframe}) with channel rails`
                         : `Chart loaded for ${symbol} (${timeframe})`);
                 }
+                if (!isBg) schedulePreload(data);
                 
             } catch (error) {
                 if (error && error.name === 'AbortError') return;
+                if (isBg) {
+                    chartLog('preload.fail', { message: error && error.message });
+                    return;
+                }
                 showError('Error loading chart data: ' + error.message);
             } finally {
-                showLoading(false);
+                if (!isBg) showLoading(false);
             }
         }
 
@@ -1402,14 +1502,17 @@
             const span = Math.max(n - 1, 1);
             const nearLeft = r[0] <= 3;
             const nearRight = r[1] >= span - 3;
+            const preloadCovers = !!(preloadTimer || preloadInFlight);
             chartLog('maybeFetchMore', {
                 n: n,
                 linear: [round3(r[0]), round3(r[1])],
                 nearLeft: nearLeft,
                 nearRight: nearRight,
                 hasBefore: !!lastChartData.has_more_before,
-                hasAfter: !!lastChartData.has_more_after
+                hasAfter: !!lastChartData.has_more_after,
+                preloadCovers: preloadCovers
             });
+            if (preloadCovers) return;
             if (nearLeft && lastChartData.has_more_before) {
                 extendWindow('left', view);
             } else if (nearRight && lastChartData.has_more_after) {
@@ -1419,6 +1522,7 @@
 
         async function extendWindow(side, view) {
             if (fetchingMore || !lastChartData) return;
+            if (preloadTimer || preloadInFlight) return;
             const xs = lastChartData.chart_data.datetime;
             const n = xs.length;
             if (!n) return;

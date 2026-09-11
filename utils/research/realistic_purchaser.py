@@ -603,6 +603,83 @@ def purchase_next_session_open_mid(
     )
 
 
+def _rth_last_15m_bar(bars: Sequence[BarLike]) -> Optional[dict]:
+    """15:45 ET last RTH 15m, else the last RTH bar of the session."""
+    if not bars:
+        return None
+    for bar in reversed(list(bars)):
+        ts = bar.get("ts")
+        if ts is None:
+            continue
+        et = as_et(ts)
+        if et.hour == 15 and et.minute == 45:
+            return dict(bar)
+    return dict(bars[-1])
+
+
+def purchase_last_rth_open_above_mid(
+    bars_15m: Union[pd.DataFrame, Sequence[BarLike], None],
+    *,
+    signal_session_date: Any = None,
+    rail: Any = None,
+    naive_tz: str = "UTC",
+    session_index: Optional[dict] = None,
+) -> PurchaseResult:
+    """Same-session last RTH 15m: fill mid only if that bar **opened** above rail.
+
+    Open is known at 15:45 ET; mid is known at 16:00 with the daily close.
+    Skip when open <= rail or the session has no RTH 15m.
+    """
+    day = _as_session_date(signal_session_date, naive_tz=naive_tz)
+    try:
+        lvl = float(rail)
+    except (TypeError, ValueError):
+        lvl = float("nan")
+    if day is None or lvl != lvl or lvl <= 0:
+        return _result(REASON_BAD_SIGNAL)
+    indexed = session_index if session_index is not None else index_rth_15m_by_session(
+        bars_15m, naive_tz=naive_tz
+    )
+    hit = _rth_last_15m_bar(indexed.get(day) or [])
+    if hit is None:
+        return _result(REASON_END_OF_SESSION, signal_px=lvl)
+    opened = _px(hit, "open")
+    high = _px(hit, "high")
+    low = _px(hit, "low")
+    if opened is None or not _hl_ok(high, low):
+        return _result(REASON_BAD_OHLC, signal_px=lvl)
+    hit_ts = hit.get("ts")
+    start = _floor_15m(as_et(hit_ts, naive_tz=naive_tz)) if hit_ts is not None else None
+    if float(opened) <= lvl:
+        return _result(
+            REASON_NO_OPEN_CROSS,
+            signal_px=lvl,
+            exec_bar_ts=start,
+            hit_bar_ts=start,
+            bar_open=float(opened),
+            bar_high=float(high),
+            bar_low=float(low),
+            bar_close=_px(hit, "close"),
+        )
+    mid = bar_mid(float(high), float(low))
+    if mid != mid or mid <= 0:
+        return _result(REASON_BAD_OHLC, signal_px=lvl, bar_open=float(opened))
+    return _result(
+        REASON_FILLED,
+        filled=True,
+        fill_px=float(mid),
+        signal_px=lvl,
+        exec_bar_ts=start,
+        mid=mid,
+        low_to_mid=low_to_mid_pct(float(high), float(low)),
+        hit_bar_ts=start,
+        bar_open=float(opened),
+        bar_high=float(high),
+        bar_low=float(low),
+        bar_close=_px(hit, "close"),
+    )
+
+
 def _row_bar(df: pd.DataFrame, i: int, *, naive_tz: str) -> dict:
     row = df.iloc[i]
     ts = df.index[i]

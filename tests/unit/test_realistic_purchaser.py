@@ -38,6 +38,7 @@ from utils.research.realistic_purchaser import (
     purchase_next_bar_open,
     purchase_next_daily_open,
     purchase_next_session_open_mid,
+    purchase_last_rth_open_above_mid,
     purchase_open_cross_15m,
     purchase_hot_cross_15m,
     index_rth_15m_by_session,
@@ -796,6 +797,45 @@ def test_next_session_open_mid_is_0930_mid_not_same_session():
     same_day = purchase_next_session_open_mid(bars.iloc[:2], signal_session_date="2025-06-13")
     assert not same_day.filled
     assert same_day.reason == REASON_NO_NEXT_OPEN
+
+
+def test_last_rth_open_above_mid_skips_open_at_or_below_rail():
+    bars = pd.DataFrame(
+        [
+            {
+                "ts": _et(2025, 6, 13, 9, 30).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 24.35,
+                "high": 25.23,
+                "low": 24.33,
+                "close": 25.05,
+                "volume": 1e4,
+            },
+            {
+                "ts": _et(2025, 6, 13, 15, 45).astimezone(timezone.utc).replace(tzinfo=None),
+                "open": 26.40,
+                "high": 26.90,
+                "low": 26.20,
+                "close": 26.58,
+                "volume": 1e4,
+            },
+        ]
+    ).set_index("ts")
+    rail = 26.50
+    below = purchase_last_rth_open_above_mid(
+        bars, signal_session_date="2025-06-13", rail=rail
+    )
+    assert not below.filled
+    assert below.reason == REASON_NO_OPEN_CROSS
+    assert below.bar_open == pytest.approx(26.40)
+
+    got = purchase_last_rth_open_above_mid(
+        bars, signal_session_date="2025-06-13", rail=26.00
+    )
+    assert got.filled
+    assert got.fill_px == pytest.approx((26.90 + 26.20) / 2.0)
+    assert got.bar_open == pytest.approx(26.40)
+    assert as_et(got.exec_bar_ts).hour == 15
+    assert as_et(got.exec_bar_ts).minute == 45
 
 
 def test_next_bar_open_uses_next_15m_open_not_mid():

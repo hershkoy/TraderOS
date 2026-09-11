@@ -109,9 +109,14 @@ def test_charts_page_controls_and_overlay_api():
     assert "axis-zoom-y" in html
     assert "type: 'category'" in html
     assert "VIEW_PAD = 50" in html
+    assert "PRELOAD_PAD = 200" in html
+    assert "schedulePreload" in html
+    assert "runPreload" in html
+    assert "background: isBg" in html
+    assert "qs.set('stream', '1')" in html
+    assert "preloadCovers" in html
     assert "loading-bar" in html
     assert "fetchChartData" in html
-    assert "stream: '1'" in html
     assert "EDGE_FETCH_ONLY_ON_X_ZOOM_OUT" in html
     assert "CHART_DEBUG" in html
     assert "xRangeFromView" in html
