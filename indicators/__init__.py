@@ -8,10 +8,12 @@ from .momentum import RSI, MACD, Stochastic
 from .volume import Volume, OBV, VWAP
 from .trend import BollingerBands, ATR
 from .supertrend import SuperTrend
+from .atr_anchored_range import atr_anchored_range
 
 __all__ = [
     'SMA', 'EMA', 'WMA',
     'RSI', 'MACD', 'Stochastic',
     'Volume', 'OBV', 'VWAP',
-    'BollingerBands', 'ATR', 'SuperTrend'
+    'BollingerBands', 'ATR', 'SuperTrend',
+    'atr_anchored_range',
 ]

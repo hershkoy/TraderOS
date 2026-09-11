@@ -548,6 +548,9 @@ def test_render_html_includes_distributions_tab():
     assert 'id="distDayHistChart"' in html
     assert 'id="distDayTsChart"' in html
     assert "function renderDistributions" in html
+    assert "function robustScore" in html
+    assert "Robust R" in html
+    assert "E_rob = 0.5" in html
     assert ">Channel</th>" in html
     assert "copyChannelJson" in html
     assert "Channel JSON (CTF paste)" in html

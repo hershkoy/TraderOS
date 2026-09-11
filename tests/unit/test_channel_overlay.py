@@ -117,6 +117,11 @@ def test_charts_page_controls_and_overlay_api():
     assert "gotoDateOrPick" in html
     assert 'id="channel-json"' in html
     assert "Draw channel" in html
+    assert "Load a chart first, then draw the channel" in html
+    assert "if (want) await setSymbol(want);" not in html
+    assert 'id="crosshair"' in html
+    assert "updateCrosshair" in html
+    assert "plot-crosshair" in html
     assert "bindAxisZoom" in html
     assert "axis-zoom-y" in html
     assert "type: 'category'" in html
@@ -129,6 +134,13 @@ def test_charts_page_controls_and_overlay_api():
     assert "runPreload" in html
     assert "background: isBg" in html
     assert "qs.set('stream', '1')" in html
+    assert "preload.no-growth" in html
+    assert "schedulePreload.skip-repeat" in html
+    assert "keepView.now" in html
+    assert "drawChannel.goto" in html
+    assert "overlayInLoadedWindow" in html
+    assert "fitViewToOverlay" in html
+    assert "applyChannelOverlay" in html
     assert "preloadCovers" in html
     assert "loading-bar" in html
     assert "fetchChartData" in html
@@ -138,6 +150,13 @@ def test_charts_page_controls_and_overlay_api():
     assert "xLinearFromDrag" in html
     assert "[charts]" in html
     assert "if (xChanged) maybeFetchMore();" not in html
+    assert "ATR Anchored Range (session)" in html
+    assert "pushAaaOverlayTraces" in html
+    assert "readIndicatorParams" in html
+    assert "syncSelectedIndicatorParams" in html
+    assert "Prior Close" in html
+    assert "Golden pocket" in html
+    assert 'id="ATRAnchoredRange-mode"' in html
     spec = client.get("/api/goto-spec?q=2025-06-13+09:30").get_json()
     assert "2025-06-13 13:30:00" in spec["candidates"]
     geo = client.post(
@@ -187,4 +206,68 @@ def test_api_data_stream_emits_progress(monkeypatch):
     assert "Fetching VST 1h window" in text
     assert '"type": "result"' in text
     assert "chart_data" in text
+
+
+def test_api_indicators_lists_atr_anchored_range():
+    from charting_server import app
+
+    client = app.test_client()
+    data = client.get("/api/indicators").get_json()
+    assert "ATRAnchoredRange" in data
+    assert data["ATRAnchoredRange"]["defaults"]["timeframe"] == "1D"
+    assert "Prior Close" in data["ATRAnchoredRange"]["param_meta"]["mode"]["options"]
+
+
+def test_api_data_includes_aaa_overlay(monkeypatch):
+    import json
+    import pandas as pd
+    from charting_server import app
+
+    idx = pd.bdate_range("2025-05-01", periods=30)
+    close = pd.Series(100.0, index=idx)
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": 1.0,
+        }
+    )
+
+    def fake_load(symbol, timeframe, **kwargs):
+        return {"df": df, "has_more_before": False, "has_more_after": False}
+
+    monkeypatch.setattr("utils.charting.ohlcv_window.load_ohlcv_window", fake_load)
+    client = app.test_client()
+    indicators = json.dumps(
+        [
+            {
+                "name": "ATRAnchoredRange",
+                "params": {
+                    "mode": "Open",
+                    "timeframe": "1D",
+                    "period": 20,
+                    "show_gp": False,
+                },
+            }
+        ]
+    )
+    resp = client.get(
+        "/api/data",
+        query_string={
+            "symbol": "VST",
+            "timeframe": "1d",
+            "indicators": indicators,
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    aaa = payload["indicators"]["AAA"]
+    assert aaa["show_gp"] is False
+    assert len(aaa["mid"]) == len(df)
+    assert aaa["mid"][-1] == 100.0
+    assert aaa["high"][-1] > aaa["mid"][-1]
+    assert aaa["low"][-1] < aaa["mid"][-1]
+
 

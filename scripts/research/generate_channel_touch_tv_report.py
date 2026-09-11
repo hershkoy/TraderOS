@@ -831,6 +831,21 @@ def render_html(
   .card {{ background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px 14px; }}
   .card .label {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
   .card .value {{ font-size:18px; font-weight:600; margin-top:4px; }}
+  .card.has-tip {{ position:relative; cursor:help; }}
+  .card.has-tip:hover {{ z-index:8; }}
+  .card .tip-mark {{
+    display:inline-block; margin-left:4px; width:14px; height:14px; line-height:13px;
+    text-align:center; border-radius:50%; border:1px solid var(--muted);
+    font-size:10px; text-transform:none; letter-spacing:0; color:var(--muted); font-weight:700;
+  }}
+  .card.has-tip .tip {{
+    display:none; position:absolute; left:0; top:calc(100% + 6px); width:max(100%, 280px);
+    background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:10px 12px; color:var(--text); font-size:12px; font-weight:400;
+    text-transform:none; letter-spacing:0; line-height:1.45; z-index:9;
+  }}
+  .card.has-tip:hover .tip {{ display:block; }}
+  .card.has-tip .tip code {{ font-size:11px; color:#fff; }}
   .pos {{ color:var(--pos); }} .neg {{ color:var(--neg); }}
   .muted {{ color:var(--muted); font-size:12px; margin-top:8px; }}
   .chart-box {{ background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:12px; height:320px; }}
@@ -1424,6 +1439,35 @@ function dropTopN(arr, n) {{
   const kill = new Set(sortedIdx);
   return arr.filter((_,i)=>!kill.has(i));
 }}
+function fmtNum(x, digits) {{
+  if (x == null || Number.isNaN(x)) return 'n/a';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  return Number(x).toFixed(digits);
+}}
+function robustScore(gains) {{
+  // R = E_rob * (PF_rob - 1); E/PF on trade P&L % after friction / win-cap.
+  if (!gains || !gains.length) {{
+    return {{ r:null, e:0, eDrop:0, eRob:0, pf:0, pfDrop:0, pfRob:0, nDrop:0 }};
+  }}
+  const e = mean(gains);
+  const pf = pfOf(gains);
+  const dropped = dropTopN(gains, 3);
+  const eDrop = dropped.length ? mean(dropped) : 0;
+  const pfDrop = dropped.length ? pfOf(dropped) : 0;
+  const eRob = 0.5 * e + 0.5 * eDrop;
+  let pfRob = 0;
+  const pfFin = Number.isFinite(pf);
+  const dropFin = Number.isFinite(pfDrop);
+  if (!pfFin && !dropFin) pfRob = Infinity;
+  else if (!pfFin) pfRob = pfDrop > 0 ? Infinity : pfDrop;
+  else if (!dropFin) pfRob = pf > 0 ? Infinity : pf;
+  else if (pf < 0 || pfDrop < 0) pfRob = 0;
+  else pfRob = Math.sqrt(pf * pfDrop);
+  let r = null;
+  if (!Number.isFinite(pfRob)) r = eRob > 0 ? Infinity : (eRob < 0 ? -Infinity : 0);
+  else r = eRob * (pfRob - 1);
+  return {{ r, e, eDrop, eRob, pf, pfDrop, pfRob, nDrop: dropped.length }};
+}}
 function winsor(arr, cap) {{
   if (!(cap > 0)) return arr.slice();
   return arr.map(x => x > cap ? cap : x);
@@ -1928,6 +1972,8 @@ function render(sim, spy) {{
     (p.winCap > 0 ? (' · winCap ' + p.winCap + '%') : '') +
     (p.excludeSym ? (' · excl ' + p.excludeSym) : '');
 
+  const rs = robustScore(m.gainPcts || []);
+  const rCls = (rs.r == null || !Number.isFinite(rs.r)) ? '' : cls(rs.r);
   setHTML('overviewCards', `
     <div class="card"><div class="label">Net profit</div><div class="value ${{cls(m.net)}}">${{money(m.net,true)}}</div></div>
     <div class="card"><div class="label">Total return</div><div class="value ${{cls(m.ret)}}">${{pct(m.ret,true)}}</div></div>
@@ -1935,6 +1981,19 @@ function render(sim, spy) {{
     <div class="card"><div class="label">Total closed trades</div><div class="value">${{m.n}}</div></div>
     <div class="card"><div class="label">Percent profitable</div><div class="value">${{pct(m.wr,false)}}</div></div>
     <div class="card"><div class="label">Profit factor</div><div class="value">${{Number.isFinite(m.pf) ? m.pf.toFixed(3) : 'inf'}}</div></div>
+    <div class="card has-tip">
+      <div class="label">Robust R <span class="tip-mark">?</span></div>
+      <div class="value ${{rCls}}">${{fmtNum(rs.r, 3)}}</div>
+      <div class="tip">
+        Rank score for comparing books (higher is better). Uses trade P&amp;L % after friction / win-cap, not dollar equity.<br><br>
+        <code>E_rob = 0.5&times;E + 0.5&times;E_drop3</code><br>
+        <code>PF_rob = sqrt(PF &times; PF_drop3)</code><br>
+        <code>R = E_rob &times; (PF_rob &minus; 1)</code><br><br>
+        Drop-top-3 removes the three largest winners so lottery trades cannot inflate the score.<br><br>
+        Now: E ${{fmtNum(rs.e,2)}}% / drop3 ${{fmtNum(rs.eDrop,2)}}% &rarr; E_rob ${{fmtNum(rs.eRob,2)}}%<br>
+        PF ${{fmtNum(rs.pf,3)}} / drop3 ${{fmtNum(rs.pfDrop,3)}} &rarr; PF_rob ${{fmtNum(rs.pfRob,3)}}
+      </div>
+    </div>
     <div class="card"><div class="label">Avg trade</div><div class="value">${{money(m.avgTrade,true)}}</div></div>
     <div class="card"><div class="label">Avg bars in trade</div><div class="value">${{m.avgBars.toFixed(1)}}</div></div>
     ${{spy ? `<div class="card"><div class="label">S&P 500 (SPY) return</div><div class="value">${{pct(spy.ret,true)}}</div></div>

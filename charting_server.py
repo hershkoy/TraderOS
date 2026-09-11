@@ -25,6 +25,11 @@ try:
 except ImportError:
     from utils.data_aggregator import DataAggregator
 from indicators import SMA, EMA, WMA, RSI, MACD, Stochastic, Volume, OBV, VWAP, BollingerBands, ATR
+from indicators.atr_anchored_range import (
+    atr_anchored_range,
+    normalize_atr_tf,
+    overlay_payload,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -46,7 +51,36 @@ INDICATORS = {
     'OBV': {'name': 'On-Balance Volume', 'params': [], 'defaults': {}},
     'VWAP': {'name': 'Volume Weighted Average Price', 'params': [], 'defaults': {}},
     'BollingerBands': {'name': 'Bollinger Bands', 'params': ['period', 'std_dev'], 'defaults': {'period': 20, 'std_dev': 2}},
-    'ATR': {'name': 'Average True Range', 'params': ['period'], 'defaults': {'period': 14}}
+    'ATR': {'name': 'Average True Range', 'params': ['period'], 'defaults': {'period': 14}},
+    'ATRAnchoredRange': {
+        'name': 'ATR Anchored Range (session)',
+        'params': ['mode', 'timeframe', 'period', 'show_gp'],
+        'defaults': {'mode': 'Open', 'timeframe': '1D', 'period': 20, 'show_gp': False},
+        'param_meta': {
+            'mode': {
+                'type': 'select',
+                'options': ['Open', 'Prior Close'],
+                'label': 'Mode',
+                'title': 'Anchor to current session open or prior close.',
+            },
+            'timeframe': {
+                'type': 'select',
+                'options': ['1D', '1W', '1M'],
+                'label': 'ATR Timeframe',
+                'title': 'ATR timeframe. Common: 1D, 1W, 1M.',
+            },
+            'period': {
+                'type': 'number',
+                'label': 'ATR Period',
+                'title': 'Bars in the ATR. 20 daily bars ~ 1 month.',
+            },
+            'show_gp': {
+                'type': 'checkbox',
+                'label': 'Golden pocket',
+                'title': 'Fib 0.61-0.65 bands inside each ATR range.',
+            },
+        },
+    },
 }
 
 @app.route('/')
@@ -111,6 +145,38 @@ def _progress(cb, pct, msg):
         cb(int(pct), str(msg))
     except Exception:
         pass
+
+
+def _as_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _load_atr_htf_df(symbol, atr_tf, around_ts, period):
+    """Extra HTF bars so session ATR has warmup beyond the visible window."""
+    from utils.charting.ohlcv_window import clamp_pad, load_ohlcv_window
+
+    pad = clamp_pad(max(int(period) + 80, 100), 100)
+    around = ""
+    if around_ts is not None:
+        ts = pd.Timestamp(around_ts)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        around = ts.strftime("%Y-%m-%d %H:%M:%S")
+    with _DB_LOCK:
+        win = load_ohlcv_window(
+            symbol,
+            atr_tf,
+            around=around,
+            before=pad,
+            after=max(20, min(pad, 80)),
+        )
+    return win.get("df")
 
 
 def _build_chart_payload(symbol, timeframe, around, before, after, indicators_raw, progress=None):
@@ -227,6 +293,30 @@ def _build_chart_payload(symbol, timeframe, around, before, after, indicators_ra
                         params.get("period", 14),
                     )
                     indicator_data["ATR"] = result.tolist()
+                elif indicator_name == "ATRAnchoredRange":
+                    atr_tf = normalize_atr_tf(params.get("timeframe", "1D"))
+                    period = int(params.get("period", 20) or 20)
+                    atr_df = None
+                    chart_tf = str(timeframe or "").strip()
+                    if atr_tf != chart_tf:
+                        try:
+                            atr_df = _load_atr_htf_df(
+                                symbol, atr_tf, df.index[-1], period
+                            )
+                        except Exception as exc:
+                            print("ATR HTF load failed for %s %s: %s" % (symbol, atr_tf, exc))
+                            atr_df = None
+                    result = atr_anchored_range(
+                        df,
+                        atr_df,
+                        mode=params.get("mode", "Open"),
+                        atr_timeframe=atr_tf,
+                        chart_timeframe=chart_tf,
+                        period=period,
+                    )
+                    indicator_data["AAA"] = overlay_payload(
+                        result, show_gp=_as_bool(params.get("show_gp"), False)
+                    )
             except Exception as e:
                 print("ERROR calculating %s: %s" % (indicator_name, e))
                 continue

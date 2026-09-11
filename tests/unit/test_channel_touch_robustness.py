@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "research"))
 from channel_touch_robustness import (  # noqa: E402
     apply_max_open,
     drop_top_n_winners,
+    robust_score,
     summarize_gains,
     tail_dependency_ratio,
     winsorize_gains,
@@ -43,6 +44,26 @@ def test_summarize_positive():
     s = summarize_gains(np.array([1.0, 2.0, -1.0]), "x")
     assert s["n"] == 3
     assert s["expectancy_pct"] == round(2.0 / 3.0, 4)
+
+
+def test_robust_score_blends_pooled_and_drop_top3():
+    g = np.array([2.0, 2.0, 2.0, -1.0, -1.0])
+    s = robust_score(g)
+    assert s["n"] == 5
+    assert s["n_drop"] == 2
+    assert s["expectancy_pct"] == 0.8
+    assert s["profit_factor"] == 3.0
+    assert s["expectancy_drop_pct"] == -1.0
+    assert s["profit_factor_drop"] == 0.0
+    assert s["e_rob"] == -0.1
+    assert s["pf_rob"] == 0.0
+    assert s["r"] == round(-0.1 * (0.0 - 1.0), 4)
+
+
+def test_robust_score_empty():
+    s = robust_score(np.array([]))
+    assert s["n"] == 0
+    assert s["r"] is None
 
 
 def test_apply_max_open():

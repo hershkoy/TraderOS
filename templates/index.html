@@ -259,9 +259,44 @@
             position: relative;
         }
 
+        .chart-wrap {
+            position: relative;
+        }
+
         #chart.axis-zoom-y { cursor: ns-resize; }
         #chart.axis-zoom-x { cursor: ew-resize; }
         #chart.axis-zooming { user-select: none; touch-action: none; }
+        #chart.plot-crosshair .nsewdrag,
+        #chart.plot-crosshair .drag { cursor: crosshair !important; }
+
+        .crosshair {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 4;
+        }
+        .crosshair .xh-v,
+        .crosshair .xh-h {
+            position: absolute;
+            background: rgba(45, 55, 72, 0.55);
+        }
+        .crosshair .xh-v { width: 1px; }
+        .crosshair .xh-h { height: 1px; }
+        .crosshair .xh-xlabel,
+        .crosshair .xh-ylabel {
+            position: absolute;
+            background: #2d3748;
+            color: #fff;
+            font-size: 11px;
+            line-height: 1.2;
+            padding: 2px 6px;
+            border-radius: 2px;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
 
         .indicator-section {
             margin-bottom: 25px;
@@ -316,12 +351,24 @@
             margin-bottom: 3px;
         }
 
-        .param-group input {
+        .param-group input,
+        .param-group select {
             width: 100%;
             padding: 5px;
             border: 1px solid #e2e8f0;
             border-radius: 4px;
             font-size: 12px;
+        }
+        .param-group.checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .param-group.checkbox-row label {
+            margin-bottom: 0;
+        }
+        .param-group.checkbox-row input[type="checkbox"] {
+            width: auto;
         }
 
         .loading {
@@ -496,15 +543,39 @@
                         {% for indicator_name, indicator_info in indicators.items() %}
                         <div class="indicator-item" onclick="toggleIndicator('{{ indicator_name }}')">
                             <strong>{{ indicator_info.name }}</strong>
-                            <div class="indicator-params" id="params-{{ indicator_name }}">
+                            <div class="indicator-params" id="params-{{ indicator_name }}" onclick="event.stopPropagation()">
                                 {% for param in indicator_info.params %}
-                                <div class="param-group">
-                                    <label for="{{ indicator_name }}-{{ param }}">{{ param.title() }}:</label>
-                                    <input type="number" 
-                                           id="{{ indicator_name }}-{{ param }}" 
+                                {% set meta = indicator_info.get('param_meta', {}).get(param, {}) %}
+                                {% set ptype = meta.get('type', 'number') %}
+                                {% set plabel = meta.get('label', param.replace('_', ' ').title()) %}
+                                {% set ptitle = meta.get('title', '') %}
+                                {% if ptype == 'select' %}
+                                <div class="param-group" title="{{ ptitle }}">
+                                    <label for="{{ indicator_name }}-{{ param }}">{{ plabel }}:</label>
+                                    <select id="{{ indicator_name }}-{{ param }}" data-param="{{ param }}">
+                                        {% for opt in meta.get('options', []) %}
+                                        <option value="{{ opt }}" {% if opt == indicator_info.defaults.get(param, '') %}selected{% endif %}>{{ opt }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                {% elif ptype == 'checkbox' %}
+                                <div class="param-group checkbox-row" title="{{ ptitle }}">
+                                    <input type="checkbox"
+                                           id="{{ indicator_name }}-{{ param }}"
+                                           data-param="{{ param }}"
+                                           {% if indicator_info.defaults.get(param) %}checked{% endif %}>
+                                    <label for="{{ indicator_name }}-{{ param }}">{{ plabel }}</label>
+                                </div>
+                                {% else %}
+                                <div class="param-group" title="{{ ptitle }}">
+                                    <label for="{{ indicator_name }}-{{ param }}">{{ plabel }}:</label>
+                                    <input type="number"
+                                           id="{{ indicator_name }}-{{ param }}"
+                                           data-param="{{ param }}"
                                            value="{{ indicator_info.defaults.get(param, '') }}"
                                            placeholder="{{ param }}">
                                 </div>
+                                {% endif %}
                                 {% endfor %}
                             </div>
                         </div>
@@ -514,7 +585,15 @@
             </div>
 
             <div class="chart-container">
-                <div id="chart"></div>
+                <div class="chart-wrap">
+                    <div id="chart"></div>
+                    <div id="crosshair" class="crosshair" hidden>
+                        <div class="xh-v"></div>
+                        <div class="xh-h"></div>
+                        <div class="xh-xlabel"></div>
+                        <div class="xh-ylabel"></div>
+                    </div>
+                </div>
                 <div id="loading" class="loading" style="display: none;">
                     <div class="loading-card">
                         <div class="loading-title">Loading chart data</div>
@@ -552,6 +631,7 @@
         let preloadTimer = null;
         let preloadGen = 0;
         let preloadInFlight = false;
+        let lastPreloadAttempt = '';
         const EDGE_FETCH_ONLY_ON_X_ZOOM_OUT = true;
         const CHART_DEBUG = true;
 
@@ -779,6 +859,31 @@
             }
         });
 
+        function readIndicatorParams(indicatorName) {
+            const paramsDiv = document.getElementById('params-' + indicatorName);
+            const params = {};
+            if (!paramsDiv) return params;
+            paramsDiv.querySelectorAll('input, select').forEach(function(el) {
+                const paramName = el.getAttribute('data-param') || el.id.slice(indicatorName.length + 1);
+                if (!paramName) return;
+                if (el.type === 'checkbox') {
+                    params[paramName] = el.checked;
+                } else if (el.tagName === 'SELECT' || el.type === 'text') {
+                    params[paramName] = el.value;
+                } else {
+                    const n = parseFloat(el.value);
+                    params[paramName] = isFinite(n) ? n : el.value;
+                }
+            });
+            return params;
+        }
+
+        function syncSelectedIndicatorParams() {
+            selectedIndicators.forEach(function(ind) {
+                ind.params = readIndicatorParams(ind.name);
+            });
+        }
+
         function toggleIndicator(indicatorName) {
             const indicatorItem = event.currentTarget;
             const paramsDiv = document.getElementById(`params-${indicatorName}`);
@@ -792,18 +897,9 @@
                 // Add indicator
                 indicatorItem.classList.add('selected');
                 paramsDiv.classList.add('show');
-                
-                // Get parameters
-                const params = {};
-                const paramInputs = paramsDiv.querySelectorAll('input');
-                paramInputs.forEach(input => {
-                    const paramName = input.id.split('-')[1];
-                    params[paramName] = parseFloat(input.value) || 0;
-                });
-                
                 selectedIndicators.push({
                     name: indicatorName,
-                    params: params
+                    params: readIndicatorParams(indicatorName)
                 });
             }
         }
@@ -862,6 +958,7 @@
         function cancelPreload(reason) {
             const had = !!(preloadTimer || preloadInFlight || preloadAbort);
             preloadGen += 1;
+            lastPreloadAttempt = '';
             if (preloadTimer) {
                 clearTimeout(preloadTimer);
                 preloadTimer = null;
@@ -871,6 +968,12 @@
                 preloadAbort = null;
             }
             if (had && reason) chartLog('preload.cancel', { reason: reason });
+        }
+
+        function chartWindowKey(data) {
+            const xs = data && data.chart_data && data.chart_data.datetime;
+            if (!xs || !xs.length) return '';
+            return [data.symbol, data.timeframe, xs[0], xs[xs.length - 1], xs.length].join('|');
         }
 
         function nextWindowPads(data) {
@@ -896,6 +999,16 @@
         function schedulePreload(data) {
             const pads = nextWindowPads(data);
             if (!pads) return;
+            const key = [data.symbol, data.timeframe, pads.around, pads.before, pads.after, pads.n].join('|');
+            if (key === lastPreloadAttempt) {
+                chartLog('schedulePreload.skip-repeat', {
+                    n: pads.n,
+                    before: pads.before,
+                    after: pads.after
+                });
+                return;
+            }
+            lastPreloadAttempt = key;
             const job = {
                 gen: preloadGen,
                 symbol: String(data.symbol || getSymbol()).toUpperCase(),
@@ -948,7 +1061,6 @@
                     before: before,
                     after: after,
                     keepView: true,
-                    view: captureView(),
                     background: true
                 });
             } finally {
@@ -978,7 +1090,7 @@
                 : (document.getElementById('goto-date').value || '').trim();
             const before = opts.before != null ? opts.before : VIEW_PAD;
             const after = opts.after != null ? opts.after : VIEW_PAD;
-            if (opts.keepView) savedView = opts.view || captureView();
+            const keepFallback = opts.keepView ? (opts.view || null) : null;
             chartLog('loadChart', {
                 keepView: !!opts.keepView,
                 background: isBg,
@@ -1009,6 +1121,7 @@
             }
             
             try {
+                syncSelectedIndicatorParams();
                 const qs = new URLSearchParams({
                     symbol: symbol,
                     timeframe: timeframe,
@@ -1028,11 +1141,26 @@
                 }
                 if (isBg && signal && signal.aborted) return;
                 if (isBg && String(data.symbol || '').toUpperCase() !== String(getSymbol()).toUpperCase()) return;
-                if (isBg) {
+                if (isBg && chartWindowKey(data) === chartWindowKey(lastChartData)) {
+                    chartLog('preload.no-growth', {
+                        n: (data.chart_data && data.chart_data.datetime || []).length,
+                        hasBefore: !!data.has_more_before,
+                        hasAfter: !!data.has_more_after
+                    });
+                    return;
+                }
+                if (opts.keepView) {
                     while (axisDrag) {
                         await new Promise(function(resolve) { setTimeout(resolve, 80); });
                         if (signal && signal.aborted) return;
                     }
+                    savedView = captureView() || keepFallback;
+                    chartLog('keepView.now', savedView && {
+                        x0: savedView.x0,
+                        x1: savedView.x1,
+                        i0: savedView.i0,
+                        i1: savedView.i1
+                    });
                 }
                 
                 renderChart(data, opts.keepView ? savedView : null);
@@ -1040,8 +1168,8 @@
                 pendingOverlay = null;
                 let drewRails = false;
                 if (overlay && (!overlay.sym || overlay.sym === String(data.symbol).toUpperCase())) {
-                    applyChannelOverlay(overlay);
-                    drewRails = true;
+                    drewRails = !!applyChannelOverlay(overlay);
+                    if (drewRails && !opts.keepView && !isBg) fitViewToOverlay(overlay);
                 }
                 if (!opts.keepView && !isBg) {
                     showSuccess(drewRails
@@ -1060,6 +1188,55 @@
             } finally {
                 if (!isBg) showLoading(false);
             }
+        }
+
+        function pushAaaOverlayTraces(traces, xs, aaa) {
+            const line = function(y, name, color, dash, showLeg) {
+                return {
+                    x: xs,
+                    y: y,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: name,
+                    hovertemplate: name + ': %{y:.4f}<extra></extra>',
+                    line: {color: color, width: 1, dash: dash || 'solid', shape: 'hv'},
+                    connectgaps: false,
+                    showlegend: !!showLeg
+                };
+            };
+            const ob = '#ff5252';
+            const os = '#00897b';
+            const mid = '#ffa500';
+            const gp = 'rgba(223,164,87,0.85)';
+            traces.push(line(aaa.high2, 'Overbought Ext', ob, 'dot', false));
+            traces.push(Object.assign(line(aaa.high, 'Overbought', ob, 'solid', true), {
+                fill: 'tonexty',
+                fillcolor: 'rgba(255,82,82,0.06)'
+            }));
+            traces.push(Object.assign(line(aaa.low, 'Oversold', os, 'solid', true), {
+                fill: 'tonexty',
+                fillcolor: 'rgba(120,123,134,0.05)'
+            }));
+            traces.push(Object.assign(line(aaa.low2, 'Oversold Ext', os, 'dot', false), {
+                fill: 'tonexty',
+                fillcolor: 'rgba(0,137,123,0.06)'
+            }));
+            traces.push(line(aaa.mid, 'AAA Mid', mid, 'dot', true));
+            if (!aaa.show_gp) return;
+            const gpFill = function(y, name) {
+                return Object.assign(line(y, name, gp, 'solid', false), {
+                    fill: 'tonexty',
+                    fillcolor: 'rgba(223,164,87,0.19)'
+                });
+            };
+            traces.push(line(aaa.gp_high1, 'GP High 1', gp, 'solid', false));
+            traces.push(gpFill(aaa.gp_high2, 'GP High 2'));
+            traces.push(line(aaa.gp_low1, 'GP Low 1', gp, 'solid', false));
+            traces.push(gpFill(aaa.gp_low2, 'GP Low 2'));
+            traces.push(line(aaa.gp_high3, 'GP High 3', gp, 'solid', false));
+            traces.push(gpFill(aaa.gp_high4, 'GP High 4'));
+            traces.push(line(aaa.gp_low3, 'GP Low 3', gp, 'solid', false));
+            traces.push(gpFill(aaa.gp_low4, 'GP Low 4'));
         }
 
         function renderChart(data, view) {
@@ -1098,6 +1275,10 @@
             // Add indicators
             Object.keys(indicators).forEach(indicatorName => {
                 const indicatorData = indicators[indicatorName];
+                if (indicatorName === 'AAA' && indicatorData && typeof indicatorData === 'object' && !Array.isArray(indicatorData)) {
+                    pushAaaOverlayTraces(traces, chartData.datetime, indicatorData);
+                    return;
+                }
                 
                 if (indicatorName.includes('SMA') || indicatorName.includes('EMA') || indicatorName.includes('WMA')) {
                     traces.push({
@@ -1193,6 +1374,7 @@
                     visible: false
                 },
                 height: 600,
+                hovermode: 'x',
                 showlegend: true,
                 legend: {
                     x: 0,
@@ -1205,6 +1387,7 @@
             lastChartData = data;
             currentChart = document.getElementById('chart');
             currentChart._chartReady = false;
+            hideCrosshair();
             bindAxisZoom(currentChart);
             if (view && xKeep) restoreView(view);
             requestAnimationFrame(function() {
@@ -1299,6 +1482,71 @@
         function setAxisCursor(gd, hit) {
             gd.classList.toggle('axis-zoom-y', hit === 'y');
             gd.classList.toggle('axis-zoom-x', hit === 'x');
+            if (hit) gd.classList.remove('plot-crosshair');
+        }
+
+        function hideCrosshair() {
+            const box = document.getElementById('crosshair');
+            if (box) box.hidden = true;
+            if (currentChart) currentChart.classList.remove('plot-crosshair');
+        }
+
+        function formatPx(v) {
+            const n = Number(v);
+            if (!isFinite(n)) return '';
+            const a = Math.abs(n);
+            if (a >= 1000) return n.toFixed(2);
+            if (a >= 1) return n.toFixed(2);
+            return n.toFixed(4);
+        }
+
+        function updateCrosshair(gd, clientX, clientY) {
+            const box = document.getElementById('crosshair');
+            if (!box || !gd || !gd._fullLayout || axisDrag) {
+                hideCrosshair();
+                return;
+            }
+            const xa = gd._fullLayout.xaxis;
+            const ya = gd._fullLayout.yaxis;
+            if (!xa || !ya || xa._offset == null || ya._offset == null) {
+                hideCrosshair();
+                return;
+            }
+            const rect = gd.getBoundingClientRect();
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+            const plotL = xa._offset;
+            const plotT = ya._offset;
+            const plotR = xa._offset + xa._length;
+            const plotB = ya._offset + ya._length;
+            if (x < plotL || x > plotR || y < plotT || y > plotB) {
+                hideCrosshair();
+                return;
+            }
+            gd.classList.add('plot-crosshair');
+            box.hidden = false;
+            const v = box.querySelector('.xh-v');
+            const h = box.querySelector('.xh-h');
+            const xl = box.querySelector('.xh-xlabel');
+            const yl = box.querySelector('.xh-ylabel');
+            v.style.left = x + 'px';
+            v.style.top = plotT + 'px';
+            v.style.height = (plotB - plotT) + 'px';
+            h.style.top = y + 'px';
+            h.style.left = plotL + 'px';
+            h.style.width = (plotR - plotL) + 'px';
+            let yVal = ya.p2l ? ya.p2l(y - plotT) : null;
+            if (ya.l2r && yVal != null) yVal = ya.l2r(yVal);
+            yl.textContent = formatPx(yVal);
+            yl.style.left = (plotR + 4) + 'px';
+            yl.style.top = (y - 8) + 'px';
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const xLin = xa.p2l ? xa.p2l(x - plotL) : x - plotL;
+            const xCat = linearToCategory(xa, xs, xLin);
+            const tf = (lastChartData && lastChartData.timeframe) || document.getElementById('timeframe').value;
+            xl.textContent = formatBarTick(xCat, tf);
+            xl.style.left = (x - 36) + 'px';
+            xl.style.top = (plotB + 4) + 'px';
         }
 
         function flushAxisZoom(gd) {
@@ -1355,9 +1603,13 @@
             const gd = currentChart;
             if (!gd) return;
             if (!axisDrag) {
-                setAxisCursor(gd, axisHit(gd, e.clientX, e.clientY));
+                const hit = axisHit(gd, e.clientX, e.clientY);
+                setAxisCursor(gd, hit);
+                if (hit) hideCrosshair();
+                else updateCrosshair(gd, e.clientX, e.clientY);
                 return;
             }
+            hideCrosshair();
             e.preventDefault();
             const xa = gd._fullLayout && gd._fullLayout.xaxis;
             const ya = gd._fullLayout && gd._fullLayout.yaxis;
@@ -1425,6 +1677,7 @@
             gd.addEventListener('lostpointercapture', onAxisPointerUp);
             gd.addEventListener('mouseleave', function() {
                 if (!axisDrag) setAxisCursor(gd, null);
+                hideCrosshair();
             });
         }
 
@@ -1777,35 +2030,142 @@
             return inds;
         }
 
+        function overlayGotoUtc(overlay) {
+            if (!overlay) return '';
+            return overlay.goto || overlay.fill_utc || overlay.en_utc || overlay.l2_utc || overlay.l1_utc || '';
+        }
+
+        function stampInLoadedWindow(utc, xs) {
+            if (!utc || !xs || !xs.length) return false;
+            const t = chartTsMs(utc);
+            const t0 = chartTsMs(xs[0]);
+            const t1 = chartTsMs(xs[xs.length - 1]);
+            return isFinite(t) && isFinite(t0) && isFinite(t1) && t >= t0 && t <= t1;
+        }
+
+        function overlayInLoadedWindow(overlay, xs) {
+            if (!overlay || !xs) return false;
+            return stampInLoadedWindow(overlay.l1_utc, xs)
+                || stampInLoadedWindow(overlay.l2_utc, xs)
+                || stampInLoadedWindow(overlay.h2_utc, xs)
+                || stampInLoadedWindow(overlay.fill_utc, xs)
+                || stampInLoadedWindow(overlay.en_utc, xs)
+                || stampInLoadedWindow(overlay.ex_utc, xs);
+        }
+
+        function fitViewToOverlay(overlay) {
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            const gd = currentChart;
+            if (!overlay || !xs || xs.length < 2 || !gd) return;
+            const stamps = [overlay.l1_utc, overlay.l2_utc, overlay.h2_utc, overlay.fill_utc, overlay.en_utc, overlay.ex_utc];
+            let i0 = xs.length;
+            let i1 = -1;
+            stamps.forEach(function(s) {
+                if (!stampInLoadedWindow(s, xs)) return;
+                const x = snapCategory(xs, s);
+                const i = xs.indexOf(x);
+                if (i >= 0) {
+                    i0 = Math.min(i0, i);
+                    i1 = Math.max(i1, i);
+                }
+            });
+            if (i1 < i0) {
+                i0 = 0;
+                i1 = xs.length - 1;
+            }
+            const pad = Math.max(8, Math.round((i1 - i0) * 0.15) || 8);
+            i0 = Math.max(0, i0 - pad);
+            i1 = Math.min(xs.length - 1, i1 + pad);
+            let lo = Infinity;
+            let hi = -Infinity;
+            const d = lastChartData.chart_data;
+            for (let i = i0; i <= i1; i++) {
+                const a = Number(d.low[i]);
+                const b = Number(d.high[i]);
+                if (isFinite(a)) lo = Math.min(lo, a);
+                if (isFinite(b)) hi = Math.max(hi, b);
+                const sy = railY(overlay, chartTsMs(xs[i]));
+                if (isFinite(sy)) {
+                    lo = Math.min(lo, sy, sy + overlay.w);
+                    hi = Math.max(hi, sy, sy + overlay.w);
+                }
+            }
+            if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return;
+            const p = (hi - lo) * 0.12;
+            chartLog('fitViewToOverlay', { i0: i0, i1: i1, y0: lo - p, y1: hi + p });
+            Plotly.relayout(gd, {
+                'xaxis.range': [i0 - 0.5, i1 + 0.5],
+                'xaxis.autorange': false,
+                'yaxis.range': [lo - p, hi + p],
+                'yaxis.autorange': false
+            });
+        }
+
         function applyChannelOverlay(overlay) {
-            if (!lastChartData || !overlay) return;
+            if (!lastChartData || !overlay) {
+                chartLog('applyChannelOverlay.skip', {
+                    hasData: !!lastChartData,
+                    hasOverlay: !!overlay
+                });
+                return false;
+            }
             const gd = document.getElementById('chart');
-            const drop = overlayTraceIndices(gd);
-            if (drop.length) Plotly.deleteTraces(gd, drop);
+            if (!gd) {
+                chartLog('applyChannelOverlay.skip', { reason: 'no-plot' });
+                return false;
+            }
             const xs = lastChartData.chart_data.datetime;
+            if (!xs || xs.length < 2) {
+                chartLog('applyChannelOverlay.skip', { reason: 'too-few-bars' });
+                return false;
+            }
             const t0 = chartTsMs(xs[0]);
             const t1 = chartTsMs(xs[xs.length - 1]);
             const y0 = railY(overlay, t0);
             const y1 = railY(overlay, t1);
             const w = overlay.w;
+            chartLog('applyChannelOverlay', {
+                sym: overlay.sym,
+                n: xs.length,
+                x0: xs[0],
+                x1: xs[xs.length - 1],
+                y0: y0,
+                y1: y1,
+                w: w
+            });
+            if (!isFinite(y0) || !isFinite(y1) || !isFinite(w)) {
+                chartLog('applyChannelOverlay.skip', { reason: 'non-finite-rails', y0: y0, y1: y1, w: w });
+                return false;
+            }
+            const drop = overlayTraceIndices(gd);
+            if (drop.length) Plotly.deleteTraces(gd, drop);
+            const supportY = [];
+            const resistY = [];
+            for (let i = 0; i < xs.length; i++) {
+                const y = railY(overlay, chartTsMs(xs[i]));
+                supportY.push(y);
+                resistY.push(y + w);
+            }
             const traces = [
                 {
-                    x: [xs[0], xs[xs.length - 1]],
-                    y: [y0, y1],
+                    x: xs,
+                    y: supportY,
                     type: 'scatter',
                     mode: 'lines',
                     name: OVERLAY_NAMES.support,
-                    line: { color: '#26a69a', width: 2 }
+                    line: { color: '#26a69a', width: 2 },
+                    hoverinfo: 'skip'
                 },
                 {
-                    x: [xs[0], xs[xs.length - 1]],
-                    y: [y0 + w, y1 + w],
+                    x: xs,
+                    y: resistY,
                     type: 'scatter',
                     mode: 'lines',
                     name: OVERLAY_NAMES.resist,
                     line: { color: '#ef5350', width: 2 },
                     fill: 'tonexty',
-                    fillcolor: 'rgba(38, 166, 154, 0.12)'
+                    fillcolor: 'rgba(38, 166, 154, 0.12)',
+                    hoverinfo: 'skip'
                 }
             ];
             const mx = [];
@@ -1814,7 +2174,15 @@
             const mc = [];
             function addMark(utc, y, label, color) {
                 if (!utc || y == null || !isFinite(y)) return;
-                mx.push(utc);
+                let x = utc;
+                if (xs.indexOf(utc) === -1) {
+                    const t = chartTsMs(utc);
+                    const t0 = chartTsMs(xs[0]);
+                    const t1 = chartTsMs(xs[xs.length - 1]);
+                    if (!isFinite(t) || t < t0 || t > t1) return;
+                    x = snapCategory(xs, utc);
+                }
+                mx.push(x);
                 my.push(y);
                 mt.push(label);
                 mc.push(color);
@@ -1845,14 +2213,37 @@
                     textfont: { size: 10, color: '#4a5568' }
                 });
             }
-            Plotly.addTraces(gd, traces);
             lastOverlay = overlay;
+            try {
+                Plotly.addTraces(gd, traces);
+            } catch (err) {
+                chartLog('applyChannelOverlay.fail', { message: err && err.message });
+                return false;
+            }
+            chartLog('applyChannelOverlay.done', { traces: traces.length, marks: mx.length });
+            return true;
         }
 
         async function drawChannel() {
             const text = (document.getElementById('channel-json').value || '').trim();
+            const loaded = lastChartData
+                ? String(lastChartData.symbol || getSymbol()).toUpperCase()
+                : String(getSymbol() || '').toUpperCase();
+            chartLog('drawChannel.start', {
+                nText: text.length,
+                hasChart: !!(lastChartData && lastChartData.chart_data),
+                nBars: lastChartData && lastChartData.chart_data && (lastChartData.chart_data.datetime || []).length,
+                loaded: loaded,
+                tf: lastChartData && lastChartData.timeframe,
+                preview: text.slice(0, 120)
+            });
             if (!text) {
                 showError('Paste Channel JSON from /hot first');
+                return;
+            }
+            if (!lastChartData || !lastChartData.chart_data) {
+                chartLog('drawChannel.skip', { reason: 'no-chart' });
+                showError('Load a chart first, then draw the channel');
                 return;
             }
             let overlay;
@@ -1863,20 +2254,56 @@
                     body: JSON.stringify({ text: text })
                 });
                 overlay = await response.json();
-                if (overlay.error) {
-                    showError(overlay.error);
+                chartLog('drawChannel.parsed', {
+                    ok: response.ok,
+                    status: response.status,
+                    sym: overlay && overlay.sym,
+                    w: overlay && overlay.w,
+                    error: overlay && overlay.error
+                });
+                if (!response.ok || overlay.error) {
+                    showError(overlay.error || ('Channel JSON failed (' + response.status + ')'));
                     return;
                 }
             } catch (err) {
+                chartLog('drawChannel.parse-fail', { message: err && err.message });
                 showError('Could not parse Channel JSON');
                 return;
             }
-            lastOverlay = overlay;
-            pendingOverlay = overlay;
-            const want = overlay.sym;
-            if (want) await setSymbol(want);
-            const around = overlay.goto || overlay.fill_utc || overlay.l2_utc || '';
-            await loadChart({ around: around, before: VIEW_PAD, after: VIEW_PAD });
+            if (overlay.sym && overlay.sym !== loaded) {
+                chartLog('drawChannel.skip', { reason: 'symbol-mismatch', overlay: overlay.sym, loaded: loaded });
+                showError('Channel JSON is for ' + overlay.sym + ', chart is ' + loaded);
+                return;
+            }
+            const xs = lastChartData.chart_data.datetime;
+            if (!overlayInLoadedWindow(overlay, xs)) {
+                const around = overlayGotoUtc(overlay);
+                chartLog('drawChannel.goto', {
+                    around: around,
+                    x0: xs[0],
+                    x1: xs[xs.length - 1],
+                    fill: overlay.fill_utc,
+                    l1: overlay.l1_utc,
+                    l2: overlay.l2_utc
+                });
+                if (!around) {
+                    showError('Channel JSON has no fill/L2 date to go to');
+                    return;
+                }
+                lastOverlay = overlay;
+                pendingOverlay = overlay;
+                const gotoEl = document.getElementById('goto-date');
+                if (gotoEl) gotoEl.value = around;
+                showSuccess('Channel fill is ' + around + ', loading that window');
+                await loadChart({ around: around, before: VIEW_PAD, after: VIEW_PAD });
+                return;
+            }
+            pendingOverlay = null;
+            const drew = applyChannelOverlay(overlay);
+            if (drew) fitViewToOverlay(overlay);
+            chartLog('drawChannel.done', { drew: !!drew, loaded: loaded, inWindow: true });
+            if (drew) showSuccess('Drew channel rails on ' + loaded);
+            else showError('Could not draw channel rails (see [charts] logs)');
         }
 
         function clearChannel() {

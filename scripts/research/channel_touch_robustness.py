@@ -104,6 +104,87 @@ def drop_top_n_winners(gains: np.ndarray, n: int) -> np.ndarray:
     return g[mask]
 
 
+def _geo_pf(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    if a is None or b is None:
+        return None
+    if not np.isfinite(a) and not np.isfinite(b):
+        return float("inf")
+    if not np.isfinite(a):
+        return float("inf") if (b is not None and b > 0) else b
+    if not np.isfinite(b):
+        return float("inf") if a > 0 else a
+    if a < 0 or b < 0:
+        return 0.0
+    return float(np.sqrt(a * b))
+
+
+def robust_score(gains: np.ndarray, *, drop_n: int = 3) -> dict:
+    """Pooled vs drop-top-N rank score: R = E_rob * (PF_rob - 1).
+
+    E_rob = 0.5*E + 0.5*E_dropN
+    PF_rob = sqrt(PF * PF_dropN)
+
+    E/PF are on trade P&L % (same units as the robustness table), not dollar equity.
+    """
+    g = np.asarray(gains, dtype=float)
+    g = g[np.isfinite(g)]
+    empty = {
+        "n": 0,
+        "n_drop": 0,
+        "expectancy_pct": None,
+        "expectancy_drop_pct": None,
+        "e_rob": None,
+        "profit_factor": None,
+        "profit_factor_drop": None,
+        "pf_rob": None,
+        "r": None,
+    }
+    if g.size == 0:
+        return empty
+    e = float(np.mean(g))
+    pf = _pf(g)
+    dropped = drop_top_n_winners(g, int(drop_n))
+    if dropped.size == 0:
+        e_drop = 0.0
+        pf_drop: Optional[float] = 0.0
+    else:
+        e_drop = float(np.mean(dropped))
+        pf_drop = _pf(dropped)
+    e_rob = 0.5 * e + 0.5 * e_drop
+    pf_rob = _geo_pf(pf if pf is not None else 0.0, pf_drop if pf_drop is not None else 0.0)
+    r: Optional[float]
+    if pf_rob is None:
+        r = None
+    elif not np.isfinite(pf_rob):
+        if e_rob > 0:
+            r = float("inf")
+        elif e_rob < 0:
+            r = float("-inf")
+        else:
+            r = 0.0
+    else:
+        r = float(e_rob * (pf_rob - 1.0))
+
+    def _rnd(x: Optional[float]) -> Optional[float]:
+        if x is None:
+            return None
+        if not np.isfinite(x):
+            return None
+        return round(float(x), 4)
+
+    return {
+        "n": int(g.size),
+        "n_drop": int(dropped.size),
+        "expectancy_pct": round(e, 4),
+        "expectancy_drop_pct": round(e_drop, 4),
+        "e_rob": round(e_rob, 4),
+        "profit_factor": _rnd(pf),
+        "profit_factor_drop": _rnd(pf_drop),
+        "pf_rob": _rnd(pf_rob),
+        "r": None if r is None or not np.isfinite(r) else round(float(r), 4),
+    }
+
+
 def drop_top_winner_fraction(gains: np.ndarray, frac: float) -> np.ndarray:
     g = np.asarray(gains, dtype=float)
     n = max(1, int(np.ceil(frac * g.size)))

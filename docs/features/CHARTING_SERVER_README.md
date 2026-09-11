@@ -9,7 +9,7 @@ A modern web-based charting server for visualizing financial data from your Back
   - Moving Averages (SMA, EMA, WMA)
   - Momentum (RSI, MACD, Stochastic)
   - Volume (Volume, OBV, VWAP)
-  - Trend (Bollinger Bands, ATR)
+  - Trend (Bollinger Bands, ATR, ATR Anchored Range session overlay)
 - **Timeframe Support**: Automatic data aggregation for different timeframes
 - **Modern UI**: Responsive design with glassmorphism effects
 - **Real-time Data**: Load data from your existing parquet files
@@ -109,6 +109,7 @@ The task runs `charting_server.py --service` (debug off, stdout to the log). Do 
 ### Trend
 - **Bollinger Bands**: Period and Standard Deviation parameters
 - **ATR (Average True Range)**: Period parameter
+- **ATR Anchored Range (session)**: TradeSeekers-style overlay. At each new ATR timeframe (1D / 1W / 1M), mid is the session open or prior close and half-range is ATR/2. Bands stay flat until the next session. On an intraday chart, ATR is the last completed higher-timeframe bar. Optional golden-pocket (0.61–0.65) fills.
 
 ## 🔧 Usage
 
