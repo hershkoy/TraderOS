@@ -8,4 +8,8 @@ Short notes. Add as needed.
 
 **AAA %b / ATR Anchored Range** — Session overlay on Charts: at each new ATR timeframe (usually 1D), mid = session open or prior close and half-range = ATR/2. Bands stay flat until the next session (TradeSeekers AAA %b overlay). Intraday uses the last completed HTF ATR (causal). Daily midnight-UTC stamps keep that calendar date.
 
+**Session volume-delta** — Buy vs sell volume estimated from candle geometry (`volume * (close-low)/(high-low)` per bar), then summed over RTH 15m bars. Matches the Volume Delta pane on charts, not a POC/VAH/VAL volume profile.
+
+**Evening Doji Star** — Bearish three-candle reversal: large bullish candle, gapped-up doji (buyer exhaustion), strong bearish third candle that closes into the first body. On the last-15m book the fill session may be candle 1; exit is the next 15m mid after candle 3's close.
+
 **N+1 mid (sell)** — Decision on completed bar N (15m low tagged the ATR/trail stop); fill is the next RTH 15m midpoint. Overnight to the next 09:30 ET bar is allowed because you already have a position. Not the same as a buy next-mid (last RTH 15:45 has no same-session next bar and cancels).

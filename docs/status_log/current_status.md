@@ -59,7 +59,9 @@ Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edg
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-11):** Rebuilt last-15m HTML after the LAUR detector fix. Unique signal-close span365 **n=2310 E +2.50 PF 2.03**. Last-15m + 15m N+1 mid **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). LAUR 2021 fill is 2021-09-10 @ 16.82 (Mar-4 rails); Oct 28 gone. HTML: `…165800.html`. **No promote.** See [LAUR false shakeout](edge_hunt/channel_touch/2026-09-11_laur_false_shakeout.md).
+**Latest (2026-09-11):** Last-15m volume-delta / geometry overlays on the 2297-trade 15m-next-mid book. Overlay A (Evening Doji Star or 2 seller sessions) n=2297 E +0.46 PF 1.19 geo 1.30 vs +0.27 / 1.09 / 1.10 — clips winner $ (−2129 vs loser +2569); 2022-23 still −0.27 / 0.90. Form 0.25 skip hurts (E +0.13). Pos 1.25/1.50 mild. Delayed 2nd-close 13 fills E −2.82. AMPL's crash is a gap; textbook doji/seller rules do not fire first. **No promote.** See [volume geometry](edge_hunt/channel_touch/2026-09-11_last_15m_volume_geometry.md).
+
+**Prior (2026-09-11):** Rebuilt last-15m HTML after the LAUR detector fix. Unique signal-close span365 **n=2310 E +2.50 PF 2.03**. Last-15m + 15m N+1 mid **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). LAUR 2021 fill is 2021-09-10 @ 16.82 (Mar-4 rails); Oct 28 gone. HTML: `…165800.html`. **No promote.** See [LAUR false shakeout](edge_hunt/channel_touch/2026-09-11_laur_false_shakeout.md).
 
 **Prior (2026-09-11):** Last-15m-open-mid kept-sell was the daily same-bar stop clip (WVE 2023-12-06 buy 6.85 / next-day 6.0254). Realistic sells, occupancy not re-walked: **15m N→N+1 mid n=2779 E +0.35 PF 1.11** (fric0.25 E +0.10 PF 1.03); **daily-close → next 09:30 15m mid n=2778 E +0.47 PF 1.14** (fric0.25 E +0.22 PF 1.06). vs kept-sell n=2779 E +0.96 PF 1.29. 2022-23 fails. **No promote.** See [realistic sells](edge_hunt/channel_touch/2026-09-11_channel_touch_last_15m_realistic_sells.md).
 
