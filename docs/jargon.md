@@ -30,4 +30,9 @@ Short notes. Add as needed.
 
 **Causal HMM skip** — Expanding 2/3-state Gaussian HMM on daily SPY log-return / 60d vol / 20d mean + VIX change + VIX/VIX3M (optional TLT/GLD/UUP). Fit through t only, Wasserstein-match states so bull = highest SPY-drift mean, join P(bull) at prior session. Last-15m P(bull)<0.5/0.65 fails like SPY SMA (2022 leftover harder; 3-state zeros 2022 and wrecks 2020-21). No promote.
 
+**Universe SMA20 breadth** — Daily fraction of the ALPACA ~2,217-name panel with close > own SMA20 (names without SMA20 omitted). Last-15m uses prior session. B50 (<0.50) and below-expanding-median skips fail the 2022/winner-$ gate. Not SPY.
+
+**RTH exhaustion (last-15m)** — (15:45 ET open − 09:30 ET open) / ATR. 15m ATR14 uses completed bars before 15:45; daily ATR is prior session. Skip if already >=2 15m-ATR or >=1 daily ATR. X_d1 lifts pooled E slightly and makes 2022 leftover worse. No promote.
+
+
 
