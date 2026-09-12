@@ -262,7 +262,7 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
         return trades
     out = trades.copy()
     if spy_df is None or spy_df.empty or "close" not in spy_df.columns:
-        for col in ("spy_ret_20d", "spy_above_sma50", "spy_atr_pct"):
+        for col in ("spy_ret_20d", "spy_above_sma50", "spy_above_sma200", "spy_atr_pct"):
             if col not in out.columns:
                 out[col] = np.nan
         return out
@@ -275,6 +275,7 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
     spy = spy.sort_index()
     close = spy["close"].astype(float)
     sma50 = close.rolling(50, min_periods=50).mean()
+    sma200 = close.rolling(200, min_periods=200).mean()
     if {"high", "low"}.issubset(spy.columns):
         atr = ATR(spy["high"].astype(float), spy["low"].astype(float), close, period=14)
     else:
@@ -289,12 +290,14 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
 
     ret20: List[Optional[float]] = []
     above: List[Optional[int]] = []
+    above200: List[Optional[int]] = []
     atr_list: List[Optional[float]] = []
     for _, row in out.iterrows():
         asof = completed_asof(row, series_is_daily=spy_is_daily)
         if asof is None:
             ret20.append(None)
             above.append(None)
+            above200.append(None)
             atr_list.append(None)
             continue
         hist_c = close.loc[:asof]
@@ -312,6 +315,11 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
             above.append(None)
         else:
             above.append(int(float(hist_c.iloc[-1]) > float(hist_s.iloc[-1])))
+        hist_s200 = sma200.loc[:asof]
+        if hist_c.empty or hist_s200.empty or not np.isfinite(float(hist_s200.iloc[-1])):
+            above200.append(None)
+        else:
+            above200.append(int(float(hist_c.iloc[-1]) > float(hist_s200.iloc[-1])))
         hist_a = atr_pct.loc[:asof]
         if hist_a.empty or not np.isfinite(float(hist_a.iloc[-1])):
             atr_list.append(None)
@@ -320,5 +328,6 @@ def enrich_spy_entry_features(trades: pd.DataFrame, spy_df: pd.DataFrame) -> pd.
 
     out["spy_ret_20d"] = ret20
     out["spy_above_sma50"] = above
+    out["spy_above_sma200"] = above200
     out["spy_atr_pct"] = atr_list
     return out

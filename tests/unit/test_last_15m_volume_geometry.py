@@ -11,6 +11,7 @@ from utils.research.last_15m_volume_geometry import (
     apply_early_exit,
     delayed_second_close,
     skip_mask,
+    splice_calendar_year,
     winner_cut_early_exit,
     winner_cut_skip,
 )
@@ -265,3 +266,25 @@ def test_failed_breakout_exits_on_first_close_at_or_below_resist():
     assert got.sell_ts == _et(2023, 7, 24, 9, 30)
     assert got.sell_px == pytest.approx(bar_mid(21.2, 20.6))
     assert got.gain_pct > -23.0
+
+
+def test_splice_calendar_year_replaces_only_that_year():
+    base = pd.DataFrame(
+        [
+            {"stock": "AAA", "buy_date": "2021-06-01", "gain_pct": 1.0},
+            {"stock": "BBB", "buy_date": "2022-03-01", "gain_pct": -5.0},
+            {"stock": "CCC", "buy_date": "2023-01-01", "gain_pct": 2.0},
+        ]
+    )
+    repl = pd.DataFrame(
+        [
+            {"stock": "L3A", "buy_date": "2022-02-01", "gain_pct": 0.4},
+            {"stock": "L3B", "buy_date": "2022-11-01", "gain_pct": 0.2},
+            {"stock": "L3C", "buy_date": "2021-12-01", "gain_pct": 9.0},
+        ]
+    )
+    got = splice_calendar_year(base, repl, year=2022, src_base="1d", src_repl="l3")
+    assert list(got["stock"]) == ["AAA", "L3A", "L3B", "CCC"]
+    assert list(got["splice_src"]) == ["1d", "l3", "l3", "1d"]
+    assert "BBB" not in set(got["stock"])
+    assert "L3C" not in set(got["stock"])

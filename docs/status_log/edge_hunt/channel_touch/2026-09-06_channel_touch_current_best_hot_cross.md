@@ -1,6 +1,8 @@
 # hot-cross into `current_best/` — 2026-09-06
 
-`current_best/` is the **live-executable, causal** gate, even if the book loses. That is the number the next 1d idea has to beat.
+**Superseded 2026-09-12:** clip-exit HTML moved to `1d_unrealistic/1d_hot_cross.html`. 1d slot is last-15m + 15m N+1 mid. See [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
+
+`current_best/` is the **live-executable, causal** gate, even if the book is fragile. That is the number the next 1d idea has to beat.
 
 ## What went in
 
@@ -27,4 +29,6 @@ Stable trades: `reports/ascending_channels/channel_touch_1d_hot_cross.csv`.
 - **Not the nightly fill.** Nightly still uses the unrealistic same-bar rail clip.
 - **Not next-mid** (n=1986 E +2.24 PF 1.89) — that overlay still keys off rail X after the EOD close.
 
-Grade the next live-executable 1d scan against **n=4079 E −0.19 PF 0.94**, not against clip n=4558 E +2.62 PF 2.10.
+**Demoted 2026-09-12:** occupancy sells were the daily clip. Honest 15m N+1 mid n=4079 E −0.83 PF 0.77. HTML is `1d_unrealistic/1d_hot_cross.html`. 1d slot is last-15m + 15m N+1 mid **n=2297 E +0.27 PF 1.09**. See [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
+
+Grade live 1d ideas against last-15m, not against this clip-exit book or clip n=4558 E +2.62 PF 2.10.

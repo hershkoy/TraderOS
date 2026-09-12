@@ -341,6 +341,36 @@ def book_stats(gains: pd.Series) -> dict:
     }
 
 
+def splice_calendar_year(
+    base: pd.DataFrame,
+    replacement: pd.DataFrame,
+    *,
+    year: int,
+    date_col: str = "buy_date",
+    src_base: str = "base",
+    src_repl: str = "replacement",
+) -> pd.DataFrame:
+    """Keep ``base`` except calendar ``year``, which comes from ``replacement``.
+
+    Occupancy is not re-walked. Column union; missing values stay NA.
+    """
+    if date_col not in base.columns or date_col not in replacement.columns:
+        raise ValueError("splice needs %s on both frames" % date_col)
+
+    def _year_mask(df: pd.DataFrame) -> pd.Series:
+        d = pd.to_datetime(df[date_col], errors="coerce")
+        return d.dt.year == int(year)
+
+    left = base.loc[~_year_mask(base)].copy()
+    right = replacement.loc[_year_mask(replacement)].copy()
+    left["splice_src"] = src_base
+    right["splice_src"] = src_repl
+    out = pd.concat([left, right], axis=0, ignore_index=True, sort=False)
+    out["_splice_sort"] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out.sort_values("_splice_sort", kind="mergesort").drop(columns=["_splice_sort"])
+    return out.reset_index(drop=True)
+
+
 def geom_mean_year_pf(year_df: pd.DataFrame, *, min_n: int = MIN_YEAR_N) -> Optional[float]:
     if year_df is None or year_df.empty:
         return None

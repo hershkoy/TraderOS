@@ -4,6 +4,9 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-12 | [1d hot-cross clip-exits out of current_best](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md) |
+| 2026-09-12 | [current_best 1d hot-cross realistic sells](2026-09-12_channel_touch_hot_cross_realistic_sells.md) |
+| 2026-09-12 | [IB hist L1 AMPL/VST/TARS](2026-09-12_ib_historical_l1_ampl_vst_tars.md) |
 | 2026-08-22 | [Edge improve (RS top1)](2026-08-22_channel_touch_edge_improve.md) |
 | 2026-08-23 | [TTM squeeze adaptive trail](2026-08-23_channel_touch_squeeze_trail.md) |
 | 2026-08-23 | [Refreshed-universe scan + TV watchlist](2026-08-23_channel_touch_refreshed_universe_scan.md) |
@@ -58,12 +61,14 @@ Ascending-channel / channel-touch research and nightly productionization.
 | 2026-09-11 | [LAUR false shakeout (rail inside, one H2 pair)](2026-09-11_laur_false_shakeout.md) |
 | 2026-09-11 | [Last-15m volume-delta / geometry overlays](2026-09-11_last_15m_volume_geometry.md) |
 | 2026-09-12 | [Last-15m follow-up overlays (doji-only / failed-breakout / session-OHLC)](2026-09-12_last_15m_followup_overlays.md) |
+| 2026-09-12 | [Why 2022-23 stays red; L3 vs last-15m H2](2026-09-12_last_15m_2022_23_regime.md) |
+| 2026-09-12 | [Synthetic splice: 2022 last-15m H2 replaced by 15m L3](2026-09-12_synthetic_2022_l3_splice.md) |
 
 Related: [current status](../../current_status.md), [edge hunt](../README.md), [realistic purchasing](../../../features/realistic_purchasing.md), [TV trendline alerts](../../../features/tv_channel_trendline_alert.md)
 
 ## Keepers (live / research)
 
-Stable HTML: **`current_best/`** is live-executable causal books even if losing — `1d_hot_cross.html` / `1d_channel_touch.html` (buy-now lerp85 **n=4079 E −0.19 PF 0.94**, the 1d number to beat), `15m_channel_touch.html` (wait-12 L3 signal-close **n=1744 E +0.13 PF 1.22**), plus realistic 15m H2/H5 (losing/flat). **Clip 1d** in `reports/ascending_channels/1d_unrealistic/` (`1d_h2_resist_break.html` nightly H2 + shakeout, `1d_l3_touch.html` retired L3). Write-up: `current_best/README.md`, `1d_unrealistic/README.md`, [realistic purchasing](../../../features/realistic_purchasing.md).
+Stable HTML: **`current_best/`** is live-executable causal books even if fragile — `1d_last_15m.html` / `1d_channel_touch.html` (last-15m-open-mid + 15m N+1 mid **n=2297 E +0.27 PF 1.09**, fric0.25 E +0.02 PF 1.01 — the 1d number to beat; 2022-23 fails; **not a promote**), `15m_channel_touch.html` (wait-12 L3 signal-close **n=1744 E +0.13 PF 1.22**), plus realistic 15m H2/H5 (losing/flat). **Clip / clip-exit 1d** in `reports/ascending_channels/1d_unrealistic/` (`1d_h2_resist_break.html` nightly H2 + shakeout, `1d_hot_cross.html` lerp85 occupancy-sell n=4079 E −0.19 PF 0.94, `1d_l3_touch.html` retired L3). Write-up: `current_best/README.md`, `1d_unrealistic/README.md`, [realistic purchasing](../../../features/realistic_purchasing.md), [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
 
 - **Live / nightly:** `--h2-resist-break --h2-resist-break-only --shakeout-breakout --min-l3-wait-bars 6` + span365; **no** RSI / in-channel / beyond-width; **unique-symbol/day** (not RS top1); ATR k=2.0 clamped 1.5%–6%; windowed 504/252. Optional `--max-entries-per-day 1` restores RS top1. Occupancy skips a second fill while the first trade is open. `--no-shakeout-breakout` restores first-break-and-done. Fill is the **unrealistic** same-bar rail clip (not `--realistic-fill`).
 - **Retired L3 keeper:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25 (`1d_unrealistic/1d_l3_touch.html`)
@@ -71,9 +76,14 @@ Stable HTML: **`current_best/`** is live-executable causal books even if losing 
 - **Live / nightly sample (causal unrealistic rail-clip 2026-09-03):** unique-symbol H2 span365 **n=3364 E +2.40 PF 2.02** (optional RS top1 n=1126 E +2.94 PF 2.24). Leaky Aug-29 was n=2253 E +2.80 PF 2.21.
 - **Shakeout then second H2 break (2026-09-05):** `--shakeout-breakout` any-closed min_inside=1. Close-fill sleeve **n=1439 E +3.16 PF 2.32**; combined unique **n=4558 E +2.62 PF 2.10**. **Nightly on** (unrealistic close / rail-clip + re-arm). Realistic next-mid unique **n=1986 E +2.24 PF 1.89** (2026-09-06 rebuild; pre-fix n=1239 E +2.27 PF 1.92) vs frozen n=713 E +1.78 PF 1.72 — HTML in `1d_unrealistic/1d_channel_touch.html` (pre-fix overlay until regen; not `current_best`). Hard-stop-only / min_inside=5 weaker. Not L3 `--shakeout-rebuy-bars`. See [shakeout breakout](2026-09-05_channel_touch_shakeout_breakout.md).
 - **Clip 1d HTML out of `current_best` (2026-09-06):** daily rail clip is not live-executable after EOD close-confirm. Those reports stay in `1d_unrealistic/`. See [1d out of current_best](2026-09-06_channel_touch_1d_out_of_current_best.md) and [realistic purchasing](../../../features/realistic_purchasing.md).
-- **1d hot-cross buy-now (2026-09-06):** `--intraday-trigger hot-cross` `--hot-cross-fill lerp85` — first 15m high >= daily rail after wait, no EOD close. Unique span365 + shakeout **n=4079 E −0.19 PF 0.94** (parent 3328 / extras 751; ~60% hard-stop; 2022-23 E −0.90). RDWR 2025-06-13 never prints (occupancy from 2025-06-05 10:30 ET rail poke 24.42). **No promote.** **`current_best/` 1d slot** (`1d_hot_cross.html`) — the number to beat. Nightly stays clip. See [hot-cross](2026-09-06_channel_touch_1d_15m_trigger.md) and [current_best copy](2026-09-06_channel_touch_current_best_hot_cross.md).
+- **1d hot-cross buy-now (2026-09-06 / demoted 2026-09-12):** `--intraday-trigger hot-cross` `--hot-cross-fill lerp85` — first 15m high >= daily rail after wait, no EOD close. Unique span365 + shakeout **n=4079 E −0.19 PF 0.94** (parent 3328 / extras 751; ~60% hard-stop; 2022-23 E −0.90). Occupancy sells are the daily clip. Honest 15m N+1 mid **n=4079 E −0.83 PF 0.77**. **`1d_unrealistic/1d_hot_cross.html`**. `/hot` analog, not the 1d gate. See [hot-cross](2026-09-06_channel_touch_1d_15m_trigger.md) and [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
+- **1d last-15m into current_best (2026-09-12):** Last RTH 15m mid if open > rail + **15m N+1 mid** sells. Unique span365 + shakeout **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). Best live 1d with realistic buy and sell. 2022-23 fails. **Not a promote.** `current_best/1d_last_15m.html` / `1d_channel_touch.html`. See [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md) and [LAUR](2026-09-11_laur_false_shakeout.md).
+- **current_best 1d hot-cross realistic sells (2026-09-12):** kept-sell n=4079 E −0.19 PF 0.94 was the daily same-bar clip. **15m N→N+1 mid n=4079 E −0.83 PF 0.77**; **daily-close → next 09:30 mid n=4078 E −0.65 PF 0.83**. Occupancy not re-walked. HCC 2019-05-02 clip −6% vs 15m −13.8%. **No promote.** See [hot-cross realistic sells](2026-09-12_channel_touch_hot_cross_realistic_sells.md).
 - **1d close-cross + trail MAE (2026-09-06):** `--intraday-trigger close-cross` `--trail-mae`. First 15m **close** > daily rail, fill next 15m mid. RDWR-only: 6 fills; 2025-06-13 never prints (Jun-5 11:15 ET). **No promote.** See [close-cross MAE](2026-09-06_channel_touch_close_cross_mae.md).
 - **Close-cross MAE ridge (2026-09-07):** year-split ridge (train < 2023) from confirm features to `mae_pct` then a padded stop. 50-name holdout and 300-name holdout both **lose E/PF vs trail-only** (300 trail n=712 E +1.28 PF 1.33 vs re-grid stop E −0.11 PF 0.97). **No promote.** See [MAE ridge](2026-09-07_channel_touch_close_cross_mae_ridge.md).
+- **IB hist L1 AMPL/VST/TARS (2026-09-12):** IB has **no historical L2**. Puller (`pull_ib_historical_l1.py`, client 8828 light-connect) for BID/ASK/TRADES. Gateway **2110** TWS-server broken; qualify Error 200 + CCP 10159. Reconnect-to-IB then `--smoke --no-ticks`. Tape not measured. Do not promote F2-like bid-fail or pos-like ask-extension. See [IB L1](2026-09-12_ib_historical_l1_ampl_vst_tars.md).
+- **Synthetic 2022 L3 splice (2026-09-12):** Last-15m 1d H2 except calendar 2022 = 15m L3 wait-12. n=2423 E +0.37 PF 1.13 vs +0.27 / 1.09. 2022-23 still −0.16 / 0.92. No switch signal. **Not a strategy.** See [splice](2026-09-12_synthetic_2022_l3_splice.md).
+- **2022-23 last-15m H2 (2026-09-12):** Bucket is red because 2022 is a failed-breakout slaughter (n=117 E −2.37 PF 0.41), not because volume-delta missed AMPL. SPY SMA200/20d keep the bear rallies and make 2022 worse. 15m L3 wait-12 is already + in both years. **No promote.** See [2022-23 regime](2026-09-12_last_15m_2022_23_regime.md).
 - **Last-15m follow-up overlays (2026-09-12):** Isolated doji-only (70 fills, geo flat), failed-breakout (1451 fills, AMPL/VST hit but winner $ −3457), session-OHLC seller (1543 fills, geo 1.18, AMPL still missed, winner $ wrecked). Occupancy not re-walked. **No promote.** See [follow-ups](2026-09-12_last_15m_followup_overlays.md).
 - **Last-15m volume-delta / geometry (2026-09-11):** Same-list overlays on last-15m + 15m N+1 mid n=2297. Early-exit (doji or 2 seller sessions) E +0.46 PF 1.19 geo 1.30 vs +0.27 / 1.09 but clips winner $ and 2022-23 still fails. Form 0.25 skip hurts. Pos 1.25/1.50 mild. Delayed 2nd-close 13 fills E −2.82. AMPL gap is not caught. **No promote.** See [volume geometry](2026-09-11_last_15m_volume_geometry.md).
 - **Last-15m realistic sells (2026-09-11):** kept-sell n=2779 E +0.96 PF 1.29 was the daily same-bar clip. **15m N→N+1 mid n=2779 E +0.35 PF 1.11**; **daily-close → next 09:30 mid n=2778 E +0.47 PF 1.14**. Occupancy not re-walked. **No promote.** See [realistic sells](2026-09-11_channel_touch_last_15m_realistic_sells.md).
@@ -123,8 +133,12 @@ python scripts\research\fit_close_cross_mae_regression.py --csv reports\ascendin
 python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --realistic-fill --realistic-fill-mode open-cross --shakeout-breakout --workers 4 --load-workers 8
 python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --shakeout-breakout --realistic-fill --realistic-fill-mode next-open --workers 4 --load-workers 8
 python scripts\research\compare_1d_last_15m_realistic_sells.py
+python scripts\research\compare_1d_hot_cross_realistic_sells.py --workers 8
 python scripts\research\overlay_last_15m_volume_geometry.py --workers 8 --delayed-second-close
 python scripts\research\overlay_last_15m_volume_geometry.py --followups --workers 8
+python scripts\research\pull_ib_historical_l1.py --smoke --ib-client-id 8828 --ib-port 4001 --no-ticks
+python scripts\research\overlay_last_15m_2022_23_regime.py
+python scripts\research\splice_2022_l3_into_1d.py
 python hot_price_server.py
 python scripts\pipeline\hot_price_service.py install-task
 ```

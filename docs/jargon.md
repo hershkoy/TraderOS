@@ -15,3 +15,5 @@ Short notes. Add as needed.
 **Failed-breakout exit** — After an H2 fill, the first later session whose close is at/below the projected resist rail; sell the next 15m mid if that is earlier than ATR/trail. Not the delayed 2nd-close *re-entry* (overlay C).
 
 **N+1 mid (sell)** — Decision on completed bar N (15m low tagged the ATR/trail stop); fill is the next RTH 15m midpoint. Overnight to the next 09:30 ET bar is allowed because you already have a position. Not the same as a buy next-mid (last RTH 15:45 has no same-session next bar and cancels).
+
+**lerp85** — Hot-cross fill heuristic: `rail + 0.85*(close − rail)` if that 15m close is at/above the resist rail, else the rail; then clamp to the bar `[low, high]`. “10% below close” is 15% of the way from close back toward the rail (along that span), not 10% of price. Gap open still lerps then clamps. Default `--hot-cross-fill`. Exact last-print is unknown (no universe 5m/tick tape); do not invent `(high−close)/2`.

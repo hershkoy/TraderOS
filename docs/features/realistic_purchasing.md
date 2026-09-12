@@ -4,9 +4,9 @@ How channel-touch backtests turn a **signal** into a **buy price** that a live t
 
 Code: `utils/research/realistic_purchaser.py`. Flags: `--realistic-fill` and `--realistic-fill-mode` on `scripts/research/backtest_channel_touch_trades.py` and `scripts/research/backtest_channel_touch_h2_break.py`.
 
-This is a **research fill**. The nightly scanner (`scripts/scanners/channel_touch_nightly.py`) still uses the **unrealistic** daily rail clip (not this purchaser). Occupancy and ATR/trail **exits** stay on the strategy timeframe (daily bars for 1d, 15m bars for 15m) even when the entry is priced from 15m — that daily stop fill is the same-bar clip (see [Realistic sells](#realistic-sells-1d-last-15m-book)).
+This is a **research fill**. The nightly scanner (`scripts/scanners/channel_touch_nightly.py`) still uses the **unrealistic** daily rail clip (not this purchaser). Occupancy and ATR/trail **exits** stay on the strategy timeframe (daily bars for 1d, 15m bars for 15m) even when the entry is priced from 15m — that daily stop fill is the same-bar clip (see [Realistic sells](#realistic-sells)).
 
-**`--realistic-fill` on 1d does not make the book live.** After a daily close-above-resist, buying that same session's 15m close / mid / open-cross is a lookback. **Avoid those as strategies** ([Do not use](#do-not-use-1d-post-eod-lookbacks)). The 15m L3 keeper and 1d `--intraday-trigger hot-cross` are the causal clocks.
+**`--realistic-fill` on 1d does not make the book live.** After a daily close-above-resist, buying that same session's 15m close / mid / open-cross is a lookback. **Avoid those as strategies** ([Do not use](#do-not-use-1d-post-eod-lookbacks)). The 15m L3 keeper and 1d last-15m-open-mid + 15m N+1 mid sells are the causal clocks in `current_best/`. `--intraday-trigger hot-cross` is still the `/hot` buy-now analog; its occupancy-sell HTML is in `1d_unrealistic/`.
 
 ---
 
@@ -16,7 +16,7 @@ This is a **research fill**. The nightly scanner (`scripts/scanners/channel_touc
 
 | Slot | File | Why it is here |
 |------|------|----------------|
-| **1d number to beat** | `current_best/1d_hot_cross.html` (same bytes as `1d_channel_touch.html`) | Buy-now `--intraday-trigger hot-cross` `--hot-cross-fill lerp85`. Unique span365 + shakeout **n=4079 E −0.19 PF 0.94**. Causal. Live analog is `/hot` armed + Alpaca last. **Do not promote.** |
+| **1d number to beat** | `current_best/1d_last_15m.html` (same bytes as `1d_channel_touch.html`) | Last RTH 15m mid if that bar opened above the daily rail, then **15m N+1 mid** sells. Unique span365 + shakeout **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). Live-executable EOD buy + realistic sells. 2022-23 fails. **Do not promote.** |
 | **15m keeper** | `current_best/15m_channel_touch.html` | L3 wait-12 **signal-close** + `--touch-error-pct 0`. **n=1744 E +0.13 PF 1.22**. Completed 15m close is workable. |
 
 The detector on the **clip** book fires on the **daily close** above resistance. Default fill (`_limit_fill_at_support`) is rail + slip **clipped to that same daily bar's [low, high]**. After 16:00 ET you know the close printed above resist; you cannot go back and buy the rail or the day's low. Nightly still uses this path. Call it **unrealistic**, not optimistic. Those reports live in `reports/ascending_channels/1d_unrealistic/`:
@@ -24,11 +24,12 @@ The detector on the **clip** book fires on the **daily close** above resistance.
 | File | What it is |
 |------|------------|
 | `1d_channel_touch.html` / `1d_h2_resist_break.html` | Nightly H2 resist-break + shakeout visualization. Entry is the clip (or a next-mid overlay still keyed off that clip). |
+| `1d_hot_cross.html` | Buy-now lerp85 unique **n=4079 E −0.19 PF 0.94** — live entry, daily occupancy **sells** (clip). Honest 15m N+1 mid **n=4079 E −0.83 PF 0.77**. Demoted from `current_best/` 2026-09-12. |
 | `1d_h2_signal_close.html` | 1d `--realistic-fill-mode signal-close` lookback (2026-09-09 unique **n=2794 E +2.48 PF 1.99**). Same class as the clip. **Do not use.** |
 | `1d_l3_touch.html` | Retired L3 support-tag keeper |
 | `1d_keeper_plus_h2_resist_break.html` | Research L3 + H2 sleeve |
 
-Hot-cross is in `current_best/` because it is live-executable, not because it clears the clip book's E/PF. Grade the next 1d idea against **n=4079 E −0.19 PF 0.94**, not against clip n=4558 E +2.62 PF 2.10, and not against 1d signal-close n=2794 E +2.48 PF 1.99.
+Grade the next 1d idea against last-15m **n=2297 E +0.27 PF 1.09** (fric0.25 **E +0.02 PF 1.01**), not against clip n=4558 E +2.62 PF 2.10, not against 1d signal-close n=2794 E +2.48 PF 1.99, and not against clip-exit hot-cross n=4079 E −0.19 PF 0.94.
 
 ---
 
@@ -49,7 +50,7 @@ If the detector waits for that session's **daily close** above resist, any fill 
 
 1d `next-open` (EOD then next-session MOO) is live-executable and still **not** promoted (lost E/PF vs clip). It is not a same-session lookback.
 
-**`next-open-mid`** is the same clock with a 15m fill: buy the **mid** of the next session's 09:30 ET 15m. Live after the daily close. Compare vs the next-mid lookback: `reports/ascending_channels/1d_unrealistic/next_open_mid_compare.csv`. Do not promote unless it beats hot-cross **n=4079 E −0.19 PF 0.94**.
+**`next-open-mid`** is the same clock with a 15m fill: buy the **mid** of the next session's 09:30 ET 15m. Live after the daily close. Compare vs the next-mid lookback: `reports/ascending_channels/1d_unrealistic/next_open_mid_compare.csv`. Do not promote unless it beats last-15m **n=2297 E +0.27 PF 1.09**.
 
 **Last-15m-open-mid** (same-session last RTH 15m mid if that bar **opened** above the rail) is EOD-contemporaneous on the **buy**. The first HTML (`…last_15m_open_mid_span365_20260911_132918.html`) **kept daily occupancy sells** — that is the same-bar stop clip. WVE 2023-12-06 buy 6.85 / sell 2023-12-07 @ 6.0254 is that clip (original ATR stop from the cheaper signal-close fill, filled on the next daily bar's low). See [Realistic sells](#realistic-sells-1d-last-15m-book).
 
@@ -154,9 +155,25 @@ Optional `--max-chase-pct` (off by default) caps how far the exec price may run 
 
 ---
 
-## Realistic sells (1d last-15m book)
+## Realistic sells
 
-Daily occupancy fills the ATR/trail **stop on the same bar whose low tagged it**. After a 16:00 ET last-15m buy you cannot sell that stop on the next daily candle. Code: `utils/research/realistic_exits.py`. Overlay: `scripts/research/compare_1d_last_15m_realistic_sells.py` (occupancy **not** re-walked; hard-stop is daily ATR k=2 clamp 1.5%–6% + 10% trail).
+Daily occupancy fills the ATR/trail **stop on the same bar whose low tagged it**. After a 15m fill you cannot sell that stop on the next daily candle. Code: `utils/research/realistic_exits.py`. Occupancy **not** re-walked; hard-stop is daily ATR k=2 clamp 1.5%–6% + 10% trail. The entry bar/session is skipped (`skip_entry_bar_stop`). A 15:45 last-RTH buy starts the stop walk on the next session; a mid-session hot-cross fill can still same-day stop on **15m-next-mid** (daily occupancy never does).
+
+### `current_best` 1d hot-cross
+
+Published HTML kept daily occupancy sells. Overlay: `scripts/research/compare_1d_hot_cross_realistic_sells.py`. Clip-exit book is `1d_unrealistic/1d_hot_cross.html`. Write-up: [hot-cross realistic sells](../status_log/edge_hunt/channel_touch/2026-09-12_channel_touch_hot_cross_realistic_sells.md).
+
+| Mode | Decision | Fill | Hot-cross unique (gross / fric 0.25) |
+|------|----------|------|--------------------------------------|
+| Kept daily occupancy (`current_best`) | Next daily low vs stop | Stop on that daily bar (clip) | n=4079 E +0.06 PF 1.02 / **E −0.19 PF 0.94** |
+| **`15m-next-mid`** | RTH 15m N low vs stop (bar close) | Next RTH 15m **mid** (overnight OK) | n=4079 E −0.58 PF 0.83 / **E −0.83 PF 0.77** |
+| **`daily-close-next-open-mid`** | Session high/low vs stop at 16:00 ET | Next session **09:30 ET 15m mid** | n=4078 E −0.40 PF 0.89 / **E −0.65 PF 0.83** |
+
+HCC 2019-05-02 lerp85 **33.4326**: clip sell next day **31.4267** (−6%); 15m N+1 mid **28.805 @ 09:45 ET** (−14%); EOD then next 09:30 mid **28.155** (−16%). 261 same-day 15m sells vs 0 on kept. **Do not promote.** Demoted the clip-exit HTML from `current_best/` on 2026-09-12. `/hot` SELL NOW (Alpaca last vs ATR/trail) is the 15m analog.
+
+### 1d last-15m book
+
+Overlay: `scripts/research/compare_1d_last_15m_realistic_sells.py`.
 
 | Mode | Decision | Fill | Last-15m unique (gross / fric 0.25) |
 |------|----------|------|-------------------------------------|
@@ -164,9 +181,7 @@ Daily occupancy fills the ATR/trail **stop on the same bar whose low tagged it**
 | **`15m-next-mid`** | RTH 15m N low vs stop (bar close) | Next RTH 15m **mid** (overnight OK) | n=2779 E +0.35 PF 1.11 / E +0.10 PF 1.03 |
 | **`daily-close-next-open-mid`** | Session high/low vs stop at 16:00 ET | Next session **09:30 ET 15m mid** | n=2778 E +0.47 PF 1.14 / E +0.22 PF 1.06 |
 
-WVE 2023-12-06 last-15m mid **6.85**: clip sell next day **6.0254** (−12%); 15m N+1 mid **4.80** @ 09:45 ET (−30%); EOD then next 09:30 mid **4.65** (−32%). 2022-23 fails on both realistic books. **Do not promote** vs hot-cross n=4079 E −0.19 PF 0.94. HTML: `reports/ascending_channels/2026-09-11/channel_touch_tv_report_interactive_fric0.25_1d_h2_last_15m_open_mid_sell_15m_next_mid_span365_20260911_142523.html` and `…sell_eod_next_open_mid…_20260911_142526.html`. Write-up: [realistic sells](../status_log/edge_hunt/channel_touch/2026-09-11_channel_touch_last_15m_realistic_sells.md).
-
-The entry bar/session is skipped (`skip_entry_bar_stop`). A 15:45 last-RTH buy starts the stop walk on the next session.
+WVE 2023-12-06 last-15m mid **6.85**: clip sell next day **6.0254** (−12%); 15m N+1 mid **4.80** @ 09:45 ET (−30%); EOD then next 09:30 mid **4.65** (−32%). 2022-23 fails on both realistic books. **Do not promote** vs hot-cross n=4079 E −0.19 PF 0.94. HTML: `reports/ascending_channels/2026-09-11/channel_touch_tv_report_interactive_fric0.25_1d_h2_last_15m_open_mid_sell_15m_next_mid_span365_20260911_142523.html` and `…sell_eod_next_open_mid…_20260911_142526.html`. Write-up: [last-15m realistic sells](../status_log/edge_hunt/channel_touch/2026-09-11_channel_touch_last_15m_realistic_sells.md).
 
 ---
 
@@ -175,15 +190,16 @@ The entry bar/session is skipped (`skip_entry_bar_stop`). A 15:45 last-RTH buy s
 | Book | Fill | Use? |
 |------|------|------|
 | Nightly 1d H2 (`channel_touch_nightly`) | Unrealistic **daily rail clip** (not this purchaser) | Watchlist only. Not a live fill. |
-| `current_best/1d_hot_cross.html` / `1d_channel_touch.html` | Buy-now hot-cross lerp85 unique **n=4079 E −0.19 PF 0.94**. Live-executable. **The 1d number to beat.** | Causal baseline. **Do not promote.** |
+| `current_best/1d_last_15m.html` / `1d_channel_touch.html` | Last RTH 15m mid if open > rail; **15m N+1 mid** sells. Unique **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01). | **1d number to beat.** 2022-23 fails. **Do not promote.** |
+| `1d_unrealistic/1d_hot_cross.html` | Buy-now lerp85 unique **n=4079 E −0.19 PF 0.94**. Live entry; occupancy **sell** is the daily clip. Honest 15m N+1 **n=4079 E −0.83 PF 0.77**. | Demoted 2026-09-12. `/hot` analog, not the gate. |
 | `1d_unrealistic/1d_h2_signal_close.html` | 1d `signal-close` lookback unique **n=2794 E +2.48 PF 1.99** | **Avoid.** |
 | `1d_unrealistic/1d_channel_touch.html` | Clip, or next-mid overlay still keyed off that clip (HTML n=1239 **pre-`_as_session_date`**; honest rebuild unique **n=1986 E +2.24 PF 1.89**) | **Avoid** as a strategy. |
 | `current_best/15m_channel_touch.html` (L3 wait-12) | `--realistic-fill` **signal-close** (live-executable completed 15m) | 15m keeper. |
 | 1d `open-cross` without `--intraday-trigger` | Same-session lookback | **Avoid.** |
 | 1d `next-open` | EOD then MOO | Live-executable; **not** promoted. |
-| 1d `next-open-mid` | EOD then next session 09:30 ET 15m mid | Live-executable; **not** promoted until it beats hot-cross. |
+| 1d `next-open-mid` | EOD then next session 09:30 ET 15m mid | Live-executable; **not** promoted until it beats last-15m. |
 | 1d last-15m-open-mid + kept daily sells | Last RTH 15m mid if open > rail; **sell is the daily stop clip** | **Avoid** the kept-sell HTML. |
-| 1d last-15m + `15m-next-mid` / `daily-close-next-open-mid` sells | Same buy; realistic delayed sells n=2779/2778 E +0.35/+0.47 | Research only. **No promote.** |
+| 1d hot-cross + `15m-next-mid` / `daily-close-next-open-mid` sells | Same lerp85 buy; n=4079 E −0.83 PF 0.77 / n=4078 E −0.65 PF 0.83 (fric 0.25) | Research only. **No promote.** |
 
 `--intraday-trigger hot-cross` is not a post-EOD reprice. Daily H2 arms from prior completed bars; the first RTH 15m whose high reaches resist is the buy-now bar (Alpaca last on `/hot` is the live analog). Fill on that 15m:
 
@@ -199,7 +215,7 @@ python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --intra
 
 IB **5m** is being ingested for a tighter clock later (`docs/features/ib_5m_backfill.md`). It is not wired into this purchaser yet.
 
-**2026-09-06 full-universe A0 (lerp85 + shakeout, unique span365):** **n=4079 E −0.19 PF 0.94**. Gap splits stay ~PF 0.92–0.95. RDWR 2025-06-13 is absent (already in a trade from the 2025-06-05 rail poke). **Do not promote.** This is the `current_best/` 1d slot (`1d_hot_cross.html`) — the number to beat. Nightly stays the clip. Write-up: [hot-cross](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_15m_trigger.md).
+**2026-09-06 full-universe A0 (lerp85 + shakeout, unique span365):** **n=4079 E −0.19 PF 0.94**. Gap splits stay ~PF 0.92–0.95. RDWR 2025-06-13 is absent (already in a trade from the 2025-06-05 rail poke). **Do not promote.** Occupancy sells are the daily clip — demoted to `1d_unrealistic/1d_hot_cross.html` on 2026-09-12. Honest 15m N+1 mid **n=4079 E −0.83 PF 0.77**. Nightly stays the clip. Write-up: [hot-cross](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_15m_trigger.md), [slot swap](../status_log/edge_hunt/channel_touch/2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
 
 `--intraday-trigger close-cross` waits for a 15m **close** above the daily rail.
 Fill follows `--realistic-fill-mode`: **`signal-close`** buys that confirm bar's
@@ -230,6 +246,8 @@ python scripts\research\compare_1d_next_open_mid.py
 
 python scripts\research\compare_1d_last_15m_realistic_sells.py
 
+python scripts\research\compare_1d_hot_cross_realistic_sells.py --workers 8
+
 python scripts\research\backtest_channel_touch_trades.py --preset 15m --n-symbols 300 --entry-mode l3_touch --min-l3-wait-bars 12 --realistic-fill --touch-error-pct 0 --workers 4 --load-workers 8
 ```
 
@@ -239,5 +257,5 @@ Do **not** run 1d `--realistic-fill-mode signal-close` / `next-mid` / `open-cros
 
 ## Related
 
-- Status notes: [hot-cross in current_best](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_current_best_hot_cross.md), [1d clip out of current_best](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_out_of_current_best.md), [realistic fill rescan](../status_log/edge_hunt/channel_touch/2026-09-04_channel_touch_realistic_fill.md), [signal-close](../status_log/edge_hunt/channel_touch/2026-09-04_channel_touch_signal_close.md), [open-cross](../status_log/edge_hunt/channel_touch/2026-09-05_channel_touch_open_cross.md), [next-open A/B](../status_log/edge_hunt/channel_touch/2026-09-05_channel_touch_next_open_ab.md), [hot-cross](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_15m_trigger.md)
+- Status notes: [1d slot swap](../status_log/edge_hunt/channel_touch/2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md), [hot-cross realistic sells](../status_log/edge_hunt/channel_touch/2026-09-12_channel_touch_hot_cross_realistic_sells.md), [hot-cross in current_best](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_current_best_hot_cross.md), [1d clip out of current_best](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_out_of_current_best.md), [realistic fill rescan](../status_log/edge_hunt/channel_touch/2026-09-04_channel_touch_realistic_fill.md), [signal-close](../status_log/edge_hunt/channel_touch/2026-09-04_channel_touch_signal_close.md), [open-cross](../status_log/edge_hunt/channel_touch/2026-09-05_channel_touch_open_cross.md), [next-open A/B](../status_log/edge_hunt/channel_touch/2026-09-05_channel_touch_next_open_ab.md), [hot-cross](../status_log/edge_hunt/channel_touch/2026-09-06_channel_touch_1d_15m_trigger.md)
 - Live 15m monitor (H5 close-confirm, not this purchaser): [channel_touch_15m_live.md](channel_touch_15m_live.md)

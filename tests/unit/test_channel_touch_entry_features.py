@@ -174,3 +174,30 @@ def test_enrich_spy_does_not_use_fill_day_close():
     out = enrich_spy_entry_features(trades, spy)
     # last completed daily close is prior session, not 999
     assert float(out.loc[0, "spy_ret_20d"]) < 50.0
+
+
+def test_enrich_spy_sma200_uses_prior_session():
+    idx = pd.date_range("2023-01-02", periods=220, freq="B")
+    close = pd.Series(np.linspace(100.0, 140.0, 220), index=idx)
+    close.iloc[-1] = 10.0
+    spy = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": 1e6,
+        }
+    )
+    trades = pd.DataFrame(
+        [
+            {
+                "stock": "AAA",
+                "buy_date": idx[-1].strftime("%Y-%m-%d"),
+                "buy_time": idx[-1].strftime("%Y-%m-%d") + " 15:45",
+                "gain_pct": 1.0,
+            }
+        ]
+    )
+    out = enrich_spy_entry_features(trades, spy)
+    assert int(out.loc[0, "spy_above_sma200"]) == 1
