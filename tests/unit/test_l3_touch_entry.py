@@ -879,6 +879,31 @@ def test_shakeout_breakout_fills_after_inside_then_rebreak():
     assert extra is not None and extra[0] == 40 and extra[2] >= 1
 
 
+def test_shakeout_confirm_only_skips_first_emits_extra():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    _inside_near_resist(high, low, close, 30, y0, slope, width)
+    _resist_break_bar(high, low, close, 40, y0, slope, width)
+    kw = _h2_break_kw(len(high))
+    only = _h2_rail_tag_fills(
+        high, low, close, shakeout_breakout=False, shakeout_confirm_only=True, **kw
+    )
+    assert len(only) == 1
+    assert only[0][0] == 40 and only[0][4] is True
+    assert len(only[0]) > 5 and only[0][5] is True
+
+
+def test_shakeout_confirm_only_no_inside_emits_nothing():
+    y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
+    _resist_break_bar(high, low, close, 22, y0, slope, width)
+    for i in range(23, 50):
+        _resist_break_bar(high, low, close, i, y0, slope, width)
+    tags = _h2_rail_tag_fills(
+        high, low, close, shakeout_confirm_only=True, **_h2_break_kw(len(high))
+    )
+    assert tags == []
+
+
 def test_shakeout_breakout_skips_if_never_inside():
     y0, slope, width, high, low, close = _rail_series(n=80, h2=12)
     _resist_break_bar(high, low, close, 22, y0, slope, width)

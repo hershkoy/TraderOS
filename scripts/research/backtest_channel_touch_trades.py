@@ -606,6 +606,7 @@ def _h2_rail_tag_fills(
     h2_resist_break: bool = False,
     shakeout_breakout: bool = False,
     shakeout_breakout_min_inside: int = 1,
+    shakeout_confirm_only: bool = False,
 ) -> List[Tuple[int, float, int, bool, bool]]:
     """From-above support tags after H2. First tag is L3 (touch_num=3).
 
@@ -628,6 +629,10 @@ def _h2_rail_tag_fills(
     inside the channel then closes above resistance again (support still
     holds), emit one extra resist-break fill. Not the L3 support-reclaim
     rebuy. Occupancy skips the extra fill while the first trade is open.
+
+    ``shakeout_confirm_only``: same shakeout walk, but do not emit the first
+    resist-break fill. Arm on the first close above, fill only the post-inside
+    rebreak. Implies looking for the extra even if ``shakeout_breakout`` is off.
     """
     want = max(3, int(entry_touch))
     wait_n = max(1, int(wait))
@@ -640,7 +645,8 @@ def _h2_rail_tag_fills(
     need_leave = False
     shake_n = max(0, int(shakeout_rebuy_bars))
     take_break = bool(h2_resist_break) and want <= 3
-    take_sbo = bool(shakeout_breakout) and take_break
+    confirm_only = bool(shakeout_confirm_only) and take_break
+    take_sbo = (bool(shakeout_breakout) or confirm_only) and take_break
     sbo_min = max(1, int(shakeout_breakout_min_inside))
     for i in range(int(h2) + 1, min(n, int(h2) + 1 + wait_n)):
         sup = _line_at(support_y0, support_x0, support_slope, i)
@@ -652,37 +658,37 @@ def _h2_rail_tag_fills(
         if np.isfinite(resist) and resist > 0 and float(close[i]) > resist * (1.0 + error_pct / 100.0):
             if take_break and i >= int(h2) + min_w:
                 fill = _limit_fill_at_support(resist, float(low[i]), float(high[i]), slip)
-                if fill is not None:
+                if fill is not None and not confirm_only:
                     out.append((i, float(fill), 3, False, True))
-                    if take_sbo:
-                        extra = _shakeout_breakout_fill(
-                            high,
-                            low,
-                            close,
-                            support_x0=support_x0,
-                            support_y0=support_y0,
-                            support_slope=support_slope,
-                            width=width,
-                            first_i=int(i),
-                            h2=int(h2),
-                            n=n,
-                            error_pct=error_pct,
-                            slip=slip,
-                            wait=wait_n,
-                            min_inside_bars=sbo_min,
-                        )
-                        if extra is not None:
-                            out.append(
-                                (
-                                    int(extra[0]),
-                                    float(extra[1]),
-                                    3,
-                                    False,
-                                    True,
-                                    True,
-                                    int(extra[2]),
-                                )
+                if take_sbo:
+                    extra = _shakeout_breakout_fill(
+                        high,
+                        low,
+                        close,
+                        support_x0=support_x0,
+                        support_y0=support_y0,
+                        support_slope=support_slope,
+                        width=width,
+                        first_i=int(i),
+                        h2=int(h2),
+                        n=n,
+                        error_pct=error_pct,
+                        slip=slip,
+                        wait=wait_n,
+                        min_inside_bars=sbo_min,
+                    )
+                    if extra is not None:
+                        out.append(
+                            (
+                                int(extra[0]),
+                                float(extra[1]),
+                                3,
+                                False,
+                                True,
+                                True,
+                                int(extra[2]),
                             )
+                        )
                 break
             if take_break:
                 continue
@@ -753,11 +759,14 @@ def _h2_hot_cross_fills(
     fill_mode: str,
     shakeout_breakout: bool = False,
     shakeout_breakout_min_inside: int = 1,
+    shakeout_confirm_only: bool = False,
     session_index: Optional[dict] = None,
 ) -> List[Tuple]:
     """Buy-now: first 15m high >= daily resist after H2 wait. No daily-close gate."""
     wait_n = max(1, int(wait))
     min_w = max(1, int(min_wait))
+    confirm_only = bool(shakeout_confirm_only)
+    take_sbo = bool(shakeout_breakout) or confirm_only
     out: List[Tuple] = []
     first_i: Optional[int] = None
     end = min(int(n), int(h2) + 1 + wait_n)
@@ -794,12 +803,13 @@ def _h2_hot_cross_fills(
             "fill_15m_close": got.bar_close,
             "hot_cross_rail": float(resist),
         }
-        out.append(
-            (i, float(got.fill_px), 3, False, True, False, 0, got.exec_bar_ts, extra)
-        )
+        if not confirm_only:
+            out.append(
+                (i, float(got.fill_px), 3, False, True, False, 0, got.exec_bar_ts, extra)
+            )
         first_i = int(i)
         break
-    if first_i is None or not bool(shakeout_breakout):
+    if first_i is None or not take_sbo:
         return out
     inside_bars = 0
     need = max(1, int(shakeout_breakout_min_inside))
@@ -900,10 +910,13 @@ def _h2_close_cross_fills(
     max_chase_pct: Optional[float] = None,
     keep_skips: bool = False,
     fill_mode: str = FILL_MODE_NEXT_MID,
+    shakeout_confirm_only: bool = False,
 ) -> List[Tuple]:
     """Close-confirm: first 15m close > daily resist; fill by ``fill_mode``."""
     wait_n = max(1, int(wait))
     min_w = max(1, int(min_wait))
+    confirm_only = bool(shakeout_confirm_only)
+    take_sbo = bool(shakeout_breakout) or confirm_only
     out: List[Tuple] = []
     first_i: Optional[int] = None
     end = min(int(n), int(h2) + 1 + wait_n)
@@ -980,12 +993,13 @@ def _h2_close_cross_fills(
             break
         if tag is False:
             continue
-        out.append(tag)
+        if not confirm_only:
+            out.append(tag)
         if tag[1] is not None:
             first_i = int(tag[0])
             break
         # cancelled confirm (15:45 / wild); keep looking later sessions
-    if first_i is None or not bool(shakeout_breakout):
+    if first_i is None or not take_sbo:
         return out
     inside_bars = 0
     need = max(1, int(shakeout_breakout_min_inside))
@@ -2043,7 +2057,7 @@ def _walk_pending_trades(
                     }
                 )
             continue
-        if is_sbo and bool(shakeout_breakout_hard_stop):
+        if is_sbo and bool(shakeout_breakout_hard_stop) and not bool(ctx.get("shakeout_confirm_only")):
             if last_exit_reason != "hard_stop":
                 continue
         sx0 = int(ch["support_x0"])
@@ -2354,6 +2368,7 @@ def trades_for_symbol(
     shakeout_breakout: bool = False,
     shakeout_breakout_min_inside: int = 1,
     shakeout_breakout_hard_stop: bool = False,
+    shakeout_confirm_only: bool = False,
     df_15m: Optional[pd.DataFrame] = None,
     intraday_fill: str = "",
     intraday_trigger: str = "",
@@ -2579,6 +2594,7 @@ def trades_for_symbol(
                             max_chase_pct=max_chase_pct,
                             keep_skips=want_trail_mae,
                             fill_mode=fill_mode if use_realistic else FILL_MODE_NEXT_MID,
+                            shakeout_confirm_only=bool(shakeout_confirm_only),
                         )
                     else:
                         tags = _h2_hot_cross_fills(
@@ -2597,6 +2613,7 @@ def trades_for_symbol(
                             fill_mode=hot_fill,
                             shakeout_breakout=bool(shakeout_breakout),
                             shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
+                            shakeout_confirm_only=bool(shakeout_confirm_only),
                             session_index=hot_session_index,
                         )
                     for tag in tags:
@@ -2643,6 +2660,7 @@ def trades_for_symbol(
                     h2_resist_break=bool(h2_resist_break),
                     shakeout_breakout=bool(shakeout_breakout),
                     shakeout_breakout_min_inside=int(shakeout_breakout_min_inside),
+                    shakeout_confirm_only=bool(shakeout_confirm_only),
                 )
                 for tag in tags:
                     i, fill, tnum = int(tag[0]), tag[1], int(tag[2])
@@ -2815,6 +2833,7 @@ def trades_for_symbol(
         "max_l3_wait_bars": max_l3_wait_bars,
         "tag_error_pct": tag_error_pct,
         "shakeout_breakout_hard_stop": shakeout_breakout_hard_stop,
+        "shakeout_confirm_only": bool(shakeout_confirm_only),
         "adv_lookback": adv_lookback,
         "hold_max": hold_max,
     }
@@ -2902,6 +2921,7 @@ def _worker_symbol_trades(payload: dict) -> List[dict]:
         shakeout_breakout=bool(payload.get("shakeout_breakout", False)),
         shakeout_breakout_min_inside=int(payload.get("shakeout_breakout_min_inside", 1)),
         shakeout_breakout_hard_stop=bool(payload.get("shakeout_breakout_hard_stop", False)),
+        shakeout_confirm_only=bool(payload.get("shakeout_confirm_only", False)),
         df_15m=payload.get("df_15m"),
         intraday_fill=str(payload.get("intraday_fill") or ""),
         intraday_trigger=str(payload.get("intraday_trigger") or ""),
@@ -3572,6 +3592,7 @@ def run_peak_trail_sweep(
         "shakeout_breakout": False,
         "shakeout_breakout_min_inside": 1,
         "shakeout_breakout_hard_stop": False,
+        "shakeout_confirm_only": False,
         "realistic_fill": True,
         "realistic_fill_mode": FILL_MODE_SIGNAL_CLOSE,
         "touch_error_pct": 0.0,
@@ -4337,6 +4358,12 @@ def main() -> int:
         help="shakeout-breakout: only take the extra fill if the previous trade was a hard stop",
     )
     ap.add_argument(
+        "--shakeout-confirm-only",
+        action="store_true",
+        help="Arm on first H2 close above resist but do not fill it; buy only the "
+        "post-shakeout second close (skip-first). Implies looking for the extra.",
+    )
+    ap.add_argument(
         "--realistic-fill",
         action="store_true",
         help="Use realistic purchase prices. 15m default is signal-bar close; "
@@ -4892,6 +4919,7 @@ def main() -> int:
             "shakeout_breakout": bool(args.shakeout_breakout),
             "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
             "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
+            "shakeout_confirm_only": bool(args.shakeout_confirm_only),
             "intraday_fill": intraday_fill,
             "intraday_trigger": str(args.intraday_trigger or ""),
             "hot_cross_fill": str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL),
@@ -5024,6 +5052,7 @@ def main() -> int:
             "shakeout_breakout": bool(args.shakeout_breakout),
             "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
             "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
+            "shakeout_confirm_only": bool(args.shakeout_confirm_only),
             "df_15m": panels_15m.get(sym) if need_15m_purchase else None,
             "intraday_fill": intraday_fill,
             "intraday_trigger": str(args.intraday_trigger or ""),
@@ -5171,7 +5200,7 @@ def main() -> int:
         f"atr_stop_mult={args.atr_stop_mult}",
         f"bars_per_session={rs_bars_per_session} rs_source={rs_source} rs_symbol={rs_symbol}",
         f"require_in_channel={args.require_in_channel} max_channel_span_days={args.max_channel_span_days}",
-        f"max_beyond_width={args.max_beyond_width} max_formation_beyond_width={args.max_formation_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} shakeout_breakout={bool(args.shakeout_breakout)} shakeout_breakout_min_inside={args.shakeout_breakout_min_inside} shakeout_breakout_hard_stop={bool(args.shakeout_breakout_hard_stop)} entry_features={bool(args.entry_features)}",
+        f"max_beyond_width={args.max_beyond_width} max_formation_beyond_width={args.max_formation_beyond_width} max_rsi={args.max_rsi} min_l3_wait_bars={args.min_l3_wait_bars} shakeout_rebuy_bars={args.shakeout_rebuy_bars} h2_resist_break={bool(args.h2_resist_break)} h2_resist_break_only={bool(args.h2_resist_break_only)} shakeout_breakout={bool(args.shakeout_breakout)} shakeout_breakout_min_inside={args.shakeout_breakout_min_inside} shakeout_breakout_hard_stop={bool(args.shakeout_breakout_hard_stop)} shakeout_confirm_only={bool(args.shakeout_confirm_only)} entry_features={bool(args.entry_features)}",
         f"intraday_fill={intraday_fill or 'off'} feature_asof={'prior-bar' if use_prior_bar else 'entry-bar'}",
         "no_buy_below_channel=True (re-entry through support or resist-break)",
         f"realistic_fill={bool(args.realistic_fill)} realistic_fill_mode={args.realistic_fill_mode}",

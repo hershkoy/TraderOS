@@ -284,6 +284,7 @@ def _daily_base() -> dict:
         "shakeout_breakout": False,
         "shakeout_breakout_min_inside": 1,
         "shakeout_breakout_hard_stop": False,
+        "shakeout_confirm_only": False,
         "channel_kwargs": {
             "error_pct": 1.2,
             "flat_pct": 0.04,
@@ -407,6 +408,13 @@ def main() -> int:
         help="Only keep extras whose parent exited on the ATR hard stop",
     )
     ap.add_argument(
+        "--shakeout-confirm-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip the first H2 resist-break fill; buy only after a shakeout then "
+        "the next close above resist. Implies looking for the extra.",
+    )
+    ap.add_argument(
         "--intraday-trigger",
         default="",
         choices=("", "hot-cross", "close-cross"),
@@ -522,9 +530,10 @@ def main() -> int:
     base["max_low_to_mid_pct"] = float(args.max_low_to_mid_pct)
     if args.touch_error_pct is not None:
         base["touch_error_pct"] = float(args.touch_error_pct)
-    base["shakeout_breakout"] = bool(args.shakeout_breakout)
+    base["shakeout_breakout"] = bool(args.shakeout_breakout) or bool(args.shakeout_confirm_only)
     base["shakeout_breakout_min_inside"] = int(args.shakeout_breakout_min_inside)
     base["shakeout_breakout_hard_stop"] = bool(args.shakeout_breakout_hard_stop)
+    base["shakeout_confirm_only"] = bool(args.shakeout_confirm_only)
     base["intraday_trigger"] = str(args.intraday_trigger or "")
     base["hot_cross_fill"] = str(args.hot_cross_fill or DEFAULT_HOT_CROSS_FILL)
     base["trail_mae"] = bool(args.trail_mae)
@@ -720,9 +729,10 @@ def main() -> int:
         "elapsed_sec": round(time.perf_counter() - t0, 1),
         "all_symbols": bool(args.all_symbols),
         "causal_h2": True,
-        "shakeout_breakout": bool(args.shakeout_breakout),
+        "shakeout_breakout": bool(args.shakeout_breakout) or bool(args.shakeout_confirm_only),
         "shakeout_breakout_min_inside": int(args.shakeout_breakout_min_inside),
         "shakeout_breakout_hard_stop": bool(args.shakeout_breakout_hard_stop),
+        "shakeout_confirm_only": bool(args.shakeout_confirm_only),
         "realistic_fill": bool(args.realistic_fill),
         "realistic_fill_mode": str(args.realistic_fill_mode),
         "touch_error_pct": (
@@ -759,7 +769,12 @@ def main() -> int:
             "formation containment: max (high-resist)/width from L1 through H2 <= %.2f"
             % float(args.max_formation_beyond_width)
         )
-    if args.shakeout_breakout:
+    if args.shakeout_confirm_only:
+        notes.append(
+            "Shakeout-confirm-only: first close above resist arms only; fill is the next "
+            "close above after >=1 inside close (support holds). Skip-first."
+        )
+    elif args.shakeout_breakout:
         notes.append(
             "Shakeout-breakout: after first resist-break, N inside closes then next close above resist "
             "(any-closed unless --shakeout-breakout-hard-stop)"

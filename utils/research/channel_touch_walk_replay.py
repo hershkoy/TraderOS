@@ -646,6 +646,7 @@ def batch_trades_for_symbol(
         "shakeout_breakout",
         "shakeout_breakout_min_inside",
         "shakeout_breakout_hard_stop",
+        "shakeout_confirm_only",
         "window_bars",
         "window_step_bars",
         "pivot_len",
