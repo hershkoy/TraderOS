@@ -25,3 +25,9 @@ Short notes. Add as needed.
 **TARS-like cancel** — H2 resist-break setup that dies on a *shallow* support close (undershoot / width `<= 0.25`) and the next daily close is back at/above support. Not a fill. A later close above the same resist inside `max_wait` is a reclaim, not shakeout-breakout (shakeout is close back at/below *resist* with support still holding).
 
 **lerp85** — Hot-cross fill heuristic: `rail + 0.85*(close − rail)` if that 15m close is at/above the resist rail, else the rail; then clamp to the bar `[low, high]`. “10% below close” is 15% of the way from close back toward the rail (along that span), not 10% of price. Gap open still lerps then clamps. Default `--hot-cross-fill`. Exact last-print is unknown (no universe 5m/tick tape); do not invent `(high−close)/2`.
+
+**VIX backwardation skip** — Prior-session VIX/VIX3M >= 1 (optionally VIX>=20) as a last-15m keep/skip. Not the Phase 6c SPY overlay. On n=2297 it makes 2022 worse (leftover E −2.69); 2023 skips none. No promote.
+
+**Causal HMM skip** — Expanding 2/3-state Gaussian HMM on daily SPY log-return / 60d vol / 20d mean + VIX change + VIX/VIX3M (optional TLT/GLD/UUP). Fit through t only, Wasserstein-match states so bull = highest SPY-drift mean, join P(bull) at prior session. Last-15m P(bull)<0.5/0.65 fails like SPY SMA (2022 leftover harder; 3-state zeros 2022 and wrecks 2020-21). No promote.
+
+
