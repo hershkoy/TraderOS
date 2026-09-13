@@ -44,7 +44,7 @@ Status: **`docs/status_log/edge_hunt/`**
 | Phase | Verdict |
 |-------|---------|
 | 4 | **KEEP** `Blend_SPY70_BV30` |
-| 5 | No promote (XS mom + swing MR) |
+| 5 | No promote (XS mom + swing MR). 2026-09-13 2022-only BB `mean_reversion`: unconstrained n=1041 E −0.16 PF 0.95; occ-15 CAGR +11.4% Sharpe 0.59 (fails Sharpe>1). Not a last-15m rescue. See [mean reversion 2022](edge_hunt/2026-09-13_mean_reversion_2022.md). |
 | 6 | No full-sample promote; vol-target near-miss |
 | 6b | Near-KEEP `Blend_VT60_BV40` (VT SPY + BigVol) — prefer freeze/productionize over more Sharpe>1 fishing |
 | 6c | No promote / no lift vs plain vol-target (VIX curve) |

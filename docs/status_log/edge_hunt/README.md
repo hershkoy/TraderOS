@@ -4,6 +4,7 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-13 | [Daily Bollinger mean reversion in 2022](2026-09-13_mean_reversion_2022.md) |
 | 2026-09-13 | [Causal VCP AVWAP breakout](2026-09-13_vcp_avwap.md) |
 | 2026-09-13 | [Last-15m AND Deepvue take-4](channel_touch/2026-09-13_last_15m_deepvue_and.md) |
 | 2026-09-12 | [Causal Deepvue weekend scan](2026-09-12_weekly_deepvue.md) |
@@ -35,6 +36,7 @@ python scripts\research\run_spy_bigvol_blend.py
 python scripts\research\run_spy_bigvol_blend_robustness.py
 python scripts\research\run_xs_mom_delta.py
 python scripts\research\run_swing_mr_screen.py
+python scripts\research\run_mean_reversion_2022.py
 python scripts\research\run_phase6_overlays.py
 python scripts\research\run_voltarget_bigvol_blend.py
 python scripts\research\run_vix_curve_overlay.py
