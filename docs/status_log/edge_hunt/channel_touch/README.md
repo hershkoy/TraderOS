@@ -4,6 +4,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-13 | [Last-15m H2 vs L3 causal switch (WR / TLT / UUP)](2026-09-13_last_15m_regime_switch.md) |
 | 2026-09-13 | [Last-15m next-open no-chase / 15m pullback](2026-09-13_last_15m_open_no_chase.md) |
 | 2026-09-13 | [Last-15m AND Deepvue weekend take-4](2026-09-13_last_15m_deepvue_and.md) |
 | 2026-09-13 | [Nightly Alpaca 1d moved to 17:00 ET](2026-09-13_nightly_1700_et.md) |
