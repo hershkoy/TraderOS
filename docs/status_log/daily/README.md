@@ -11,5 +11,6 @@ Short day-by-day summaries of research and data ops. Deeper notes live under `ed
 | 2026-08-29 | [Nightly H2 + unique-symbol 15m filters](2026-08-29.md) |
 | 2026-08-30 | [15m H5 overshoot+vol stack](2026-08-30.md) |
 | 2026-09-05 | [Shakeout nightly, fill A/B, `/hot` price hub](2026-09-05.md) |
+| 2026-09-13 | [Nightly 17:00 ET + choppy-regime RSI-2 / pullback](2026-09-13.md) |
 
 Roll-up: [../current_status.md](../current_status.md)

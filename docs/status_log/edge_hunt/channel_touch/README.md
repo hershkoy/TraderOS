@@ -4,6 +4,9 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-13 | [H2+L3 occupancy: unified FCFS vs dedicated sleeves](2026-09-13_h2_l3_blend_occupancy.md) |
+| 2026-09-13 | [Unconstrained H2+L3 concurrent overlay](2026-09-13_h2_l3_concurrent_overlay.md) |
+| 2026-09-13 | [Sit 2022 out vs TLT global gate](2026-09-13_tlt_global_gate_sitout.md) |
 | 2026-09-13 | [Last-15m H2 vs L3 causal switch (WR / TLT / UUP)](2026-09-13_last_15m_regime_switch.md) |
 | 2026-09-13 | [Last-15m next-open no-chase / 15m pullback](2026-09-13_last_15m_open_no_chase.md) |
 | 2026-09-13 | [Last-15m AND Deepvue weekend take-4](2026-09-13_last_15m_deepvue_and.md) |
