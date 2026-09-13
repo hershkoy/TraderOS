@@ -36,13 +36,14 @@ from find_ascending_channels import _pick_15m_by_daily_adv  # noqa: E402
 from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
 from utils.research.last_15m_volume_geometry import book_stats, geom_mean_year_pf  # noqa: E402
 from utils.research.panel import list_daily_symbols, to_naive_index  # noqa: E402
-from utils.research.realistic_purchaser import as_et, index_rth_15m_by_session  # noqa: E402
+from utils.research.realistic_purchaser import as_et  # noqa: E402
 from utils.research.report_paths import dated_outdir  # noqa: E402
 from utils.research.vcp_avwap import (  # noqa: E402
     VcpParams,
     arm_sessions,
     avwap_series,
     find_vcp_breakout_fill,
+    index_rth_15m_fast,
     occupancy_take,
     rvol_window_bars,
     simulate_vcp_exit,
@@ -244,11 +245,15 @@ def main() -> int:
     timings["load_15m"] = time.perf_counter() - t0
     LOG.info("15m panels %d/%d (%.1fs)", len(panels_15m), len(need), timings["load_15m"])
 
+    LOG.info("Indexing RTH 15m sessions")
     indexed: Dict[str, dict] = {}
-    for sym, df in panels_15m.items():
+    for i_sym, (sym, df) in enumerate(panels_15m.items(), 1):
         if df is None or df.empty:
             continue
-        indexed[str(sym).upper()] = index_rth_15m_by_session(df, naive_tz="UTC")
+        indexed[str(sym).upper()] = index_rth_15m_fast(df, naive_tz="UTC")
+        if i_sym % 50 == 0:
+            LOG.info("Indexed 15m %d/%d", i_sym, len(panels_15m))
+    LOG.info("Indexed 15m %d names", len(indexed))
 
     weekly_below_by_sym: Dict[str, dict] = {}
     vol_cache: Dict[str, tuple] = {}
@@ -261,6 +266,7 @@ def main() -> int:
     n_skip_open = 0
     open_until: Dict[str, date] = {}
     n_arms_total = len(arm_rows)
+    LOG.info("Starting fills on %d arm rows", n_arms_total)
 
     for i_arm, rec in enumerate(sorted(arm_rows, key=lambda r: (r["watch_date"], r["stock"])), 1):
         if i_arm % 10000 == 0:

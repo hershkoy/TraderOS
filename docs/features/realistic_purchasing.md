@@ -50,6 +50,8 @@ If the detector waits for that session's **daily close** above resist, any fill 
 
 1d `next-open` (EOD then next-session MOO) is live-executable and still **not** promoted (lost E/PF vs clip). It is not a same-session lookback.
 
+Last-15m **next-open no-chase** (buy next 09:30 unless overnight gap-up, else same-session 15m pullback holding the rail) is also live-executable and **loses** the last-15m 15:45-mid book (chase MOO n=2297 E −0.01; pullback n=1236 E +0.16 PF 1.05 vs +0.27 / 1.09). **No promote.** See [open no-chase](../status_log/edge_hunt/channel_touch/2026-09-13_last_15m_open_no_chase.md).
+
 **`next-open-mid`** is the same clock with a 15m fill: buy the **mid** of the next session's 09:30 ET 15m. Live after the daily close. Compare vs the next-mid lookback: `reports/ascending_channels/1d_unrealistic/next_open_mid_compare.csv`. Do not promote unless it beats last-15m **n=2297 E +0.27 PF 1.09**.
 
 **Last-15m-open-mid** (same-session last RTH 15m mid if that bar **opened** above the rail) is EOD-contemporaneous on the **buy**. The first HTML (`…last_15m_open_mid_span365_20260911_132918.html`) **kept daily occupancy sells** — that is the same-bar stop clip. WVE 2023-12-06 buy 6.85 / sell 2023-12-07 @ 6.0254 is that clip (original ATR stop from the cheaper signal-close fill, filled on the next daily bar's low). See [Realistic sells](#realistic-sells-1d-last-15m-book).
@@ -245,6 +247,8 @@ python scripts\research\backtest_channel_touch_h2_break.py --all-symbols --reali
 python scripts\research\compare_1d_next_open_mid.py
 
 python scripts\research\compare_1d_last_15m_realistic_sells.py
+
+python scripts\research\overlay_last_15m_open_no_chase.py --workers 8
 
 python scripts\research\compare_1d_hot_cross_realistic_sells.py --workers 8
 

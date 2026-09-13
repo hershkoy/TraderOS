@@ -55,11 +55,17 @@ Promotion gate (vs SPY): Sharpe > 1.0, Sharpe ≥ SPY, MDD better than SPY (CAGR
 
 Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edge smoke done. Research execution default: no fixed TP + ~10% stop (+ MA exit). Scanner `squeeze` is TTM zero-cross only.
 
+### VCP AVWAP (research translation)
+
+Status: [2026-09-13_vcp_avwap](edge_hunt/2026-09-13_vcp_avwap.md). Causal 15m signal-close buys + N+1 mid sells on the old Playbook #1 detector. 300 ADV names **n=2071 E +0.55 PF 1.26 geo 1.27**; fric0.25 E +0.30 PF 1.13; 2022-23 **E +0.92 PF 1.46**. 78% hard-stop, median −2.0, drop-top-3 E +0.21, max concurrent 55. **No promote.**
+
 ### Channel-touch / ascending channels (active production track)
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-13):** AND last-15m H2 with Deepvue weekend take-4. Trade-week overlap **n=1** (MRNA 2021-06-22 last-15m −6.29%; Deepvue +86% that week). Signal-day n=0. Ever-on-list n=161 wrecks 2020-21 (E −1.31 PF 0.66). Coiled-near-MA vs already-above-rail almost never meet. **No promote.** See [Deepvue AND](edge_hunt/channel_touch/2026-09-13_last_15m_deepvue_and.md).
+**Latest (2026-09-13):** Last-15m next-session MOO without chasing an overnight gap, else same-session 15m pullback holding the rail. Chase-all-opens n=2297 E **−0.01** PF 1.00; skip-gap n=553 E −0.02; pullback n=1236 E +0.16 PF 1.05 vs last-15m +0.27 / 1.09. 2022 worse. **No promote.** See [open no-chase](edge_hunt/channel_touch/2026-09-13_last_15m_open_no_chase.md).
+
+**Prior (2026-09-13):** AND last-15m H2 with Deepvue weekend take-4. Trade-week overlap **n=1** (MRNA 2021-06-22 last-15m −6.29%; Deepvue +86% that week). Signal-day n=0. Ever-on-list n=161 wrecks 2020-21 (E −1.31 PF 0.66). Coiled-near-MA vs already-above-rail almost never meet. **No promote.** See [Deepvue AND](edge_hunt/channel_touch/2026-09-13_last_15m_deepvue_and.md).
 
 **Prior (2026-09-12):** Causal Deepvue-style weekend scan (QQQ rising 21 EMA, RS 85, RMV tightness, max 4) with next-session 09:30 15m-mid buys and 15m N+1 mid sells. 300 ADV names **n=179 E +2.25 PF 1.85 geo 0.985**; median **−2.94**; 2022-23 **E −2.16 PF 0.17**. Fat tails / 83% hard-stop. **No promote.** HTML: `reports/weekly_deepvue/2026-09-12/weekly_deepvue.html`. See [weekly Deepvue](edge_hunt/2026-09-12_weekly_deepvue.md).
 

@@ -4,6 +4,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-13 | [Last-15m next-open no-chase / 15m pullback](2026-09-13_last_15m_open_no_chase.md) |
 | 2026-09-13 | [Last-15m AND Deepvue weekend take-4](2026-09-13_last_15m_deepvue_and.md) |
 | 2026-09-13 | [Nightly Alpaca 1d moved to 17:00 ET](2026-09-13_nightly_1700_et.md) |
 | 2026-09-12 | [Universe breadth + last-15m RTH exhaustion skip](2026-09-12_last_15m_breadth_exhaustion.md) |
@@ -90,6 +91,7 @@ Stable HTML: **`current_best/`** is live-executable causal books even if fragile
 - **Close-cross MAE ridge (2026-09-07):** year-split ridge (train < 2023) from confirm features to `mae_pct` then a padded stop. 50-name holdout and 300-name holdout both **lose E/PF vs trail-only** (300 trail n=712 E +1.28 PF 1.33 vs re-grid stop E −0.11 PF 0.97). **No promote.** See [MAE ridge](2026-09-07_channel_touch_close_cross_mae_ridge.md).
 - **Shakeout-confirm-only skip first (2026-09-12):** Arm on first close above resist; fill only after inside then 2nd close. Live last-15m N+1 **n=1191 E +0.36 PF 1.12** vs current_best +0.27 / 1.09; **2022 n=67 E −3.73 PF 0.11** (worse than first-chase 2022). Clip unique n=1942 E +2.61 is not the grade. Candle/vol occupancy-walk skipped. **No promote.** See [confirm-only](2026-09-12_shakeout_confirm_only.md).
 - **H2 cancel then later breakout (2026-09-12):** 940 last-15m names, 8909 span365 H2s. **6330** cancel on a support close before fill; **28.6%** later close above the same resist (1812). Shallow poke (≤0.25w) is **28.1%** — not a predictor. TARS-like (shallow + next-bar recover) **679 / 239 reclaim (35.2%)**. Last-15m + ATR sleeve n=232 E +1.15 PF 1.38 geo 1.21 but 2020-21 PF 0.94, n thin, drop-top-3 E +0.41; TARS itself **−5.5%** hard-stop Jan-5 before the melt-up. Occupancy not re-walked. **No promote.** See [cancel reclaim](2026-09-12_h2_cancel_reclaim.md).
+- **Last-15m next-open no-chase (2026-09-13):** After last-15m, buy next 09:30 unless overnight gap-up vs prior 15m close; then same-session 15m pullback + green/hammer/engulf holding the rail. Chase MOO n=2297 E **−0.01** PF 1.00; skip-gap n=553 E −0.02; pullback n=1236 E +0.16 PF 1.05 geo 1.09 vs last-15m +0.27 / 1.09 / 1.10. 2022 worse. **No promote.** See [open no-chase](2026-09-13_last_15m_open_no_chase.md).
 - **Last-15m AND Deepvue take-4 (2026-09-13):** Trade-week join with weekend focus rows. **n=1** (MRNA 2021-06-22 last-15m −6.29% hard-stop; Deepvue same week +86%). Signal-day n=0. Ever-on-list n=161 E +1.47 PF 1.45 geo 1.11 but 2020-21 **E −1.31 PF 0.66**. **No promote.** See [Deepvue AND](2026-09-13_last_15m_deepvue_and.md).
 - **Universe breadth + RTH exhaustion (2026-09-12):** ALPACA % above SMA20 and (15:45 open − 09:30 open)/ATR on last-15m n=2297. B50 wrecks 2020-21/2024-26. X_d1 pooled E +0.35 vs +0.27, 2022 leftover −2.71. **No promote.** See [breadth/exhaustion](2026-09-12_last_15m_breadth_exhaustion.md).
 - **Causal HMM / VIX skip (2026-09-12):** Prior-session VIX/VIX3M backwardation and expanding 2/3-state HMM on last-15m n=2297. VIX_back 2022 E −2.69 (worse). HMM2 leftover 2022 n=24 E −3.71 (bear-rally). HMM3 zeros 2022 and wrecks 2020-21. Macro HMM2 geo 1.11 vs 1.10, 2022 still −2.14. **No promote.** Same failure mode as SPY SMA. See [HMM/VIX skip](2026-09-12_last_15m_hmm_vix_skip.md).
@@ -154,6 +156,7 @@ python scripts\research\overlay_last_15m_2022_23_regime.py
 python scripts\research\overlay_last_15m_hmm_vix_skip.py
 python -u scripts\research\overlay_last_15m_breadth_exhaustion.py --workers 8
 python scripts\research\overlay_last_15m_deepvue_and.py
+python scripts\research\overlay_last_15m_open_no_chase.py --workers 8
 python scripts\research\splice_2022_l3_into_1d.py
 python hot_price_server.py
 python scripts\pipeline\hot_price_service.py install-task

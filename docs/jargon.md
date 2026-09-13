@@ -36,5 +36,9 @@ Short notes. Add as needed.
 
 **Deepvue take-4** — Causal weekend scan (`utils/research/weekly_deepvue.py`): QQQ Friday close above a rising 21 EMA, RS 21d/63d >= 85, RMV tightness near 10/21 EMA, sector cap 2, keep 4 names. Buy next 09:30 ET 15m mid. Not Deepvue the product. AND with last-15m H2 is n=1 (MRNA); no promote.
 
+**MOO** — Market On Open: buy (or sell) at the session's **opening print**. Here that is the next RTH **09:30 ET 15m open** (IB bar start), known when that bar begins — not the 09:30 bar's mid or close, and not a broker auction-order type. Opposite of waiting for a later 15m confirm. Chase-all MOO on last-15m n=2297 E −0.01; no promote.
+
+**Open no-chase (last-15m)** — After a last-15m H2, buy next 09:30 ET open only if that open did not gap up vs the signal session's last 15m close and still holds the rail. Gap-up (or open already below the rail): same-session wait for a pullback then a green/hammer/engulfing 15m whose low and close hold at/above the rail; fill that close. Tick gap-up, not 15m `gap_15m`. Chase-all MOO n=2297 E −0.01; pullback n=1236 E +0.16 PF 1.05. No promote.
+
 
 

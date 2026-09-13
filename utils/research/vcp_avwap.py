@@ -27,15 +27,11 @@ from utils.research.realistic_exits import (
     REASON_NO_15M,
     REASON_NO_ENTRY_BAR,
     REASON_NO_NEXT_BAR,
-    find_bar_index,
-    flatten_rth_sessions,
 )
 from utils.research.realistic_purchaser import (
     FILL_MODE_SIGNAL_CLOSE,
     PurchaseResult,
-    as_et,
     bar_mid,
-    is_last_rth_15m_bar,
     normalize_fill_mode,
     purchase_after_close_signal,
     purchase_at_signal_close,
@@ -333,6 +329,9 @@ def arm_sessions(
         base = find_vcp_base_at(close, high, low, volume, i, params)
         if base is None:
             continue
+        pivot = float(base["pivot_price"])
+        if px > pivot:
+            continue
         atr_i = float(atr[i]) if atr[i] == atr[i] else float("nan")
         rows.append(
             {
@@ -374,6 +373,55 @@ def _trailing_rvol(
     if avg <= 0:
         return float("nan")
     return float(vol_now) / avg
+
+
+def index_rth_15m_fast(df: pd.DataFrame, *, naive_tz: str = "UTC") -> Dict[date, List[dict]]:
+    """Vectorized RTH 15m session index (avoids per-bar ZoneInfo in as_et)."""
+    if df is None or df.empty:
+        return {}
+    idx = pd.DatetimeIndex(df.index)
+    if idx.tz is None:
+        idx = idx.tz_localize(str(naive_tz))
+    et = idx.tz_convert("America/New_York")
+    hour = et.hour
+    minute = et.minute
+    rth = (
+        (et.weekday < 5)
+        & (minute % 15 == 0)
+        & (
+            ((hour == 9) & (minute >= 30))
+            | ((hour > 9) & (hour < 15))
+            | ((hour == 15) & (minute <= 45))
+        )
+    )
+    if not bool(np.any(rth)):
+        return {}
+    sub = df.loc[rth]
+    et_sub = et[rth]
+    opens = sub["open"].to_numpy(dtype=float, copy=False)
+    highs = sub["high"].to_numpy(dtype=float, copy=False)
+    lows = sub["low"].to_numpy(dtype=float, copy=False)
+    closes = sub["close"].to_numpy(dtype=float, copy=False)
+    vols = sub["volume"].to_numpy(dtype=float, copy=False) if "volume" in sub.columns else np.ones(len(sub))
+    ts_list = et_sub.to_pydatetime()
+    dates = et_sub.date
+    out: Dict[date, List[dict]] = {}
+    for i in range(len(sub)):
+        sess = pd.Timestamp(dates[i]).date()
+        bar = {
+            "ts": ts_list[i],
+            "open": float(opens[i]),
+            "high": float(highs[i]),
+            "low": float(lows[i]),
+            "close": float(closes[i]),
+            "volume": float(vols[i]),
+        }
+        bucket = out.get(sess)
+        if bucket is None:
+            out[sess] = [bar]
+        else:
+            bucket.append(bar)
+    return out
 
 
 def flatten_session_volumes(
@@ -452,6 +500,44 @@ def find_vcp_breakout_fill(
     return empty
 
 
+def _clock_tuple(ts: Any) -> Optional[tuple]:
+    if ts is None:
+        return None
+    t = ts
+    if hasattr(t, "to_pydatetime"):
+        try:
+            t = t.to_pydatetime()
+        except (TypeError, ValueError):
+            t = ts
+    if not isinstance(t, datetime):
+        try:
+            t = pd.Timestamp(ts).to_pydatetime()
+        except (TypeError, ValueError):
+            return None
+    return (int(t.year), int(t.month), int(t.day), int(t.hour), int(t.minute))
+
+
+def _index_by_clock(bars: Sequence[dict], ts: Any) -> Optional[int]:
+    want = _clock_tuple(ts)
+    if want is None:
+        return None
+    for i, bar in enumerate(bars):
+        got = _clock_tuple(bar.get("ts"))
+        if got is not None and got == want:
+            return i
+    return None
+
+
+def _is_last_rth_clock(ts: Any) -> bool:
+    if ts is None:
+        return False
+    try:
+        return int(ts.hour) == 15 and int(ts.minute) == 45
+    except (AttributeError, TypeError, ValueError):
+        clock = _clock_tuple(ts)
+        return bool(clock is not None and clock[3] == 15 and clock[4] == 45)
+
+
 def simulate_vcp_exit(
     by_day: Dict[date, Sequence[dict]],
     *,
@@ -467,13 +553,20 @@ def simulate_vcp_exit(
     AVWAP loss of control (15m close below AVWAP) raises the stop to
     ``avwap - 0.5 * ATR``; fill is still the next 15m mid after the tag.
     """
-    bars = flatten_rth_sessions(by_day)
+    bars: List[dict] = []
+    sess_of: List[date] = []
+    for sess_d in sorted(by_day.keys()):
+        day_bars = list(by_day.get(sess_d) or [])
+        day_bars.sort(key=lambda b: b.get("ts"))
+        for bar in day_bars:
+            bars.append(bar)
+            sess_of.append(sess_d)
     px = float(entry_px)
     if not bars:
         return ExitResult(filled=False, reason=REASON_NO_15M)
     if px != px or px <= 0:
         return ExitResult(filled=False, reason=REASON_NO_ENTRY_BAR)
-    entry_i = find_bar_index(bars, entry_ts)
+    entry_i = _index_by_clock(bars, entry_ts)
     if entry_i is None:
         return ExitResult(filled=False, reason=REASON_NO_ENTRY_BAR)
     atr = float(atr_at_entry) if atr_at_entry is not None else float("nan")
@@ -505,8 +598,8 @@ def simulate_vcp_exit(
         if hi is not None:
             peak = max(peak, hi)
         ts = bars[i].get("ts")
-        sess = as_et(ts).date() if ts is not None else None
-        if sess is not None and cl is not None:
+        sess = sess_of[i]
+        if cl is not None:
             prior = prior_of.get(sess)
             avwap = avwap_by_prior_session.get(prior) if prior is not None else None
             if avwap is not None and avwap == avwap and cl < float(avwap):
@@ -525,7 +618,7 @@ def simulate_vcp_exit(
                 stop=stop,
                 exit_reason=reason,
             )
-        if ts is not None and is_last_rth_15m_bar(ts) and sess is not None:
+        if _is_last_rth_clock(ts):
             if bool(weekly_below.get(sess, False)):
                 return _next_mid(
                     bars,
@@ -636,6 +729,7 @@ __all__ = [
     "find_vcp_base_at",
     "find_vcp_breakout_fill",
     "flatten_session_volumes",
+    "index_rth_15m_fast",
     "occupancy_take",
     "pullback_depths",
     "rvol_window_bars",
