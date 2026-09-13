@@ -410,7 +410,7 @@ def _alpaca_1d_feed(
     job: dict,
 ) -> Dict[str, Any]:
     role = "Daily H2 armed book. EOD scan only - not a live API."
-    cadence = "Weekdays 23:00 local (CronRunner channel_touch_nightly)"
+    cadence = "Weekdays 17:00 ET (CronRunner channel_touch_nightly)"
     expected = last_completed_session_date(now)
     expected_s = _fmt_date(expected)
     got = _as_of_date(as_of_1d)
@@ -438,7 +438,7 @@ def _alpaca_1d_feed(
             detail="No 1d as_of. Run channel_touch_nightly.",
             job=job,
         )
-    nxt = job.get("next_run") or "23:00 local"
+    nxt = job.get("next_run") or "17:00 ET"
     if got < expected:
         if _job_failed(job):
             status = STATUS_FAILED
@@ -450,14 +450,13 @@ def _alpaca_1d_feed(
             status = STATUS_STALE
             detail = (
                 "Expected last close %s (not today until after cash close). "
-                "Nightly at 23:00 local is 16:00 ET - Alpaca daily often still has "
-                "the prior session at that minute. Next run %s."
+                "Nightly is 17:00 ET Mon-Fri so Alpaca daily can settle. Next run %s."
             ) % (expected_s, nxt)
     elif is_rth(now) or _to_et(now).time() < RTH_CLOSE:
         status = STATUS_WAITING
         detail = (
             "Caught up through last close %s. 1d does not update intraday; "
-            "today's bar is scanned at 23:00 local tonight."
+            "today's bar is scanned at 17:00 ET tonight."
         ) % expected_s
     else:
         status = STATUS_UP_TO_DATE

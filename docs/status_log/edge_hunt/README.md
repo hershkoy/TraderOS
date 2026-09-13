@@ -4,6 +4,8 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-13 | [Last-15m AND Deepvue take-4](channel_touch/2026-09-13_last_15m_deepvue_and.md) |
+| 2026-09-12 | [Causal Deepvue weekend scan](2026-09-12_weekly_deepvue.md) |
 | 2026-08-22 | [Phase 1 scorecard](2026-08-22_edge_hunt_phase1_scorecard.md) |
 | 2026-08-22 | [Phase 2 dual momentum](2026-08-22_edge_hunt_phase2_scorecard.md) |
 | 2026-08-22 | [Phase 3 SPY+BigVol blend](2026-08-22_edge_hunt_phase3_scorecard.md) |

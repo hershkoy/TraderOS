@@ -1,6 +1,7 @@
 @echo off
-REM Register Windows Task Scheduler job for channel-touch nightly
-REM Default: weekdays 23:00 local (after US cash close for Israel/UTC+2/+3)
+REM OBSOLETE. Do not install this task. CronRunner job channel_touch_nightly
+REM in crons\crontab.yaml fires 17:00 ET Mon-Fri (America/New_York).
+REM Default used to be 23:00 local (= 16:00 ET cash close; Alpaca 1d still prior session).
 
 set TASK_NAME=backTraderTest\ChannelTouchNightly
 set BAT_PATH=%~dp0channel_touch_nightly.bat

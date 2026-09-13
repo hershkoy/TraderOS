@@ -18,7 +18,7 @@ Client IDs (keep distinct; overlapping `ib.connect()` wedges Gateway):
 
 CronRunner jobs in `crons/crontab.yaml` (America/New_York unless noted):
 
-1. **16:00 ET-ish** — existing `channel_touch_nightly` (local 23:00) refreshes **Alpaca 1d** and runs the daily H2 scan. Alpaca, not IB.
+1. **17:00 ET Mon–Fri** — `channel_touch_nightly` refreshes **Alpaca 1d** and runs the daily H2 scan (America/New_York). Alpaca, not IB. Do not fire at 16:00 ET cash close; daily bars are often still the prior session then.
 2. **16:30 ET Mon–Fri** — `after_rth_ib_backfill`: IB **15m** catch-up (`--reset-resume --fresh-hours 12`, client 8822), then IB **5m** historical (client 8823) until the next weekday **09:15 ET**. Friday’s run continues through the weekend.
 3. **09:15 ET Mon–Fri** — `stop_ib_5m_backfill`: writes `logs/data/ib_5m_universe.stop`, waits, then kills the job tree so live 15m owns Gateway.
 4. **Hourly in the backfill window** — `backfill_ib_5m_universe` watchdog: weekends all hours; Mon–Fri **17:00–08:00 ET** (not RTH 09:15–16:30). Restarts 5m if `after_rth_ib_backfill` died (`--skip-if-job-running after_rth_ib_backfill --reset-failed`). Skips if that job or a live 5m pid lock is held. Clears leftover stop files and ignores stale locks after reboot.

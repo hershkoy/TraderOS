@@ -41,8 +41,8 @@ def _jobs(**overrides):
         JOB_IB_UNIVERSE: _job(JOB_IB_UNIVERSE, last_fired="2026-09-02T02:30", exit_code=0),
         JOB_ALPACA_1D: _job(
             JOB_ALPACA_1D,
-            last_fired="2026-09-01T23:00",
-            next_run="2026-09-02T23:00+03:00",
+            last_fired="2026-09-01T17:00",
+            next_run="2026-09-02T17:00-04:00",
         ),
     }
     base.update(overrides)
@@ -95,7 +95,7 @@ def test_feeds_match_hot_dashboard_staleness():
     assert by_id["alpaca_1d"]["status"] == STATUS_STALE
     assert by_id["alpaca_1d"]["expected_as_of"] == "2026-09-01"
     assert "EOD" in by_id["alpaca_1d"]["role"] or "EOD" in by_id["alpaca_1d"]["detail"]
-    assert "16:00 ET" in by_id["alpaca_1d"]["detail"]
+    assert "17:00 ET" in by_id["alpaca_1d"]["detail"]
 
 
 def test_ib_15m_updating_when_job_running():
@@ -122,7 +122,7 @@ def test_1d_waiting_when_caught_up_during_rth():
     by_id = {row["id"]: row for row in feeds}
     assert by_id["ib_15m"]["status"] == STATUS_UP_TO_DATE
     assert by_id["alpaca_1d"]["status"] == STATUS_WAITING
-    assert "23:00" in by_id["alpaca_1d"]["detail"]
+    assert "17:00 ET" in by_id["alpaca_1d"]["detail"]
 
 
 def test_alpaca_last_waiting_after_rth():

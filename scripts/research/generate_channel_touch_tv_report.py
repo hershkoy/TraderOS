@@ -274,21 +274,21 @@ def load_trades_for_report(trades_path: Path) -> pd.DataFrame:
             "No raw sibling CSV for %s; Max entries/day cannot add same-day fills",
             trades_path.name,
         )
-        return pd.read_csv(trades_path)
+        return ensure_report_trade_columns(pd.read_csv(trades_path))
 
     df = pd.read_csv(raw_path)
     kwargs = filter_kwargs_from_summary(_summary_path_for_trades(trades_path))
     filtered = filter_trades(df, **kwargs)
     if filtered.empty and not df.empty:
         logger.warning("Quality filters dropped all raw trades; embedding unfiltered raw set")
-        return df
+        return ensure_report_trade_columns(df)
     logger.info(
         "Report embed from %s: raw=%d quality-filtered=%d (no RS/day cap)",
         raw_path.name,
         len(df),
         len(filtered),
     )
-    return filtered
+    return ensure_report_trade_columns(filtered)
 
 
 def _parse_summary_txt(path: Optional[Path]) -> Tuple[Dict[str, str], List[str], List[str]]:
@@ -416,6 +416,60 @@ def load_spy_close(
     if close.index.tz is not None:
         close.index = close.index.tz_convert(None)
     return close.sort_index()
+
+
+def _utc_date_strings(series: pd.Series) -> pd.Series:
+    """Calendar YYYY-MM-DD from a clock column (naive timestamps treated as UTC)."""
+    ts = pd.to_datetime(series, errors="coerce", utc=True)
+    return ts.dt.tz_convert("UTC").dt.strftime("%Y-%m-%d")
+
+
+def ensure_report_trade_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill sell_date / hold_days so 15m-clock CSVs (no daily occupancy dates) still render.
+
+    Weekly Deepvue writes buy_date + buy_time/sell_time (UTC) and omits sell_date.
+    Channel-touch CSVs already have both; this is a no-op for those rows.
+    """
+    t = df.copy()
+    if t.empty:
+        if "sell_date" not in t.columns:
+            t["sell_date"] = pd.Series(dtype="object")
+        if "hold_days" not in t.columns:
+            t["hold_days"] = pd.Series(dtype="float")
+        return t
+
+    if "buy_date" not in t.columns or t["buy_date"].isna().all():
+        for col in ("buy_time", "buy_ts"):
+            if col in t.columns:
+                t["buy_date"] = _utc_date_strings(t[col])
+                break
+    if "buy_date" not in t.columns:
+        raise ValueError("trades need buy_date or buy_time")
+
+    need_sell = "sell_date" not in t.columns or t["sell_date"].isna().all()
+    if need_sell:
+        filled = None
+        for col in ("sell_time", "sell_ts"):
+            if col in t.columns:
+                filled = _utc_date_strings(t[col])
+                break
+        if filled is None:
+            raise ValueError("trades need sell_date or sell_time")
+        t["sell_date"] = filled
+    elif t["sell_date"].isna().any():
+        for col in ("sell_time", "sell_ts"):
+            if col in t.columns:
+                t["sell_date"] = t["sell_date"].where(
+                    t["sell_date"].notna(),
+                    _utc_date_strings(t[col]),
+                )
+                break
+
+    if "hold_days" not in t.columns:
+        buy = pd.to_datetime(t["buy_date"], errors="coerce")
+        sell = pd.to_datetime(t["sell_date"], errors="coerce")
+        t["hold_days"] = (sell - buy).dt.days
+    return t
 
 
 def _series_clock_ts(df: pd.DataFrame, time_col: str, date_col: str) -> Tuple[pd.Series, pd.Series]:
@@ -664,7 +718,7 @@ def trades_to_raw(df: pd.DataFrame) -> List[dict]:
     keys as a broken ``-Infinity`` sort (NaN comparators scramble the pick).
     """
     out: List[dict] = []
-    t = df.copy()
+    t = ensure_report_trade_columns(df)
     t["buy_date"] = pd.to_datetime(t["buy_date"])
     t["sell_date"] = pd.to_datetime(t["sell_date"])
     t = t.reset_index(drop=True)

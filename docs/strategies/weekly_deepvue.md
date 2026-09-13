@@ -132,12 +132,13 @@ Causal scan (not Deepvue): `utils/research/weekly_deepvue.py` + `scripts/researc
 
 Weekend signal on completed daily bars (W-FRI). **Buy** next session 09:30 ET 15m mid. **Sell** 3% hard stop on 15m N+1 mid, or two daily closes below the 21 EMA then the next 15m mid. Occupancy max 4. See [realistic purchasing](../features/realistic_purchasing.md).
 
-First 300-name ADV book (2026-09-12): unique occupancy **n=179 E +2.25 PF 1.85 geo 0.985**, median **−2.94**, 2022-23 **E −2.16 PF 0.17**, 83% hard-stop. **No promote.** Write-up: [2026-09-12_weekly_deepvue](../status_log/edge_hunt/2026-09-12_weekly_deepvue.md).
+First 300-name ADV book (2026-09-12): unique occupancy **n=179 E +2.25 PF 1.85 geo 0.985**, median **−2.94**, 2022-23 **E −2.16 PF 0.17**, 83% hard-stop. **No promote.** Write-up: [2026-09-12_weekly_deepvue](../status_log/edge_hunt/2026-09-12_weekly_deepvue.md). HTML: `reports/weekly_deepvue/2026-09-12/weekly_deepvue.html` (TV-style; Channel column empty — no rails; default friction 0.25). AND last-15m H2 (2026-09-13): trade-week **n=1** — do not combine the buy signals. See [Deepvue AND](../status_log/edge_hunt/channel_touch/2026-09-13_last_15m_deepvue_and.md).
 
 ```bat
 venv\Scripts\activate
 set PYTHONPATH=.
 python -u scripts\research\backtest_weekly_deepvue.py --n-symbols 300
+python scripts\research\generate_weekly_deepvue_report.py
 ```
 
 ## That weekend’s tape (context only)

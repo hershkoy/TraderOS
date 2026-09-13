@@ -45,8 +45,13 @@ Geo uses YEAR_BUCKETS with n>=30 (skips 2018-19). 2022-23 PF 0.17 pulls geo unde
 
 Do not occupancy-walk a 2%/day variant or full-universe rescan until a causal change actually lifts 2022-23 without clipping 2020-21 / 2024-26 winner dollars.
 
+AND with last-15m H2 (2026-09-13): trade-week overlap **n=1** (MRNA). Ever-on-list last-15m n=161 wrecks 2020-21. **No promote.** See [Deepvue AND](channel_touch/2026-09-13_last_15m_deepvue_and.md).
+
+HTML (TV-style, no rails / Channel column empty; default friction 0.25): `reports/weekly_deepvue/2026-09-12/weekly_deepvue.html`.
+
 ```bat
 venv\Scripts\activate
 set PYTHONPATH=.
 python -u scripts\research\backtest_weekly_deepvue.py --n-symbols 300
+python scripts\research\generate_weekly_deepvue_report.py
 ```

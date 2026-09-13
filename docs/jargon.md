@@ -34,5 +34,7 @@ Short notes. Add as needed.
 
 **RTH exhaustion (last-15m)** — (15:45 ET open − 09:30 ET open) / ATR. 15m ATR14 uses completed bars before 15:45; daily ATR is prior session. Skip if already >=2 15m-ATR or >=1 daily ATR. X_d1 lifts pooled E slightly and makes 2022 leftover worse. No promote.
 
+**Deepvue take-4** — Causal weekend scan (`utils/research/weekly_deepvue.py`): QQQ Friday close above a rising 21 EMA, RS 21d/63d >= 85, RMV tightness near 10/21 EMA, sector cap 2, keep 4 names. Buy next 09:30 ET 15m mid. Not Deepvue the product. AND with last-15m H2 is n=1 (MRNA); no promote.
+
 
 

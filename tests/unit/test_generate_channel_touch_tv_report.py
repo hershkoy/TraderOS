@@ -227,6 +227,32 @@ def test_trades_to_raw_uses_bar_times_when_present():
     assert by_sym["ARGX"]["sell_at"] == "2019-01-04 09:45"
 
 
+def test_ensure_report_trade_columns_derives_sell_date_from_utc_clock():
+    from scripts.research.generate_channel_touch_tv_report import (
+        ensure_report_trade_columns,
+        trades_to_raw,
+    )
+
+    df = pd.DataFrame(
+        {
+            "stock": ["AFRM"],
+            "buy_date": ["2021-08-23"],
+            "buy_time": ["2021-08-23 13:30"],
+            "sell_time": ["2021-11-15 14:45"],
+            "buy_price": [100.0],
+            "sell_price": [218.0],
+            "gain_pct": [118.0],
+            "exit_reason": ["ma_2close"],
+        }
+    )
+    filled = ensure_report_trade_columns(df)
+    assert filled.iloc[0]["sell_date"] == "2021-11-15"
+    assert int(filled.iloc[0]["hold_days"]) == 84
+    row = trades_to_raw(df)[0]
+    assert row["sell"] == "2021-11-15"
+    assert row["sell_at"] == "2021-11-15 09:45"
+
+
 def test_trades_to_raw_converts_utc_clock_to_rth_across_dst():
     from scripts.research.generate_channel_touch_tv_report import trades_to_raw
 

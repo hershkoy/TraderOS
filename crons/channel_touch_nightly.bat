@@ -2,7 +2,7 @@
 REM Nightly channel-touch: update ALPACA 1d -> H2 resist-break scan -> Telegram
 REM Defaults: min-wait 6, span 365, unique-symbol/day (no RS cap), ATR k=2; no RSI / in-channel / beyond-width
 REM Rollback L3: add --no-h2-resist-break --require-in-channel --max-rsi 50 --max-beyond-width 0.25
-REM Schedule via: crons\install_channel_touch_nightly_task.bat
+REM Schedule via CronRunner: 17:00 ET Mon-Fri (crons\crontab.yaml). Not cash close.
 
 cd /d %~dp0..
 if not exist logs\scanners mkdir logs\scanners

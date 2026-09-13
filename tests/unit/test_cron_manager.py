@@ -123,7 +123,8 @@ def test_repo_crontab_loads():
     assert "stop_ib_5m_backfill" in names
     assert "backfill_ib_5m_universe" in names
     nightly = mgr.job("channel_touch_nightly")
-    assert nightly.schedule == ["0 23 * * 1-5"]
+    assert nightly.schedule == ["0 17 * * 1-5"]
+    assert nightly.timezone == "America/New_York"
     assert nightly.skip_if_ran_today is True
     after = mgr.job("after_rth_ib_backfill")
     assert after.schedule == ["30 16 * * 1-5"]
