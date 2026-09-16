@@ -39,6 +39,7 @@ from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
 from utils.notify.alerts import send_alert  # noqa: E402
 from utils.scanning.channel_touch_15m import (  # noqa: E402
     LIVE_15M_DEFAULTS,
+    PROXIMITY_SKIP_IF_FRESH_SEC,
     armed_rows_for_symbol,
     attach_last_prices,
     drop_incomplete_15m_bars,
@@ -56,6 +57,7 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     rank_hot,
     unique_symbol_day_ok,
 )
+from utils.scanning.channel_touch_hot_api import prices_are_stale  # noqa: E402
 from utils.scanning.channel_touch_15m_refresh import (  # noqa: E402
     last_ts_map_from_rows,
     refresh_ib_15m_symbols,
@@ -261,6 +263,46 @@ def _load_rows_from_store_or_json(
         logger.info("Loaded watchlist %s rows=%d as_of=%s", args.watchlist, len(rows), payload.get("as_of"))
         return payload, rows
     raise FileNotFoundError("No candidates in TimescaleDB and watchlist JSON missing: %s" % args.watchlist)
+
+
+def _prices_from_rows(rows: Sequence[dict]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for row in rows:
+        stock = str(row.get("stock") or "").upper()
+        px = row.get("last_price")
+        if not stock or px is None:
+            continue
+        try:
+            val = float(px)
+        except (TypeError, ValueError):
+            continue
+        if val > 0:
+            out[stock] = val
+    return out
+
+
+def _proximity_last_prices(
+    armed_syms: Sequence[str],
+    rows: Sequence[dict],
+    *,
+    batch_size: int,
+    skip_if_fresh_sec: float = PROXIMITY_SKIP_IF_FRESH_SEC,
+) -> Tuple[Dict[str, float], str]:
+    """Alpaca last for proximity. status: fetched | skipped_fresh | failed | empty."""
+    if not armed_syms:
+        return {}, "empty"
+    if skip_if_fresh_sec > 0 and not prices_are_stale(rows, max_age_sec=float(skip_if_fresh_sec)):
+        logger.info(
+            "Skip Alpaca snapshot; last_price_ts younger than %.0fs (hub backup)",
+            float(skip_if_fresh_sec),
+        )
+        return {}, "skipped_fresh"
+    try:
+        prices = fetch_alpaca_last_prices(armed_syms, batch_size=int(batch_size))
+        return prices, "fetched"
+    except Exception as exc:
+        logger.warning("Alpaca last prices failed (keeping stored): %s", exc)
+        return {}, "failed"
 
 
 def _sync_bought_stops(
@@ -811,27 +853,36 @@ def main() -> int:
                     if r.get("status") in ("armed", "waiting", "filled")
                 }
             )
+            fetched = False
             if armed_syms:
                 t_px = time.perf_counter()
-                last_prices = fetch_alpaca_last_prices(armed_syms, batch_size=int(args.alpaca_batch))
+                last_prices, px_status = _proximity_last_prices(
+                    armed_syms,
+                    rows,
+                    batch_size=int(args.alpaca_batch),
+                )
+                fetched = px_status == "fetched"
                 logger.info(
-                    "Alpaca last prices %d/%d in %.2fs",
+                    "Alpaca last prices status=%s %d/%d in %.2fs",
+                    px_status,
                     len(last_prices),
                     len(armed_syms),
                     time.perf_counter() - t_px,
                 )
-            rows = attach_last_prices(rows, last_prices, below_pct=below_pct)
-            rows = rank_hot(rows, below_pct=below_pct)
-            payload["rows"] = rows
-            _write_watchlist(args.watchlist, payload)
-            if store is not None:
-                try:
-                    store.update_live_prices(rows, price_ts=datetime.now(timezone.utc))
-                except Exception as exc:
-                    logger.warning("Could not update live prices: %s", exc)
+            if fetched:
+                rows = attach_last_prices(rows, last_prices, below_pct=below_pct)
+                rows = rank_hot(rows, below_pct=below_pct)
+                payload["rows"] = rows
+                _write_watchlist(args.watchlist, payload)
+                if store is not None:
+                    try:
+                        store.update_live_prices(rows, price_ts=datetime.now(timezone.utc))
+                    except Exception as exc:
+                        logger.warning("Could not update live prices: %s", exc)
+            bought_prices = last_prices if last_prices else _prices_from_rows(rows)
             _sync_bought_stops(
                 store,
-                last_prices,
+                bought_prices,
                 settings,
                 dry_run=dry_run,
                 alpaca_batch=int(args.alpaca_batch),

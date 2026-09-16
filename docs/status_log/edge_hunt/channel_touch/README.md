@@ -4,6 +4,10 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-16 | [Short H3+ resistance fade](2026-09-16_resist_short_h3.md) |
+| 2026-09-16 | [Last-15m consecutive-loss sit-out](2026-09-16_last_15m_loss_streak.md) |
+| 2026-09-15 | [Alpaca snapshot timeout / 15m FAILED Telegram](2026-09-15_alpaca_snapshot_timeout.md) |
+| 2026-09-14 | [Causal VX-curve slope < 4 skip on last-15m](2026-09-14_last_15m_vx_curve_skip.md) |
 | 2026-09-13 | [H2+L3 occupancy: unified FCFS vs dedicated sleeves](2026-09-13_h2_l3_blend_occupancy.md) |
 | 2026-09-13 | [Unconstrained H2+L3 concurrent overlay](2026-09-13_h2_l3_concurrent_overlay.md) |
 | 2026-09-13 | [Sit 2022 out vs TLT global gate](2026-09-13_tlt_global_gate_sitout.md) |
@@ -82,6 +86,7 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 
 Stable HTML: **`current_best/`** is live-executable causal books even if fragile — `1d_last_15m.html` / `1d_channel_touch.html` (last-15m-open-mid + 15m N+1 mid **n=2297 E +0.27 PF 1.09**, fric0.25 E +0.02 PF 1.01 — the 1d number to beat; 2022-23 fails; **not a promote**), `15m_channel_touch.html` (wait-12 L3 signal-close **n=1744 E +0.13 PF 1.22**), plus realistic 15m H2/H5 (losing/flat). **Clip / clip-exit 1d** in `reports/ascending_channels/1d_unrealistic/` (`1d_h2_resist_break.html` nightly H2 + shakeout, `1d_hot_cross.html` lerp85 occupancy-sell n=4079 E −0.19 PF 0.94, `1d_l3_touch.html` retired L3). Write-up: `current_best/README.md`, `1d_unrealistic/README.md`, [realistic purchasing](../../../features/realistic_purchasing.md), [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
 
+- **Short H3+ resistance fade (2026-09-16):** After causal H2, short from-below resist tags (H3/H4+), cover at support + ATR k=2. Daily unique span365 **n=250 E +0.06 PF 1.02** — **no promote**. 15m unique span10 **n=7004 E +0.21 PF 1.47** geo 1.45 (all years +; drop-top-50 holds; fric0.25 E +0.06) — research-interesting, **not a hard promote** / do not wire. See [resist short H3](2026-09-16_resist_short_h3.md).
 - **Live / nightly:** `--h2-resist-break --h2-resist-break-only --shakeout-breakout --min-l3-wait-bars 6` + span365; **no** RSI / in-channel / beyond-width; **unique-symbol/day** (not RS top1); ATR k=2.0 clamped 1.5%–6%; windowed 504/252. Optional `--max-entries-per-day 1` restores RS top1. Occupancy skips a second fill while the first trade is open. `--no-shakeout-breakout` restores first-break-and-done. Fill is the **unrealistic** same-bar rail clip (not `--realistic-fill`).
 - **Retired L3 keeper:** `--entry-mode l3_touch --min-l3-wait-bars 6 --max-rsi 50` + in-channel + span365 + beyond 0.25 (`1d_unrealistic/1d_l3_touch.html`)
 - Squeeze-adaptive trail 10%/18% (research exits; not a scan gate)
@@ -98,6 +103,7 @@ Stable HTML: **`current_best/`** is live-executable causal books even if fragile
 - **Last-15m next-open no-chase (2026-09-13):** After last-15m, buy next 09:30 unless overnight gap-up vs prior 15m close; then same-session 15m pullback + green/hammer/engulf holding the rail. Chase MOO n=2297 E **−0.01** PF 1.00; skip-gap n=553 E −0.02; pullback n=1236 E +0.16 PF 1.05 geo 1.09 vs last-15m +0.27 / 1.09 / 1.10. 2022 worse. **No promote.** See [open no-chase](2026-09-13_last_15m_open_no_chase.md).
 - **Last-15m AND Deepvue take-4 (2026-09-13):** Trade-week join with weekend focus rows. **n=1** (MRNA 2021-06-22 last-15m −6.29% hard-stop; Deepvue same week +86%). Signal-day n=0. Ever-on-list n=161 E +1.47 PF 1.45 geo 1.11 but 2020-21 **E −1.31 PF 0.66**. **No promote.** See [Deepvue AND](2026-09-13_last_15m_deepvue_and.md).
 - **Universe breadth + RTH exhaustion (2026-09-12):** ALPACA % above SMA20 and (15:45 open − 09:30 open)/ATR on last-15m n=2297. B50 wrecks 2020-21/2024-26. X_d1 pooled E +0.35 vs +0.27, 2022 leftover −2.71. **No promote.** See [breadth/exhaustion](2026-09-12_last_15m_breadth_exhaustion.md).
+- **Causal VX-curve slope < 4 (2026-09-14):** Pine `((VX2/VX1)-1)*100` in Python from TV `CBOE_DLY:VX1!` / `VX2!` daily dumps (not cash analog). **VX12_lt4** n=1645 E **−0.00** PF **1.00** geo **1.00**; 2022 leftover n=62 E **−2.45**; 2020-21 blunt; 2023 leftover worse. **No promote.** Do not fish 5/8. See [VX curve](2026-09-14_last_15m_vx_curve_skip.md).
 - **Causal HMM / VIX skip (2026-09-12):** Prior-session VIX/VIX3M backwardation and expanding 2/3-state HMM on last-15m n=2297. VIX_back 2022 E −2.69 (worse). HMM2 leftover 2022 n=24 E −3.71 (bear-rally). HMM3 zeros 2022 and wrecks 2020-21. Macro HMM2 geo 1.11 vs 1.10, 2022 still −2.14. **No promote.** Same failure mode as SPY SMA. See [HMM/VIX skip](2026-09-12_last_15m_hmm_vix_skip.md).
 - **IB hist L1 AMPL/VST/TARS (2026-09-12):** IB has **no historical L2**. Puller (`pull_ib_historical_l1.py`, client 8828 light-connect) for BID/ASK/TRADES. Gateway **2110** TWS-server broken; qualify Error 200 + CCP 10159. Reconnect-to-IB then `--smoke --no-ticks`. Tape not measured. Do not promote F2-like bid-fail or pos-like ask-extension. See [IB L1](2026-09-12_ib_historical_l1_ampl_vst_tars.md).
 - **Synthetic 2022 L3 splice (2026-09-12):** Last-15m 1d H2 except calendar 2022 = 15m L3 wait-12. n=2423 E +0.37 PF 1.13 vs +0.27 / 1.09. 2022-23 still −0.16 / 0.92. No switch signal. **Not a strategy.** See [splice](2026-09-12_synthetic_2022_l3_splice.md).
@@ -119,6 +125,8 @@ Stable HTML: **`current_best/`** is live-executable causal books even if fragile
 ```bat
 venv\Scripts\activate
 set PYTHONPATH=.
+python scripts\research\backtest_channel_touch_resist_short.py --n-symbols 300 --workers 4 --load-workers 8
+python scripts\research\backtest_channel_touch_resist_short.py --preset 15m --n-symbols 300 --workers 4 --load-workers 8 --min-h3-wait-bars 12
 python scripts\research\backtest_channel_touch_trades.py --all-symbols --squeeze-adaptive --atr-stop-mult 2.0 --require-in-channel --max-channel-span-days 365 --max-beyond-width 0.25 --max-entries-per-day 1 --friction-pct 0.25 --workers 4 --load-workers 8 --start 2018-11-01
 python scripts\research\backtest_channel_touch_trades.py --stop-pct-sweep 0.02,0.03,0.04 --workers 4
 python scripts\research\backtest_channel_touch_trades.py --atr-stop-mult-sweep 1,1.5,2 --workers 4
@@ -158,6 +166,7 @@ python scripts\research\analyze_h2_cancel_reclaim.py --workers 8
 python scripts\research\pull_ib_historical_l1.py --smoke --ib-client-id 8828 --ib-port 4001 --no-ticks
 python scripts\research\overlay_last_15m_2022_23_regime.py
 python scripts\research\overlay_last_15m_hmm_vix_skip.py
+python scripts\research\overlay_last_15m_vx_curve.py --vx1 reports\ascending_channels\2026-09-14\tv_cboe_vx1_daily.json --vx2 reports\ascending_channels\2026-09-14\tv_cboe_vx2_daily.json
 python -u scripts\research\overlay_last_15m_breadth_exhaustion.py --workers 8
 python scripts\research\overlay_last_15m_deepvue_and.py
 python scripts\research\overlay_last_15m_open_no_chase.py --workers 8

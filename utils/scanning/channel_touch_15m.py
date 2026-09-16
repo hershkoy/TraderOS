@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -78,6 +79,14 @@ LIVE_15M_DEFAULTS: Dict[str, Any] = {
     "ib_fetch_max_days": 5.0,
     "refresh_below_pct": 0.5,
 }
+
+# alpaca-py 0.13 StockHistoricalDataClient has no timeout; request() uses None.
+ALPACA_CONNECT_TIMEOUT_SEC = 5.0
+ALPACA_READ_TIMEOUT_SEC = 15.0
+ALPACA_SNAPSHOT_RETRIES = 3
+ALPACA_RETRY_WAIT_SEC = 0.75
+# Minute proximity is a hub backup; skip Alpaca if last_price_ts is this fresh.
+PROXIMITY_SKIP_IF_FRESH_SEC = 30.0
 
 
 def setup_channel_kwargs(overrides: Optional[dict] = None) -> dict:
@@ -544,20 +553,27 @@ def attach_last_prices(
     last_prices: Dict[str, float],
     *,
     below_pct: float = 0.0,
+    keep_missing: bool = True,
 ) -> List[dict]:
     out: List[dict] = []
     for row in rows:
         item = dict(row)
-        px = last_prices.get(str(item.get("stock", "")).upper())
-        item["last_price"] = round(float(px), 6) if px is not None and np.isfinite(float(px)) else None
+        key = str(item.get("stock", "")).upper()
+        if key in last_prices:
+            px = last_prices.get(key)
+            item["last_price"] = (
+                round(float(px), 6) if px is not None and np.isfinite(float(px)) else None
+            )
+        elif not keep_missing:
+            item["last_price"] = None
         resist = item.get("resist")
-        if item["last_price"] is not None and resist is not None and float(resist) > 0:
+        if item.get("last_price") is not None and resist is not None and float(resist) > 0:
             item["dist_live_pct"] = round(
                 (float(item["last_price"]) - float(resist)) / float(resist) * 100.0, 4
             )
-        else:
+        elif not keep_missing or key in last_prices:
             item["dist_live_pct"] = None
-        item["hot"] = is_hot_proximity(item["last_price"], resist, below_pct=float(below_pct))
+        item["hot"] = is_hot_proximity(item.get("last_price"), resist, below_pct=float(below_pct))
         out.append(item)
     return out
 
@@ -581,15 +597,92 @@ def rank_hot(rows: Sequence[dict], *, below_pct: float = 0.0) -> List[dict]:
     return ranked
 
 
+def is_transient_alpaca_error(exc: BaseException) -> bool:
+    """Timeouts, resets, and 429s are retryable; do not treat auth/value errors as such."""
+    cur: Optional[BaseException] = exc
+    seen: set[int] = set()
+    markers = (
+        "timed out",
+        "timeout",
+        "connection aborted",
+        "connection reset",
+        "forcibly closed",
+        "10054",
+        "remotely closed",
+        "max retries exceeded",
+        "temporarily unavailable",
+        "too many requests",
+        " 429",
+        "status code 429",
+    )
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(
+            cur,
+            (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError),
+        ):
+            return True
+        winerr = getattr(cur, "winerror", None)
+        if winerr == 10054:
+            return True
+        name = type(cur).__name__.lower()
+        if "timeout" in name or name in ("connectionerror", "protocolerror", "chunkedencodingerror"):
+            return True
+        text = str(cur).lower()
+        if any(token in text for token in markers):
+            return True
+        cur = cur.__cause__ or getattr(cur, "__context__", None)
+    return False
+
+
+def _bind_session_timeout(session: Any, timeout: Tuple[float, float]) -> None:
+    orig = session.request
+
+    def request(method, url, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = timeout
+        return orig(method, url, **kwargs)
+
+    session.request = request
+
+
+def _alpaca_snapshot_client(api_key: str, secret_key: str, *, timeout: Tuple[float, float]):
+    from alpaca.data.historical import StockHistoricalDataClient
+
+    client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+    session = getattr(client, "_session", None)
+    if session is not None:
+        _bind_session_timeout(session, timeout)
+    return client
+
+
+def _prices_from_snapshots(data: Any) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    items = data.items() if hasattr(data, "items") else []
+    for sym, snap in items:
+        trade = getattr(snap, "latest_trade", None)
+        px = getattr(trade, "price", None) if trade is not None else None
+        if px is not None and np.isfinite(float(px)) and float(px) > 0:
+            out[str(sym).upper()] = float(px)
+    return out
+
+
 def fetch_alpaca_last_prices(
     symbols: Sequence[str],
     *,
     batch_size: int = 200,
     feed: str = "iex",
+    timeout: Optional[Tuple[float, float]] = None,
+    retries: int = ALPACA_SNAPSHOT_RETRIES,
+    retry_wait_sec: float = ALPACA_RETRY_WAIT_SEC,
 ) -> Dict[str, float]:
-    """Last trade price via Alpaca snapshot. Daily volume is IEX, not IB 15m."""
+    """Last trade price via Alpaca snapshot. Daily volume is IEX, not IB 15m.
+
+    alpaca-py 0.13 issues snapshot GETs with read timeout=None. Bind a finite
+    timeout and retry connection resets / read timeouts per batch so a hung
+    data.alpaca.markets socket does not take down the 15m proximity job.
+    """
     from alpaca.data.enums import DataFeed
-    from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockSnapshotRequest
     from utils.config.env_loader import get_env_var, load_env_file
     import os
@@ -600,19 +693,63 @@ def fetch_alpaca_last_prices(
     if not key or not secret:
         raise ValueError("ALPACA_API_KEY_ID / ALPACA_API_SECRET missing")
     feed_enum = DataFeed.IEX if str(feed).lower() == "iex" else DataFeed.SIP
-    client = StockHistoricalDataClient(api_key=key, secret_key=secret)
+    http_timeout = timeout or (ALPACA_CONNECT_TIMEOUT_SEC, ALPACA_READ_TIMEOUT_SEC)
+    max_tries = max(1, int(retries))
+    wait_s = max(0.0, float(retry_wait_sec))
+    client = _alpaca_snapshot_client(key, secret, timeout=http_timeout)
     clean = [str(s).upper() for s in symbols if str(s).strip()]
     out: Dict[str, float] = {}
     size = max(1, int(batch_size))
+    last_exc: Optional[BaseException] = None
     for i in range(0, len(clean), size):
         part = clean[i : i + size]
-        req = StockSnapshotRequest(symbol_or_symbols=part, feed=feed_enum)
-        data = client.get_stock_snapshot(req)
-        for sym, snap in data.items():
-            trade = getattr(snap, "latest_trade", None)
-            px = getattr(trade, "price", None) if trade is not None else None
-            if px is not None and np.isfinite(float(px)) and float(px) > 0:
-                out[str(sym).upper()] = float(px)
+        batch_ok = False
+        for attempt in range(1, max_tries + 1):
+            try:
+                req = StockSnapshotRequest(symbol_or_symbols=part, feed=feed_enum)
+                data = client.get_stock_snapshot(req)
+                out.update(_prices_from_snapshots(data))
+                batch_ok = True
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                transient = is_transient_alpaca_error(exc)
+                if (not transient) or attempt >= max_tries:
+                    logger.warning(
+                        "Alpaca snapshot batch %s-%s failed after %d/%d: %s",
+                        i + 1,
+                        i + len(part),
+                        attempt,
+                        max_tries,
+                        exc,
+                    )
+                    break
+                logger.warning(
+                    "Alpaca snapshot batch %s-%s attempt %d/%d failed (%s); retrying",
+                    i + 1,
+                    i + len(part),
+                    attempt,
+                    max_tries,
+                    exc,
+                )
+                try:
+                    closer = getattr(client, "close", None)
+                    if callable(closer):
+                        closer()
+                    else:
+                        session = getattr(client, "_session", None)
+                        if session is not None:
+                            session.close()
+                except Exception:
+                    pass
+                if wait_s:
+                    time.sleep(wait_s)
+                client = _alpaca_snapshot_client(key, secret, timeout=http_timeout)
+        if not batch_ok:
+            continue
+    if clean and not out and last_exc is not None:
+        raise last_exc
     return out
 
 

@@ -109,10 +109,13 @@ each 15m bar close (RTH)
   then IB hist on the rest of armed/waiting so wait/rails stay current
 
 each RTH minute
-  Alpaca last on the armed list (~1s)
+  Alpaca last on the armed list (~1s) unless last_price_ts is already <30s
+    (HotPriceHub is the primary poll; this job is the backup)
+  snapshot HTTP timeout is 5s connect / 15s read (alpaca-py 0.13 default is None);
+    retry connection reset / read timeout per batch, keep stored prices on failure
+  do not Telegram FAILED for a flaky Alpaca poll; 15m bar-close fills still run
   update last_price / dist_live_pct / hot in TimescaleDB
   also refresh Bought stops; Telegram SELL NOW if last hits the live stop
-  backup if the always-on price hub is not running
   no Telegram for newly hot (hot is not a fill)
 
 always-on price hub (logon task HotPriceHub, default :5001)

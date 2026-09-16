@@ -204,6 +204,109 @@ def test_attach_last_prices_marks_hot():
     assert out2[0]["hot"] is False
 
 
+def test_attach_last_prices_keep_missing_preserves_stored():
+    rows = [
+        {"stock": "AAA", "resist": 50.0, "last_price": 51.0, "dist_live_pct": 2.0, "hot": True},
+        {"stock": "BBB", "resist": 10.0, "last_price": 9.0, "dist_live_pct": -10.0, "hot": False},
+    ]
+    out = attach_last_prices(rows, {"AAA": 52.0}, below_pct=0.0)
+    assert out[0]["last_price"] == 52.0
+    assert out[1]["last_price"] == 9.0
+    assert out[1]["hot"] is False
+
+
+def test_is_transient_alpaca_error():
+    from utils.scanning.channel_touch_15m import is_transient_alpaca_error
+
+    assert is_transient_alpaca_error(
+        ConnectionResetError(10054, "An existing connection was forcibly closed by the remote host")
+    )
+    class ReadTimeout(Exception):
+        pass
+
+    assert is_transient_alpaca_error(
+        ReadTimeout("HTTPSConnectionPool(host='data.alpaca.markets', port=443): Read timed out. (read timeout=None)")
+    )
+    assert not is_transient_alpaca_error(ValueError("ALPACA_API_KEY_ID / ALPACA_API_SECRET missing"))
+
+
+def test_bind_session_timeout_replaces_none():
+    from utils.scanning.channel_touch_15m import _bind_session_timeout
+
+    class Sess:
+        def __init__(self):
+            self.seen = None
+
+        def request(self, method, url, **kwargs):
+            self.seen = kwargs
+            return "ok"
+
+    sess = Sess()
+    _bind_session_timeout(sess, (5.0, 15.0))
+    assert sess.request("GET", "http://x") == "ok"
+    assert sess.seen["timeout"] == (5.0, 15.0)
+
+
+def test_fetch_alpaca_retries_connection_reset(monkeypatch):
+    from utils.scanning import channel_touch_15m as ct
+
+    class Trade:
+        price = 12.5
+
+    class Snap:
+        latest_trade = Trade()
+
+    class FakeClient:
+        n = 0
+
+        def get_stock_snapshot(self, req):
+            FakeClient.n += 1
+            if FakeClient.n == 1:
+                raise ConnectionResetError(
+                    10054, "An existing connection was forcibly closed by the remote host"
+                )
+            return {"AAA": Snap()}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(ct, "_alpaca_snapshot_client", lambda *a, **k: FakeClient())
+    monkeypatch.setattr(
+        "utils.config.env_loader.get_env_var",
+        lambda key: "dummy",
+    )
+    monkeypatch.setattr("utils.config.env_loader.load_env_file", lambda: None)
+    monkeypatch.setattr("alpaca.data.requests.StockSnapshotRequest", lambda **k: object())
+    monkeypatch.setattr("alpaca.data.enums.DataFeed", type("F", (), {"IEX": "iex", "SIP": "sip"}))
+
+    out = ct.fetch_alpaca_last_prices(["AAA"], retries=3, retry_wait_sec=0)
+    assert out == {"AAA": 12.5}
+    assert FakeClient.n == 2
+
+
+def test_fetch_alpaca_raises_when_all_retries_fail(monkeypatch):
+    from utils.scanning import channel_touch_15m as ct
+
+    class FakeClient:
+        def get_stock_snapshot(self, req):
+            raise ConnectionResetError(10054, "forcibly closed")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(ct, "_alpaca_snapshot_client", lambda *a, **k: FakeClient())
+    monkeypatch.setattr("utils.config.env_loader.get_env_var", lambda key: "dummy")
+    monkeypatch.setattr("utils.config.env_loader.load_env_file", lambda: None)
+    monkeypatch.setattr("alpaca.data.requests.StockSnapshotRequest", lambda **k: object())
+    monkeypatch.setattr("alpaca.data.enums.DataFeed", type("F", (), {"IEX": "iex", "SIP": "sip"}))
+
+    try:
+        ct.fetch_alpaca_last_prices(["AAA"], retries=2, retry_wait_sec=0)
+        assert False, "expected ConnectionResetError"
+    except ConnectionResetError:
+        pass
+
+
 def test_armed_rows_uses_injected_setup():
     n = 60
     idx = pd.date_range("2024-01-02 14:30", periods=n, freq="15min")

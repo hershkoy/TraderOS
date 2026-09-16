@@ -2,6 +2,8 @@
 
 Short notes. Add as needed.
 
+**CAGR** — Compound Annual Growth Rate: geometric mean annual return of an equity curve, `(end/start)^(1/years) − 1`. Reported on edge-hunt books; not the ranking objective (Sharpe/MDD vs SPY gate).
+
 **MAE** — Maximum Adverse Excursion: the worst dip against you after the fill, as a % of entry (here: how far price went against the trade *before* the trail’s peak). Not “mean absolute error.”
 
 **RMSE** — Root Mean Squared Error: typical size of prediction mistakes, in the same units as the target. If we predict MAE and RMSE is 2.7, guesses are off by about 2.7 percentage points on average (large errors count more than small ones).
@@ -32,6 +34,8 @@ Short notes. Add as needed.
 
 **VIX backwardation skip** — Prior-session VIX/VIX3M >= 1 (optionally VIX>=20) as a last-15m keep/skip. Not the Phase 6c SPY overlay. On n=2297 it makes 2022 worse (leftover E −2.69); 2023 skips none. No promote.
 
+**VX-curve slope skip** — Pine `((VX2/VX1)-1)*100` from separate TV daily dumps, ratio in Python; skip last-15m if prior-session slope < 4. VX12_lt4 n=1645 E −0.00 PF 1.00 geo 1.00; 2022 leftover −2.45; 2020-21 blunt. No promote. Do not fish 5/8.
+
 **Causal HMM skip** — Expanding 2/3-state Gaussian HMM on daily SPY log-return / 60d vol / 20d mean + VIX change + VIX/VIX3M (optional TLT/GLD/UUP). Fit through t only, Wasserstein-match states so bull = highest SPY-drift mean, join P(bull) at prior session. Last-15m P(bull)<0.5/0.65 fails like SPY SMA (2022 leftover harder; 3-state zeros 2022 and wrecks 2020-21). No promote.
 
 **Universe SMA20 breadth** — Daily fraction of the ALPACA ~2,217-name panel with close > own SMA20 (names without SMA20 omitted). Last-15m uses prior session. B50 (<0.50) and below-expanding-median skips fail the 2022/winner-$ gate. Not SPY.
@@ -45,6 +49,8 @@ Short notes. Add as needed.
 **Open no-chase (last-15m)** — After a last-15m H2, buy next 09:30 ET open only if that open did not gap up vs the signal session's last 15m close and still holds the rail. Gap-up (or open already below the rail): same-session wait for a pullback then a green/hammer/engulfing 15m whose low and close hold at/above the rail; fill that close. Tick gap-up, not 15m `gap_15m`. Chase-all MOO n=2297 E −0.01; pullback n=1236 E +0.16 PF 1.05. No promote.
 
 **RSI-2 MOC** — Connors-style daily. Research fill is the same-session close (15:45 IB 15m developing close is the live scan proxy; not Alpaca 17:00 EOD). First book: close > SMA200, RSI(2)<5, skip prior VIX>30; unique n=5451 E +0.46 PF 1.36; occ-15 fric0.25 PF 0.96; 2022 n=10. Refine (2026-09-13): SMA50, no VIX sit-out (size = clip(20/VIX, 0.25, 1)), fric 0.10; SMA50 occ-15 n=2082 E +0.37 PF 1.30; 2022 n=194 E +1.08. Extreme RSI<2 / no-MA occ-15 2022 PF 0.95 — do not drop SMA50. RSI cross-back (arm <5, buy reclaim 5 or 10) cuts max concurrent 185→110 but occ-15 fric0.10 PF 1.21 vs threshold 1.30 — no promote. Exit close > SMA5 or RSI(2)>=70, else 8-session time stop. Not Phase 5 `rsi2_stock`.
+
+**LOD / 9 EMA x VWAP reclaim** — Intraday long after the session low is in and 9 EMA crosses up through session VWAP. Unit = LOD to VWAP at the cross; target +1 unit, stop unit/3. Research clock is IB 15m: buy next-mid (or signal-close) after the completed cross, sell next same-session 15m mid (EOD close if no next bar). Not the video's intra-bar line-cross. 300 ADV names next-mid n=227915 E +0.005 PF 1.02; fric 0.10 E −0.10 PF 0.67. Daily top1 ~100x n=1959 E −0.11 PF 0.85; unit>=5 n=867 E +0.01 PF 1.01 geo 0.92 (drop-top-3 red, 2022 PF 0.84). No promote.
 
 **3-day pullback (limit)** — Evening setup: close > SMA100, exactly three consecutive lower lows, close < SMA5. Next-session GTC limit = close − 0.5 × ATR(10); gap-through fills at the open. First up-close vs the prior close sells the next morning open. Refine default time stop 6 sessions. Unique n=4564 E +0.27 PF 1.24; 2023 n=1193 E −0.40 PF 0.70. First book (no time stop) n=4536 E +0.26 PF 1.23; 2022-23 PF 0.77. Close-loc 0.7 (setup close in top 30% of the bar) n=1104 E +0.01 PF 1.01; 2023 PF 0.49. No promote.
 

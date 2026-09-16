@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>__TITLE__</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0d1421; --panel:#131722; --panel2:#1e222d; --border:#2a2e39;
+    --text:#d1d4dc; --muted:#787b86; --accent:#2962ff; --pos:#26a69a; --neg:#ef5350; --spy:#f7931a;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Trebuchet MS",Roboto,Ubuntu,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.45; }
+  .wrap { max-width:1200px; margin:0 auto; padding:20px; }
+  .header { background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:18px 20px; margin-bottom:12px; }
+  .header h1 { font-size:20px; font-weight:600; color:#fff; }
+  .header .sub { color:var(--muted); font-size:13px; margin-top:6px; }
+  .pill { display:inline-block; margin-left:10px; padding:2px 10px; border-radius:999px;
+    font-size:12px; font-weight:600; background:#1b3a2f; color:var(--pos); vertical-align:middle; }
+  .controls {
+    background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:14px 16px; margin-bottom:14px; display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px 14px; align-items:end;
+  }
+  .controls label { display:block; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
+  .controls input, .controls select {
+    width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
+    border-radius:4px; padding:8px 10px; font-size:13px;
+  }
+  .controls .actions { display:flex; gap:8px; align-items:end; }
+  .btn {
+    background:var(--accent); color:#fff; border:none; border-radius:4px; padding:9px 14px;
+    font-size:13px; font-weight:600; cursor:pointer;
+  }
+  .btn.secondary { background:#2a2e39; color:var(--text); }
+  .btn:hover { filter:brightness(1.08); }
+  .hint { grid-column:1/-1; color:var(--muted); font-size:12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:14px 0; }
+  .card { background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px 14px; }
+  .card .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .value { font-size:18px; font-weight:600; margin-top:4px; }
+  .card .claim { color:var(--muted); font-size:11px; margin-top:4px; }
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:12px; }
+  .panel h2 { font-size:15px; color:#fff; margin-bottom:10px; font-weight:600; }
+  .chart-box { background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:12px; height:340px; margin-bottom:8px; }
+  .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:900px) { .chart-grid { grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; }
+  th { color:var(--muted); font-weight:500; position:sticky; top:0; background:var(--panel); }
+  tr:hover td { background:rgba(41,98,255,.06); }
+  .table-wrap { max-height:480px; overflow:auto; border:1px solid var(--border); border-radius:6px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .rules { margin:0; padding-left:18px; color:var(--text); font-size:13px; }
+  .rules li { margin:4px 0; }
+  .tabs { display:flex; gap:4px; margin:0 0 12px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .tab { background:transparent; border:none; color:var(--muted); padding:10px 14px; cursor:pointer;
+    font-size:13px; font-weight:500; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab.active { color:#fff; border-bottom-color:var(--accent); }
+  .tabpanel { display:none; }
+  .tabpanel.active { display:block; }
+  .ok { color:var(--pos); } .warn { color:var(--spy); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <h1>__TITLE__ <span class="pill" id="verdictPill">claim check</span></h1>
+    <div class="sub" id="headerSub"></div>
+    <div class="sub" id="filterSub"></div>
+  </div>
+
+  <div class="controls">
+    <div>
+      <label for="capital">Portfolio size ($)</label>
+      <input id="capital" type="number" min="1000" step="1000" />
+    </div>
+    <div>
+      <label for="sizeMode">Position sizing</label>
+      <select id="sizeMode">
+        <option value="fixed">Fixed $ per trade</option>
+        <option value="pct_initial">% of initial capital</option>
+        <option value="pct_equity">% of equity (compound)</option>
+      </select>
+    </div>
+    <div>
+      <label for="sizeVal" id="sizeValLabel">Size ($)</label>
+      <input id="sizeVal" type="number" min="0" step="100" />
+    </div>
+    <div>
+      <label for="friction">Friction / round-trip (%)</label>
+      <input id="friction" type="number" min="0" max="5" step="0.05" />
+    </div>
+    <div>
+      <label for="maxPerDay">Max entries / day (0 = all)</label>
+      <input id="maxPerDay" type="number" min="0" max="50" step="1" />
+    </div>
+    <div>
+      <label for="maxOpen">Max concurrent opens (0 = none)</label>
+      <input id="maxOpen" type="number" min="0" max="100" step="1" />
+    </div>
+    <div>
+      <label for="winCap">Win cap P&amp;L % (0 = none)</label>
+      <input id="winCap" type="number" min="0" max="500" step="1" title="Winsorize: cap each trade gain at this % before sizing" />
+    </div>
+    <div>
+      <label for="excludeSym">Exclude symbols</label>
+      <input id="excludeSym" type="text" placeholder="e.g. SPY" />
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnApply" type="button">Apply</button>
+      <button class="btn secondary" id="btnReset" type="button">Reset</button>
+    </div>
+    <div class="hint">
+      Client-side recalc on Apply (same controls as channel-touch reports).
+      <b>Friction</b> / <b>Win cap</b> change trade P&amp;L %; sizing drives dollar equity.
+      Single-symbol SPY: Max entries/day and Max concurrent rarely change the book.
+      Claimed stats assume ~0 friction and full book.
+    </div>
+  </div>
+
+  <div class="cards" id="metricCards"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="years">By year</button>
+    <button class="tab" data-tab="trades">Trades</button>
+    <button class="tab" data-tab="friction">Friction</button>
+    <button class="tab" data-tab="rules">Rules</button>
+  </div>
+
+  <div class="tabpanel active" id="tab-overview">
+    <div class="panel">
+      <h2>Equity vs buy &amp; hold</h2>
+      <div class="chart-box"><canvas id="eqChart"></canvas></div>
+      <div class="muted" id="eqNote">Equity marks on exit dates. Orange = SPY buy&amp;hold with same portfolio size.</div>
+    </div>
+    <div class="panel">
+      <h2>Claimed vs current filter</h2>
+      <div class="table-wrap" style="max-height:none">
+        <table>
+          <thead><tr><th>Metric</th><th>Video claim</th><th>Current (Apply)</th><th>Delta</th><th></th></tr></thead>
+          <tbody id="compareBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-years">
+    <div class="chart-grid">
+      <div class="panel">
+        <h2>Trades per year</h2>
+        <div class="chart-box"><canvas id="yearNChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Expectancy by year (%)</h2>
+        <div class="chart-box"><canvas id="yearEChart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Year buckets</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Year</th><th>n</th><th>E %</th><th>WR %</th><th>PF</th><th>Sum %</th></tr></thead>
+        <tbody id="yearBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-trades">
+    <div class="panel">
+      <h2>Trades <span class="muted" id="tradeCount"></span></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Entry px</th><th>Exit px</th><th>P&amp;L %</th><th>P&amp;L $</th><th>Hold</th></tr></thead>
+        <tbody id="tradeBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-friction">
+    <div class="panel">
+      <h2>Round-turn friction stress (precomputed, full book)</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <thead><tr><th>Friction</th><th>n</th><th>E %</th><th>WR %</th><th>PF</th><th>CAGR %</th><th>MDD %</th><th>Exposure %</th></tr></thead>
+        <tbody id="fricBody"></tbody>
+      </table></div>
+      <div class="muted" style="margin-top:8px">Static table from generation. Use the Friction control + Apply for interactive sizing/equity.</div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-rules">
+    <div class="panel">
+      <h2>Trading rules (from video transcript)</h2>
+      <ul class="rules" id="rulesList"></ul>
+      <div class="muted" style="margin-top:12px">Historical backtest only — not a forecast. Not graded against project edge-hunt promote gates.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATA = __DATA_JSON__;
+const C = DATA.claimed;
+const META = DATA.primary;
+
+let eqChart = null, yearNChart = null, yearEChart = null;
+
+function fmt(n, d) {
+  if (d === undefined) d = 2;
+  if (n === null || n === undefined || Number.isNaN(n)) return "-";
+  return Number(n).toFixed(d);
+}
+function pct(n, d, signed) {
+  if (d === undefined) d = 2;
+  if (n === null || n === undefined || Number.isNaN(n)) return "-";
+  const s = Number(n).toFixed(d) + "%";
+  if (!signed) return s;
+  return (n >= 0 ? "+" : "") + s;
+}
+function money(x, signed) {
+  const a = Math.abs(x);
+  const s = a.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  if (!signed) return "$" + s;
+  return (x >= 0 ? "+$" : "-$") + s;
+}
+function cls(x) { return x >= 0 ? "pos" : "neg"; }
+function deltaClass(ours, claim, absTol, relTol) {
+  const a = Math.abs(ours), b = Math.abs(claim);
+  const diff = Math.abs(a - b);
+  if (diff <= absTol || diff / Math.max(b, 1e-9) <= relTol) return "ok";
+  if (diff / Math.max(b, 1e-9) <= 0.2) return "warn";
+  return "neg";
+}
+
+function stampBuy(t) { return t.buy_at || t.buy; }
+function stampSell(t) { return t.sell_at || t.sell; }
+function dayKey(t) { return String(t.buy || "").slice(0, 10); }
+
+function readParams() {
+  return {
+    capital: Math.max(1000, Number(document.getElementById("capital").value) || 100000),
+    sizeMode: document.getElementById("sizeMode").value,
+    sizeVal: Math.max(0, Number(document.getElementById("sizeVal").value) || 0),
+    friction: Math.max(0, Number(document.getElementById("friction").value) || 0),
+    maxPerDay: Math.max(0, Math.floor(Number(document.getElementById("maxPerDay").value) || 0)),
+    maxOpen: Math.max(0, Math.floor(Number(document.getElementById("maxOpen").value) || 0)),
+    winCap: Math.max(0, Number(document.getElementById("winCap").value) || 0),
+    excludeSym: (document.getElementById("excludeSym").value || "").trim().toUpperCase(),
+  };
+}
+
+function syncSizeLabel() {
+  const mode = document.getElementById("sizeMode").value;
+  document.getElementById("sizeValLabel").textContent =
+    mode === "fixed" ? "Size ($)" : "Size (%)";
+}
+
+function parseExclude(p) {
+  if (!p.excludeSym) return new Set();
+  return new Set(p.excludeSym.split(/[,\s]+/).filter(Boolean));
+}
+
+function filterExclude(trades, excludeSet) {
+  if (!excludeSet || !excludeSet.size) return trades.slice();
+  return trades.filter(t => !excludeSet.has(String(t.symbol).toUpperCase()));
+}
+
+function filterMaxPerDay(trades, maxPerDay) {
+  if (!maxPerDay || maxPerDay <= 0) return trades.slice();
+  const byDay = {};
+  for (const t of trades) {
+    const day = dayKey(t);
+    if (!byDay[day]) byDay[day] = [];
+    byDay[day].push(t);
+  }
+  const out = [];
+  Object.keys(byDay).sort().forEach(day => {
+    out.push(...byDay[day].slice(0, maxPerDay));
+  });
+  out.sort((a, b) => (a.sell < b.sell ? -1 : a.sell > b.sell ? 1 : a.buy < b.buy ? -1 : 0));
+  return out;
+}
+
+function filterMaxOpen(trades, maxOpen) {
+  if (!maxOpen || maxOpen <= 0) return trades.slice();
+  const ordered = trades.slice().sort((a, b) => {
+    const ab = stampBuy(a), bb = stampBuy(b);
+    if (ab !== bb) return ab < bb ? -1 : 1;
+    return 0;
+  });
+  const kept = [];
+  const openExits = [];
+  for (const t of ordered) {
+    const buy = stampBuy(t);
+    while (openExits.length && openExits[0] < buy) openExits.shift();
+    if (openExits.length >= maxOpen) continue;
+    kept.push(t);
+    openExits.push(stampSell(t));
+    openExits.sort();
+  }
+  return kept;
+}
+
+function prepareTrades(raw, p) {
+  let t = filterExclude(raw, parseExclude(p));
+  t = filterMaxPerDay(t, p.maxPerDay);
+  t = filterMaxOpen(t, p.maxOpen);
+  return t;
+}
+
+function notionalFor(equity, capital, p) {
+  if (p.sizeMode === "pct_equity") return equity * (p.sizeVal / 100);
+  if (p.sizeMode === "pct_initial") return capital * (p.sizeVal / 100);
+  return p.sizeVal;
+}
+
+function cappedGain(t, p) {
+  let g = t.gain - p.friction;
+  if (p.winCap > 0 && g > p.winCap) g = p.winCap;
+  return g;
+}
+
+function simulate(trades, p) {
+  let equity = p.capital;
+  let peak = p.capital;
+  let maxDd = 0;
+  const rows = [];
+  const eqCurve = [];
+  const gainPcts = [];
+  let wins = 0, gp = 0, gl = 0, holdSum = 0;
+
+  if (trades.length) {
+    const firstBuy = trades.reduce((a,t) => t.buy < a ? t.buy : a, trades[0].buy);
+    eqCurve.push({ x: firstBuy, y: p.capital });
+  }
+
+  for (const t of trades) {
+    const notion = Math.max(0, notionalFor(equity, p.capital, p));
+    const gainPct = cappedGain(t, p);
+    gainPcts.push(gainPct);
+    const pnl = notion * (gainPct / 100);
+    equity += pnl;
+    peak = Math.max(peak, equity);
+    const dd = peak > 0 ? (equity / peak - 1) * 100 : 0;
+    maxDd = Math.min(maxDd, dd);
+    if (gainPct > 0) { wins += 1; gp += gainPct; } else { gl += -gainPct; }
+    holdSum += (t.hold_days || t.bars || 0);
+    rows.push(Object.assign({}, t, { gainPct: gainPct, pnl: pnl, equity: equity, notion: notion }));
+    eqCurve.push({ x: t.sell, y: equity });
+  }
+
+  const n = trades.length;
+  const pf = gl > 0 ? gp / gl : (gp > 0 ? Infinity : 0);
+  const avg = n ? gainPcts.reduce((a,b)=>a+b,0) / n : 0;
+  const wr = n ? (wins / n) * 100 : 0;
+  const ret = (equity / p.capital - 1) * 100;
+
+  let cagr = null;
+  if (n >= 1) {
+    let fullYears = 1e-9;
+    try {
+      const a = new Date(META.first_bar + "T00:00:00Z").getTime();
+      const b = new Date(META.last_bar + "T00:00:00Z").getTime();
+      fullYears = Math.max((b - a) / (365.25 * 86400000) - 200/252, 1e-9);
+    } catch (e) {
+      const t0 = new Date(trades[0].buy + "T00:00:00Z").getTime();
+      const t1 = new Date(trades[n-1].sell + "T00:00:00Z").getTime();
+      fullYears = Math.max((t1 - t0) / (365.25 * 86400000), 1e-9);
+    }
+    cagr = (Math.pow(equity / p.capital, 1 / fullYears) - 1) * 100;
+  }
+
+  const byYearMap = {};
+  for (const r of rows) {
+    const y = String(r.buy).slice(0, 4);
+    if (!byYearMap[y]) byYearMap[y] = [];
+    byYearMap[y].push(r.gainPct);
+  }
+  const byYear = Object.keys(byYearMap).sort().map(y => {
+    const g = byYearMap[y];
+    const w = g.filter(x => x > 0).reduce((a,b)=>a+b,0);
+    const l = g.filter(x => x <= 0).reduce((a,b)=>a+(-b),0);
+    return {
+      year: Number(y),
+      n: g.length,
+      E: g.reduce((a,b)=>a+b,0) / g.length,
+      WR: 100 * g.filter(x => x > 0).length / g.length,
+      PF: l > 0 ? w / l : null,
+      sum_ret: g.reduce((a,b)=>a+b,0),
+    };
+  });
+
+  return {
+    params: p,
+    rows: rows,
+    eqCurve: eqCurve,
+    byYear: byYear,
+    metrics: {
+      n: n,
+      wr: wr,
+      pf: pf,
+      avg: avg,
+      maxDd: maxDd,
+      ret: ret,
+      cagr: cagr,
+      final: equity,
+      net: equity - p.capital,
+      avgHold: n ? holdSum / n : 0,
+      gainPcts: gainPcts,
+    },
+  };
+}
+
+function spyEquityCurve(capital) {
+  const bh = META.bh_monthly || [];
+  if (!bh.length) return [];
+  return bh.map(p => ({ x: p.date, y: capital * p.equity }));
+}
+
+function ensureCharts() {
+  const common = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: { legend: { labels: { color: "#d1d4dc" } } },
+    scales: {
+      x: { ticks: { color: "#787b86", maxTicksLimit: 12 }, grid: { color: "#2a2e39" } },
+      y: { ticks: { color: "#787b86" }, grid: { color: "#2a2e39" } }
+    }
+  };
+  if (!eqChart) {
+    eqChart = new Chart(document.getElementById("eqChart"), {
+      type: "line",
+      data: { labels: [], datasets: [
+        { label: "Strategy", data: [], borderColor: "#2962ff", backgroundColor: "rgba(41,98,255,.12)",
+          fill: true, pointRadius: 0, borderWidth: 2, tension: 0.05 },
+        { label: "SPY buy & hold", data: [], borderColor: "#f7931a", fill: false,
+          pointRadius: 0, borderWidth: 1.5, tension: 0.05 },
+      ]},
+      options: common
+    });
+  }
+  if (!yearNChart) {
+    yearNChart = new Chart(document.getElementById("yearNChart"), {
+      type: "bar",
+      data: { labels: [], datasets: [{ label: "Trades", data: [], backgroundColor: "#2962ff" }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#787b86", maxRotation: 90 }, grid: { display: false } },
+          y: { ticks: { color: "#787b86" }, grid: { color: "#2a2e39" }, beginAtZero: true }
+        }
+      }
+    });
+  }
+  if (!yearEChart) {
+    yearEChart = new Chart(document.getElementById("yearEChart"), {
+      type: "bar",
+      data: { labels: [], datasets: [{ label: "E %", data: [], backgroundColor: [] }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#787b86", maxRotation: 90 }, grid: { display: false } },
+          y: { ticks: { color: "#787b86" }, grid: { color: "#2a2e39" } }
+        }
+      }
+    });
+  }
+}
+
+function alignSeries(labels, points) {
+  const m = Object.fromEntries(points.map(p => [p.x, p.y]));
+  let last = null;
+  return labels.map(d => { if (m[d] !== undefined) last = m[d]; return last; });
+}
+
+function apply() {
+  const p = readParams();
+  const filtered = prepareTrades(DATA.trades || [], p);
+  const sim = simulate(filtered, p);
+  const m = sim.metrics;
+  ensureCharts();
+
+  document.getElementById("headerSub").textContent =
+    "Yahoo SPY daily " + META.first_bar + " -> " + META.last_bar +
+    "  |  generated " + DATA.generated +
+    "  |  B&H CAGR " + pct(META.spy_bh_cagr_pct);
+
+  document.getElementById("filterSub").textContent =
+    m.n + " trades · sizing " + p.sizeMode + " " +
+    (p.sizeMode === "fixed" ? money(p.sizeVal, false) : (fmt(p.sizeVal, 2) + "%")) +
+    " · friction " + fmt(p.friction, 2) + "%" +
+    " · max/day " + (p.maxPerDay || "all") +
+    " · maxOpen " + (p.maxOpen || "none") +
+    (p.winCap > 0 ? (" · winCap " + p.winCap + "%") : "") +
+    (p.excludeSym ? (" · excl " + p.excludeSym) : "") +
+    (DATA.trades.length > m.n ? (" · showing " + m.n + " of " + DATA.trades.length) : "");
+
+  document.getElementById("verdictPill").textContent =
+    (Math.abs(m.n - C.n) <= 2 && Math.abs((Number.isFinite(m.pf) ? m.pf : 99) - C.profit_factor) <= 0.2 && p.friction === 0)
+      ? "mostly replicates" : "filtered view";
+
+  const cards = [
+    { label: "Trades", value: String(m.n), claim: String(C.n) },
+    { label: "Win rate", value: pct(m.wr), claim: pct(C.win_rate_pct, 0) },
+    { label: "Profit factor", value: Number.isFinite(m.pf) ? fmt(m.pf, 2) : "inf", claim: fmt(C.profit_factor, 1) },
+    { label: "Avg gain", value: pct(m.avg), claim: pct(C.avg_gain_pct, 1) },
+    { label: "Max DD (equity)", value: pct(m.maxDd), claim: pct(C.mdd_pct, 0) },
+    { label: "Total return", value: pct(m.ret, 2, true), claim: "—" },
+    { label: "CAGR (approx)", value: m.cagr == null ? "-" : pct(m.cagr), claim: pct(C.cagr_pct, 0) },
+    { label: "Net profit", value: money(m.net, true), claim: "—" },
+  ];
+  document.getElementById("metricCards").innerHTML = cards.map(c =>
+    '<div class="card"><div class="label">' + c.label + '</div><div class="value">' + c.value +
+    '</div><div class="claim">claimed ' + c.claim + '</div></div>'
+  ).join("");
+
+  const compareRows = [
+    ["Trades", C.n, m.n, 2, 0.05, false],
+    ["Win rate %", C.win_rate_pct, m.wr, 3, 0.08, true],
+    ["Profit factor", C.profit_factor, Number.isFinite(m.pf) ? m.pf : 99, 0.15, 0.08, false],
+    ["Avg gain %", C.avg_gain_pct, m.avg, 0.1, 0.1, true],
+    ["Max DD %", C.mdd_pct, Math.abs(m.maxDd), 1, 0.08, true],
+    ["CAGR %", C.cagr_pct, m.cagr == null ? NaN : m.cagr, 0.3, 0.1, true],
+  ];
+  document.getElementById("compareBody").innerHTML = compareRows.map(function(row) {
+    const name = row[0], claim = row[1], ours = row[2], absTol = row[3], relTol = row[4], isPct = row[5];
+    const d = ours - claim;
+    const tagCls = Number.isNaN(ours) ? "warn" : deltaClass(ours, claim, absTol, relTol);
+    const tag = tagCls === "ok" ? "match" : (tagCls === "warn" ? "close" : "off");
+    const f = function(x) { return Number.isNaN(x) ? "-" : (isPct ? pct(x) : fmt(x)); };
+    return "<tr><td>" + name + "</td><td>" + f(claim) + "</td><td>" + f(ours) +
+      '</td><td class="' + tagCls + '">' + (Number.isNaN(d) ? "-" : ((d>=0?"+":"") + f(d))) +
+      '</td><td class="' + tagCls + '">' + tag + "</td></tr>";
+  }).join("");
+
+  const spyPts = spyEquityCurve(p.capital);
+  const labelSet = new Set();
+  sim.eqCurve.forEach(pt => labelSet.add(pt.x));
+  spyPts.forEach(pt => labelSet.add(pt.x));
+  const labels = Array.from(labelSet).sort();
+  eqChart.data.labels = labels;
+  eqChart.data.datasets[0].data = alignSeries(labels, sim.eqCurve);
+  eqChart.data.datasets[1].data = alignSeries(labels, spyPts);
+  eqChart.update();
+  document.getElementById("eqNote").textContent =
+    "Model: " + (p.sizeMode === "fixed" ? ("fixed " + money(p.sizeVal,false) + "/trade") :
+      (p.sizeMode === "pct_initial" ? (p.sizeVal + "% of initial") : (p.sizeVal + "% of equity"))) +
+    "; equity marks on exit dates. Friction " + pct(p.friction) +
+    " round-trip. Orange = SPY buy & hold with same portfolio size.";
+
+  const years = sim.byYear;
+  const yLabels = years.map(y => String(y.year));
+  yearNChart.data.labels = yLabels;
+  yearNChart.data.datasets[0].data = years.map(y => y.n);
+  yearNChart.update();
+  yearEChart.data.labels = yLabels;
+  yearEChart.data.datasets[0].data = years.map(y => y.E);
+  yearEChart.data.datasets[0].backgroundColor = years.map(y => y.E >= 0 ? "#26a69a" : "#ef5350");
+  yearEChart.update();
+
+  document.getElementById("yearBody").innerHTML = years.map(y =>
+    "<tr><td>" + y.year + "</td><td>" + y.n + '</td><td class="' + (y.E>=0?"pos":"neg") + '">' +
+    fmt(y.E,3) + "</td><td>" + fmt(y.WR,1) + "</td><td>" + (y.PF==null?"-":fmt(y.PF,2)) +
+    '</td><td class="' + (y.sum_ret>=0?"pos":"neg") + '">' + fmt(y.sum_ret,2) + "</td></tr>"
+  ).join("");
+
+  document.getElementById("tradeCount").textContent = "(" + sim.rows.length + ")";
+  document.getElementById("tradeBody").innerHTML = sim.rows.map(function(t,i) {
+    return "<tr><td>" + (i+1) + "</td><td>" + t.buy + "</td><td>" + t.sell + "</td><td>" +
+      fmt(t.entry_px,2) + "</td><td>" + fmt(t.exit_px,2) + '</td><td class="' + cls(t.gainPct) + '">' +
+      fmt(t.gainPct,3) + '</td><td class="' + cls(t.pnl) + '">' + money(t.pnl,true) +
+      "</td><td>" + t.hold_days + "d</td></tr>";
+  }).join("");
+}
+
+function resetDefaults() {
+  const d = DATA.defaults;
+  document.getElementById("capital").value = d.capital;
+  document.getElementById("sizeMode").value = d.sizeMode;
+  document.getElementById("sizeVal").value = d.sizeVal;
+  document.getElementById("friction").value = d.friction;
+  document.getElementById("maxPerDay").value = d.maxPerDay;
+  document.getElementById("maxOpen").value = d.maxOpen != null ? d.maxOpen : 0;
+  document.getElementById("winCap").value = d.winCap != null ? d.winCap : 0;
+  document.getElementById("excludeSym").value = d.excludeSym || "";
+  syncSizeLabel();
+  apply();
+}
+
+document.getElementById("fricBody").innerHTML = (DATA.friction || []).map(f =>
+  "<tr><td>" + fmt(f.friction_pct,2) + "%</td><td>" + f.n + "</td><td>" + fmt(f.avg_gain_pct,3) +
+  "</td><td>" + fmt(f.win_rate_pct,2) + "</td><td>" + fmt(f.profit_factor,3) + "</td><td>" +
+  fmt(f.cagr_full_window_pct,2) + "</td><td>" + fmt(f.mdd_mtm_pct,2) + "</td><td>" +
+  fmt(f.exposure_pct,2) + "</td></tr>"
+).join("");
+document.getElementById("rulesList").innerHTML = (DATA.rules || []).map(r => "<li>" + r + "</li>").join("");
+
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tabpanel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+  });
+});
+document.getElementById("sizeMode").addEventListener("change", syncSizeLabel);
+document.getElementById("btnApply").addEventListener("click", apply);
+document.getElementById("btnReset").addEventListener("click", resetDefaults);
+document.querySelector(".controls").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); apply(); }
+});
+
+resetDefaults();
+</script>
+</body>
+</html>

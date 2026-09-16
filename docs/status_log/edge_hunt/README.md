@@ -4,6 +4,9 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-14 | [Causal VX-curve slope < 4 skip on last-15m](channel_touch/2026-09-14_last_15m_vx_curve_skip.md) |
+| 2026-09-13 | [SMB LOD / 9 EMA x VWAP reclaim](2026-09-13_vwap_ema_reclaim.md) |
+| 2026-09-13 | [VWAP reclaim 100x filters](2026-09-13_vwap_ema_reclaim_filters.md) |
 | 2026-09-13 | [Choppy-regime RSI-2 MOC + 3-day pullback](2026-09-13_choppy_regime.md) |
 | 2026-09-13 | [Daily Bollinger mean reversion in 2022](2026-09-13_mean_reversion_2022.md) |
 | 2026-09-13 | [Causal VCP AVWAP breakout](2026-09-13_vcp_avwap.md) |
@@ -39,6 +42,8 @@ python scripts\research\run_xs_mom_delta.py
 python scripts\research\run_swing_mr_screen.py
 python scripts\research\run_mean_reversion_2022.py
 python scripts\research\run_choppy_regime.py
+python scripts\research\backtest_vwap_ema_reclaim.py --n-symbols 300
+python scripts\research\overlay_vwap_ema_filters.py
 python scripts\research\run_phase6_overlays.py
 python scripts\research\run_voltarget_bigvol_blend.py
 python scripts\research\run_vix_curve_overlay.py

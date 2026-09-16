@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "scanners"))
 from datetime import datetime, timezone
 
 from channel_touch_15m import (
+    _proximity_last_prices,
     _should_rebuild_watchlist,
     _split_refresh_batches,
     build_arg_parser,
@@ -109,3 +110,26 @@ def test_split_refresh_batches_hot_first():
     first, rest = _split_refresh_batches(rows, refresh_below_pct=0.5)
     assert first == ["HOT"]
     assert rest == ["FAR"]
+
+
+def test_proximity_last_prices_skips_when_hub_fresh():
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    rows = [{"stock": "AAA", "last_price": 10.0, "last_price_ts": now}]
+    prices, status = _proximity_last_prices(["AAA"], rows, batch_size=50, skip_if_fresh_sec=30)
+    assert status == "skipped_fresh"
+    assert prices == {}
+
+
+def test_proximity_last_prices_keeps_stored_on_failure(monkeypatch):
+    import channel_touch_15m as scanner
+
+    def boom(*args, **kwargs):
+        raise ConnectionResetError(10054, "forcibly closed")
+
+    monkeypatch.setattr(scanner, "fetch_alpaca_last_prices", boom)
+    rows = [{"stock": "AAA", "last_price": 10.0, "last_price_ts": None}]
+    prices, status = _proximity_last_prices(["AAA"], rows, batch_size=50, skip_if_fresh_sec=0)
+    assert status == "failed"
+    assert prices == {}
