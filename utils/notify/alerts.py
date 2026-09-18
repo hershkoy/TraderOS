@@ -16,11 +16,13 @@ def send_alert(
     dry_run: bool = False,
     title: Optional[str] = None,
     desktop: bool = True,
+    telegram: bool = True,
 ) -> None:
-    """Telegram first, then optional desktop toast + sound. Desktop failure does not raise."""
+    """Optional Telegram + optional desktop toast/sound. Desktop failure does not raise."""
     if dry_run:
         logger.info("[dry-run] would notify:\n%s", text)
         return
-    send_message(text)
+    if telegram:
+        send_message(text)
     if desktop:
         send_desktop(text, title=title)

@@ -286,6 +286,72 @@ def _esc(s: str) -> str:
     )
 
 
+def leverage_book(
+    trades: List[Dict[str, Any]],
+    *,
+    leverage: float,
+    friction_pct: float,
+    first_bar: str,
+    last_bar: str,
+) -> Dict[str, Any]:
+    """Futures-style book: capital P&L% = leverage * SPY% - friction*leverage (notional costs)."""
+    if not trades:
+        return {
+            "leverage": leverage,
+            "friction_pct": friction_pct,
+            "n": 0,
+        }
+    gains = []
+    for t in trades:
+        # Primary trades are friction-0 SPY %; apply notional friction then leverage.
+        spy = float(t["ret_pct"])
+        gains.append(leverage * (spy - friction_pct))
+    g = np.asarray(gains, dtype=float)
+    wins = g[g > 0]
+    losses = g[g <= 0]
+    gross_win = float(wins.sum()) if len(wins) else 0.0
+    gross_loss = float(-losses.sum()) if len(losses) else 0.0
+    pf = (gross_win / gross_loss) if gross_loss > 0 else float("inf")
+
+    equity = [1.0]
+    for r in g:
+        equity.append(equity[-1] * (1.0 + r / 100.0))
+    eq = np.array(equity)
+    peak = np.maximum.accumulate(eq)
+    mdd = float((eq / peak - 1.0).min() * 100.0)
+
+    t0 = pd.Timestamp(first_bar)
+    t1 = pd.Timestamp(last_bar)
+    years = max((t1 - t0).days / 365.25 - 200 / 252.0, 1e-9)
+    cagr = (eq[-1] ** (1.0 / years) - 1.0) * 100.0
+
+    hold_sum = sum(int(t["hold_days"]) for t in trades)
+    # reuse exposure from unlevered hold days vs ~calendar after warmup
+    cal = max((t1 - t0).days * 252 / 365.25 - 200, 1.0)
+    exposure = 100.0 * hold_sum / cal
+
+    return {
+        "leverage": leverage,
+        "friction_pct": friction_pct,
+        "n": len(trades),
+        "win_rate_pct": round(float((g > 0).mean() * 100), 2),
+        "profit_factor": round(float(pf), 3),
+        "avg_gain_pct": round(float(g.mean()), 3),
+        "median_gain_pct": round(float(np.median(g)), 3),
+        "mdd_pct": round(mdd, 2),
+        "cagr_pct": round(float(cagr), 2),
+        "final_equity": round(float(eq[-1]), 4),
+        "exposure_pct": round(float(exposure), 2),
+        "risk_adj_return_pct": None
+        if exposure <= 0
+        else round(float(cagr) / (exposure / 100.0), 1),
+        "note": (
+            "Futures-style: each trade return = L*(SPY%% - fric). "
+            "MDD/CAGR on compounded sleeve equity. Cash idle between trades."
+        ),
+    }
+
+
 def render_html(
     *,
     primary: Dict[str, Any],
@@ -293,6 +359,7 @@ def render_html(
     claimed: Dict[str, Any],
     title: str,
     defaults: Optional[Dict[str, Any]] = None,
+    leverage_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     if defaults is None:
         defaults = {
@@ -330,6 +397,7 @@ def render_html(
         "trades": trades_js,
         "defaults": defaults,
         "friction": friction_rows,
+        "leverage": leverage_rows or [],
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "rules": [
             "Buy at close when close is lowest of last 15 sessions",
@@ -402,6 +470,19 @@ def main() -> None:
         "excludeSym": "",
     }
 
+    leverage_rows: List[Dict[str, Any]] = []
+    for lev in (1.0, 2.0, 3.0):
+        for fric in (0.0, 0.10):
+            leverage_rows.append(
+                leverage_book(
+                    primary["trades"],
+                    leverage=lev,
+                    friction_pct=fric,
+                    first_bar=str(primary["first_bar"]),
+                    last_bar=str(primary["last_bar"]),
+                )
+            )
+
     title = "Deep Pullback Strategy — SPY claim check"
     html = render_html(
         primary=primary,
@@ -409,6 +490,7 @@ def main() -> None:
         claimed=CLAIMED,
         title=title,
         defaults=defaults,
+        leverage_rows=leverage_rows,
     )
     html_path = outdir / "deep_pullback_spy.html"
     html_path.write_text(html, encoding="utf-8")
@@ -420,6 +502,7 @@ def main() -> None:
         "claimed": CLAIMED,
         "yahoo_full": {k: v for k, v in primary.items() if k not in ("trades",)},
         "friction": friction_rows,
+        "leverage": leverage_rows,
         "defaults": defaults,
         "html": str(html_path),
         "trades_csv": str(trades_path),
@@ -435,6 +518,7 @@ def main() -> None:
                 "claimed": CLAIMED,
                 "primary": primary,
                 "friction": friction_rows,
+                "leverage": leverage_rows,
                 "defaults": defaults,
             },
             indent=2,

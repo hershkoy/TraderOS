@@ -5,12 +5,23 @@ Writes use a committed cursor (TimescaleDBClient.execute_query always fetchall).
 """
 from __future__ import annotations
 
+import copy
+import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from utils.scanning.channel_touch_15m import is_hot_proximity
+from utils.scanning.channel_touch_notify_prefs import (
+    DEFAULT_NOTIFY_PREFS,
+    NOTIFY_APPLICABLE,
+    apply_legacy_patch_to_prefs,
+    legacy_from_prefs,
+    merge_notify_prefs,
+    normalize_notify_prefs,
+    prefs_from_legacy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +32,7 @@ INIT_SQL_PATHS = (
     ROOT / "init-scripts" / "15-channel-touch-desktop-notify.sql",
     ROOT / "init-scripts" / "16-channel-touch-display-timezone.sql",
     ROOT / "init-scripts" / "17-channel-touch-bought-trades.sql",
+    ROOT / "init-scripts" / "18-channel-touch-notify-prefs.sql",
 )
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -28,6 +40,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "telegram_on_hot": False,
     "telegram_on_sell": True,
     "desktop_notify": True,
+    "notify_prefs": copy.deepcopy(DEFAULT_NOTIFY_PREFS),
     "proximity_below_pct": 0.0,
     "max_abs_dist_pct": None,
     "sort_key": "abs_dist",
@@ -102,6 +115,7 @@ SETTINGS_COLUMNS = (
     "telegram_on_hot",
     "telegram_on_sell",
     "desktop_notify",
+    "notify_prefs",
     "proximity_below_pct",
     "max_abs_dist_pct",
     "sort_key",
@@ -115,6 +129,13 @@ SETTINGS_COLUMNS = (
     "as_of_1d",
     "n_universe_1d",
     "display_timezone",
+)
+
+_LEGACY_NOTIFY_KEYS = (
+    "telegram_on_fill",
+    "telegram_on_hot",
+    "telegram_on_sell",
+    "desktop_notify",
 )
 
 _BOOL_KEYS = {
@@ -215,6 +236,21 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out["telegram_on_hot"] = _as_bool(src.get("telegram_on_hot"), False)
     out["telegram_on_sell"] = _as_bool(src.get("telegram_on_sell"), True)
     out["desktop_notify"] = _as_bool(src.get("desktop_notify"), True)
+    has_prefs = (
+        bool(raw)
+        and "notify_prefs" in raw
+        and raw.get("notify_prefs") not in (None, "", {})
+    )
+    if has_prefs:
+        out["notify_prefs"] = normalize_notify_prefs(raw.get("notify_prefs"))
+        out.update(legacy_from_prefs(out["notify_prefs"]))
+    else:
+        out["notify_prefs"] = prefs_from_legacy(
+            telegram_on_fill=out["telegram_on_fill"],
+            telegram_on_hot=out["telegram_on_hot"],
+            telegram_on_sell=out["telegram_on_sell"],
+            desktop_notify=out["desktop_notify"],
+        )
     below = _as_float(src.get("proximity_below_pct"))
     out["proximity_below_pct"] = 0.0 if below is None else float(below)
     out["max_abs_dist_pct"] = _as_float(src.get("max_abs_dist_pct"))
@@ -232,13 +268,14 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     stale = src.get("stale_warning")
     out["stale_warning"] = None if stale in (None, "") else str(stale)
     tf = str(src.get("timeframe_filter") or "all").lower()
-    out["timeframe_filter"] = tf if tf in ("all", "15m", "1d") else "all"
+    out["timeframe_filter"] = tf if tf in ("all", "15m", "1d", "dp") else "all"
     as_of_1d = src.get("as_of_1d")
     out["as_of_1d"] = None if as_of_1d in (None, "") else str(as_of_1d)
     n_uni_1d = _as_int(src.get("n_universe_1d"))
     out["n_universe_1d"] = 0 if n_uni_1d is None else int(n_uni_1d)
     tz = str(src.get("display_timezone") or "exchange").lower()
     out["display_timezone"] = tz if tz in _TZ_MODES else "exchange"
+    out["notify_applicable"] = copy.deepcopy(NOTIFY_APPLICABLE)
     return out
 
 
@@ -247,8 +284,15 @@ def apply_settings_patch(current: dict, patch: Optional[dict]) -> Dict[str, Any]
     if not patch:
         return normalize_settings(merged)
     for key in SETTINGS_COLUMNS:
-        if key in patch:
+        if key in patch and key != "notify_prefs":
             merged[key] = patch[key]
+    if "notify_prefs" in patch:
+        merged["notify_prefs"] = merge_notify_prefs(
+            merged.get("notify_prefs"), patch.get("notify_prefs")
+        )
+    elif any(k in patch for k in _LEGACY_NOTIFY_KEYS):
+        base = normalize_notify_prefs(merged.get("notify_prefs"))
+        merged["notify_prefs"] = apply_legacy_patch_to_prefs(base, patch)
     return normalize_settings(merged)
 
 
@@ -451,6 +495,7 @@ class ChannelTouchCandidatesStore:
         if current is None:
             current = self.load_settings()
         settings = apply_settings_patch(current, patch)
+        prefs_json = json.dumps(settings["notify_prefs"])
         self._run(
             """
             UPDATE channel_touch_15m_settings
@@ -458,6 +503,7 @@ class ChannelTouchCandidatesStore:
                 telegram_on_hot = %s,
                 telegram_on_sell = %s,
                 desktop_notify = %s,
+                notify_prefs = %s::jsonb,
                 proximity_below_pct = %s,
                 max_abs_dist_pct = %s,
                 sort_key = %s,
@@ -479,6 +525,7 @@ class ChannelTouchCandidatesStore:
                 settings["telegram_on_hot"],
                 settings["telegram_on_sell"],
                 settings["desktop_notify"],
+                prefs_json,
                 settings["proximity_below_pct"],
                 settings["max_abs_dist_pct"],
                 settings["sort_key"],
@@ -816,7 +863,9 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_settings (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     telegram_on_fill BOOLEAN NOT NULL DEFAULT TRUE,
     telegram_on_hot BOOLEAN NOT NULL DEFAULT FALSE,
+    telegram_on_sell BOOLEAN NOT NULL DEFAULT TRUE,
     desktop_notify BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_prefs JSONB,
     proximity_below_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
     max_abs_dist_pct DOUBLE PRECISION,
     sort_key TEXT NOT NULL DEFAULT 'abs_dist',

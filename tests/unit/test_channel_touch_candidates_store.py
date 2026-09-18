@@ -18,6 +18,8 @@ def test_normalize_settings_defaults_and_patch():
     assert s["telegram_on_hot"] is False
     assert s["telegram_on_sell"] is True
     assert s["desktop_notify"] is True
+    assert s["notify_prefs"]["15m"]["fill"]["telegram"] is True
+    assert s["notify_prefs"]["dp"]["approaching"]["telegram"] is False
     assert s["display_timezone"] == "exchange"
     assert s["proximity_below_pct"] == 0.0
     assert s["max_abs_dist_pct"] is None
@@ -33,6 +35,7 @@ def test_normalize_settings_defaults_and_patch():
         },
     )
     assert patched["telegram_on_hot"] is True
+    assert patched["notify_prefs"]["dp"]["approaching"]["telegram"] is True
     assert patched["telegram_on_fill"] is True
     assert patched["max_abs_dist_pct"] == 3.0
     assert patched["search"] == "nvda"

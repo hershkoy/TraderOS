@@ -8,7 +8,7 @@
   4) At each RTH 15m close: IB hist on the armed/hot list only, drop the
      in-progress bar, upsert TimescaleDB, re-scan those names
   5) On that completed bar: unique-symbol/day + prior-bar vol>=2 + overshoot>=0.08
-  6) Telegram + browser/desktop only on H5 fills (not on hot last-price)
+  6) Telegram / desktop gated per /hot notify_prefs (15m fill default on; hot off)
 
 Prerequisite: IB 15m must be current. If last bar is still 2025-12, run:
   python scripts\\data\\backfill_ib_15m_universe.py
@@ -52,6 +52,7 @@ from utils.scanning.channel_touch_15m import (  # noqa: E402
     live_refresh_symbols,
     lookback_start,
     merge_rescanned_15m_rows,
+    newly_hot_rows,
     notify_payloads,
     passes_h5_stack,
     rank_hot,
@@ -769,10 +770,14 @@ def _send_gated_telegram(
     n_universe: int,
     stale: Optional[str],
     dry_run: bool,
+    newly_hot: Optional[List[dict]] = None,
 ) -> None:
+    from utils.scanning.channel_touch_notify_prefs import want_notify
+
+    hot_rows = list(newly_hot or [])
     msgs = notify_payloads(
         fills=fills,
-        newly_hot=[],
+        newly_hot=hot_rows,
         settings=settings,
         as_of=as_of or "n/a",
         n_armed=n_armed,
@@ -780,9 +785,22 @@ def _send_gated_telegram(
         n_universe=n_universe,
         stale_warning=stale,
     )
+    desk_fill = want_notify(settings, "15m", "fill", "browser")
+    desk_hot = want_notify(settings, "15m", "hot", "browser")
     for msg in msgs:
         logger.info("Notify payload:\n%s", msg)
-        _notify(msg, dry_run=dry_run, desktop=bool(settings.get("desktop_notify", True)))
+        # Desktop toast mirrors Telegram body; prefer fill desktop when both.
+        is_hot_msg = "newly hot" in msg.lower()
+        desktop = desk_hot if is_hot_msg else desk_fill
+        _notify(msg, dry_run=dry_run, desktop=desktop)
+    if hot_rows and store is not None and not dry_run:
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            stocks = [str(r.get("stock") or "").upper() for r in hot_rows if r.get("stock")]
+            if stocks and hasattr(store, "mark_hot_notified"):
+                store.mark_hot_notified(stocks, day=today)
+        except Exception as exc:
+            logger.warning("mark_hot_notified failed: %s", exc)
 
 
 def main() -> int:
@@ -903,6 +921,8 @@ def main() -> int:
                     r.get("wait_bars"),
                     r.get("volume_rel_20"),
                 )
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            newly = newly_hot_rows(filter_15m_rows(rows), today=today)
             _send_gated_telegram(
                 store=store,
                 settings=settings,
@@ -914,6 +934,7 @@ def main() -> int:
                 n_universe=n_universe,
                 stale=stale,
                 dry_run=dry_run,
+                newly_hot=newly,
             )
             logger.info("proximity elapsed_sec=%.1f", time.perf_counter() - t0)
             return 0

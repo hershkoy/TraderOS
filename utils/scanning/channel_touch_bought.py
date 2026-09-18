@@ -497,11 +497,17 @@ def flush_sell_notifications(
     dry_run: bool = False,
     send_fn: Optional[Callable[..., None]] = None,
 ) -> List[str]:
-    """Telegram SELL NOW once per trade. Browser alerts use sell_keys on the payload."""
+    """Telegram SELL NOW once per trade when prefs allow. Browser uses sell_keys."""
+    from utils.scanning.channel_touch_notify_prefs import want_notify
+
     settings = settings or {}
-    want = bool(settings.get("telegram_on_sell", True))
-    pending = pending_sell_notifies(load_bought_safe(store, active_only=True))
-    if not pending or not want:
+    pending_all = pending_sell_notifies(load_bought_safe(store, active_only=True))
+    pending = [
+        t
+        for t in pending_all
+        if want_notify(settings, str(t.get("timeframe") or "15m"), "sell", "telegram")
+    ]
+    if not pending:
         return []
     body = format_sell_message(pending)
     if dry_run:
@@ -511,8 +517,12 @@ def flush_sell_notifications(
         from utils.notify.alerts import send_alert
 
         send_fn = send_alert
-    desktop = bool(settings.get("desktop_notify", True))
-    send_fn(body, dry_run=False, title="SELL NOW", desktop=desktop)
+    # Desktop toast if any pending trade's detector has browser sell on.
+    desktop = any(
+        want_notify(settings, str(t.get("timeframe") or "15m"), "sell", "browser")
+        for t in pending
+    )
+    send_fn(body, dry_run=False, title="SELL NOW", desktop=desktop, telegram=True)
     marker = getattr(store, "mark_sell_notified", None)
     if marker is not None:
         ids = [t.get("id") for t in pending if t.get("id") is not None]

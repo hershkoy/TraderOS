@@ -110,13 +110,20 @@ def test_hot_page_and_api(monkeypatch):
         assert b"Hot candidates" in page.data
         assert b"Detector" in page.data
         assert b'id="tf-filter"' in page.data
-        assert b"Browser + sound on fills / sells" in page.data
-        assert b"Telegram on SELL NOW" in page.data
+        assert b"notify-matrix" in page.data
+        assert b"TG = Telegram" in page.data
+        assert b"Browser + sound on fills / sells" not in page.data
+        assert b"Telegram on SELL NOW" not in page.data
         assert b'id="tab-bought"' in page.data
         assert b"Dist to stop" in page.data
         assert b"SELL NOW" in page.data
         assert b'data-bought-stock' in page.data
         assert b"Telegram when newly hot" not in page.data
+        assert b"notify_prefs" in page.data
+        assert b"wantBrowser" in page.data
+        assert b"maybeHotAlerts" in page.data
+        assert b"maybeArmedAlerts" in page.data
+        assert b"maybeApproachAlerts" in page.data
         assert b'id="live-badge"' in page.data
         assert b"Connecting" in page.data
         assert b"FILL_SEEN_KEY" in page.data
@@ -172,19 +179,27 @@ def test_hot_page_and_api(monkeypatch):
         )
         posted = client.post(
             "/api/hot-candidates/settings",
-            data=json.dumps({"telegram_on_hot": True, "status_filter": "armed", "display_timezone": "local"}),
+            data=json.dumps({
+                "notify_prefs": {
+                    "dp": {"approaching": {"telegram": True, "browser": False}},
+                },
+                "status_filter": "armed",
+                "display_timezone": "local",
+            }),
             content_type="application/json",
         )
         assert posted.status_code == 200
         saved = posted.get_json()
         assert saved["telegram_on_hot"] is True
-        assert saved["telegram_on_fill"] is True
+        assert saved["notify_prefs"]["dp"]["approaching"]["telegram"] is True
+        assert saved["notify_prefs"]["15m"]["fill"]["telegram"] is True
         assert saved["status_filter"] == "armed"
         assert saved["display_timezone"] == "local"
 
         listed = client.get("/api/hot-candidates/settings")
         assert listed.get_json()["telegram_on_hot"] is True
         assert listed.get_json()["display_timezone"] == "local"
+        assert listed.get_json()["notify_prefs"]["dp"]["approaching"]["telegram"] is True
         assert kicks["n"] >= 1
 
         marked = client.post(

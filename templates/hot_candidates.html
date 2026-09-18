@@ -103,6 +103,51 @@
         }
         .checks { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 12px; }
         .checks label { font-size: 14px; color: #4a5568; font-weight: 600; cursor: pointer; }
+        .notify-matrix-wrap { margin-top: 14px; overflow-x: auto; }
+        .notify-matrix {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            min-width: 720px;
+        }
+        .notify-matrix th, .notify-matrix td {
+            padding: 6px 8px;
+            border-bottom: 1px solid #e2e8f0;
+            text-align: center;
+            vertical-align: middle;
+        }
+        .notify-matrix th {
+            color: #4a5568;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            cursor: default;
+        }
+        .notify-matrix th:hover { color: #4a5568; }
+        .notify-matrix th.det { text-align: left; }
+        .notify-matrix td.det {
+            text-align: left;
+            font-weight: 700;
+            color: #2d3748;
+            white-space: nowrap;
+        }
+        .notify-matrix .pair {
+            display: inline-flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+        }
+        .notify-matrix .pair label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #4a5568;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .notify-matrix td.na { color: #a0aec0; font-size: 11px; }
+        .notify-hint { margin-top: 8px; font-size: 12px; color: #718096; }
         .live-dot {
             display: inline-block;
             width: 9px;
@@ -150,10 +195,12 @@
         .pill.armed { background: #c6f6d5; color: #276749; }
         .pill.waiting { background: #feebc8; color: #9c4221; }
         .pill.filled { background: #bee3f8; color: #2c5282; }
+        .pill.exit_signal { background: #9b2c2c; color: #fff; }
         .pill.hot { background: #fed7d7; color: #9b2c2c; }
         .pill.buy { background: #9b2c2c; color: #fff; }
         .pill.tf-15m { background: #e9d8fd; color: #553c9a; }
         .pill.tf-1d { background: #bee3f8; color: #2c5282; }
+        .pill.tf-dp { background: #faf089; color: #744210; }
         .pos { color: #276749; font-weight: 600; }
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
@@ -314,6 +361,7 @@
                         <option value="all">All</option>
                         <option value="15m">15m</option>
                         <option value="1d">1d</option>
+                        <option value="dp">DP (SPY pullback)</option>
                     </select>
                 </div>
                 <div class="control-group">
@@ -321,8 +369,9 @@
                     <select id="status-filter">
                         <option value="all">All</option>
                         <option value="armed">Armed</option>
-                        <option value="waiting">Waiting</option>
-                        <option value="filled">Filled (bar)</option>
+                        <option value="waiting">Waiting / approaching</option>
+                        <option value="filled">Filled (bar / in trade)</option>
+                        <option value="exit_signal">Exit signal</option>
                         <option value="hot">Hot (last at/above resist)</option>
                     </select>
                 </div>
@@ -339,10 +388,24 @@
                     <input type="number" id="below-pct" min="0" step="0.1" value="0">
                 </div>
             </div>
-            <div class="checks">
-                <label><input type="checkbox" id="tg-fill" checked> Telegram on 15m H5 fills</label>
-                <label><input type="checkbox" id="tg-sell" checked> Telegram on SELL NOW</label>
-                <label><input type="checkbox" id="desk-notify" checked> Browser + sound on fills / sells</label>
+            <div class="notify-matrix-wrap">
+                <table class="notify-matrix" id="notify-matrix">
+                    <thead>
+                        <tr>
+                            <th class="det">Detector</th>
+                            <th>Hot</th>
+                            <th>Armed</th>
+                            <th>Approaching</th>
+                            <th>Fill / H5</th>
+                            <th>Sell / exit</th>
+                        </tr>
+                    </thead>
+                    <tbody id="notify-body"></tbody>
+                </table>
+                <div class="notify-hint">
+                    TG = Telegram, Br = browser beep + notification.
+                    15m Fill = H5 buy-now; DP Armed = MOC buy; DP Approaching = last 20m before close.
+                </div>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
         </div>
@@ -403,8 +466,44 @@
         const PRICE_WS_PORT = {{ price_ws_port|default(5001)|int }};
         const FILL_SEEN_KEY = 'hotCandidates.seenFills';
         const SELL_SEEN_KEY = 'hotCandidates.seenSells';
+        const HOT_SEEN_KEY = 'hotCandidates.seenHot';
+        const ARMED_SEEN_KEY = 'hotCandidates.seenArmed';
+        const APPROACH_SEEN_KEY = 'hotCandidates.seenApproach';
         const CTF_COPIED_KEY = 'hotCandidates.ctfCopied';
         const FETCH_OPTS = { cache: 'no-store' };
+        const NOTIFY_DETECTORS = ['15m', '1d', 'dp'];
+        const NOTIFY_EVENTS = ['hot', 'armed', 'approaching', 'fill', 'sell'];
+        const NOTIFY_LABELS = { '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)' };
+        const DEFAULT_NOTIFY_APPLICABLE = {
+            '15m': { hot: true, armed: true, approaching: false, fill: true, sell: true },
+            '1d': { hot: true, armed: true, approaching: false, fill: true, sell: true },
+            'dp': { hot: false, armed: true, approaching: true, fill: false, sell: true }
+        };
+        const DEFAULT_NOTIFY_PREFS = {
+            '15m': {
+                hot: { telegram: false, browser: false },
+                armed: { telegram: false, browser: false },
+                approaching: { telegram: false, browser: false },
+                fill: { telegram: true, browser: true },
+                sell: { telegram: true, browser: true }
+            },
+            '1d': {
+                hot: { telegram: false, browser: false },
+                armed: { telegram: false, browser: false },
+                approaching: { telegram: false, browser: false },
+                fill: { telegram: true, browser: true },
+                sell: { telegram: true, browser: true }
+            },
+            'dp': {
+                hot: { telegram: false, browser: false },
+                armed: { telegram: true, browser: true },
+                approaching: { telegram: false, browser: false },
+                fill: { telegram: false, browser: false },
+                sell: { telegram: true, browser: true }
+            }
+        };
+        let notifyApplicable = DEFAULT_NOTIFY_APPLICABLE;
+        let notifyPrefs = JSON.parse(JSON.stringify(DEFAULT_NOTIFY_PREFS));
         let saveTimer = null;
         let loading = false;
         let bootstrapped = false;
@@ -414,9 +513,9 @@
         let reconnectAttempt = 0;
         let socketReady = false;
 
-        function loadSeenFills() {
+        function loadSeenSet(key) {
             try {
-                const raw = sessionStorage.getItem(FILL_SEEN_KEY);
+                const raw = sessionStorage.getItem(key);
                 if (!raw) return new Set();
                 const arr = JSON.parse(raw);
                 if (!Array.isArray(arr)) return new Set();
@@ -426,24 +525,30 @@
             }
         }
 
-        function saveSeenFills(set) {
+        function saveSeenSet(key, set) {
             try {
-                sessionStorage.setItem(FILL_SEEN_KEY, JSON.stringify(Array.from(set)));
+                sessionStorage.setItem(key, JSON.stringify(Array.from(set)));
             } catch (err) {}
+        }
+
+        function loadSeenFills() {
+            return loadSeenSet(FILL_SEEN_KEY);
+        }
+
+        function saveSeenFills(set) {
+            saveSeenSet(FILL_SEEN_KEY, set);
         }
 
         let seenFills = loadSeenFills();
         let primedFill = seenFills.size > 0;
-        let seenSells = (function() {
-            try {
-                const raw = sessionStorage.getItem(SELL_SEEN_KEY);
-                if (!raw) return new Set();
-                const arr = JSON.parse(raw);
-                if (!Array.isArray(arr)) return new Set();
-                return new Set(arr);
-            } catch (err) { return new Set(); }
-        })();
+        let seenSells = loadSeenSet(SELL_SEEN_KEY);
         let primedSell = seenSells.size > 0;
+        let seenHot = loadSeenSet(HOT_SEEN_KEY);
+        let primedHot = seenHot.size > 0;
+        let seenArmed = loadSeenSet(ARMED_SEEN_KEY);
+        let primedArmed = seenArmed.size > 0;
+        let seenApproach = loadSeenSet(APPROACH_SEEN_KEY);
+        let primedApproach = seenApproach.size > 0;
         let lastData = null;
         let activeTab = 'candidates';
         const EXCHANGE_TZ = 'America/New_York';
@@ -658,15 +763,68 @@
             return Number(v) >= 0 ? 'pos' : 'neg';
         }
 
+        function wantBrowser(detector, event) {
+            const det = notifyPrefs[detector] || {};
+            const ev = det[event] || {};
+            return !!ev.browser;
+        }
+
+        function anyBrowserOn() {
+            for (let i = 0; i < NOTIFY_DETECTORS.length; i++) {
+                const det = NOTIFY_DETECTORS[i];
+                for (let j = 0; j < NOTIFY_EVENTS.length; j++) {
+                    const ev = NOTIFY_EVENTS[j];
+                    if (!(notifyApplicable[det] || {})[ev]) continue;
+                    if (wantBrowser(det, ev)) return true;
+                }
+            }
+            return false;
+        }
+
+        function renderNotifyMatrix() {
+            const body = document.getElementById('notify-body');
+            if (!body) return;
+            const rows = NOTIFY_DETECTORS.map(function(det) {
+                const cells = NOTIFY_EVENTS.map(function(ev) {
+                    const ok = !!(notifyApplicable[det] || {})[ev];
+                    if (!ok) return '<td class="na">n/a</td>';
+                    const pref = ((notifyPrefs[det] || {})[ev]) || {};
+                    const tgId = 'np-' + det + '-' + ev + '-tg';
+                    const brId = 'np-' + det + '-' + ev + '-br';
+                    return (
+                        '<td><div class="pair">' +
+                        '<label title="Telegram"><input type="checkbox" data-np="1" data-det="' + det +
+                        '" data-ev="' + ev + '" data-ch="telegram" id="' + tgId + '"' +
+                        (pref.telegram ? ' checked' : '') + '> TG</label>' +
+                        '<label title="Browser"><input type="checkbox" data-np="1" data-det="' + det +
+                        '" data-ev="' + ev + '" data-ch="browser" id="' + brId + '"' +
+                        (pref.browser ? ' checked' : '') + '> Br</label>' +
+                        '</div></td>'
+                    );
+                }).join('');
+                return '<tr><td class="det">' + (NOTIFY_LABELS[det] || det) + '</td>' + cells + '</tr>';
+            }).join('');
+            body.innerHTML = rows;
+            body.querySelectorAll('input[data-np]').forEach(function(el) {
+                el.addEventListener('change', function() {
+                    const det = el.getAttribute('data-det');
+                    const ev = el.getAttribute('data-ev');
+                    const ch = el.getAttribute('data-ch');
+                    if (!notifyPrefs[det]) notifyPrefs[det] = {};
+                    if (!notifyPrefs[det][ev]) notifyPrefs[det][ev] = { telegram: false, browser: false };
+                    notifyPrefs[det][ev][ch] = !!el.checked;
+                    if (ch === 'browser' && el.checked) ensureNotifyPermission();
+                    scheduleSave();
+                });
+            });
+        }
+
         function collectPatch() {
             const maxDist = document.getElementById('max-dist').value;
             const below = document.getElementById('below-pct').value;
             const sorted = document.querySelector('th.sorted');
             return {
-                telegram_on_fill: document.getElementById('tg-fill').checked,
-                telegram_on_hot: false,
-                telegram_on_sell: document.getElementById('tg-sell').checked,
-                desktop_notify: document.getElementById('desk-notify').checked,
+                notify_prefs: notifyPrefs,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
                 timeframe_filter: document.getElementById('tf-filter').value,
@@ -680,9 +838,21 @@
 
         function applySettings(s) {
             if (!s) return;
-            document.getElementById('tg-fill').checked = !!s.telegram_on_fill;
-            document.getElementById('tg-sell').checked = s.telegram_on_sell !== false;
-            document.getElementById('desk-notify').checked = s.desktop_notify !== false;
+            if (s.notify_prefs) {
+                notifyPrefs = JSON.parse(JSON.stringify(DEFAULT_NOTIFY_PREFS));
+                NOTIFY_DETECTORS.forEach(function(det) {
+                    const src = s.notify_prefs[det] || {};
+                    NOTIFY_EVENTS.forEach(function(ev) {
+                        const ch = src[ev] || {};
+                        notifyPrefs[det][ev] = {
+                            telegram: !!ch.telegram,
+                            browser: !!ch.browser
+                        };
+                    });
+                });
+            }
+            if (s.notify_applicable) notifyApplicable = s.notify_applicable;
+            renderNotifyMatrix();
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
             document.getElementById('tf-filter').value = s.timeframe_filter || 'all';
@@ -703,6 +873,7 @@
                 th.textContent = th.dataset.label + (th.dataset.dir === 'desc' ? ' v' : ' ^');
             }
             syncAsOfHeader();
+            if (anyBrowserOn()) ensureNotifyPermission();
         }
 
         function fillKeySet(data) {
@@ -726,9 +897,7 @@
 
         function rememberSells(next) {
             seenSells = next;
-            try {
-                sessionStorage.setItem(SELL_SEEN_KEY, JSON.stringify(Array.from(seenSells)));
-            } catch (err) {}
+            saveSeenSet(SELL_SEEN_KEY, seenSells);
         }
 
         function playBeep() {
@@ -763,6 +932,140 @@
             } catch (err) {}
         }
 
+        function keySetFrom(data, field) {
+            if (data && Array.isArray(data[field])) return new Set(data[field]);
+            return new Set();
+        }
+
+        function maybeEventAlerts(data, opts) {
+            const field = opts.field;
+            const alertsField = opts.alertsField;
+            const event = opts.event;
+            const titleVerb = opts.titleVerb;
+            const detailSuffix = opts.detailSuffix;
+            let seen = opts.seen;
+            let primed = opts.primed;
+            const next = keySetFrom(data, field);
+            if (!primed.value) {
+                opts.remember(next);
+                primed.value = true;
+                return;
+            }
+            const newsKeys = [];
+            next.forEach(function(k) {
+                if (!seen.has(k)) newsKeys.push(k);
+            });
+            opts.remember(next);
+            if (!newsKeys.length) return;
+            const alerts = (data[alertsField] || []).filter(function(a) {
+                return newsKeys.indexOf(a.key) >= 0;
+            });
+            const allowed = alerts.filter(function(a) {
+                const tf = String(a.timeframe || '15m');
+                return wantBrowser(tf, event);
+            });
+            // If server sent keys but no alert payloads, fall back to key parse when prefs allow.
+            let toShow = allowed;
+            if (!toShow.length && newsKeys.length) {
+                toShow = newsKeys.map(function(k) {
+                    const parts = String(k).split('|');
+                    return { key: k, stock: parts[0], timeframe: parts[1] || '15m' };
+                }).filter(function(a) {
+                    return wantBrowser(a.timeframe, event);
+                });
+            }
+            if (!toShow.length) return;
+            const names = toShow.map(function(a) { return a.stock; });
+            const unique = names.filter(function(s, i) { return names.indexOf(s) === i; });
+            const detail = toShow.slice(0, 4).map(function(a) {
+                if (a.fill_px != null && a.fill_px !== '') {
+                    return a.stock + ' @ ' + Number(a.fill_px).toFixed(2);
+                }
+                if (a.last_price != null && a.last_price !== '' && a.current_stop != null) {
+                    return a.stock + ' last ' + Number(a.last_price).toFixed(2) +
+                        ' stop ' + Number(a.current_stop).toFixed(2);
+                }
+                if (a.last_price != null && a.last_price !== '') {
+                    return a.stock + ' last ' + Number(a.last_price).toFixed(2);
+                }
+                return a.stock + (a.timeframe ? ' (' + a.timeframe + ')' : '');
+            }).join(', ');
+            desktopAlert(
+                unique.length === 1 ? (titleVerb + ' ' + unique[0]) : (titleVerb + ' ' + unique.length),
+                (detail || unique.join(', ')) + ' — ' + detailSuffix
+            );
+        }
+
+        function maybeDesktopAlerts(data) {
+            if (!data || data.error) return;
+            maybeEventAlerts(data, {
+                field: 'fill_keys',
+                alertsField: 'fill_alerts',
+                event: 'fill',
+                titleVerb: 'BUY',
+                detailSuffix: '15m H5 fill, buy now',
+                seen: seenFills,
+                primed: { get value() { return primedFill; }, set value(v) { primedFill = v; } },
+                remember: function(next) { rememberFills(next); seenFills = next; }
+            });
+        }
+
+        function maybeSellAlerts(data) {
+            if (!data || data.error) return;
+            maybeEventAlerts(data, {
+                field: 'sell_keys',
+                alertsField: 'sell_alerts',
+                event: 'sell',
+                titleVerb: 'SELL NOW',
+                detailSuffix: 'stop hit, sell now',
+                seen: seenSells,
+                primed: { get value() { return primedSell; }, set value(v) { primedSell = v; } },
+                remember: rememberSells
+            });
+        }
+
+        function maybeHotAlerts(data) {
+            if (!data || data.error) return;
+            maybeEventAlerts(data, {
+                field: 'hot_keys',
+                alertsField: 'hot_alerts',
+                event: 'hot',
+                titleVerb: 'HOT',
+                detailSuffix: 'last at/above resist',
+                seen: seenHot,
+                primed: { get value() { return primedHot; }, set value(v) { primedHot = v; } },
+                remember: function(next) { seenHot = next; saveSeenSet(HOT_SEEN_KEY, seenHot); }
+            });
+        }
+
+        function maybeArmedAlerts(data) {
+            if (!data || data.error) return;
+            maybeEventAlerts(data, {
+                field: 'armed_keys',
+                alertsField: 'armed_alerts',
+                event: 'armed',
+                titleVerb: 'ARMED',
+                detailSuffix: 'setup armed',
+                seen: seenArmed,
+                primed: { get value() { return primedArmed; }, set value(v) { primedArmed = v; } },
+                remember: function(next) { seenArmed = next; saveSeenSet(ARMED_SEEN_KEY, seenArmed); }
+            });
+        }
+
+        function maybeApproachAlerts(data) {
+            if (!data || data.error) return;
+            maybeEventAlerts(data, {
+                field: 'approaching_keys',
+                alertsField: 'approaching_alerts',
+                event: 'approaching',
+                titleVerb: 'APPROACHING',
+                detailSuffix: 'DP approaching MOC',
+                seen: seenApproach,
+                primed: { get value() { return primedApproach; }, set value(v) { primedApproach = v; } },
+                remember: function(next) { seenApproach = next; saveSeenSet(APPROACH_SEEN_KEY, seenApproach); }
+            });
+        }
+
         const LIVE_LABELS = {
             connecting: 'Connecting',
             live: 'Live',
@@ -777,71 +1080,6 @@
             badge.className = 'live-badge ' + key;
             label.textContent = LIVE_LABELS[key];
             badge.title = title || '';
-        }
-
-        function maybeDesktopAlerts(data) {
-            if (!data || data.error) return;
-            const next = fillKeySet(data);
-            if (!primedFill) {
-                rememberFills(next);
-                primedFill = true;
-                return;
-            }
-            const newsKeys = [];
-            next.forEach(function(k) {
-                if (!seenFills.has(k)) newsKeys.push(k);
-            });
-            rememberFills(next);
-            const deskOn = document.getElementById('desk-notify').checked;
-            if (!deskOn || !newsKeys.length) return;
-            const alerts = (data.fill_alerts || []).filter(function(a) {
-                return newsKeys.indexOf(a.key) >= 0;
-            });
-            const names = (alerts.length ? alerts : newsKeys.map(function(k) {
-                return { stock: String(k).split('|')[0] };
-            })).map(function(a) { return a.stock; });
-            const unique = names.filter(function(s, i) { return names.indexOf(s) === i; });
-            const detail = alerts.slice(0, 4).map(function(a) {
-                const px = a.fill_px == null || a.fill_px === '' ? '--' : Number(a.fill_px).toFixed(2);
-                return a.stock + ' @ ' + px;
-            }).join(', ');
-            desktopAlert(
-                unique.length === 1 ? ('BUY ' + unique[0]) : ('BUY ' + unique.length),
-                (detail || unique.join(', ')) + ' — 15m H5 fill, buy now'
-            );
-        }
-
-        function maybeSellAlerts(data) {
-            if (!data || data.error) return;
-            const next = sellKeySet(data);
-            if (!primedSell) {
-                rememberSells(next);
-                primedSell = true;
-                return;
-            }
-            const newsKeys = [];
-            next.forEach(function(k) {
-                if (!seenSells.has(k)) newsKeys.push(k);
-            });
-            rememberSells(next);
-            const deskOn = document.getElementById('desk-notify').checked;
-            if (!deskOn || !newsKeys.length) return;
-            const alerts = (data.sell_alerts || []).filter(function(a) {
-                return newsKeys.indexOf(a.key) >= 0;
-            });
-            const names = (alerts.length ? alerts : newsKeys.map(function(k) {
-                return { stock: String(k).split('|')[0] };
-            })).map(function(a) { return a.stock; });
-            const unique = names.filter(function(s, i) { return names.indexOf(s) === i; });
-            const detail = alerts.slice(0, 4).map(function(a) {
-                const px = a.last_price == null || a.last_price === '' ? '--' : Number(a.last_price).toFixed(2);
-                const stop = a.current_stop == null || a.current_stop === '' ? '--' : Number(a.current_stop).toFixed(2);
-                return a.stock + ' last ' + px + ' stop ' + stop;
-            }).join(', ');
-            desktopAlert(
-                unique.length === 1 ? ('SELL NOW ' + unique[0]) : ('SELL NOW ' + unique.length),
-                (detail || unique.join(', ')) + ' — stop hit, sell now'
-            );
         }
 
         async function saveSettings() {
@@ -902,8 +1140,9 @@
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
-                const chartTf = tf === '1d' ? '1d' : '15m';
-                const tfClass = tf === '1d' ? 'tf-1d' : 'tf-15m';
+                const chartTf = (tf === '1d' || tf === 'dp') ? '1d' : '15m';
+                const tfClass = tf === '1d' ? 'tf-1d' : (tf === 'dp' ? 'tf-dp' : 'tf-15m');
+                const tfLabel = tf === 'dp' ? 'DP' : tf;
                 const stock = r.stock || '';
                 const boughtCell = r.bought
                     ? '<span class="pill owned">bought</span>'
@@ -912,7 +1151,7 @@
                 return '<tr>' +
                     '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +
                     channelCell(r.ch) +
-                    '<td><span class="pill ' + tfClass + '">' + tf + '</span></td>' +
+                    '<td><span class="pill ' + tfClass + '">' + tfLabel + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
                     '<td>' + fmtNum(r.last_price, 2) + '</td>' +
@@ -991,7 +1230,7 @@
             if (data.settings && !bootstrapped) {
                 applySettings(data.settings);
                 bootstrapped = true;
-                if (document.getElementById('desk-notify').checked) ensureNotifyPermission();
+                if (anyBrowserOn()) ensureNotifyPermission();
             }
             lastData = data;
             syncAsOfHeader();
@@ -1025,6 +1264,9 @@
             renderBought(data.bought || []);
             maybeDesktopAlerts(data);
             maybeSellAlerts(data);
+            maybeHotAlerts(data);
+            maybeArmedAlerts(data);
+            maybeApproachAlerts(data);
         }
 
         async function poll() {
@@ -1139,10 +1381,9 @@
             });
         });
 
-        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tg-fill', 'tg-sell', 'desk-notify', 'tz-filter'].forEach(function(id) {
+        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tz-filter'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
-                if (id === 'desk-notify' && el.checked) ensureNotifyPermission();
                 scheduleSave();
                 if (id === 'tz-filter') {
                     syncAsOfHeader();
@@ -1228,6 +1469,7 @@
 
         labelLocalTzOption();
         syncAsOfHeader();
+        renderNotifyMatrix();
         connectWs();
     </script>
 </body>

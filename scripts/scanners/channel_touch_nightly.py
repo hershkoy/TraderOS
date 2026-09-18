@@ -407,14 +407,21 @@ def main() -> int:
         )
         msg = f"{msg}\nelapsed_sec={time.perf_counter() - t0:.1f}\ncsv={out_csv.name}"
         logger.info("Notify payload:\n%s", msg)
-        desktop = True
+        want_tg = True
+        want_desk = True
         try:
-            desktop = bool(
-                ChannelTouchCandidatesStore().load_settings().get("desktop_notify", True)
-            )
+            from utils.scanning.channel_touch_notify_prefs import want_notify
+
+            settings = ChannelTouchCandidatesStore().load_settings()
+            want_tg = want_notify(settings, "1d", "fill", "telegram")
+            want_desk = want_notify(settings, "1d", "fill", "browser")
         except Exception:
-            desktop = True
-        _notify(msg, dry_run=dry_run, desktop=desktop)
+            want_tg, want_desk = True, True
+        if want_tg or want_desk:
+            if dry_run:
+                logger.info("[dry-run] would notify 1d fill tg=%s desk=%s", want_tg, want_desk)
+            else:
+                send_alert(msg, dry_run=False, desktop=want_desk, telegram=want_tg)
         return 0
     except Exception as exc:
         logger.exception("Nightly channel-touch failed: %s", exc)

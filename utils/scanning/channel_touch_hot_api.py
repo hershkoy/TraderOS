@@ -214,6 +214,90 @@ def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     return keys
 
 
+def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
+    """Keys for currently armed setups (stock|tf|h2_time)."""
+    keys: List[str] = []
+    for row in rows:
+        if str(row.get("status") or "").lower() != "armed":
+            continue
+        stock = str(row.get("stock") or "").upper()
+        if not stock:
+            continue
+        tf = str(row.get("timeframe") or "15m")
+        h2 = str(row.get("h2_time") or row.get("as_of") or "")
+        keys.append("%s|%s|%s" % (stock, tf, h2))
+    return keys
+
+
+def approaching_keys_from_rows(rows: Sequence[dict]) -> List[str]:
+    """Keys for DP approaching (waiting) rows."""
+    keys: List[str] = []
+    for row in rows:
+        tf = str(row.get("timeframe") or "")
+        if tf != "dp":
+            continue
+        if str(row.get("status") or "").lower() != "waiting":
+            continue
+        stock = str(row.get("stock") or "").upper() or "SPY"
+        tag = str(row.get("hot_notified_on") or row.get("as_of") or "approach")
+        keys.append("%s|dp|%s" % (stock, tag))
+    return keys
+
+
+def status_alerts_from_rows(
+    rows: Sequence[dict],
+    *,
+    event: str,
+) -> List[dict]:
+    """Browser alert payloads for hot / armed / approaching transitions."""
+    out: List[dict] = []
+    event = str(event or "").lower()
+    if event == "hot":
+        key_fn = hot_keys_from_rows
+        match = lambda r: bool(r.get("hot"))
+    elif event == "armed":
+        key_fn = armed_keys_from_rows
+        match = lambda r: str(r.get("status") or "").lower() == "armed"
+    elif event == "approaching":
+        key_fn = approaching_keys_from_rows
+        match = lambda r: (
+            str(r.get("timeframe") or "") == "dp"
+            and str(r.get("status") or "").lower() == "waiting"
+        )
+    else:
+        return out
+    key_set = set(key_fn(rows))
+    for row in rows:
+        if not match(row):
+            continue
+        stock = str(row.get("stock") or "").upper()
+        tf = str(row.get("timeframe") or "15m")
+        if event == "hot":
+            key = "%s|%s" % (stock, tf)
+        elif event == "armed":
+            key = "%s|%s|%s" % (stock, tf, str(row.get("h2_time") or row.get("as_of") or ""))
+        else:
+            key = "%s|dp|%s" % (
+                stock or "SPY",
+                str(row.get("hot_notified_on") or row.get("as_of") or "approach"),
+            )
+        if key not in key_set:
+            continue
+        out.append(
+            {
+                "stock": stock or "SPY",
+                "timeframe": tf,
+                "event": event,
+                "status": row.get("status"),
+                "resist": row.get("resist"),
+                "last_price": row.get("last_price") or row.get("last_close"),
+                "wait_bars": row.get("wait_bars"),
+                "key": key,
+            }
+        )
+    return out
+
+
 def is_strategy_fill(row: dict) -> bool:
     """True when a 15m row is a completed-bar H5 fill (buy-now)."""
     if str(row.get("timeframe") or "15m") != "15m":
@@ -292,7 +376,7 @@ def filter_candidates(
             if str(row.get("status") or "").lower() != status:
                 continue
         tf_filter = str(timeframe_filter or "all").lower()
-        if tf_filter in ("15m", "1d"):
+        if tf_filter in ("15m", "1d", "dp"):
             row_tf = str(row.get("timeframe") or "15m")
             if row_tf != tf_filter:
                 continue
@@ -419,6 +503,9 @@ def candidates_payload(
     n_armed_1d = sum(
         1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "15m") == "1d"
     )
+    n_armed_dp = sum(
+        1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "") == "dp"
+    )
     price_ts = None
     for row in rows:
         ts = row.get("last_price_ts")
@@ -462,8 +549,14 @@ def candidates_payload(
         "n_armed": n_armed,
         "n_armed_15m": n_armed_15m,
         "n_armed_1d": n_armed_1d,
+        "n_armed_dp": n_armed_dp,
         "n_hot": n_hot,
         "hot_keys": hot_keys_from_rows(rows),
+        "armed_keys": armed_keys_from_rows(rows),
+        "approaching_keys": approaching_keys_from_rows(rows),
+        "hot_alerts": status_alerts_from_rows(rows, event="hot"),
+        "armed_alerts": status_alerts_from_rows(rows, event="armed"),
+        "approaching_alerts": status_alerts_from_rows(rows, event="approaching"),
         "fill_keys": fill_keys_from_rows(rows),
         "fill_alerts": fill_alerts_from_rows(rows),
         "bought": bought,
@@ -578,6 +671,8 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
         feeds_fingerprint(payload.get("feeds") or []),
         tuple(payload.get("fill_keys") or []),
         tuple(payload.get("hot_keys") or []),
+        tuple(payload.get("armed_keys") or []),
+        tuple(payload.get("approaching_keys") or []),
         tuple(payload.get("sell_keys") or []),
         tuple(bought_slim),
         settings.get("status_filter"),
@@ -587,6 +682,7 @@ def payload_fingerprint(payload: Dict[str, Any]) -> str:
         settings.get("sort_key"),
         settings.get("sort_dir"),
         settings.get("proximity_below_pct"),
+        repr(settings.get("notify_prefs") or {}),
         tuple(slim),
     )
     return repr(key)

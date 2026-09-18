@@ -131,6 +131,7 @@
     <button class="tab" data-tab="years">By year</button>
     <button class="tab" data-tab="trades">Trades</button>
     <button class="tab" data-tab="friction">Friction</button>
+    <button class="tab" data-tab="leverage">Leverage (futures)</button>
     <button class="tab" data-tab="rules">Rules</button>
   </div>
 
@@ -189,6 +190,25 @@
         <tbody id="fricBody"></tbody>
       </table></div>
       <div class="muted" style="margin-top:8px">Static table from generation. Use the Friction control + Apply for interactive sizing/equity.</div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-leverage">
+    <div class="panel">
+      <h2>Futures-style leverage (Yahoo SPY book)</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <thead>
+          <tr>
+            <th>Leverage</th><th>Fric %</th><th>n</th><th>E %</th><th>WR %</th><th>PF</th>
+            <th>CAGR %</th><th>MDD %</th><th>Final eq</th><th>Risk-adj</th>
+          </tr>
+        </thead>
+        <tbody id="levBody"></tbody>
+      </table></div>
+      <div class="muted" style="margin-top:8px" id="levNote">
+        Model: trade return on sleeve capital = L &times; (SPY% &minus; fric). Same entries/exits as 1&times; book.
+        Prefer MES/ES on MOC over options. MDD scales with L — 3&times; turns ~14% into ~40%+.
+      </div>
     </div>
   </div>
 
@@ -598,6 +618,13 @@ document.getElementById("fricBody").innerHTML = (DATA.friction || []).map(f =>
   fmt(f.cagr_full_window_pct,2) + "</td><td>" + fmt(f.mdd_mtm_pct,2) + "</td><td>" +
   fmt(f.exposure_pct,2) + "</td></tr>"
 ).join("");
+document.getElementById("levBody").innerHTML = (DATA.leverage || []).map(function(r) {
+  return "<tr><td>" + fmt(r.leverage,1) + "x</td><td>" + fmt(r.friction_pct,2) + "</td><td>" + r.n +
+    "</td><td>" + fmt(r.avg_gain_pct,3) + "</td><td>" + fmt(r.win_rate_pct,2) + "</td><td>" +
+    fmt(r.profit_factor,3) + "</td><td>" + fmt(r.cagr_pct,2) + '</td><td class="neg">' +
+    fmt(r.mdd_pct,2) + "</td><td>" + fmt(r.final_equity,3) + "</td><td>" +
+    (r.risk_adj_return_pct == null ? "-" : fmt(r.risk_adj_return_pct,1)) + "</td></tr>";
+}).join("");
 document.getElementById("rulesList").innerHTML = (DATA.rules || []).map(r => "<li>" + r + "</li>").join("");
 
 document.querySelectorAll(".tab").forEach(btn => {
