@@ -11,9 +11,10 @@ Live / RTH: Alpaca last stands in for today's developing close.
 Approaching (early arm): above SMA200 and at least two of
   {near 15d low, sharp down-day, full cond1, full cond2}.
 
-Telegram "approaching" only in the last MOC_WINDOW_MIN minutes of RTH, with an
-explicit MOC target: if close finishes at/below moc_max (and above SMA floor),
-send MOC buy.
+Telegram "approaching" only in the last MOC_APPROACH_WINDOW_MIN minutes of RTH,
+with an explicit MOC target: if close finishes at/below moc_max (and above SMA
+floor), send MOC buy. "Buy now" (ARMED) Telegram only in the last
+MOC_BUY_NOW_WINDOW_MIN minutes (default 2 -> 15:58 ET before Arca MOC lock).
 """
 from __future__ import annotations
 
@@ -35,8 +36,12 @@ ET = ZoneInfo("America/New_York")
 NEAR_LOW_PCT = 0.005  # within 0.5% of the rolling 15d min close
 SHARP_RET_RANK = 3  # today's ret among worst N of last 10 (1=worst)
 
-# Approaching Telegram only inside this many minutes before 16:00 ET
-MOC_WINDOW_MIN = 20
+# Approaching Telegram: last N minutes before 16:00 ET (15:45 default)
+MOC_APPROACH_WINDOW_MIN = 15
+# Buy-now / ARMED Telegram: last N minutes before 16:00 ET (15:58 default)
+MOC_BUY_NOW_WINDOW_MIN = 2
+# Back-compat alias (approaching window)
+MOC_WINDOW_MIN = MOC_APPROACH_WINDOW_MIN
 RTH_CLOSE = time(16, 0)
 
 
@@ -92,12 +97,21 @@ def minutes_to_rth_close(now: Optional[datetime] = None) -> Optional[float]:
     return (close_dt - now_et).total_seconds() / 60.0
 
 
-def in_moc_alert_window(now: Optional[datetime] = None, *, window_min: int = MOC_WINDOW_MIN) -> bool:
-    """True in the last `window_min` minutes of the RTH cash close (15:40-16:00 ET default)."""
+def in_moc_alert_window(
+    now: Optional[datetime] = None, *, window_min: int = MOC_APPROACH_WINDOW_MIN
+) -> bool:
+    """True in the last `window_min` minutes of RTH cash close (15:45-16:00 ET default)."""
     m = minutes_to_rth_close(now)
     if m is None:
         return False
     return 0.0 <= m <= float(window_min)
+
+
+def in_moc_buy_now_window(
+    now: Optional[datetime] = None, *, window_min: int = MOC_BUY_NOW_WINDOW_MIN
+) -> bool:
+    """True in the last `window_min` minutes before 16:00 ET (15:58-16:00 default)."""
+    return in_moc_alert_window(now, window_min=window_min)
 
 
 def moc_entry_target(completed_closes: np.ndarray) -> Dict[str, Any]:
@@ -205,14 +219,16 @@ def evaluate_live(
     last_price: Optional[float],
     prev_row: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
-    moc_window_min: int = MOC_WINDOW_MIN,
+    moc_window_min: int = MOC_APPROACH_WINDOW_MIN,
+    moc_buy_now_min: int = MOC_BUY_NOW_WINDOW_MIN,
 ) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """Build /hot candidate row + optional Telegram payloads.
 
     Returns (row, alerts) where alerts are dicts with keys kind, text.
     kind in {approach, arm, exit}.
-    Approaching alerts only inside the last moc_window_min minutes before 16:00 ET,
-    and include an MOC target price.
+    Approaching alerts only inside the last moc_window_min minutes before 16:00 ET
+    (default 15 -> from 15:45), with an MOC target price. Buy-now / ARMED alerts
+    only inside the last moc_buy_now_min minutes (default 2 -> from 15:58).
     """
     now = now or datetime.now(timezone.utc)
     now_et = now.astimezone(ET)
@@ -236,7 +252,8 @@ def evaluate_live(
         completed_highs = highs.copy()
 
     target = moc_entry_target(completed)
-    moc_window = in_moc_alert_window(now, window_min=moc_window_min)
+    approach_window = in_moc_alert_window(now, window_min=moc_window_min)
+    buy_now_window = in_moc_buy_now_window(now, window_min=moc_buy_now_min)
     mins_left = minutes_to_rth_close(now)
 
     # Inject developing bar from Alpaca last when available (NY session date)
@@ -285,7 +302,8 @@ def evaluate_live(
         status = "armed"
         hot = True
         arm_key = "%s:arm" % today_et.isoformat()
-        if moc_window and prev_notify != arm_key:
+        approach_key = "%s:approach" % today_et.isoformat()
+        if buy_now_window and prev_notify != arm_key:
             tgt = ""
             if target.get("ok"):
                 tgt = " Target was close<=%.2f (above SMA %.2f)." % (
@@ -296,10 +314,11 @@ def evaluate_live(
                 {
                     "kind": "arm",
                     "text": (
-                        "Deep Pullback SPY ARMED — send MOC buy now. "
+                        "Deep Pullback SPY ARMED — send MOC buy now (%sm to close). "
                         "15d low + worst 1d/10 + above SMA200. "
                         "last=%.2f sma200=%.2f ret1=%.2f%%%s"
                         % (
+                            "?" if mins_left is None else ("%.0f" % mins_left),
                             feat["close"],
                             feat["sma200"],
                             100.0 * float(feat["ret1"] or 0.0),
@@ -309,10 +328,41 @@ def evaluate_live(
                 }
             )
             notify_tag = arm_key
+        elif (
+            approach_window
+            and not buy_now_window
+            and target.get("ok")
+            and target.get("viable")
+            and prev_notify not in (approach_key, arm_key)
+        ):
+            # Full signal early: warn with MOC target; buy-now waits until 15:58
+            mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
+            alerts.append(
+                {
+                    "kind": "approach",
+                    "text": (
+                        "Deep Pullback SPY approaching (%sm to close) — conditions already met. "
+                        "If SPY stays at or below %.2f (and above SMA200 %.2f), "
+                        "send MOC buy at ~15:58. Now last=%.2f."
+                        % (
+                            mins_txt,
+                            float(target["moc_max"]),
+                            float(target["sma_floor"]),
+                            feat["close"],
+                        )
+                    ),
+                }
+            )
+            notify_tag = approach_key
     elif feat["approaching"]:
         status = "waiting"
         approach_key = "%s:approach" % today_et.isoformat()
-        if moc_window and target.get("ok") and target.get("viable") and prev_notify != approach_key:
+        if (
+            approach_window
+            and target.get("ok")
+            and target.get("viable")
+            and prev_notify != approach_key
+        ):
             mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
             alerts.append(
                 {
@@ -320,7 +370,7 @@ def evaluate_live(
                     "text": (
                         "Deep Pullback SPY approaching (%sm to close). "
                         "If SPY closes at or below %.2f (and still above SMA200 %.2f), "
-                        "send MOC buy. "
+                        "send MOC buy at ~15:58. "
                         "Now last=%.2f (need <=%.2f for 15d-low, <=%.2f for worst-1d). "
                         "score=%d/3."
                         % (
@@ -396,7 +446,8 @@ def evaluate_live(
         "_full_signal": feat["full_signal"],
         "_feat": feat,
         "_target": target,
-        "_moc_window": moc_window,
+        "_moc_window": approach_window,
+        "_moc_buy_now": buy_now_window,
         "_mins_to_close": mins_left,
     }
     return row, alerts

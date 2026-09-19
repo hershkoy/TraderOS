@@ -50,3 +50,5 @@ venv\Scripts\activate && set PYTHONPATH=. && python scripts\research\run_qs_five
 S4 proxy uses **prior-session ADX(5)** (causal; today’s ADX needs the close).
 
 No live wiring.
+
+**Follow-up (1m 15:57 vs 15:58):** see `2026-09-18_qs_five_swing_1m_moc.md` — both clocks recover ~10.4–10.6% CAGR vs oracle ~10.9 on the candidate-day 1m span.

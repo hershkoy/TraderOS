@@ -44,13 +44,14 @@ jobs:
   schedule:
   - 30-59 9 * * 1-5
   - '*/5 10-14 * * 1-5'
-  - 0,5,10,15,20,25,30,35 15 * * 1-5
-  - 40-59 15 * * 1-5
+  - 0,5,10,15,20,25,30,35,40 15 * * 1-5
+  - 45-59 15 * * 1-5
   - 0 16 * * 1-5
   command: crons\deep_pullback_spy.bat
-  description: Deep Pullback SPY for /hot (timeframe=dp). Approaching Telegram only
-    in last 20m of RTH (15:40-16:00 ET) with MOC target price; ARMED/EXIT too.
-    Uses DB 1d + Alpaca last. Every minute in MOC window; else ~5m.
+  description: Deep Pullback SPY for /hot (timeframe=dp). Approaching Telegram in
+    last 15m of RTH (15:45-16:00 ET) with MOC target; BUY NOW / ARMED Telegram only
+    in last 2m (15:58-16:00). Uses DB 1d + Alpaca last. Every minute from 15:45;
+    else ~5m.
   timezone: America/New_York
 - name: backfill_ib_15m_universe
   enabled: false

@@ -27,6 +27,8 @@ from utils.research.qs_five_swing import (
 
 # Decision clocks as (hour, minute) America/New_York RTH.
 PROXY_CLOCKS_5M: Sequence[Tuple[int, int]] = ((15, 45), (15, 50), (15, 55))
+# SPY Arca MOC locks at 15:59 ET — decide at 15:57 / 15:58 on 1m.
+PROXY_CLOCKS_1M_MOC: Sequence[Tuple[int, int]] = ((15, 57), (15, 58))
 
 
 def _session_date_utc(ts: pd.Timestamp) -> pd.Timestamp:
@@ -52,8 +54,8 @@ def rth_intraday(df_intra: pd.DataFrame) -> pd.DataFrame:
     d = d.dropna(subset=["ts"]).sort_values("ts")
     ny = d["ts"].dt.tz_convert("America/New_York")
     minutes = ny.dt.hour * 60 + ny.dt.minute
-    # 09:30 = 570, last 5m bar starts 15:55 = 955; 15m last starts 15:45 = 945
-    mask = (minutes >= 570) & (minutes <= 955)
+    # 09:30 = 570; 5m last 15:55=955; 1m MOC decision through 15:58=958
+    mask = (minutes >= 570) & (minutes <= 958)
     out = d.loc[mask].copy()
     out["session_date"] = [_session_date_utc(t) for t in out["ts"]]
     out["ny_hm"] = list(zip(ny.loc[mask].dt.hour, ny.loc[mask].dt.minute))
@@ -499,6 +501,184 @@ def backtest_proxy_moc(
     return out
 
 
+def _dev_from_day(
+    day: pd.DataFrame, hour: int, minute: int
+) -> Optional[Dict[str, float]]:
+    if day is None or day.empty:
+        return None
+    target = hour * 60 + minute
+    ny_minutes = [h * 60 + m for h, m in day["ny_hm"]]
+    use = day.loc[[m <= target for m in ny_minutes]]
+    if use.empty:
+        return None
+    return {
+        "open": float(use["open"].iloc[0]),
+        "high": float(use["high"].max()),
+        "low": float(use["low"].min()),
+        "close": float(use["close"].iloc[-1]),
+    }
+
+
+def backtest_proximity_then_1m(
+    daily: pd.DataFrame,
+    rth_15m: pd.DataFrame,
+    rth_1m: pd.DataFrame,
+    *,
+    decision_hour: int,
+    decision_minute: int,
+    proximity_hour: int = 15,
+    proximity_minute: int = 45,
+    friction_pct: float = 0.0,
+    symbol: str = "SPY",
+) -> Dict[str, Any]:
+    """Arm only if 15m proximity fires AND 1m decision clock fires; MOC fill."""
+    d = prepare_frame(daily)
+    by15 = {sd: g for sd, g in rth_15m.groupby("session_date", sort=False)}
+    by1 = {sd: g for sd, g in rth_1m.groupby("session_date", sort=False)}
+
+    armed: List[bool] = []
+    px: List[Optional[float]] = []
+    sid: List[Optional[str]] = []
+    oracle_hit = 0
+    proxy_hit = 0
+    both = 0
+    proxy_only = 0
+    oracle_only = 0
+    no_intra = 0
+    prox_only_no_decision = 0
+
+    for i in range(len(d)):
+        o_sid = _priority_sid_from_flags(_entry_flags_settled(d, i))
+        if o_sid is not None:
+            oracle_hit += 1
+
+        sess = _session_date_utc(d.iloc[i]["ts"])
+        day15 = by15.get(sess)
+        day1 = by1.get(sess)
+        dev15 = _dev_from_day(day15, proximity_hour, proximity_minute)
+        if dev15 is None:
+            no_intra += 1
+            armed.append(False)
+            px.append(None)
+            sid.append(None)
+            if o_sid is not None:
+                oracle_only += 1
+            continue
+
+        prox_sid = _priority_sid_from_flags(
+            _entry_flags_developing(d, i, dev15, ibs_buffer=0.0)
+        )
+        if prox_sid is None:
+            armed.append(False)
+            px.append(None)
+            sid.append(None)
+            if o_sid is not None:
+                oracle_only += 1
+            continue
+
+        dev1 = _dev_from_day(day1, decision_hour, decision_minute)
+        if dev1 is None:
+            no_intra += 1
+            prox_only_no_decision += 1
+            armed.append(False)
+            px.append(None)
+            sid.append(None)
+            if o_sid is not None:
+                oracle_only += 1
+            continue
+
+        p_sid = _priority_sid_from_flags(
+            _entry_flags_developing(d, i, dev1, ibs_buffer=0.0)
+        )
+        if p_sid is not None:
+            proxy_hit += 1
+            armed.append(True)
+            px.append(float(d.iloc[i]["close"]))
+            sid.append(p_sid)
+            if o_sid is not None:
+                both += 1
+            else:
+                proxy_only += 1
+        else:
+            prox_only_no_decision += 1
+            armed.append(False)
+            px.append(None)
+            sid.append(None)
+            if o_sid is not None:
+                oracle_only += 1
+
+    label = "prox15m_1m_%02d%02d" % (decision_hour, decision_minute)
+    out = _walk_trades(
+        d,
+        entry_armed=armed,
+        entry_px=px,
+        entry_sid=sid,
+        friction_pct=friction_pct,
+        strategy_id=label.upper(),
+        symbol=symbol,
+    )
+    out["book"] = label
+    out["agreement"] = {
+        "oracle_signal_days": oracle_hit,
+        "proxy_arm_days": proxy_hit,
+        "both": both,
+        "proxy_only_false_pos": proxy_only,
+        "oracle_only_miss": oracle_only,
+        "no_intraday": no_intra,
+        "proximity_without_decision": prox_only_no_decision,
+        "precision": (both / proxy_hit) if proxy_hit else None,
+        "recall": (both / oracle_hit) if oracle_hit else None,
+    }
+    out["decision_clock"] = "%02d:%02d ET" % (decision_hour, decision_minute)
+    out["proximity_clock"] = "%02d:%02d ET" % (proximity_hour, proximity_minute)
+    return out
+
+
+def build_qs_moc_candidate_days(
+    symbol: str = "SPY",
+    *,
+    start: str = "2018-01-01",
+) -> List:
+    """Oracle signal days U 15m@15:45 proximity-arm days (for 1m backfill)."""
+    from scripts.research.generate_deep_pullback_report import YAHOO_CACHE, load_yahoo
+    from utils.db.timescaledb_client import get_timescaledb_client
+
+    yahoo = load_yahoo(YAHOO_CACHE, refresh=False)
+    daily = yahoo[yahoo["ts"] >= start].reset_index(drop=True)
+    client = get_timescaledb_client()
+    rows = client.execute_query(
+        "SELECT ts, open, high, low, close, volume FROM market_data "
+        "WHERE symbol=%s AND timeframe=%s AND ts >= %s ORDER BY ts",
+        (symbol, "15m", start),
+    )
+    if not rows:
+        return []
+    intra = pd.DataFrame(
+        rows, columns=["ts", "open", "high", "low", "close", "volume"]
+    )
+    intra["ts"] = pd.to_datetime(intra["ts"], utc=True)
+    for c in ("open", "high", "low", "close", "volume"):
+        intra[c] = pd.to_numeric(intra[c], errors="coerce")
+
+    d = prepare_frame(daily)
+    rth = rth_intraday(intra)
+    by15 = {sd: g for sd, g in rth.groupby("session_date", sort=False)}
+    days = set()
+    for i in range(len(d)):
+        sess = _session_date_utc(d.iloc[i]["ts"])
+        o_sid = _priority_sid_from_flags(_entry_flags_settled(d, i))
+        if o_sid is not None:
+            days.add(pd.Timestamp(sess).date())
+            continue
+        day15 = by15.get(sess)
+        dev = _dev_from_day(day15, 15, 45)
+        if dev is None:
+            continue
+        if _priority_sid_from_flags(_entry_flags_developing(d, i, dev, ibs_buffer=0.0)):
+            days.add(pd.Timestamp(sess).date())
+    return sorted(days)
+
+
 def run_realism_suite(
     daily: pd.DataFrame,
     intraday: pd.DataFrame,
@@ -539,3 +719,49 @@ def run_realism_suite(
         )
 
     return {"books": books, "rth_bars": len(rth), "daily_bars": len(daily)}
+
+
+def run_moc_1m_suite(
+    daily: pd.DataFrame,
+    intraday_1m: pd.DataFrame,
+    intraday_15m: pd.DataFrame,
+    *,
+    clocks: Sequence[Tuple[int, int]] = PROXY_CLOCKS_1M_MOC,
+    symbol: str = "SPY",
+    include_5m_1555: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """Oracle + next-open + raw 1m 15:57/15:58 + proximity∧1m funnel."""
+    rth1 = rth_intraday(intraday_1m)
+    rth15 = rth_intraday(intraday_15m)
+    books: Dict[str, Any] = {}
+    books["oracle_moc"] = backtest_oracle(daily, friction_pct=0.0, symbol=symbol)
+    books["next_open"] = backtest_next_open(daily, friction_pct=0.0, symbol=symbol)
+
+    for h, m in clocks:
+        key = "proxy_%02d%02d" % (h, m)
+        books[key] = backtest_proxy_moc(
+            daily, rth1, hour=h, minute=m, friction_pct=0.0, ibs_buffer=0.0, symbol=symbol
+        )
+        books["prox15m_1m_%02d%02d" % (h, m)] = backtest_proximity_then_1m(
+            daily,
+            rth15,
+            rth1,
+            decision_hour=h,
+            decision_minute=m,
+            friction_pct=0.0,
+            symbol=symbol,
+        )
+
+    if include_5m_1555 is not None and not include_5m_1555.empty:
+        rth5 = rth_intraday(include_5m_1555)
+        books["proxy_1555_5m"] = backtest_proxy_moc(
+            daily, rth5, hour=15, minute=55, friction_pct=0.0, ibs_buffer=0.0, symbol=symbol
+        )
+        books["proxy_1555_5m"]["book"] = "proxy_1555_5m"
+
+    return {
+        "books": books,
+        "rth_1m_bars": len(rth1),
+        "rth_15m_bars": len(rth15),
+        "daily_bars": len(daily),
+    }

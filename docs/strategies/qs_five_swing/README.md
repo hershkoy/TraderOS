@@ -73,3 +73,9 @@ Logic: `utils/research/qs_five_swing.py`
 - No live `/hot` / CronRunner wiring in this pass.
 - Status: `docs/status_log/edge_hunt/2026-09-18_qs_five_swing.md`
 - **Fill realism (2018–2026, IB 5m):** `docs/status_log/edge_hunt/2026-09-18_qs_five_swing_realism.md` — oracle MOC CAGR ~11%; honest 5m 15:45–15:55 proxies ~7–9%; next-open ~10% but MDD −29%; 15m@15:45 is nearly oracle (bar spans into the close — do not treat as an early decision).
+- **1m MOC clocks (Arca lock 15:59):** `docs/status_log/edge_hunt/2026-09-18_qs_five_swing_1m_moc.md` — decide **15:57** vs **15:58** nearly identical (~10.4 vs ~10.6% CAGR vs oracle ~10.9); prox15m∧1m same; both beat 5m@15:55 (~7.5%).
+
+| Clock | Book | CAGR | vs oracle |
+|-------|------|------|-----------|
+| 15:57 | proxy / prox∧1m | ~10.4 / ~10.4 | −0.4 / −0.5 pp |
+| 15:58 | proxy / prox∧1m | ~10.6 / ~10.4 | −0.3 / −0.4 pp |

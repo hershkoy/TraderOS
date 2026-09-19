@@ -18,7 +18,7 @@ Research HTML: `reports/research/deep_pullback/deep_pullback_spy.html`
 |-------|--------|
 | Timeframe key | `dp` (Detector filter: DP) |
 | Writer | `scripts/scanners/deep_pullback_spy.py` |
-| Cron | `deep_pullback_spy` ~5m RTH; every minute 15:40–16:00 ET (`crons/crontab.yaml`) |
+| Cron | `deep_pullback_spy` ~5m RTH; every minute 15:45–16:00 ET (`crons/crontab.yaml`) |
 | Data | TimescaleDB SPY `1d` + Alpaca last as developing close |
 | Resist column | MOC target `moc_max` = min(15d-low cap, worst-1d ret cap) |
 | Support column | SMA200 floor |
@@ -27,6 +27,6 @@ Research HTML: `reports/research/deep_pullback/deep_pullback_spy.html`
 
 **Approaching (early arm):** above SMA200 and at least two of {near 15d low within 0.5%, sharp day in worst-3 of 10, exact cond1, exact cond2}. Shown on `/hot` anytime during RTH when score warrants it.
 
-**Telegram approaching:** only in the last **20 minutes** before cash close (15:40–16:00 ET). Message includes the MOC target: if SPY finishes at or below `moc_max` (and still above SMA200), send MOC buy. ARMED / EXIT (and browser alerts) are gated per detector on `/hot` notify matrix (DP Armed / Approaching / Sell × TG|Br). Mark **Bought** after you fill so the scanner tracks QS exit.
+**Telegram / browser approaching:** only in the last **15 minutes** before cash close (15:45–16:00 ET). Message includes the MOC target: if SPY finishes at or below `moc_max` (and still above SMA200), send MOC buy ~15:58. **BUY NOW / ARMED** alerts only in the last **2 minutes** (15:58–16:00 ET). EXIT (and browser alerts) are gated per detector on `/hot` notify matrix (DP Armed / Approaching / Sell × TG|Br). Mark **Bought** after you fill so the scanner tracks QS exit.
 
 Fill at the **close auction / last minutes** — same as the research book. Prefer MES/ES for leverage; options are a poor fit for ~0.8% average moves.

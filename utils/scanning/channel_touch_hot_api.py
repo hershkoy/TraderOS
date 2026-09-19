@@ -215,7 +215,11 @@ def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
 
 
 def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
-    """Keys for currently armed setups (stock|tf|h2_time)."""
+    """Keys for currently armed setups (stock|tf|h2_time).
+
+    Deep Pullback (dp) only after buy-now notify (hot_notified_on ends with :arm),
+    so browser ARMED matches the 15:58 Telegram window.
+    """
     keys: List[str] = []
     for row in rows:
         if str(row.get("status") or "").lower() != "armed":
@@ -224,22 +228,30 @@ def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
         if not stock:
             continue
         tf = str(row.get("timeframe") or "15m")
+        if tf == "dp":
+            tag = str(row.get("hot_notified_on") or "")
+            if not tag.endswith(":arm"):
+                continue
         h2 = str(row.get("h2_time") or row.get("as_of") or "")
         keys.append("%s|%s|%s" % (stock, tf, h2))
     return keys
 
 
 def approaching_keys_from_rows(rows: Sequence[dict]) -> List[str]:
-    """Keys for DP approaching (waiting) rows."""
+    """Keys for DP approaching notify (:approach), including early full-signal armed."""
     keys: List[str] = []
     for row in rows:
         tf = str(row.get("timeframe") or "")
         if tf != "dp":
             continue
-        if str(row.get("status") or "").lower() != "waiting":
+        tag = str(row.get("hot_notified_on") or "")
+        if not tag.endswith(":approach"):
+            continue
+        status = str(row.get("status") or "").lower()
+        # waiting, or armed-but-not-yet-buy-now (tag still :approach)
+        if status not in ("waiting", "armed"):
             continue
         stock = str(row.get("stock") or "").upper() or "SPY"
-        tag = str(row.get("hot_notified_on") or row.get("as_of") or "approach")
         keys.append("%s|dp|%s" % (stock, tag))
     return keys
 
@@ -262,7 +274,8 @@ def status_alerts_from_rows(
         key_fn = approaching_keys_from_rows
         match = lambda r: (
             str(r.get("timeframe") or "") == "dp"
-            and str(r.get("status") or "").lower() == "waiting"
+            and str(r.get("hot_notified_on") or "").endswith(":approach")
+            and str(r.get("status") or "").lower() in ("waiting", "armed")
         )
     else:
         return out

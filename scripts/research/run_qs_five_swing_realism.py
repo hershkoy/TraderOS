@@ -35,7 +35,9 @@ from scripts.research.generate_deep_pullback_report import (  # noqa: E402
 )
 from utils.db.timescaledb_client import get_timescaledb_client  # noqa: E402
 from utils.research.qs_five_swing_realism import (  # noqa: E402
+    PROXY_CLOCKS_1M_MOC,
     PROXY_CLOCKS_5M,
+    run_moc_1m_suite,
     run_realism_suite,
 )
 
@@ -177,14 +179,19 @@ def main() -> None:
     ap.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
     ap.add_argument("--start", default="2016-01-01")
     ap.add_argument("--end", default=None)
-    ap.add_argument("--intraday-tf", choices=("5m", "15m"), default="5m")
+    ap.add_argument("--intraday-tf", choices=("1m", "5m", "15m"), default="5m")
     ap.add_argument("--symbol", default="SPY")
     ap.add_argument("--ibs-buffer", type=float, default=0.05)
     ap.add_argument("--refresh-yahoo", action="store_true")
     ap.add_argument(
         "--clocks",
-        default="15:45,15:50,15:55",
-        help="ET decision clocks for 5m (ignored extras if 15m)",
+        default="",
+        help="ET clocks; default 15:45,15:50,15:55 for 5m; 15:57,15:58 for 1m",
+    )
+    ap.add_argument(
+        "--with-5m-baseline",
+        action="store_true",
+        help="With --intraday-tf 1m also include proxy_1555_5m baseline",
     )
     args = ap.parse_args()
     outdir: Path = args.outdir
@@ -199,10 +206,14 @@ def main() -> None:
 
     intra = load_intraday(args.symbol, args.intraday_tf, args.start, args.end)
     if intra.empty:
-        logger.error("No %s %s bars from %s — backfill first", args.symbol, args.intraday_tf, args.start)
+        logger.error(
+            "No %s %s bars from %s — backfill first",
+            args.symbol,
+            args.intraday_tf,
+            args.start,
+        )
         sys.exit(1)
 
-    # Align daily window to intraday availability when testing proxies
     intra_first = str(intra["ts"].iloc[0].date())
     intra_last = str(intra["ts"].iloc[-1].date())
     daily = daily[
@@ -211,10 +222,16 @@ def main() -> None:
     ].reset_index(drop=True)
 
     clocks: List[Tuple[int, int]] = []
-    if args.intraday_tf == "15m":
-        clocks = [(15, 45)]
+    clock_str = str(args.clocks).strip()
+    if not clock_str:
+        if args.intraday_tf == "1m":
+            clocks = list(PROXY_CLOCKS_1M_MOC)
+        elif args.intraday_tf == "15m":
+            clocks = [(15, 45)]
+        else:
+            clocks = list(PROXY_CLOCKS_5M)
     else:
-        for part in str(args.clocks).split(","):
+        for part in clock_str.split(","):
             part = part.strip()
             if not part:
                 continue
@@ -233,17 +250,34 @@ def main() -> None:
         clocks,
     )
 
-    suite = run_realism_suite(
-        daily,
-        intra,
-        clocks=clocks,
-        ibs_buffer=float(args.ibs_buffer),
-        symbol=args.symbol,
-    )
-    wall = time.perf_counter() - t0
+    if args.intraday_tf == "1m":
+        intra_15 = load_intraday(args.symbol, "15m", args.start, args.end)
+        if intra_15.empty:
+            logger.error("No 15m bars for proximity gate")
+            sys.exit(1)
+        intra_5 = None
+        if args.with_5m_baseline:
+            intra_5 = load_intraday(args.symbol, "5m", args.start, args.end)
+        suite = run_moc_1m_suite(
+            daily,
+            intra,
+            intra_15,
+            clocks=clocks,
+            symbol=args.symbol,
+            include_5m_1555=intra_5,
+        )
+        stem = "1m_moc"
+    else:
+        suite = run_realism_suite(
+            daily,
+            intra,
+            clocks=clocks,
+            ibs_buffer=float(args.ibs_buffer),
+            symbol=args.symbol,
+        )
+        stem = args.intraday_tf
 
-    rows = [_row(b) for b in suite["books"].values()]
-    # stable-ish order
+    wall = time.perf_counter() - t0
     order = sorted(suite["books"].keys())
     rows = [_row(suite["books"][k]) for k in order]
 
@@ -260,9 +294,9 @@ def main() -> None:
         "clocks": ["%02d:%02d" % c for c in clocks],
     }
 
-    title = "QS Five Swing fill realism — %s %s" % (args.symbol, args.intraday_tf)
+    title = "QS Five Swing fill realism — %s %s" % (args.symbol, stem)
     html = render_html(rows=rows, meta=meta, title=title)
-    html_path = outdir / ("qs_five_swing_realism_%s.html" % args.intraday_tf)
+    html_path = outdir / ("qs_five_swing_realism_%s.html" % stem)
     html_path.write_text(html, encoding="utf-8")
 
     summary = {
@@ -270,7 +304,7 @@ def main() -> None:
         "table": rows,
         "books": {k: _slim(v) for k, v in suite["books"].items()},
     }
-    json_path = outdir / ("qs_five_swing_realism_%s_summary.json" % args.intraday_tf)
+    json_path = outdir / ("qs_five_swing_realism_%s_summary.json" % stem)
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     for r in rows:

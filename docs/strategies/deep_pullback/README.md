@@ -94,7 +94,7 @@ Generator:
 | Feature playbook | [`docs/features/deep_pullback_spy.md`](../features/deep_pullback_spy.md) |
 | Scanner | `scripts/scanners/deep_pullback_spy.py` |
 | Logic | `utils/scanning/deep_pullback_spy.py` |
-| Cron | `deep_pullback_spy` — ~5m RTH; every minute 15:40–16:00 ET |
+| Cron | `deep_pullback_spy` — ~5m RTH; every minute 15:45–16:00 ET |
 | Dashboard | `/hot` Detector **DP** (`timeframe=dp`) |
 
 Status on `/hot`:
@@ -108,8 +108,8 @@ Status on `/hot`:
 
 Telegram:
 
-- **Approaching** only in the last **20 minutes** before 16:00 ET, with an explicit target: *If SPY closes at or below X (still above SMA200), send MOC buy.*
-- **ARMED** in that same window once all three conditions print → send MOC now.
+- **Approaching** only in the last **15 minutes** before 16:00 ET, with an explicit target: *If SPY closes at or below X (still above SMA200), send MOC buy at ~15:58.*
+- **BUY NOW / ARMED** only in the last **2 minutes** (15:58–16:00 ET) once all three conditions print.
 - **EXIT** uses SELL NOW toggle.
 
 ---
