@@ -147,6 +147,8 @@ _BOOL_KEYS = {
     "hot",
 }
 _TZ_MODES = ("exchange", "utc", "local")
+TIMEFRAME_FILTER_VALUES = ("15m", "1d", "dp", "qs")
+STATUS_FILTER_VALUES = ("armed", "waiting", "filled", "exit_signal", "hot")
 _INT_KEYS = {"wait_bars", "support_x0", "h2_idx", "as_of_i", "n_universe"}
 _FLOAT_KEYS = {
     "proximity_below_pct",
@@ -227,6 +229,44 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
+def normalize_csv_filter(value: Any, allowed: Sequence[str]) -> str:
+    """Canonical dashboard filter: 'all' or comma-separated allowed tokens.
+
+    Accepts a string, comma-separated string, or list. Unknown tokens are
+    dropped. Empty, 'all', or every allowed value selected stores 'all' so
+    older single-select rows keep working.
+    """
+    allowed_list = [str(v).strip().lower() for v in allowed if str(v).strip()]
+    allowed_set = set(allowed_list)
+    if value is None or value == "":
+        return "all"
+    if isinstance(value, (list, tuple, set)):
+        raw_parts = list(value)
+    else:
+        text = str(value).strip()
+        if not text or text.lower() == "all":
+            return "all"
+        raw_parts = [p for p in text.replace(";", ",").split(",")]
+    seen = set()
+    for part in raw_parts:
+        token = str(part).strip().lower()
+        if token in ("", "all"):
+            continue
+        if token in allowed_set:
+            seen.add(token)
+    if not seen or len(seen) >= len(allowed_list):
+        return "all"
+    return ",".join(t for t in allowed_list if t in seen)
+
+
+def csv_filter_tokens(value: Any, allowed: Sequence[str]) -> List[str]:
+    """Selected filter tokens. Empty list means no filter (all)."""
+    norm = normalize_csv_filter(value, allowed)
+    if norm == "all":
+        return []
+    return [t for t in norm.split(",") if t]
+
+
 def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     src = dict(DEFAULT_SETTINGS)
     if raw:
@@ -258,8 +298,9 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out["sort_key"] = sort_key if sort_key else "abs_dist"
     sort_dir = str(src.get("sort_dir") or "asc").lower()
     out["sort_dir"] = "desc" if sort_dir == "desc" else "asc"
-    status = str(src.get("status_filter") or "all")
-    out["status_filter"] = status if status else "all"
+    out["status_filter"] = normalize_csv_filter(
+        src.get("status_filter"), STATUS_FILTER_VALUES
+    )
     out["search"] = str(src.get("search") or "")
     as_of = src.get("as_of")
     out["as_of"] = None if as_of in (None, "") else str(as_of)
@@ -267,8 +308,9 @@ def normalize_settings(raw: Optional[dict] = None) -> Dict[str, Any]:
     out["n_universe"] = 0 if n_uni is None else int(n_uni)
     stale = src.get("stale_warning")
     out["stale_warning"] = None if stale in (None, "") else str(stale)
-    tf = str(src.get("timeframe_filter") or "all").lower()
-    out["timeframe_filter"] = tf if tf in ("all", "15m", "1d", "dp", "qs") else "all"
+    out["timeframe_filter"] = normalize_csv_filter(
+        src.get("timeframe_filter"), TIMEFRAME_FILTER_VALUES
+    )
     as_of_1d = src.get("as_of_1d")
     out["as_of_1d"] = None if as_of_1d in (None, "") else str(as_of_1d)
     n_uni_1d = _as_int(src.get("n_universe_1d"))

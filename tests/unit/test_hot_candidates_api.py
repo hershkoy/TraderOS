@@ -110,6 +110,8 @@ def test_hot_page_and_api(monkeypatch):
         assert b"Hot candidates" in page.data
         assert b"Detector" in page.data
         assert b'id="tf-filter"' in page.data
+        assert b'aria-multiselectable="true"' in page.data
+        assert b'id="status-filter"' in page.data
         assert b"notify-matrix" in page.data
         assert b"TG = Telegram" in page.data
         assert b"Browser + sound on fills / sells" not in page.data
@@ -120,6 +122,9 @@ def test_hot_page_and_api(monkeypatch):
         assert b'data-bought-stock' in page.data
         assert b"Telegram when newly hot" not in page.data
         assert b"notify_prefs" in page.data
+        assert b"mergeNotifyPrefs" in page.data
+        assert b"loadSettings" in page.data
+        assert b"QS (SPY)" in page.data
         assert b"wantBrowser" in page.data
         assert b"maybeHotAlerts" in page.data
         assert b"maybeArmedAlerts" in page.data
@@ -154,7 +159,13 @@ def test_hot_page_and_api(monkeypatch):
         assert body["rows"][0]["stock"] == "AAA"
         assert body["as_of"] == "2026-08-30 15:45:00"
         assert "feeds" in body
-        assert {row["id"] for row in body["feeds"]} == {"alpaca_last", "ib_15m", "ib_15m_universe", "alpaca_1d"}
+        assert {row["id"] for row in body["feeds"]} == {
+            "alpaca_last",
+            "ib_15m",
+            "ib_15m_universe",
+            "ib_5m",
+            "alpaca_1d",
+        }
         assert body["hot_keys"] == ["AAA|15m"]
         assert body["fill_keys"] == []
         assert body["fill_alerts"] == []
@@ -196,10 +207,39 @@ def test_hot_page_and_api(monkeypatch):
         assert saved["status_filter"] == "armed"
         assert saved["display_timezone"] == "local"
 
+        multi = client.post(
+            "/api/hot-candidates/settings",
+            data=json.dumps({
+                "status_filter": ["armed", "hot"],
+                "timeframe_filter": "15m,1d",
+            }),
+            content_type="application/json",
+        )
+        assert multi.status_code == 200
+        multi_saved = multi.get_json()
+        assert multi_saved["status_filter"] == "armed,hot"
+        assert multi_saved["timeframe_filter"] == "15m,1d"
+
+        qs_posted = client.post(
+            "/api/hot-candidates/settings",
+            data=json.dumps({
+                "notify_prefs": {
+                    "qs": {"approaching": {"telegram": True, "browser": True}},
+                },
+            }),
+            content_type="application/json",
+        )
+        assert qs_posted.status_code == 200
+        qs_saved = qs_posted.get_json()
+        assert qs_saved["notify_prefs"]["qs"]["approaching"]["telegram"] is True
+        assert qs_saved["notify_prefs"]["qs"]["approaching"]["browser"] is True
+        assert qs_saved["notify_applicable"]["qs"]["approaching"] is True
+
         listed = client.get("/api/hot-candidates/settings")
         assert listed.get_json()["telegram_on_hot"] is True
         assert listed.get_json()["display_timezone"] == "local"
         assert listed.get_json()["notify_prefs"]["dp"]["approaching"]["telegram"] is True
+        assert listed.get_json()["notify_prefs"]["qs"]["approaching"]["telegram"] is True
         assert kicks["n"] >= 1
 
         marked = client.post(

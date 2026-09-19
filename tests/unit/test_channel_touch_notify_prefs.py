@@ -69,6 +69,21 @@ def test_apply_settings_patch_syncs_legacy_flags():
     assert legacy["telegram_on_hot"] is True
 
 
+def test_qs_prefs_round_trip_and_fill_missing_detector():
+    s = normalize_settings({"notify_prefs": {"dp": {"approaching": {"telegram": True}}}})
+    assert "qs" in s["notify_prefs"]
+    assert s["notify_applicable"]["qs"]["approaching"] is True
+    assert s["notify_prefs"]["qs"]["armed"]["telegram"] is True
+    patched = apply_settings_patch(
+        s,
+        {"notify_prefs": {"qs": {"approaching": {"telegram": True, "browser": True}}}},
+    )
+    assert patched["notify_prefs"]["qs"]["approaching"]["telegram"] is True
+    assert patched["notify_prefs"]["qs"]["approaching"]["browser"] is True
+    assert patched["notify_prefs"]["dp"]["approaching"]["telegram"] is True
+    assert patched["telegram_on_hot"] is True
+
+
 def test_notify_payloads_15m_hot_when_prefs_on():
     fills = pd.DataFrame(
         [

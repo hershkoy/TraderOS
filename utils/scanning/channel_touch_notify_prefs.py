@@ -1,6 +1,6 @@
 """Per-detector Telegram / browser notification preferences for /hot.
 
-Matrix: detector (15m | 1d | dp) x event (hot | armed | approaching | fill | sell)
+Matrix: detector (15m | 1d | dp | qs) x event (hot | armed | approaching | fill | sell)
 x channel (telegram | browser).
 
 Legacy flat flags (telegram_on_fill / telegram_on_hot / telegram_on_sell /

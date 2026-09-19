@@ -20,7 +20,10 @@
             padding: 20px;
             margin-bottom: 16px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            position: relative;
         }
+        .header, .panel { z-index: 2; }
+        .tabs, .table-wrap { z-index: 1; }
         .title-row {
             display: flex;
             align-items: center;
@@ -95,12 +98,71 @@
             font-size: 13px;
         }
         .control-group select, .control-group input[type="text"],
-        .control-group input[type="number"] {
+        .control-group input[type="number"],
+        .ms-btn {
             padding: 8px 10px;
             border: 2px solid #e2e8f0;
             border-radius: 8px;
             font-size: 14px;
         }
+        .ms { position: relative; }
+        .ms-btn {
+            position: relative;
+            width: 100%;
+            padding-right: 28px;
+            background: #fff;
+            text-align: left;
+            cursor: pointer;
+            color: #333;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ms-btn::after {
+            content: '';
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            margin-top: -2px;
+            border: 5px solid transparent;
+            border-top-color: #718096;
+            pointer-events: none;
+        }
+        .ms.open .ms-btn,
+        .ms-btn:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+        .ms-menu {
+            display: none;
+            position: absolute;
+            z-index: 30;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 100%;
+            width: max-content;
+            max-width: 320px;
+            background: #fff;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            padding: 6px 0;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+        .ms.open .ms-menu { display: block; }
+        .ms-menu label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+            cursor: pointer;
+            margin: 0;
+        }
+        .ms-menu label:hover { background: #edf2f7; }
         .checks { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 12px; }
         .checks label { font-size: 14px; color: #4a5568; font-weight: 600; cursor: pointer; }
         .notify-matrix-wrap { margin-top: 14px; overflow-x: auto; }
@@ -359,25 +421,33 @@
                     </select>
                 </div>
                 <div class="control-group">
-                    <label for="tf-filter">Detector</label>
-                    <select id="tf-filter">
-                        <option value="all">All</option>
-                        <option value="15m">15m</option>
-                        <option value="1d">1d</option>
-                        <option value="dp">DP (SPY pullback)</option>
-                        <option value="qs">QS (SPY five-swing)</option>
-                    </select>
+                    <label id="tf-filter-label" for="tf-filter-btn">Detector</label>
+                    <div class="ms" id="tf-filter" data-filter="timeframe">
+                        <button type="button" class="ms-btn" id="tf-filter-btn"
+                            aria-haspopup="listbox" aria-expanded="false"
+                            aria-labelledby="tf-filter-label">All</button>
+                        <div class="ms-menu" role="listbox" aria-multiselectable="true">
+                            <label><input type="checkbox" value="15m" data-short="15m" checked> 15m</label>
+                            <label><input type="checkbox" value="1d" data-short="1d" checked> 1d</label>
+                            <label><input type="checkbox" value="dp" data-short="DP" checked> DP (SPY pullback)</label>
+                            <label><input type="checkbox" value="qs" data-short="QS" checked> QS (SPY five-swing)</label>
+                        </div>
+                    </div>
                 </div>
                 <div class="control-group">
-                    <label for="status-filter">Status</label>
-                    <select id="status-filter">
-                        <option value="all">All</option>
-                        <option value="armed">Armed</option>
-                        <option value="waiting">Waiting / approaching</option>
-                        <option value="filled">Filled (bar / in trade)</option>
-                        <option value="exit_signal">Exit signal</option>
-                        <option value="hot">Hot (last at/above resist)</option>
-                    </select>
+                    <label id="status-filter-label" for="status-filter-btn">Status</label>
+                    <div class="ms" id="status-filter" data-filter="status">
+                        <button type="button" class="ms-btn" id="status-filter-btn"
+                            aria-haspopup="listbox" aria-expanded="false"
+                            aria-labelledby="status-filter-label">All</button>
+                        <div class="ms-menu" role="listbox" aria-multiselectable="true">
+                            <label><input type="checkbox" value="armed" data-short="Armed" checked> Armed</label>
+                            <label><input type="checkbox" value="waiting" data-short="Waiting" checked> Waiting / approaching</label>
+                            <label><input type="checkbox" value="filled" data-short="Filled" checked> Filled (bar / in trade)</label>
+                            <label><input type="checkbox" value="exit_signal" data-short="Exit" checked> Exit signal</label>
+                            <label><input type="checkbox" value="hot" data-short="Hot" checked> Hot (last at/above resist)</label>
+                        </div>
+                    </div>
                 </div>
                 <div class="control-group">
                     <label for="max-dist">Max |dist to resist| %</label>
@@ -839,8 +909,8 @@
                 notify_prefs: notifyPrefs,
                 proximity_below_pct: below === '' ? 0 : Number(below),
                 max_abs_dist_pct: maxDist === '' ? null : Number(maxDist),
-                timeframe_filter: document.getElementById('tf-filter').value,
-                status_filter: document.getElementById('status-filter').value,
+                timeframe_filter: selectedFilterValues(document.getElementById('tf-filter')),
+                status_filter: selectedFilterValues(document.getElementById('status-filter')),
                 search: document.getElementById('search').value,
                 display_timezone: tzMode(),
                 sort_key: sorted ? sorted.getAttribute('data-key') : 'abs_dist',
@@ -848,29 +918,56 @@
             };
         }
 
+        function mergeNotifyApplicable(fromServer) {
+            const out = JSON.parse(JSON.stringify(DEFAULT_NOTIFY_APPLICABLE));
+            if (!fromServer) return out;
+            NOTIFY_DETECTORS.forEach(function(det) {
+                if (!out[det]) out[det] = {};
+                const src = fromServer[det] || {};
+                NOTIFY_EVENTS.forEach(function(ev) {
+                    if (Object.prototype.hasOwnProperty.call(src, ev)) {
+                        out[det][ev] = !!src[ev];
+                    }
+                });
+            });
+            return out;
+        }
+
+        function mergeNotifyPrefs(fromServer) {
+            const out = JSON.parse(JSON.stringify(DEFAULT_NOTIFY_PREFS));
+            if (!fromServer) return out;
+            NOTIFY_DETECTORS.forEach(function(det) {
+                const src = fromServer[det];
+                if (!src || typeof src !== 'object') return;
+                if (!out[det]) out[det] = {};
+                NOTIFY_EVENTS.forEach(function(ev) {
+                    const ch = src[ev];
+                    if (!ch || typeof ch !== 'object') return;
+                    const cur = out[det][ev] || { telegram: false, browser: false };
+                    out[det][ev] = {
+                        telegram: Object.prototype.hasOwnProperty.call(ch, 'telegram')
+                            ? !!ch.telegram : !!cur.telegram,
+                        browser: Object.prototype.hasOwnProperty.call(ch, 'browser')
+                            ? !!ch.browser : !!cur.browser
+                    };
+                });
+            });
+            return out;
+        }
+
         function applySettings(s) {
             if (!s) return;
             if (s.notify_prefs) {
-                notifyPrefs = JSON.parse(JSON.stringify(DEFAULT_NOTIFY_PREFS));
-                NOTIFY_DETECTORS.forEach(function(det) {
-                    const src = s.notify_prefs[det] || {};
-                    NOTIFY_EVENTS.forEach(function(ev) {
-                        const ch = src[ev] || {};
-                        notifyPrefs[det][ev] = {
-                            telegram: !!ch.telegram,
-                            browser: !!ch.browser
-                        };
-                    });
-                });
+                notifyPrefs = mergeNotifyPrefs(s.notify_prefs);
             }
-            if (s.notify_applicable) notifyApplicable = s.notify_applicable;
+            notifyApplicable = mergeNotifyApplicable(s.notify_applicable);
             renderNotifyMatrix();
             document.getElementById('below-pct').value = s.proximity_below_pct == null ? 0 : s.proximity_below_pct;
             document.getElementById('max-dist').value = s.max_abs_dist_pct == null ? '' : s.max_abs_dist_pct;
-            document.getElementById('tf-filter').value = s.timeframe_filter || 'all';
+            setFilterValues(document.getElementById('tf-filter'), s.timeframe_filter || 'all');
             document.getElementById('tz-filter').value = (s.display_timezone === 'utc' || s.display_timezone === 'local')
                 ? s.display_timezone : 'exchange';
-            document.getElementById('status-filter').value = s.status_filter || 'all';
+            setFilterValues(document.getElementById('status-filter'), s.status_filter || 'all');
             document.getElementById('search').value = s.search || '';
             document.querySelectorAll('th[data-key]').forEach(function(th) {
                 if (!th.dataset.label) th.dataset.label = th.textContent.replace(/ [v^]$/, '').trim();
@@ -1103,11 +1200,29 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(patch)
                 });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json().catch(function() { return null; });
+                if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+                if (data && data.notify_prefs) {
+                    const savedQs = data.notify_prefs.qs;
+                    if (!savedQs) {
+                        document.getElementById('save-status').textContent =
+                            'Saved (restart ChartingServer to keep QS notify)';
+                        return;
+                    }
+                }
                 document.getElementById('save-status').textContent = 'Saved';
             } catch (err) {
                 document.getElementById('save-status').textContent = 'Save failed';
             }
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/hot-candidates/settings', FETCH_OPTS);
+                if (!res.ok) return;
+                applySettings(await res.json());
+                bootstrapped = true;
+            } catch (err) {}
         }
 
         function scheduleSave() {
@@ -1402,7 +1517,7 @@
             });
         });
 
-        ['tf-filter', 'status-filter', 'max-dist', 'search', 'below-pct', 'tz-filter'].forEach(function(id) {
+        ['max-dist', 'search', 'below-pct', 'tz-filter'].forEach(function(id) {
             const el = document.getElementById(id);
             el.addEventListener('change', function() {
                 scheduleSave();
@@ -1420,6 +1535,94 @@
             if (el.tagName === 'INPUT' && el.type !== 'checkbox') {
                 el.addEventListener('input', scheduleSave);
             }
+        });
+
+        function closeAllMultiSelects() {
+            document.querySelectorAll('.ms.open').forEach(function(root) {
+                root.classList.remove('open');
+                const btn = root.querySelector('.ms-btn');
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+            });
+        }
+
+        function selectedFilterValues(root) {
+            if (!root) return 'all';
+            const boxes = Array.prototype.slice.call(root.querySelectorAll('input[type="checkbox"]'));
+            const vals = boxes.filter(function(cb) { return cb.checked; }).map(function(cb) { return cb.value; });
+            if (!vals.length || vals.length === boxes.length) return 'all';
+            return vals.join(',');
+        }
+
+        function setFilterValues(root, csv) {
+            if (!root) return;
+            const boxes = Array.prototype.slice.call(root.querySelectorAll('input[type="checkbox"]'));
+            const allowed = boxes.map(function(cb) { return cb.value; });
+            let text = csv;
+            if (Array.isArray(csv)) text = csv.join(',');
+            text = String(text || 'all').trim().toLowerCase();
+            let selected = [];
+            if (text && text !== 'all') {
+                String(text).split(',').forEach(function(part) {
+                    const v = part.trim().toLowerCase();
+                    if (v && v !== 'all' && allowed.indexOf(v) >= 0 && selected.indexOf(v) < 0) {
+                        selected.push(v);
+                    }
+                });
+            }
+            const allOn = !selected.length || selected.length === allowed.length;
+            boxes.forEach(function(cb) {
+                cb.checked = allOn || selected.indexOf(cb.value) >= 0;
+            });
+            syncFilterButton(root);
+        }
+
+        function syncFilterButton(root) {
+            const btn = root.querySelector('.ms-btn');
+            if (!btn) return;
+            const boxes = Array.prototype.slice.call(root.querySelectorAll('input[type="checkbox"]'));
+            const checked = boxes.filter(function(cb) { return cb.checked; });
+            if (!checked.length || checked.length === boxes.length) {
+                btn.textContent = 'All';
+                return;
+            }
+            btn.textContent = checked.map(function(cb) {
+                return cb.getAttribute('data-short') || cb.value;
+            }).join(', ');
+        }
+
+        function initMultiSelect(root) {
+            const btn = root.querySelector('.ms-btn');
+            const menu = root.querySelector('.ms-menu');
+            if (!btn || !menu) return;
+            btn.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                const open = !root.classList.contains('open');
+                closeAllMultiSelects();
+                if (open) {
+                    root.classList.add('open');
+                    btn.setAttribute('aria-expanded', 'true');
+                }
+            });
+            menu.addEventListener('click', function(ev) { ev.stopPropagation(); });
+            menu.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+                cb.addEventListener('change', function() {
+                    const boxes = menu.querySelectorAll('input[type="checkbox"]');
+                    const nOn = Array.prototype.filter.call(boxes, function(x) { return x.checked; }).length;
+                    if (nOn === 0) {
+                        boxes.forEach(function(x) { x.checked = true; });
+                    }
+                    syncFilterButton(root);
+                    scheduleSave();
+                    setTimeout(afterSettingsSaved, 450);
+                });
+            });
+            syncFilterButton(root);
+        }
+
+        document.querySelectorAll('.ms').forEach(initMultiSelect);
+        document.addEventListener('click', closeAllMultiSelects);
+        document.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Escape') closeAllMultiSelects();
         });
 
         async function markBought(stock, timeframe, btn) {
@@ -1491,6 +1694,7 @@
         labelLocalTzOption();
         syncAsOfHeader();
         renderNotifyMatrix();
+        loadSettings();
         connectWs();
     </script>
 </body>

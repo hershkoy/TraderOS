@@ -88,6 +88,12 @@ def test_filter_status_hot_and_max_abs_dist():
     ]
     only_1d = filter_candidates(mixed, timeframe_filter="1d")
     assert [r["stock"] for r in only_1d] == ["D"]
+    both_tf = filter_candidates(mixed, timeframe_filter="15m,1d")
+    assert [r["stock"] for r in both_tf] == ["A", "D"]
+    armed_or_hot = filter_candidates(rows, status_filter=["armed", "hot"])
+    assert [r["stock"] for r in armed_or_hot] == ["A", "C"]
+    waiting_and_hot = filter_candidates(rows, status_filter="waiting,hot")
+    assert [r["stock"] for r in waiting_and_hot] == ["A", "B"]
 
 
 def test_prices_are_stale_without_ts():
@@ -200,10 +206,18 @@ def test_candidates_payload_prices_stale_uses_latest_quote_age():
     assert stale["prices_stale"] is True
     assert stale["price_age_sec"] == 600.0
 
-    empty = candidates_payload(MemoryStore(rows=[]), refresh=False, now=now, jobs={})
+    empty = candidates_payload(
+        MemoryStore(rows=[]), refresh=False, now=now, jobs={}, five_m={}
+    )
     assert empty["prices_stale"] is False
     assert empty["price_ts"] is None
-    assert [row["id"] for row in empty["feeds"]] == ["alpaca_last", "ib_15m", "ib_15m_universe", "alpaca_1d"]
+    assert [row["id"] for row in empty["feeds"]] == [
+        "alpaca_last",
+        "ib_15m",
+        "ib_15m_universe",
+        "ib_5m",
+        "alpaca_1d",
+    ]
 
 
 def test_hot_keys_from_rows_skips_cold_and_blank():

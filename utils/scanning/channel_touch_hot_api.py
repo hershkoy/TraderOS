@@ -28,6 +28,9 @@ from utils.scanning.channel_touch_ctf import attach_channel_json
 from utils.scanning.channel_touch_feed_status import build_feeds, feeds_fingerprint
 from utils.scanning.channel_touch_candidates_store import (
     ChannelTouchCandidatesStore,
+    STATUS_FILTER_VALUES,
+    TIMEFRAME_FILTER_VALUES,
+    csv_filter_tokens,
     normalize_settings,
 )
 
@@ -369,12 +372,13 @@ def fill_alerts_from_rows(rows: Sequence[dict]) -> List[dict]:
 def filter_candidates(
     rows: Sequence[dict],
     *,
-    status_filter: str = "all",
+    status_filter: Any = "all",
     max_abs_dist_pct: Optional[float] = None,
     search: str = "",
-    timeframe_filter: str = "all",
+    timeframe_filter: Any = "all",
 ) -> List[dict]:
-    status = str(status_filter or "all").lower()
+    statuses = set(csv_filter_tokens(status_filter, STATUS_FILTER_VALUES))
+    tfs = set(csv_filter_tokens(timeframe_filter, TIMEFRAME_FILTER_VALUES))
     needle = str(search or "").strip().upper()
     cap = None
     if max_abs_dist_pct is not None:
@@ -384,16 +388,15 @@ def filter_candidates(
             cap = None
     out: List[dict] = []
     for row in rows:
-        if status == "hot":
-            if not row.get("hot"):
+        if statuses:
+            row_status = str(row.get("status") or "").lower()
+            match_status = row_status in statuses
+            match_hot = "hot" in statuses and bool(row.get("hot"))
+            if not (match_status or match_hot):
                 continue
-        elif status not in ("", "all"):
-            if str(row.get("status") or "").lower() != status:
-                continue
-        tf_filter = str(timeframe_filter or "all").lower()
-        if tf_filter in ("15m", "1d", "dp", "qs"):
-            row_tf = str(row.get("timeframe") or "15m")
-            if row_tf != tf_filter:
+        if tfs:
+            row_tf = str(row.get("timeframe") or "15m").lower()
+            if row_tf not in tfs:
                 continue
         if needle and needle not in str(row.get("stock") or "").upper():
             continue
@@ -475,6 +478,7 @@ def candidates_payload(
     fetch_fn: Callable[..., Dict[str, float]] = fetch_alpaca_last_prices,
     now: Optional[datetime] = None,
     jobs: Optional[Dict[str, Any]] = None,
+    five_m: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     st = store if store is not None else get_store()
     settings = normalize_settings(st.load_settings())
@@ -559,6 +563,7 @@ def candidates_payload(
         as_of_1d=settings.get("as_of_1d"),
         now=now_ts,
         jobs=jobs,
+        five_m=five_m,
     )
     return {
         "rows": ordered,

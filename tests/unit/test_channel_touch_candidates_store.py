@@ -40,8 +40,25 @@ def test_normalize_settings_defaults_and_patch():
     assert patched["max_abs_dist_pct"] == 3.0
     assert patched["search"] == "nvda"
     assert patched["display_timezone"] == "utc"
+    assert patched["status_filter"] == "armed"
     bad_tz = apply_settings_patch(patched, {"display_timezone": "mars"})
     assert bad_tz["display_timezone"] == "exchange"
+
+
+def test_normalize_settings_multi_filters():
+    s = normalize_settings({
+        "timeframe_filter": ["15m", "1d"],
+        "status_filter": "armed,hot",
+    })
+    assert s["timeframe_filter"] == "15m,1d"
+    assert s["status_filter"] == "armed,hot"
+    all_tf = normalize_settings({"timeframe_filter": "15m,1d,dp,qs"})
+    assert all_tf["timeframe_filter"] == "all"
+    bogus = normalize_settings({"timeframe_filter": "weekly", "status_filter": ["nope"]})
+    assert bogus["timeframe_filter"] == "all"
+    assert bogus["status_filter"] == "all"
+    ordered = apply_settings_patch(s, {"status_filter": ["hot", "armed", "waiting"]})
+    assert ordered["status_filter"] == "armed,waiting,hot"
 
 
 def test_merge_keeps_live_price_and_hot_notified_for_same_h2():
