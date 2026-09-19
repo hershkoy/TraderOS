@@ -27,6 +27,6 @@ Research HTML: `reports/research/deep_pullback/deep_pullback_spy.html`
 
 **Approaching (early arm):** above SMA200 and at least two of {near 15d low within 0.5%, sharp day in worst-3 of 10, exact cond1, exact cond2}. Shown on `/hot` anytime during RTH when score warrants it.
 
-**Telegram / browser approaching:** only in the last **15 minutes** before cash close (15:45–16:00 ET). Message includes the MOC target: if SPY finishes at or below `moc_max` (and still above SMA200), send MOC buy ~15:58. **BUY NOW / ARMED** alerts only in the last **2 minutes** (15:58–16:00 ET). EXIT (and browser alerts) are gated per detector on `/hot` notify matrix (DP Armed / Approaching / Sell × TG|Br). Mark **Bought** after you fill so the scanner tracks QS exit.
+**Telegram / browser approaching:** only in the last **15 minutes** before cash close (15:45–16:00 ET). Message includes the MOC target. After approaching fires, the scanner keeps the row and refreshes Alpaca last every minute; `/hot` **Last** shows `current / target` (green = still buy-ok, red = above target or below SMA). **BUY NOW** only from **15:57** and only while last is still at/below target. EXIT (and browser alerts) are gated per detector on `/hot` notify matrix (DP Armed / Approaching / Sell × TG|Br). Mark **Bought** after you fill so the scanner tracks QS exit.
 
 Fill at the **close auction / last minutes** — same as the research book. Prefer MES/ES for leverage; options are a poor fit for ~0.8% average moves.

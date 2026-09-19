@@ -194,6 +194,8 @@
         }
         .pill.armed { background: #c6f6d5; color: #276749; }
         .pill.waiting { background: #feebc8; color: #9c4221; }
+        .moc-buy-ok { color: #276749; font-weight: 600; }
+        .moc-buy-bad { color: #c53030; font-weight: 600; }
         .pill.filled { background: #bee3f8; color: #2c5282; }
         .pill.exit_signal { background: #9b2c2c; color: #fff; }
         .pill.hot { background: #fed7d7; color: #9b2c2c; }
@@ -404,7 +406,7 @@
                 </table>
                 <div class="notify-hint">
                     TG = Telegram, Br = browser beep + notification.
-                    15m Fill = H5 buy-now; DP Armed = MOC buy at 15:58; DP Approaching = last 15m before close.
+                    15m Fill = H5 buy-now; DP Approaching = 15:45+; DP Last = current/target (green=buy-ok); BUY NOW at 15:57 if still below target.
                 </div>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
@@ -423,8 +425,8 @@
                         <th data-key="timeframe">Detector</th>
                         <th data-key="status">Status</th>
                         <th data-key="hot">Hot</th>
-                        <th data-key="last_price">Last</th>
-                        <th data-key="resist">Resist</th>
+                        <th data-key="last_price" title="DP shows current / MOC target">Last</th>
+                        <th data-key="resist" title="DP: MOC target (moc_max)">Resist</th>
                         <th data-key="abs_dist" class="sorted">Dist %</th>
                         <th data-key="wait_bars">Wait</th>
                         <th data-key="volume_rel_20">Vol rel</th>
@@ -1148,13 +1150,22 @@
                     ? '<span class="pill owned">bought</span>'
                     : '<button type="button" class="btn-bought" data-bought-stock="' + stock +
                         '" data-bought-tf="' + tf + '">Bought</button>';
+                let lastCell = fmtNum(r.last_price, 2);
+                if (tf === 'dp') {
+                    const ok = !!r.wait_ok;
+                    const cur = fmtNum(r.last_price, 2);
+                    const tgt = fmtNum(r.resist, 2);
+                    lastCell = '<span class="' + (ok ? 'moc-buy-ok' : 'moc-buy-bad') +
+                        '" title="current / MOC target (green = still buy-ok)">' +
+                        cur + ' / ' + tgt + '</span>';
+                }
                 return '<tr>' +
                     '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +
                     channelCell(r.ch) +
                     '<td><span class="pill ' + tfClass + '">' + tfLabel + '</span></td>' +
                     '<td><span class="pill ' + st + '">' + st + '</span></td>' +
                     '<td>' + hot + '</td>' +
-                    '<td>' + fmtNum(r.last_price, 2) + '</td>' +
+                    '<td>' + lastCell + '</td>' +
                     '<td>' + fmtNum(r.resist, 2) + '</td>' +
                     '<td class="' + distClass(dist) + '">' + (dist == null ? '--' : (Number(dist) >= 0 ? '+' : '') + fmtNum(dist, 2)) + '</td>' +
                     '<td>' + (r.wait_bars == null ? '--' : r.wait_bars) + '</td>' +

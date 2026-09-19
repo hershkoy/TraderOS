@@ -90,18 +90,21 @@ def run(*, dry_run: bool = False, no_telegram: bool = False) -> int:
             store.replace_candidates([], timeframe=TIMEFRAME_DP)
         return 0
 
-    # Only keep visible when interesting or in a trade
+    # Keep after approaching/arm so minute SPY pulls refresh current vs target
     feat_score = int(row.get("wait_bars") or 0)
     st = str(row.get("status") or "")
+    notify = str(row.get("hot_notified_on") or "")
+    watching = notify.endswith(":approach") or notify.endswith(":arm")
     keep = st in ("armed", "filled", "exit_signal") or (
-        st == "waiting" and feat_score >= 2
-    )
+        st == "waiting" and (feat_score >= 2 or watching)
+    ) or watching
     db_rows = [candidate_db_row(row)] if keep else []
 
     logger.info(
-        "DP status=%s score=%s hot=%s last=%.2f resist(15d low)=%s keep=%s alerts=%d",
+        "DP status=%s score=%s buy_ok=%s hot=%s last=%.2f target=%s keep=%s alerts=%d",
         row.get("status"),
         row.get("wait_bars"),
+        row.get("wait_ok"),
         row.get("hot"),
         float(row.get("last_price") or 0),
         row.get("resist"),

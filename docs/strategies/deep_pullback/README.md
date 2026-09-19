@@ -108,8 +108,8 @@ Status on `/hot`:
 
 Telegram:
 
-- **Approaching** only in the last **15 minutes** before 16:00 ET, with an explicit target: *If SPY closes at or below X (still above SMA200), send MOC buy at ~15:58.*
-- **BUY NOW / ARMED** only in the last **2 minutes** (15:58–16:00 ET) once all three conditions print.
+- **Approaching** only in the last **15 minutes** before 16:00 ET, with an explicit target: *If SPY stays at or below X (still above SMA200), send MOC buy at ~15:57.* After that, `/hot` shows **current / target** (green while still buy-ok).
+- **BUY NOW** from **15:57** only while last is still at/below the MOC target.
 - **EXIT** uses SELL NOW toggle.
 
 ---

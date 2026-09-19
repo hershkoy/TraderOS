@@ -13,8 +13,10 @@ Approaching (early arm): above SMA200 and at least two of
 
 Telegram "approaching" only in the last MOC_APPROACH_WINDOW_MIN minutes of RTH,
 with an explicit MOC target: if close finishes at/below moc_max (and above SMA
-floor), send MOC buy. "Buy now" (ARMED) Telegram only in the last
-MOC_BUY_NOW_WINDOW_MIN minutes (default 2 -> 15:58 ET before Arca MOC lock).
+floor), send MOC buy. After approaching is sent, keep the row and refresh SPY
+last every minute (CronRunner minute cadence) so /hot can show current vs target
+(green = still buy-ok). "Buy now" (ARMED) only in the last MOC_BUY_NOW_WINDOW_MIN
+minutes (default 3 -> 15:57 ET) and only while last is still at/below target.
 """
 from __future__ import annotations
 
@@ -38,8 +40,8 @@ SHARP_RET_RANK = 3  # today's ret among worst N of last 10 (1=worst)
 
 # Approaching Telegram: last N minutes before 16:00 ET (15:45 default)
 MOC_APPROACH_WINDOW_MIN = 15
-# Buy-now / ARMED Telegram: last N minutes before 16:00 ET (15:58 default)
-MOC_BUY_NOW_WINDOW_MIN = 2
+# Buy-now / ARMED Telegram: last N minutes before 16:00 ET (15:57 default)
+MOC_BUY_NOW_WINDOW_MIN = 3
 # Back-compat alias (approaching window)
 MOC_WINDOW_MIN = MOC_APPROACH_WINDOW_MIN
 RTH_CLOSE = time(16, 0)
@@ -110,8 +112,28 @@ def in_moc_alert_window(
 def in_moc_buy_now_window(
     now: Optional[datetime] = None, *, window_min: int = MOC_BUY_NOW_WINDOW_MIN
 ) -> bool:
-    """True in the last `window_min` minutes before 16:00 ET (15:58-16:00 default)."""
+    """True in the last `window_min` minutes before 16:00 ET (15:57-16:00 default)."""
     return in_moc_alert_window(now, window_min=window_min)
+
+
+def moc_price_buy_ok(last: float, target: Dict[str, Any]) -> bool:
+    """True when last is in the MOC buy band: (sma_floor, moc_max]."""
+    if not target.get("ok"):
+        return False
+    moc_max = target.get("moc_max")
+    sma_floor = target.get("sma_floor")
+    if moc_max is None or sma_floor is None:
+        return False
+    px = float(last)
+    return px <= float(moc_max) and px > float(sma_floor)
+
+
+def session_moc_watching(prev_notify: str, today_iso: str) -> bool:
+    """True if approaching/arm already fired for this ET session."""
+    tag = str(prev_notify or "")
+    if not tag.startswith("%s:" % today_iso):
+        return False
+    return tag.endswith(":approach") or tag.endswith(":arm")
 
 
 def moc_entry_target(completed_closes: np.ndarray) -> Dict[str, Any]:
@@ -227,12 +249,15 @@ def evaluate_live(
     Returns (row, alerts) where alerts are dicts with keys kind, text.
     kind in {approach, arm, exit}.
     Approaching alerts only inside the last moc_window_min minutes before 16:00 ET
-    (default 15 -> from 15:45), with an MOC target price. Buy-now / ARMED alerts
-    only inside the last moc_buy_now_min minutes (default 2 -> from 15:58).
+    (default 15 -> from 15:45), with an MOC target price. After approach, the row
+    sticks through the close so last vs target can refresh every minute.
+    Buy-now / ARMED only inside the last moc_buy_now_min minutes (default 3 ->
+    from 15:57) and only while last is still at/below the MOC target.
     """
     now = now or datetime.now(timezone.utc)
     now_et = now.astimezone(ET)
     today_et = now_et.date()
+    today_iso = today_et.isoformat()
     alerts: List[Dict[str, str]] = []
     if daily is None or daily.empty or len(daily) < 200:
         return {}, alerts
@@ -246,10 +271,8 @@ def evaluate_live(
     # Completed history through yesterday (for MOC target)
     if bar_day == today_et:
         completed = closes[:-1].copy()
-        completed_highs = highs[:-1].copy()
     else:
         completed = closes.copy()
-        completed_highs = highs.copy()
 
     target = moc_entry_target(completed)
     approach_window = in_moc_alert_window(now, window_min=moc_window_min)
@@ -272,14 +295,22 @@ def evaluate_live(
     if not feat.get("ok"):
         return {}, alerts
 
+    live_px = float(feat["close"])
+    buy_ok = moc_price_buy_ok(live_px, target)
+
     prev_status = str((prev_row or {}).get("status") or "")
     prev_fill = (prev_row or {}).get("fill_px")
     prev_notify = str((prev_row or {}).get("hot_notified_on") or "")
     in_position = prev_status in ("filled", "in_position", "exit_signal") and prev_fill is not None
+    watching = session_moc_watching(prev_notify, today_iso)
+    # Stay on /hot after approach until cash close (minute SPY refreshes)
+    sticky_watch = watching and mins_left is not None
 
     status = "idle"
     hot = False
     notify_tag = prev_notify
+    arm_key = "%s:arm" % today_iso
+    approach_key = "%s:approach" % today_iso
 
     if in_position:
         ph = feat.get("prior_high")
@@ -298,86 +329,39 @@ def evaluate_live(
                 )
         else:
             status = "filled"
-    elif feat["full_signal"]:
-        status = "armed"
-        hot = True
-        arm_key = "%s:arm" % today_et.isoformat()
-        approach_key = "%s:approach" % today_et.isoformat()
-        if buy_now_window and prev_notify != arm_key:
-            tgt = ""
-            if target.get("ok"):
-                tgt = " Target was close<=%.2f (above SMA %.2f)." % (
-                    float(target["moc_max"]),
-                    float(target["sma_floor"]),
-                )
-            alerts.append(
-                {
-                    "kind": "arm",
-                    "text": (
-                        "Deep Pullback SPY ARMED — send MOC buy now (%sm to close). "
-                        "15d low + worst 1d/10 + above SMA200. "
-                        "last=%.2f sma200=%.2f ret1=%.2f%%%s"
-                        % (
-                            "?" if mins_left is None else ("%.0f" % mins_left),
-                            feat["close"],
-                            feat["sma200"],
-                            100.0 * float(feat["ret1"] or 0.0),
-                            tgt,
-                        )
-                    ),
-                }
-            )
-            notify_tag = arm_key
-        elif (
+    elif sticky_watch or feat["full_signal"] or feat["approaching"]:
+        if feat["full_signal"] and buy_ok:
+            status = "armed"
+            hot = True
+        else:
+            status = "waiting"
+
+        # Approaching: once per session inside the 15m window (before buy-now)
+        if (
             approach_window
             and not buy_now_window
             and target.get("ok")
             and target.get("viable")
             and prev_notify not in (approach_key, arm_key)
+            and (feat["approaching"] or feat["full_signal"])
         ):
-            # Full signal early: warn with MOC target; buy-now waits until 15:58
             mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
+            already = " — conditions already met" if feat["full_signal"] else ""
             alerts.append(
                 {
                     "kind": "approach",
                     "text": (
-                        "Deep Pullback SPY approaching (%sm to close) — conditions already met. "
+                        "Deep Pullback SPY approaching (%sm to close)%s. "
                         "If SPY stays at or below %.2f (and above SMA200 %.2f), "
-                        "send MOC buy at ~15:58. Now last=%.2f."
-                        % (
-                            mins_txt,
-                            float(target["moc_max"]),
-                            float(target["sma_floor"]),
-                            feat["close"],
-                        )
-                    ),
-                }
-            )
-            notify_tag = approach_key
-    elif feat["approaching"]:
-        status = "waiting"
-        approach_key = "%s:approach" % today_et.isoformat()
-        if (
-            approach_window
-            and target.get("ok")
-            and target.get("viable")
-            and prev_notify != approach_key
-        ):
-            mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
-            alerts.append(
-                {
-                    "kind": "approach",
-                    "text": (
-                        "Deep Pullback SPY approaching (%sm to close). "
-                        "If SPY closes at or below %.2f (and still above SMA200 %.2f), "
-                        "send MOC buy at ~15:58. "
+                        "send MOC buy at ~15:57. "
                         "Now last=%.2f (need <=%.2f for 15d-low, <=%.2f for worst-1d). "
                         "score=%d/3."
                         % (
                             mins_txt,
+                            already,
                             float(target["moc_max"]),
                             float(target["sma_floor"]),
-                            feat["close"],
+                            live_px,
                             float(target["low_cap"]),
                             float(target["ret_cap"]),
                             int(feat["score"]),
@@ -386,19 +370,45 @@ def evaluate_live(
                 }
             )
             notify_tag = approach_key
+            watching = True
+            sticky_watch = mins_left is not None
+
+        # Buy now: 15:57+ and still below target (after approach or live signal)
+        if (
+            buy_now_window
+            and buy_ok
+            and prev_notify != arm_key
+            and (watching or feat["full_signal"] or feat["approaching"])
+        ):
+            mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
+            alerts.append(
+                {
+                    "kind": "arm",
+                    "text": (
+                        "Deep Pullback SPY BUY NOW — send MOC (%sm to close). "
+                        "last=%.2f <= target %.2f (above SMA %.2f)."
+                        % (
+                            mins_txt,
+                            live_px,
+                            float(target["moc_max"]),
+                            float(target["sma_floor"]),
+                        )
+                    ),
+                }
+            )
+            notify_tag = arm_key
+            status = "armed"
+            hot = True
 
     if status == "idle":
         return {}, alerts
 
-    min15 = float(feat["min15"])
-    dist = None if min15 == 0 else (feat["close"] / min15 - 1.0) * 100.0
     fill_px = float(prev_fill) if in_position and prev_fill is not None else None
 
     as_of = pd.Timestamp(d.iloc[-1]["ts"]).to_pydatetime()
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=timezone.utc)
 
-    # Surface MOC target on the row (resist stays 15d low; overshoot_prior = moc_max)
     moc_max = target.get("moc_max") if target.get("ok") else None
     sma_floor = target.get("sma_floor") if target.get("ok") else None
 
@@ -412,13 +422,14 @@ def evaluate_live(
         "channel_end": None,
         "channel_span_days": None,
         "wait_bars": int(feat["score"]),
-        "wait_ok": bool(feat["full_signal"] or feat["approaching"]),
+        # For DP: wait_ok = current still supports MOC buy (green on /hot)
+        "wait_ok": bool(buy_ok) if not in_position else bool(feat.get("full_signal")),
         "support": float(sma_floor if sma_floor is not None else feat["sma200"]),
         "resist": float(moc_max if moc_max is not None else feat["min15"]),
         "last_close": float(feat.get("prior_close") or feat["close"]),
         "dist_to_resist_pct": None
         if moc_max in (None, 0)
-        else round((feat["close"] / float(moc_max) - 1.0) * 100.0, 4),
+        else round((live_px / float(moc_max) - 1.0) * 100.0, 4),
         "volume_rel_20": None,
         "overshoot_prior": None
         if feat.get("ret1") is None
@@ -432,14 +443,14 @@ def evaluate_live(
         "support_slope": None,
         "channel_width": None
         if feat["sma200"] == 0
-        else round(abs(feat["close"] / feat["sma200"] - 1.0) * 100.0, 4),
+        else round(abs(live_px / feat["sma200"] - 1.0) * 100.0, 4),
         "h2_idx": None,
         "as_of_i": None,
-        "last_price": float(last_price) if last_price is not None else float(feat["close"]),
+        "last_price": float(last_price) if last_price is not None else live_px,
         "last_price_ts": now,
         "dist_live_pct": None
         if moc_max in (None, 0)
-        else round((feat["close"] / float(moc_max) - 1.0) * 100.0, 4),
+        else round((live_px / float(moc_max) - 1.0) * 100.0, 4),
         "hot": bool(hot),
         "hot_notified_on": notify_tag,
         "_developing": developing,
@@ -448,7 +459,9 @@ def evaluate_live(
         "_target": target,
         "_moc_window": approach_window,
         "_moc_buy_now": buy_now_window,
+        "_moc_buy_ok": buy_ok,
         "_mins_to_close": mins_left,
+        "_sticky_watch": sticky_watch,
     }
     return row, alerts
 
