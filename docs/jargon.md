@@ -4,6 +4,8 @@ Short notes. Add as needed.
 
 **CAGR** — Compound Annual Growth Rate: geometric mean annual return of an equity curve, `(end/start)^(1/years) − 1`. Reported on edge-hunt books; not the ranking objective (Sharpe/MDD vs SPY gate).
 
+**MTM** — Mark-to-market: equity *while a trade is still open*, `last closed equity × (today's close / entry)`. Overview MDD uses this (Deep Pullback ~14%; the 2011 loser is the usual driver). Not closed-trade MDD (Leverage tab ~10% unlevered / ~31% at 3× — compounds only after the exit). Leverage scales the Overview number: ~14% × 3 ≈ 40%+ → ~$20k hole on a $50k sleeve if a 2011-style loser prints while you are in it. Futures variation margin is this cash P&L every day, not a paper SPY line.
+
 **MAE** — Maximum Adverse Excursion: the worst dip against you after the fill, as a % of entry (here: how far price went against the trade *before* the trail’s peak). Not “mean absolute error.”
 
 **RMSE** — Root Mean Squared Error: typical size of prediction mistakes, in the same units as the target. If we predict MAE and RMSE is 2.7, guesses are off by about 2.7 percentage points on average (large errors count more than small ones).
