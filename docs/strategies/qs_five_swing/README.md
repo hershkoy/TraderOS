@@ -65,17 +65,57 @@ Logic: `utils/research/qs_five_swing.py`
 
 ---
 
+## Fill realism / MOC clocks (2018–2026)
+
+Oracle claim-check assumes **buy at the settled close (MOC)**. Live Arca MOC locks at **15:59 ET**. Tested with IB **1m** developing OHLC at **15:57** and **15:58**, plus a **15m@15:45 proximity → 1m decide** funnel (same live path as DP). Fill stays settled close; exit unchanged.
+
+**Verdict:** **15:57 ≈ 15:58** (trivial gap). Both recover ~10.4–10.6% CAGR vs oracle **10.86%**. Prefer **15:57** for ~2 min headroom before lock (matches DP buy-now); 15:58 is a hair better on paper only. Honest **5m@15:55** is much weaker (~7.5%) — do not treat 15m@15:45 as an early decision (that bar spans into the close).
+
+| Book | n | E % | PF | CAGR % | MDD % | Prec / Recall |
+|------|---|-----|----|--------|-------|----------------|
+| **oracle_moc** | 256 | 0.36 | 1.78 | **10.86** | -21.4 | — |
+| **proxy 15:58** (1m) | 253 | 0.355 | 1.78 | **10.56** | -16.0 | 0.93 / 0.92 |
+| **proxy 15:57** (1m) | 254 | 0.349 | 1.77 | **10.42** | -16.0 | 0.93 / 0.92 |
+| **prox15m∧1m 15:58** | 252 | 0.352 | 1.77 | **10.44** | -16.0 | 0.94 / 0.92 |
+| **prox15m∧1m 15:57** | 253 | 0.349 | 1.77 | **10.36** | -16.0 | 0.94 / 0.91 |
+| next_open | 249 | 0.346 | 1.67 | 10.04 | **-29.1** | — |
+| proxy 15:55 (5m) | 257 | 0.255 | 1.51 | 7.47 | -17.8 | 0.88 / 0.93 |
+
+Window: Yahoo 1d + IB 1m **2018-01-19 → 2026-09-16** (candidate-day 1m backfill). Prec/recall = arm agreement vs settled oracle day.
+
+```bat
+venv\Scripts\activate && set PYTHONPATH=. && python scripts\research\run_qs_five_swing_realism.py --intraday-tf 1m --start 2018-01-01 --clocks 15:57,15:58 --with-5m-baseline
+```
+
+HTML: `reports/research/qs_five_swing_realism/qs_five_swing_realism_1m_moc.html`  
+Status: `docs/status_log/edge_hunt/2026-09-18_qs_five_swing_1m_moc.md` (5m/15m: `2026-09-18_qs_five_swing_realism.md`)
+
+---
+
+## Live on `/hot`
+
+| Piece | Detail |
+|-------|--------|
+| Detector | **QS** (`timeframe=qs`) |
+| Cron | `qs_five_swing_spy` — ~5m RTH; every minute **15:45–16:00** ET |
+| Data | TimescaleDB SPY `1d` + optional `1m` H/L + Alpaca last |
+| Resist | Active sleeve MOC close ceiling (priority S1→S5) |
+| Last | `current / target` — **green** while buy-ok, **red** if above target / signal gone |
+| Alerts | **Approaching** from 15:45; **BUY NOW** from **15:57** if still ≤ target; EXIT on QS exit |
+
+Enable QS Approaching / Armed / Sell in the `/hot` notify matrix. Mark **Bought** after MOC fill so EXIT tracks.
+
+```bat
+venv\Scripts\activate && set PYTHONPATH=. && python scripts\scanners\qs_five_swing_spy.py --dry-run
+```
+
+---
+
 ## Notes / caveats
 
 - Historical claim-check, not a forecast. Treated as **selective sleeves** (same posture as Deep Pullback) — not graded on edge-hunt Sharpe>1 promote gates.
 - Strategy 1 uses the article **2.5×** range multiplier (easy to miss in short video summaries).
 - Combined fill mix (fric 0): S4 294, S1 252, S3 148, S5 140, S2 124 — priority and overlap change which sleeve “owns” a day.
-- No live `/hot` / CronRunner wiring in this pass.
-- Status: `docs/status_log/edge_hunt/2026-09-18_qs_five_swing.md`
-- **Fill realism (2018–2026, IB 5m):** `docs/status_log/edge_hunt/2026-09-18_qs_five_swing_realism.md` — oracle MOC CAGR ~11%; honest 5m 15:45–15:55 proxies ~7–9%; next-open ~10% but MDD −29%; 15m@15:45 is nearly oracle (bar spans into the close — do not treat as an early decision).
-- **1m MOC clocks (Arca lock 15:59):** `docs/status_log/edge_hunt/2026-09-18_qs_five_swing_1m_moc.md` — decide **15:57** vs **15:58** nearly identical (~10.4 vs ~10.6% CAGR vs oracle ~10.9); prox15m∧1m same; both beat 5m@15:55 (~7.5%).
+- Live path: `utils/scanning/qs_five_swing_spy.py` / CronRunner `qs_five_swing_spy` (same MOC clocks as DP).
+- Status (claim-check): `docs/status_log/edge_hunt/2026-09-18_qs_five_swing.md`
 
-| Clock | Book | CAGR | vs oracle |
-|-------|------|------|-----------|
-| 15:57 | proxy / prox∧1m | ~10.4 / ~10.4 | −0.4 / −0.5 pp |
-| 15:58 | proxy / prox∧1m | ~10.6 / ~10.4 | −0.3 / −0.4 pp |

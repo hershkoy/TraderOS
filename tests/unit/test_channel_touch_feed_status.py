@@ -14,6 +14,7 @@ from utils.scanning.channel_touch_feed_status import (
     STATUS_UP_TO_DATE,
     STATUS_UPDATING,
     STATUS_WAITING,
+    as_of_behind_last_close,
     build_feeds,
     last_completed_rth_15m,
     last_completed_session_date,
@@ -71,6 +72,17 @@ def test_last_completed_session_date_before_and_after_close():
     assert last_completed_session_date(wed_close).isoformat() == "2026-09-02"
     saturday = datetime(2026, 9, 5, 12, 0, tzinfo=ET)
     assert last_completed_session_date(saturday).isoformat() == "2026-09-04"
+
+
+def test_as_of_behind_last_close_friday_session_on_saturday():
+    saturday = datetime(2026, 9, 19, 3, 9, tzinfo=ET)
+    behind, got, expected = as_of_behind_last_close("2026-09-17", now=saturday)
+    assert behind is True
+    assert got.isoformat() == "2026-09-17"
+    assert expected.isoformat() == "2026-09-18"
+    behind, got, expected = as_of_behind_last_close("2026-09-18", now=saturday)
+    assert behind is False
+    assert expected.isoformat() == "2026-09-18"
 
 
 def test_feeds_match_hot_dashboard_staleness():

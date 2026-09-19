@@ -193,7 +193,7 @@ If IB 15m is still stale, the scanner **warns** and still builds a watchlist fro
 | Watchlist JSON (sidecar) | `reports/ascending_channels/channel_touch_15m_watchlist.json` |
 | Fills log | `reports/ascending_channels/channel_touch_15m_fills_log.csv` |
 | Scanner logs | `logs/scanners/channel_touch_15m_*.log` |
-| Daily nightly | `scripts/scanners/channel_touch_nightly.py` — CronRunner **17:00 ET Mon–Fri** |
+| Daily nightly | `scripts/scanners/channel_touch_nightly.py` — CronRunner **17:00 ET Mon–Fri**; fail retries +1h/+2h/+3h |
 
 Telegram uses the same `.env` keys as nightly: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 H5 fills raise Telegram from `channel_touch_15m --mode run` plus a **Windows toast + system sound** (`utils/notify/desktop.py`) unless

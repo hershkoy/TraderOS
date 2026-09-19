@@ -12,7 +12,7 @@ import copy
 import json
 from typing import Any, Dict, Optional
 
-NOTIFY_DETECTORS = ("15m", "1d", "dp")
+NOTIFY_DETECTORS = ("15m", "1d", "dp", "qs")
 NOTIFY_EVENTS = ("hot", "armed", "approaching", "fill", "sell")
 NOTIFY_CHANNELS = ("telegram", "browser")
 
@@ -39,6 +39,13 @@ NOTIFY_APPLICABLE: Dict[str, Dict[str, bool]] = {
         "fill": False,
         "sell": True,
     },
+    "qs": {
+        "hot": False,
+        "armed": True,
+        "approaching": True,
+        "fill": False,
+        "sell": True,
+    },
 }
 
 _CHANNEL_DEFAULTS = {"telegram": False, "browser": False}
@@ -59,6 +66,13 @@ DEFAULT_NOTIFY_PREFS: Dict[str, Dict[str, Dict[str, bool]]] = {
         "sell": {"telegram": True, "browser": True},
     },
     "dp": {
+        "hot": {"telegram": False, "browser": False},
+        "armed": {"telegram": True, "browser": True},
+        "approaching": {"telegram": False, "browser": False},
+        "fill": {"telegram": False, "browser": False},
+        "sell": {"telegram": True, "browser": True},
+    },
+    "qs": {
         "hot": {"telegram": False, "browser": False},
         "armed": {"telegram": True, "browser": True},
         "approaching": {"telegram": False, "browser": False},
@@ -105,13 +119,17 @@ def prefs_from_legacy(
     prefs["1d"]["fill"]["telegram"] = bool(telegram_on_fill)
     prefs["dp"]["armed"]["telegram"] = bool(telegram_on_fill)
     prefs["dp"]["approaching"]["telegram"] = bool(telegram_on_hot)
+    prefs["qs"]["armed"]["telegram"] = bool(telegram_on_fill)
+    prefs["qs"]["approaching"]["telegram"] = bool(telegram_on_hot)
     for det in NOTIFY_DETECTORS:
         prefs[det]["sell"]["telegram"] = bool(telegram_on_sell)
-    # Browser historically gated fills/sells (and DP alerts when desktop was on).
+    # Browser historically gated fills/sells (and DP/QS alerts when desktop was on).
     prefs["15m"]["fill"]["browser"] = bool(desktop_notify)
     prefs["1d"]["fill"]["browser"] = bool(desktop_notify)
     prefs["dp"]["armed"]["browser"] = bool(desktop_notify)
     prefs["dp"]["approaching"]["browser"] = bool(desktop_notify)
+    prefs["qs"]["armed"]["browser"] = bool(desktop_notify)
+    prefs["qs"]["approaching"]["browser"] = bool(desktop_notify)
     for det in NOTIFY_DETECTORS:
         prefs[det]["sell"]["browser"] = bool(desktop_notify)
     return prefs
@@ -125,12 +143,16 @@ def legacy_from_prefs(prefs: Dict[str, Dict[str, Dict[str, bool]]]) -> Dict[str,
             p["15m"]["fill"]["telegram"]
             or p["1d"]["fill"]["telegram"]
             or p["dp"]["armed"]["telegram"]
+            or p["qs"]["armed"]["telegram"]
         ),
-        "telegram_on_hot": bool(p["dp"]["approaching"]["telegram"]),
+        "telegram_on_hot": bool(
+            p["dp"]["approaching"]["telegram"] or p["qs"]["approaching"]["telegram"]
+        ),
         "telegram_on_sell": bool(
             p["15m"]["sell"]["telegram"]
             or p["1d"]["sell"]["telegram"]
             or p["dp"]["sell"]["telegram"]
+            or p["qs"]["sell"]["telegram"]
         ),
         "desktop_notify": any(
             p[det][ev]["browser"]
@@ -205,8 +227,10 @@ def apply_legacy_patch_to_prefs(
         out["15m"]["fill"]["telegram"] = v
         out["1d"]["fill"]["telegram"] = v
         out["dp"]["armed"]["telegram"] = v
+        out["qs"]["armed"]["telegram"] = v
     if "telegram_on_hot" in patch:
         out["dp"]["approaching"]["telegram"] = _as_bool(patch.get("telegram_on_hot"), False)
+        out["qs"]["approaching"]["telegram"] = _as_bool(patch.get("telegram_on_hot"), False)
     if "telegram_on_sell" in patch:
         v = _as_bool(patch.get("telegram_on_sell"), True)
         for det in NOTIFY_DETECTORS:
@@ -217,6 +241,8 @@ def apply_legacy_patch_to_prefs(
         out["1d"]["fill"]["browser"] = v
         out["dp"]["armed"]["browser"] = v
         out["dp"]["approaching"]["browser"] = v
+        out["qs"]["armed"]["browser"] = v
+        out["qs"]["approaching"]["browser"] = v
         for det in NOTIFY_DETECTORS:
             out[det]["sell"]["browser"] = v
     return out

@@ -65,7 +65,8 @@ The charting dashboard is **not** a crontab job. Install the always-on logon tas
 ## Behaviour
 
 - Same-minute re-entry is skipped (state in `logs/cron/state.json`).
-- `skip_if_ran_today: true` skips a later tick if that job already **succeeded** today in the job timezone (used on `channel_touch_nightly` so a manual run does not double-fire at 17:00 ET). Failed runs are retried.
+- `skip_if_ran_today: true` skips a later tick if that job already **succeeded** today in the job timezone (used on `channel_touch_nightly` so a manual run does not double-fire at 17:00 ET).
+- `retry_hours: [1, 2, 3]` (on `channel_touch_nightly`) re-fires +1h/+2h/+3h after a **failed** run. `/hot` next-run uses those slots while the job is still failed. A stale Alpaca 1d as_of (prior session after the Friday 17:00 ET close) is a failed run, not exit 0.
 - If a job is still running, the next due tick skips it (lock in `logs/cron/locks/`).
 - Job stdout/stderr: `logs/cron/{name}_{timestamp}.log`
 - Tick log: `logs/cron/tick_YYYYMMDD.log` (only when something is due, plus errors)

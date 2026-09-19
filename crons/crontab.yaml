@@ -12,11 +12,18 @@ jobs:
   enabled: true
   schedule: 0 17 * * 1-5
   command: crons\channel_touch_nightly.bat
-  description: Daily H2 resist-break after Alpaca 1d settles (17:00 ET Mon-Fri). Do
-    not fire at 16:00 ET cash close; Alpaca daily is often still the prior session
-    then. Disable the old ChannelTouchNightly task before enabling this.
+  description: Daily H2 resist-break after Alpaca 1d settles (17:00 ET Mon-Fri). Friday
+    session close is the Friday 17:00 ET run. Do not fire at 16:00 ET cash close;
+    Alpaca daily is often still the prior session then. If the job fails (including
+    as_of still on the prior session), retry +1h, +2h, +3h. skip_if_ran_today skips
+    those retries after a successful run. Disable the old ChannelTouchNightly task
+    before enabling this.
   timezone: America/New_York
   skip_if_ran_today: true
+  retry_hours:
+  - 1
+  - 2
+  - 3
 - name: channel_touch_15m
   enabled: true
   schedule:
@@ -52,6 +59,19 @@ jobs:
     last 15m of RTH (15:45-16:00 ET) with MOC target; then minute SPY pulls keep
     current vs target on /hot (green=buy-ok). BUY NOW only from 15:57 if still
     at/below target. Uses DB 1d + Alpaca last. Every minute from 15:45; else ~5m.
+  timezone: America/New_York
+- name: qs_five_swing_spy
+  enabled: true
+  schedule:
+  - 30-59 9 * * 1-5
+  - '*/5 10-14 * * 1-5'
+  - 0,5,10,15,20,25,30,35,40 15 * * 1-5
+  - 45-59 15 * * 1-5
+  - 0 16 * * 1-5
+  command: crons\qs_five_swing_spy.bat
+  description: QS Five-Swing SPY for /hot (timeframe=qs). Approaching from 15:45 with
+    MOC target; minute SPY pulls keep current vs target (green=buy-ok). BUY NOW from
+    15:57 if still at/below target. DB 1d + optional 1m + Alpaca last.
   timezone: America/New_York
 - name: backfill_ib_15m_universe
   enabled: false

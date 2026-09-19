@@ -7,8 +7,8 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -48,6 +48,7 @@ class CronJob:
     description: str = ""
     timezone: Optional[str] = None
     skip_if_ran_today: bool = False
+    retry_hours: List[int] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -62,6 +63,8 @@ class CronJob:
             data["timezone"] = self.timezone
         if self.skip_if_ran_today:
             data["skip_if_ran_today"] = True
+        if self.retry_hours:
+            data["retry_hours"] = list(self.retry_hours)
         return data
 
     @classmethod
@@ -87,6 +90,7 @@ class CronJob:
             description=desc,
             timezone=tz_s or None,
             skip_if_ran_today=skip_today,
+            retry_hours=_parse_retry_hours(raw.get("retry_hours")),
         )
 
 
@@ -176,7 +180,7 @@ class CronManager:
             if not job.enabled:
                 continue
             when = _aware_now(now, job.timezone or default_tz)
-            if any_cron_matches(job.schedule, when):
+            if any_cron_matches(job.schedule, when) or self._retry_due(job, when):
                 out.append(job)
         return out
 
@@ -185,6 +189,9 @@ class CronManager:
         default_tz = str(data.get("timezone") or "local")
         when = _aware_now(after, job.timezone or default_tz)
         nxt = next_match(job.schedule, when)
+        retry_nxt = self._next_retry(job, when)
+        if retry_nxt is not None and retry_nxt < nxt:
+            return retry_nxt
         return nxt
 
     def tick(
@@ -321,6 +328,53 @@ class CronManager:
             return False
         return rec.get("last_exit_code") == 0
 
+    def _retry_due(self, job: CronJob, when: datetime) -> bool:
+        slot = self._retry_slot_at(job, when)
+        if slot is None:
+            return False
+        rec = (self._load_state().get("jobs") or {}).get(job.name) or {}
+        last = str(rec.get("last_fired") or "")
+        return last != when.strftime("%Y-%m-%dT%H:%M")
+
+    def _next_retry(self, job: CronJob, after: datetime) -> Optional[datetime]:
+        hours = [int(h) for h in (job.retry_hours or [])]
+        if not hours:
+            return None
+        rec = (self._load_state().get("jobs") or {}).get(job.name) or {}
+        if not _is_failed_exit(rec.get("last_exit_code")):
+            return None
+        origin = _parse_job_minute(
+            rec.get("fail_started_at") or rec.get("last_fired"), after.tzinfo
+        )
+        if origin is None:
+            return None
+        after_min = after.replace(second=0, microsecond=0)
+        soonest = None
+        for hour in hours:
+            slot = (origin + timedelta(hours=hour)).replace(second=0, microsecond=0)
+            if slot > after_min and (soonest is None or slot < soonest):
+                soonest = slot
+        return soonest
+
+    def _retry_slot_at(self, job: CronJob, when: datetime) -> Optional[datetime]:
+        hours = [int(h) for h in (job.retry_hours or [])]
+        if not hours:
+            return None
+        rec = (self._load_state().get("jobs") or {}).get(job.name) or {}
+        if not _is_failed_exit(rec.get("last_exit_code")):
+            return None
+        origin = _parse_job_minute(
+            rec.get("fail_started_at") or rec.get("last_fired"), when.tzinfo
+        )
+        if origin is None:
+            return None
+        minute = when.replace(second=0, microsecond=0)
+        for hour in hours:
+            slot = (origin + timedelta(hours=hour)).replace(second=0, microsecond=0)
+            if slot == minute:
+                return slot
+        return None
+
     def _mark_fired(self, name: str, minute_key: str) -> None:
         state = self._load_state()
         jobs = state.setdefault("jobs", {})
@@ -335,6 +389,10 @@ class CronManager:
         rec["last_finished"] = datetime.now().isoformat(timespec="seconds")
         rec["last_exit_code"] = rc
         rec["last_log"] = log_path
+        if rc == 0:
+            rec.pop("fail_started_at", None)
+        elif not rec.get("fail_started_at"):
+            rec["fail_started_at"] = rec.get("last_fired")
         self._save_state(state)
 
     def _load_state(self) -> Dict[str, Any]:
@@ -466,6 +524,54 @@ class CronManager:
 def _validate_name(name: str) -> None:
     if not name.replace("_", "").replace("-", "").isalnum():
         raise ValueError("job name must be alphanumeric plus _- : %r" % name)
+
+
+def _parse_retry_hours(raw: Any) -> List[int]:
+    if raw is None or raw is False or raw == "":
+        return []
+    if isinstance(raw, bool):
+        raise ValueError("retry_hours must be a list of positive hours")
+    if isinstance(raw, (int, float)):
+        items = [raw]
+    elif isinstance(raw, str):
+        items = [part.strip() for part in raw.split(",") if part.strip()]
+    else:
+        items = list(raw)
+    out: List[int] = []
+    for item in items:
+        hour = int(item)
+        if hour < 1:
+            raise ValueError("retry_hours must be >= 1, got %s" % hour)
+        out.append(hour)
+    return out
+
+
+def _is_failed_exit(rc: Any) -> bool:
+    if rc is None:
+        return False
+    try:
+        return int(rc) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_job_minute(value: Any, tz) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if len(text) < 16:
+        return None
+    try:
+        naive = datetime.strptime(text[:16], "%Y-%m-%dT%H:%M")
+    except ValueError:
+        try:
+            naive = datetime.fromisoformat(text[:19])
+        except ValueError:
+            return None
+        naive = naive.replace(second=0, microsecond=0)
+    if naive.tzinfo is None:
+        return naive.replace(tzinfo=tz)
+    if tz is None:
+        return naive
+    return naive.astimezone(tz)
 
 
 def _aware_now(now: Optional[datetime], tz_name: str) -> datetime:

@@ -214,11 +214,13 @@ def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     return keys
 
 
+_MOC_DETECTORS = ("dp", "qs")
+
+
 def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     """Keys for currently armed setups (stock|tf|h2_time).
 
-    Deep Pullback (dp) only after buy-now notify (hot_notified_on ends with :arm),
-    so browser ARMED matches the 15:58 Telegram window.
+    MOC sleeves (dp/qs) only after buy-now notify (hot_notified_on ends with :arm).
     """
     keys: List[str] = []
     for row in rows:
@@ -228,7 +230,7 @@ def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
         if not stock:
             continue
         tf = str(row.get("timeframe") or "15m")
-        if tf == "dp":
+        if tf in _MOC_DETECTORS:
             tag = str(row.get("hot_notified_on") or "")
             if not tag.endswith(":arm"):
                 continue
@@ -238,21 +240,20 @@ def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
 
 
 def approaching_keys_from_rows(rows: Sequence[dict]) -> List[str]:
-    """Keys for DP approaching notify (:approach), including early full-signal armed."""
+    """Keys for MOC approaching notify (:approach), including early armed."""
     keys: List[str] = []
     for row in rows:
         tf = str(row.get("timeframe") or "")
-        if tf != "dp":
+        if tf not in _MOC_DETECTORS:
             continue
         tag = str(row.get("hot_notified_on") or "")
         if not tag.endswith(":approach"):
             continue
         status = str(row.get("status") or "").lower()
-        # waiting, or armed-but-not-yet-buy-now (tag still :approach)
         if status not in ("waiting", "armed"):
             continue
         stock = str(row.get("stock") or "").upper() or "SPY"
-        keys.append("%s|dp|%s" % (stock, tag))
+        keys.append("%s|%s|%s" % (stock, tf, tag))
     return keys
 
 
@@ -273,7 +274,7 @@ def status_alerts_from_rows(
     elif event == "approaching":
         key_fn = approaching_keys_from_rows
         match = lambda r: (
-            str(r.get("timeframe") or "") == "dp"
+            str(r.get("timeframe") or "") in _MOC_DETECTORS
             and str(r.get("hot_notified_on") or "").endswith(":approach")
             and str(r.get("status") or "").lower() in ("waiting", "armed")
         )
@@ -290,8 +291,9 @@ def status_alerts_from_rows(
         elif event == "armed":
             key = "%s|%s|%s" % (stock, tf, str(row.get("h2_time") or row.get("as_of") or ""))
         else:
-            key = "%s|dp|%s" % (
+            key = "%s|%s|%s" % (
                 stock or "SPY",
+                tf,
                 str(row.get("hot_notified_on") or row.get("as_of") or "approach"),
             )
         if key not in key_set:
@@ -389,7 +391,7 @@ def filter_candidates(
             if str(row.get("status") or "").lower() != status:
                 continue
         tf_filter = str(timeframe_filter or "all").lower()
-        if tf_filter in ("15m", "1d", "dp"):
+        if tf_filter in ("15m", "1d", "dp", "qs"):
             row_tf = str(row.get("timeframe") or "15m")
             if row_tf != tf_filter:
                 continue
@@ -519,6 +521,9 @@ def candidates_payload(
     n_armed_dp = sum(
         1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "") == "dp"
     )
+    n_armed_qs = sum(
+        1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "") == "qs"
+    )
     price_ts = None
     for row in rows:
         ts = row.get("last_price_ts")
@@ -563,6 +568,7 @@ def candidates_payload(
         "n_armed_15m": n_armed_15m,
         "n_armed_1d": n_armed_1d,
         "n_armed_dp": n_armed_dp,
+        "n_armed_qs": n_armed_qs,
         "n_hot": n_hot,
         "hot_keys": hot_keys_from_rows(rows),
         "armed_keys": armed_keys_from_rows(rows),

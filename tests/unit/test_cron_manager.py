@@ -126,6 +126,7 @@ def test_repo_crontab_loads():
     assert nightly.schedule == ["0 17 * * 1-5"]
     assert nightly.timezone == "America/New_York"
     assert nightly.skip_if_ran_today is True
+    assert nightly.retry_hours == [1, 2, 3]
     after = mgr.job("after_rth_ib_backfill")
     assert after.schedule == ["30 16 * * 1-5"]
     assert after.timezone == "America/New_York"
@@ -166,6 +167,64 @@ def test_5m_watchdog_due_only_in_backfill_windows():
     assert "backfill_ib_5m_universe" not in due_names(friday_1600)
     assert "backfill_ib_5m_universe" not in due_names(friday_0915)
     assert "stop_ib_5m_backfill" in due_names(friday_0915)
+
+
+def test_tick_retry_hours_after_fail(tmp_path: Path):
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    mgr = _mgr(tmp_path)
+    mgr.add_job(
+        CronJob(
+            name="nightly",
+            schedule=["0 17 * * 1-5"],
+            command="echo nightly",
+            enabled=True,
+            skip_if_ran_today=True,
+            timezone="America/New_York",
+            retry_hours=[1, 2, 3],
+        )
+    )
+    mgr._mark_fired("nightly", "2026-09-18T17:00")
+    state = mgr._load_state()
+    state["jobs"]["nightly"]["last_exit_code"] = 1
+    state["jobs"]["nightly"]["fail_started_at"] = "2026-09-18T17:00"
+    mgr._save_state(state)
+    job = mgr.job("nightly")
+
+    assert mgr.tick(now=datetime(2026, 9, 18, 18, 0, tzinfo=ny), dry_run=True) == ["nightly"]
+    assert mgr.tick(now=datetime(2026, 9, 18, 19, 0, tzinfo=ny), dry_run=True) == ["nightly"]
+    assert mgr.tick(now=datetime(2026, 9, 18, 20, 0, tzinfo=ny), dry_run=True) == ["nightly"]
+    assert mgr.tick(now=datetime(2026, 9, 18, 21, 0, tzinfo=ny), dry_run=True) == []
+    assert mgr.tick(now=datetime(2026, 9, 18, 17, 30, tzinfo=ny), dry_run=True) == []
+
+    nxt = mgr.next_run(job, after=datetime(2026, 9, 18, 17, 1, tzinfo=ny))
+    assert nxt == datetime(2026, 9, 18, 18, 0, tzinfo=ny)
+
+    state["jobs"]["nightly"]["last_exit_code"] = 0
+    state["jobs"]["nightly"].pop("fail_started_at", None)
+    mgr._save_state(state)
+    assert mgr.tick(now=datetime(2026, 9, 18, 18, 0, tzinfo=ny), dry_run=True) == []
+    nxt = mgr.next_run(job, after=datetime(2026, 9, 18, 17, 1, tzinfo=ny))
+    assert nxt == datetime(2026, 9, 21, 17, 0, tzinfo=ny)
+
+
+def test_record_result_sets_fail_started_at(tmp_path: Path):
+    mgr = _mgr(tmp_path)
+    mgr.add_job(CronJob(name="nightly", schedule=["0 17 * * 1-5"], command="echo nightly"))
+    mgr._mark_fired("nightly", "2026-09-18T17:00")
+    mgr._record_result("nightly", 1, "log.txt")
+    rec = mgr.job_state("nightly")
+    assert rec["last_exit_code"] == 1
+    assert rec["fail_started_at"] == "2026-09-18T17:00"
+    mgr._mark_fired("nightly", "2026-09-18T18:00")
+    mgr._record_result("nightly", 1, "log2.txt")
+    rec = mgr.job_state("nightly")
+    assert rec["fail_started_at"] == "2026-09-18T17:00"
+    mgr._record_result("nightly", 0, "log3.txt")
+    rec = mgr.job_state("nightly")
+    assert rec["last_exit_code"] == 0
+    assert "fail_started_at" not in rec
 
 
 def test_stop_job_when_not_running(tmp_path: Path):

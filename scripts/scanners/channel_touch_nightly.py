@@ -20,7 +20,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -42,6 +42,7 @@ from utils.scanning.channel_touch import (
 )
 from utils.scanning.channel_touch_1d import build_1d_watchlist_rows
 from utils.scanning.channel_touch_candidates_store import ChannelTouchCandidatesStore
+from utils.scanning.channel_touch_feed_status import as_of_behind_last_close
 from utils.research.report_paths import dated_outdir
 
 RESEARCH = ROOT / "scripts" / "research"
@@ -292,6 +293,17 @@ def main() -> int:
 
         as_of = resolve_as_of_from_panels(panels, spy_df)
         as_of_s = as_of.strftime("%Y-%m-%d")
+        behind, got_day, expected_day = as_of_behind_last_close(
+            as_of, now=datetime.now(timezone.utc)
+        )
+        if behind:
+            msg = (
+                "Channel-touch nightly FAILED: ALPACA 1d as_of=%s behind last close %s. "
+                "CronRunner retries +1h/+2h/+3h after a failed 17:00 ET run."
+            ) % (got_day or as_of_s, expected_day)
+            logger.error(msg)
+            _notify(msg, dry_run=dry_run)
+            return 1
         logger.info(
             "Scanning live triggers as_of=%s mode=%s h2_break=%s only=%s shakeout=%s "
             "min_wait=%d max_rsi=%s in_channel=%s span<=%.0f beyond=%s window=%d/%d",

@@ -4,6 +4,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-19 | [Nightly fail retries +1h/+2h/+3h](2026-09-19_nightly_retry.md) |
 | 2026-09-16 | [Short H3+ resistance fade](2026-09-16_resist_short_h3.md) |
 | 2026-09-16 | [Last-15m consecutive-loss sit-out](2026-09-16_last_15m_loss_streak.md) |
 | 2026-09-15 | [Alpaca snapshot timeout / 15m FAILED Telegram](2026-09-15_alpaca_snapshot_timeout.md) |

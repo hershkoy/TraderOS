@@ -93,6 +93,18 @@ def last_completed_session_date(now: datetime) -> date:
     return day
 
 
+def as_of_behind_last_close(
+    as_of: Any, now: Optional[datetime] = None
+) -> tuple:
+    """True when stored daily as_of is before the last completed US session."""
+    now_ts = now or datetime.now(timezone.utc)
+    expected = last_completed_session_date(now_ts)
+    got = _as_of_date(as_of)
+    if got is None:
+        return True, None, expected
+    return got < expected, got, expected
+
+
 def last_completed_rth_15m(now: datetime) -> datetime:
     """Period-start of the last fully closed US RTH 15m bar (ET-aware).
 
@@ -410,7 +422,7 @@ def _alpaca_1d_feed(
     job: dict,
 ) -> Dict[str, Any]:
     role = "Daily H2 armed book. EOD scan only - not a live API."
-    cadence = "Weekdays 17:00 ET (CronRunner channel_touch_nightly)"
+    cadence = "Weekdays 17:00 ET; fail retries +1h/+2h/+3h (CronRunner channel_touch_nightly)"
     expected = last_completed_session_date(now)
     expected_s = _fmt_date(expected)
     got = _as_of_date(as_of_1d)
@@ -444,13 +456,15 @@ def _alpaca_1d_feed(
             status = STATUS_FAILED
             detail = (
                 "Expected last close %s. Nightly last exit %s. "
-                "1d is EOD-only; next run %s. Today's bar is not a live feed."
+                "Retries +1h/+2h/+3h after a failed 17:00 ET Friday-session run. "
+                "Next %s. Today's bar is not a live feed."
             ) % (expected_s, job.get("last_exit_code"), nxt)
         else:
             status = STATUS_STALE
             detail = (
-                "Expected last close %s (not today until after cash close). "
-                "Nightly is 17:00 ET Mon-Fri so Alpaca daily can settle. Next run %s."
+                "Expected last close %s (Friday session is 17:00 ET Friday, "
+                "not today until after cash close). "
+                "If that run fails, CronRunner retries +1h/+2h/+3h. Next run %s."
             ) % (expected_s, nxt)
     elif is_rth(now) or _to_et(now).time() < RTH_CLOSE:
         status = STATUS_WAITING

@@ -203,6 +203,7 @@
         .pill.tf-15m { background: #e9d8fd; color: #553c9a; }
         .pill.tf-1d { background: #bee3f8; color: #2c5282; }
         .pill.tf-dp { background: #faf089; color: #744210; }
+        .pill.tf-qs { background: #c3dafe; color: #2a4365; }
         .pos { color: #276749; font-weight: 600; }
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
@@ -364,6 +365,7 @@
                         <option value="15m">15m</option>
                         <option value="1d">1d</option>
                         <option value="dp">DP (SPY pullback)</option>
+                        <option value="qs">QS (SPY five-swing)</option>
                     </select>
                 </div>
                 <div class="control-group">
@@ -406,7 +408,7 @@
                 </table>
                 <div class="notify-hint">
                     TG = Telegram, Br = browser beep + notification.
-                    15m Fill = H5 buy-now; DP Approaching = 15:45+; DP Last = current/target (green=buy-ok); BUY NOW at 15:57 if still below target.
+                    15m Fill = H5 buy-now; DP/QS Approaching = 15:45+; Last = current/target (green=buy-ok); BUY NOW at 15:57 if still below target.
                 </div>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
@@ -473,13 +475,14 @@
         const APPROACH_SEEN_KEY = 'hotCandidates.seenApproach';
         const CTF_COPIED_KEY = 'hotCandidates.ctfCopied';
         const FETCH_OPTS = { cache: 'no-store' };
-        const NOTIFY_DETECTORS = ['15m', '1d', 'dp'];
+        const NOTIFY_DETECTORS = ['15m', '1d', 'dp', 'qs'];
         const NOTIFY_EVENTS = ['hot', 'armed', 'approaching', 'fill', 'sell'];
-        const NOTIFY_LABELS = { '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)' };
+        const NOTIFY_LABELS = { '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)', 'qs': 'QS (SPY)' };
         const DEFAULT_NOTIFY_APPLICABLE = {
             '15m': { hot: true, armed: true, approaching: false, fill: true, sell: true },
             '1d': { hot: true, armed: true, approaching: false, fill: true, sell: true },
-            'dp': { hot: false, armed: true, approaching: true, fill: false, sell: true }
+            'dp': { hot: false, armed: true, approaching: true, fill: false, sell: true },
+            'qs': { hot: false, armed: true, approaching: true, fill: false, sell: true }
         };
         const DEFAULT_NOTIFY_PREFS = {
             '15m': {
@@ -497,6 +500,13 @@
                 sell: { telegram: true, browser: true }
             },
             'dp': {
+                hot: { telegram: false, browser: false },
+                armed: { telegram: true, browser: true },
+                approaching: { telegram: false, browser: false },
+                fill: { telegram: false, browser: false },
+                sell: { telegram: true, browser: true }
+            },
+            'qs': {
                 hot: { telegram: false, browser: false },
                 armed: { telegram: true, browser: true },
                 approaching: { telegram: false, browser: false },
@@ -1061,7 +1071,7 @@
                 alertsField: 'approaching_alerts',
                 event: 'approaching',
                 titleVerb: 'APPROACHING',
-                detailSuffix: 'DP approaching MOC',
+                detailSuffix: 'DP/QS approaching MOC',
                 seen: seenApproach,
                 primed: { get value() { return primedApproach; }, set value(v) { primedApproach = v; } },
                 remember: function(next) { seenApproach = next; saveSeenSet(APPROACH_SEEN_KEY, seenApproach); }
@@ -1142,16 +1152,16 @@
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
-                const chartTf = (tf === '1d' || tf === 'dp') ? '1d' : '15m';
-                const tfClass = tf === '1d' ? 'tf-1d' : (tf === 'dp' ? 'tf-dp' : 'tf-15m');
-                const tfLabel = tf === 'dp' ? 'DP' : tf;
+                const chartTf = (tf === '1d' || tf === 'dp' || tf === 'qs') ? '1d' : '15m';
+                const tfClass = tf === '1d' ? 'tf-1d' : (tf === 'dp' ? 'tf-dp' : (tf === 'qs' ? 'tf-qs' : 'tf-15m'));
+                const tfLabel = tf === 'dp' ? 'DP' : (tf === 'qs' ? 'QS' : tf);
                 const stock = r.stock || '';
                 const boughtCell = r.bought
                     ? '<span class="pill owned">bought</span>'
                     : '<button type="button" class="btn-bought" data-bought-stock="' + stock +
                         '" data-bought-tf="' + tf + '">Bought</button>';
                 let lastCell = fmtNum(r.last_price, 2);
-                if (tf === 'dp') {
+                if (tf === 'dp' || tf === 'qs') {
                     const ok = !!r.wait_ok;
                     const cur = fmtNum(r.last_price, 2);
                     const tgt = fmtNum(r.resist, 2);
