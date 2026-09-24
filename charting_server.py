@@ -109,11 +109,13 @@ def get_symbols():
 
 
 def _chart_symbols():
-    """Fast symbol list: ticker_universe + memory cache (not DISTINCT on market_data)."""
+    """Fast symbol list: ticker_universe + extra ETFs (not DISTINCT on market_data)."""
     now = time.time()
     cached = _SYMBOLS_CACHE.get("symbols") or []
     if cached and (now - float(_SYMBOLS_CACHE.get("ts") or 0)) < _SYMBOLS_TTL_SEC:
         return list(cached)
+    from utils.charting.channel_overlay import merge_chart_symbols
+
     symbols = []
     try:
         from utils.db.timescaledb_client import get_timescaledb_client
@@ -133,6 +135,7 @@ def _chart_symbols():
     except Exception as exc:
         print("chart symbols from ticker_universe failed: %s" % exc)
         symbols = []
+    symbols = merge_chart_symbols(symbols)
     if symbols:
         _SYMBOLS_CACHE["ts"] = now
         _SYMBOLS_CACHE["symbols"] = symbols
@@ -454,6 +457,31 @@ def api_channel_overlay():
         from utils.charting.channel_overlay import parse_channel_overlay
 
         return jsonify(parse_channel_overlay(text))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/tpv-overlay", methods=["POST"])
+def api_tpv_overlay():
+    """Parse pasted TPV JSON/CSV and optionally bucket onto chart bars."""
+    body = request.get_json(silent=True) or {}
+    text = body.get("text")
+    if text is None:
+        text = body.get("json", body.get("csv", body.get("trades", "")))
+    bars = body.get("bars")
+    symbol = body.get("symbol") or body.get("sym") or ""
+    this_sym = _as_bool(body.get("this_sym_only", body.get("thisSymbolOnly")), False)
+    try:
+        from utils.charting.trade_pnl import tpv_payload
+
+        return jsonify(
+            tpv_payload(
+                text,
+                bar_times=bars if isinstance(bars, list) else None,
+                symbol=symbol,
+                this_sym_only=this_sym,
+            )
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 

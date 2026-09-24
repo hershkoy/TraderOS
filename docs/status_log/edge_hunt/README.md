@@ -4,6 +4,13 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-22 | [SPY 7d ROC rebound claim-check](2026-09-22_roc_rebound_spy.md) |
+| 2026-09-22 | [ROC rebound 50-name ETF/large/small sample](2026-09-22_roc_rebound_universe.md) |
+| 2026-09-22 | [ROC rebound ETF overlay grid (A1/A3 soft-interesting)](2026-09-22_roc_rebound_etf_grid.md) |
+| 2026-09-22 | [ROC rebound expanding walk-forward (SOFT_PASS fragile years)](2026-09-22_roc_rebound_walkforward.md) |
+| 2026-09-22 | [ROC A3 single-slot vs SPY (FAIL holdout gates)](2026-09-22_roc_rebound_occupancy.md) |
+| 2026-09-22 | [ROC capital fixes (time-stop/Rf soft improve, no gate)](2026-09-22_roc_rebound_capital_fix.md) |
+| 2026-09-19 | [Animesh/Dhan HA + 55 EMA + MACD swing](2026-09-19_ha_ema_macd_swing.md) |
 | 2026-09-14 | [Causal VX-curve slope < 4 skip on last-15m](channel_touch/2026-09-14_last_15m_vx_curve_skip.md) |
 | 2026-09-13 | [SMB LOD / 9 EMA x VWAP reclaim](2026-09-13_vwap_ema_reclaim.md) |
 | 2026-09-13 | [VWAP reclaim 100x filters](2026-09-13_vwap_ema_reclaim_filters.md) |
@@ -42,6 +49,7 @@ python scripts\research\run_xs_mom_delta.py
 python scripts\research\run_swing_mr_screen.py
 python scripts\research\run_mean_reversion_2022.py
 python scripts\research\run_choppy_regime.py
+python scripts\research\run_ha_ema_macd_swing.py --weekly
 python scripts\research\backtest_vwap_ema_reclaim.py --n-symbols 300
 python scripts\research\overlay_vwap_ema_filters.py
 python scripts\research\run_phase6_overlays.py

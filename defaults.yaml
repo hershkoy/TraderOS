@@ -104,6 +104,37 @@ strategies:
       trend_sma: 50
       use_trend: true
 
+  # Jesse XAUSTBreakFree port (1h Donchian + 4h SuperTrend). Defaults = their optimized HP.
+  # Instrument: GLD ETF proxy (no XAUUSD/GC futures in DB). Fee 0.02% per side.
+  xaust_breakfree:
+    description: "1h Donchian breakout + 4h SuperTrend regime (long/short), ATR stops/trails"
+    data_requirements:
+      base_timeframe: "hourly"
+      additional_timeframes: ["4h"]
+      requires_resampling: false
+    parameters:
+      st_period: 24
+      st_factor: 4.0
+      ema4: 10
+      don_period: 85
+      atr_stop: 3.0
+      trail_atr: 6.5
+      exit_on_flip: 0
+      l_adx: 10
+      s_adx: 15
+      s_stop: 4.0
+      s_trail: 3.5
+      s_tp: 5.0
+      risk_pct: 3.0
+      max_lev: 4.0
+      commission: 0.0002
+      atr_period: 14
+      adx_period: 14
+      higher_tf_idx: 1
+      use_session_filter: false
+      printlog: false
+      log_level: "INFO"
+
 # Data settings
 data:
   min_data_points: 30     # Minimum data points required for backtest

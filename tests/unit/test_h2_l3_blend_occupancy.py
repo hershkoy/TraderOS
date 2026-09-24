@@ -172,3 +172,45 @@ def test_sell_frees_unified_slot():
     kept, skip = occupancy_unified_fcfs(blend, max_open=1, unique_symbol=True)
     assert sleeve_counts(kept)[SLEEVE_L3] == 1
     assert skip.empty
+
+
+def test_short_sleeve_dedicated_cap():
+    from utils.research.h2_l3_blend_occupancy import SLEEVE_SHORT
+
+    long = _book(
+        [
+            {
+                "stock": "AAA",
+                "buy_time": "2022-01-03 20:45:00",
+                "sell_time": "2022-01-20 15:00:00",
+                "gain_pct": -5.0,
+                "buy_date": "2022-01-03",
+            }
+        ]
+    )
+    short = _book(
+        [
+            {
+                "stock": "BBB",
+                "buy_time": "2022-01-04 14:30:00",
+                "sell_time": "2022-01-04 18:00:00",
+                "gain_pct": 0.5,
+                "buy_date": "2022-01-04",
+            }
+        ]
+    )
+    blend = prepare_blend(
+        long, short, sleeve_a=SLEEVE_H2, sleeve_b=SLEEVE_SHORT
+    )
+    kept, skip = occupancy_dedicated_sleeves(
+        blend,
+        a_cap=1,
+        b_cap=1,
+        unique_across=True,
+        sleeve_a=SLEEVE_H2,
+        sleeve_b=SLEEVE_SHORT,
+    )
+    counts = sleeve_counts(kept, sleeve_a=SLEEVE_H2, sleeve_b=SLEEVE_SHORT)
+    assert counts[SLEEVE_H2] == 1
+    assert counts[SLEEVE_SHORT] == 1
+    assert skip.empty

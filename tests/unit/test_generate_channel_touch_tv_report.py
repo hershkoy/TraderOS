@@ -739,4 +739,89 @@ def test_render_html_embeds_channel_json():
     assert '"exp":74' in html
     assert "data-copy-ch" in html
     assert "paste into CTF Channel JSON" in html
+    assert 'id="tfExportJson"' in html
+    assert "function exportTradesJson" in html
+    assert "function tpvJsonForRows" in html
+    assert "function tpvCsvForRows" not in html
+    assert "item.enp" in html
+    assert "item.ex_ms" in html
+    assert "__TPV_EXPORT_JS__" not in html
+    assert "Paste into Charts" in html
+    assert "Trades JSON (TPV paste)" in html
+    assert "Download .json" in html
+
+
+def test_patch_html_tpv_export_is_idempotent():
+    from scripts.research.generate_channel_touch_tv_report import patch_html_tpv_export
+
+    old = """
+        <button class="btn" id="tfPushEquity" type="button" title="Copy Max P&amp;L into Win cap and re-run equity">Push Max P&amp;L to equity</button>
+    <p class="muted">Paste into Channel Touch Fill Viewer \u2192 Channel JSON.</p>
+        <button class="btn" type="button" id="chCopyAgain">Copy</button>
+        <button class="btn secondary" type="button" id="chCopyClose">Close</button>
+  if ((RAW.trades || []).some(t => t.ch)) {
+    note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';
+  }
+document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
+function openChModal(text) {
+  const modal = document.getElementById('chCopyModal');
+  const ta = document.getElementById('chCopyText');
+  ta.value = text;
+  modal.classList.add('open');
+  ta.focus();
+  ta.select();
+}
+function copyChannelJson(text, btn) {
+  openChModal(text);
+  copyText(text).then(() => {
+    if (btn) {
+      btn.classList.add('copied');
+      setTimeout(() => btn.classList.remove('copied'), 1200);
+    }
+    showCopyToast('Copied channel JSON \u2014 paste into CTF Channel JSON');
+  }).catch(() => {
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  });
+}
+document.getElementById('chCopyAgain').addEventListener('click', () => {
+  copyChannelJson(document.getElementById('chCopyText').value, null);
+});
+"""
+    patched = patch_html_tpv_export(old)
+    assert 'id="tfExportJson"' in patched
+    assert "function exportTradesJson" in patched
+    assert "function tpvItem" in patched
+    assert "function tpvJsonForRows" in patched
+    assert "item.enp" in patched
+    assert "function tpvCsvForRows" not in patched
+    assert 'id="chCopyDownload"' in patched
+    assert patched.count("function copyChannelJson") == 1
+    assert patched.count("function openChModal") == 1
+    again = patch_html_tpv_export(patched)
+    assert again == patched
+
+
+def test_upgrade_tpv_export_js_restores_json():
+    from scripts.research.generate_channel_touch_tv_report import upgrade_tpv_export_js
+
+    old = """
+let copyModalToast = 'x';
+function tpvItem(t) {
+  const item = {};
+  item.s = 'A';
+  item.x = 1;
+  return item;
+}
+function tpvCsvForRows(rows) { return ''; }
+function exportTradesJson() {}
+function closeChModal() {}
+"""
+    out = upgrade_tpv_export_js(old)
+    assert "function tpvJsonForRows" in out
+    assert "function tpvCsvForRows" not in out
+    assert "item.enp" in out
+    assert "Trades JSON (TPV paste)" in out
+    assert "function closeChModal" in out
+    again = upgrade_tpv_export_js(out)
+    assert again == out
 

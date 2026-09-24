@@ -17,6 +17,18 @@ def test_filter_symbols_prefix_then_contains():
     assert filter_symbols("", symbols, limit=2) == ["AAPL", "ABBV"]
 
 
+def test_merge_chart_symbols_includes_spy():
+    from utils.charting.channel_overlay import CHART_EXTRA_SYMBOLS, merge_chart_symbols
+
+    merged = merge_chart_symbols(["AAPL", "msft", "SPY"])
+    assert "SPY" in merged
+    assert "QQQ" in merged
+    assert "AAPL" in merged
+    assert "MSFT" in merged
+    assert merged == sorted(set(["AAPL", "MSFT"] + [s.upper() for s in CHART_EXTRA_SYMBOLS]))
+    assert filter_symbols("SPY", merge_chart_symbols(["AAPL", "KGSPY"]))[0] == "SPY"
+
+
 def test_parse_goto_date_only():
     spec = parse_goto_query("2025-06-13")
     assert spec["date_only"] is True
@@ -109,6 +121,7 @@ def test_charts_page_controls_and_overlay_api():
     client = app.test_client()
     html = client.get("/").get_data(as_text=True)
     assert 'id="symbol-input"' in html
+    assert "if (!seen[q] && starts.length === 0) starts.unshift(q);" in html
     assert 'id="goto-date"' in html
     assert 'id="goto-picker"' in html
     assert 'type="datetime-local"' in html
@@ -117,6 +130,10 @@ def test_charts_page_controls_and_overlay_api():
     assert "gotoDateOrPick" in html
     assert 'id="channel-json"' in html
     assert "Draw channel" in html
+    assert 'id="tpv-json"' in html
+    assert "Draw TPV" in html
+    assert "applyTpvPane" in html
+    assert "Load a chart first, then draw TPV" in html
     assert "Load a chart first, then draw the channel" in html
     assert "if (want) await setSymbol(want);" not in html
     assert 'id="crosshair"' in html
@@ -177,6 +194,16 @@ def test_charts_page_controls_and_overlay_api():
     ).get_json()
     assert geo["sym"] == "MUR"
     assert geo["w"] == 1.8
+    tpv = client.post(
+        "/api/tpv-overlay",
+        json={
+            "text": "WGO,1561477500,-5.73",
+            "bars": ["2019-06-24 00:00:00", "2019-06-26 00:00:00"],
+        },
+    ).get_json()
+    assert tpv["n"] == 1
+    assert tpv["n_on"] == 1
+    assert tpv["y"][0] == -5.73
     hot = client.get("/hot").get_data(as_text=True)
     assert "paste on Charts (Channel JSON) or CTF" in hot
 

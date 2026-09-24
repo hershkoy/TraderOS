@@ -158,15 +158,15 @@ def _has_more(df: pd.DataFrame, around_ts: Optional[pd.Timestamp], before_n: int
     return len(df) >= max(1, before_n + after_n), False
 
 
-def _fetch_window_df(client, symbol: str, timeframe: str, around_ts, before_n: int, after_n: int) -> pd.DataFrame:
-    raw = client.get_market_data_window(
+def _fetch_window_df(_client, symbol: str, timeframe: str, around_ts, before_n: int, after_n: int) -> pd.DataFrame:
+    # Unique ts (latest ingest). Raw LIMIT on duplicated SPY 1d rows was ~14 sessions.
+    return fetch_unique_ohlcv_window(
         symbol,
         timeframe,
-        around=None if around_ts is None else around_ts.to_pydatetime(),
+        around=around_ts,
         before=before_n,
         after=after_n,
     )
-    return _to_ohlcv(raw)
 
 
 UNIQUE_OHLCV_SELECT = (

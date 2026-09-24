@@ -1,21 +1,25 @@
-"""Timestamp occupancy for a last-15m H2 + 15m L3 blend.
+"""Timestamp occupancy for a two-sleeve trade blend.
 
-Unified FCFS uses one max_open across both sleeves (H2 duration can starve L3).
-Dedicated sleeves reserve L3 slots so the short book can still fire when H2 is
-full. Unique-symbol is the single-account rule (one lot per name). Independent
+Unified FCFS uses one max_open across both sleeves. Dedicated sleeves reserve
+per-sleeve caps so the second book can still fire when the first is full.
+Unique-symbol is the single-account rule (one lot per name). Independent
 sleeves walk each book with its own cap and may double a name.
+
+Default sleeve tags keep the last-15m H2 + 15m L3 names for the original
+overlay. Short fade uses ``SLEEVE_SHORT``.
 
 Sells free a slot when sell_ts <= next buy_ts. Occupancy is greedy on the
 existing fill/exit times (not a re-detect).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
 SLEEVE_H2 = "last15m_h2"
 SLEEVE_L3 = "l3_wait12"
+SLEEVE_SHORT = "resist_short_h3"
 SKIP_CAP = "cap_full"
 SKIP_SLEEVE = "sleeve_full"
 SKIP_SYMBOL = "same_symbol"
@@ -29,14 +33,20 @@ def _naive_ts(series: pd.Series) -> pd.Series:
 
 
 def prepare_blend(
-    h2: pd.DataFrame,
-    l3: pd.DataFrame,
+    book_a: pd.DataFrame,
+    book_b: pd.DataFrame,
     *,
     gain_col: str = "gain_pct",
+    sleeve_a: str = SLEEVE_H2,
+    sleeve_b: str = SLEEVE_L3,
 ) -> pd.DataFrame:
-    """Stack books with buy/sell timestamps and a sleeve tag."""
+    """Stack two books with buy/sell timestamps and sleeve tags.
+
+    ``book_a`` / ``book_b`` were historically ``h2`` / ``l3``; any two trade
+    frames work as long as they have stock + buy/sell clocks and a gain column.
+    """
     parts: List[pd.DataFrame] = []
-    for sleeve, df in ((SLEEVE_H2, h2), (SLEEVE_L3, l3)):
+    for sleeve, df in ((str(sleeve_a), book_a), (str(sleeve_b), book_b)):
         if df is None or df.empty:
             continue
         out = df.copy()
@@ -66,6 +76,8 @@ def occupancy_unified_fcfs(
     *,
     max_open: int,
     unique_symbol: bool = True,
+    sleeve_a: str = SLEEVE_H2,
+    sleeve_b: str = SLEEVE_L3,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """One capital pool. First buy_time wins until a slot frees.
 
@@ -75,34 +87,46 @@ def occupancy_unified_fcfs(
         trades,
         mode="unified",
         max_open=int(max_open),
-        h2_cap=0,
-        l3_cap=0,
+        a_cap=0,
+        b_cap=0,
         unique_symbol=bool(unique_symbol),
         unique_across=bool(unique_symbol),
+        sleeve_a=str(sleeve_a),
+        sleeve_b=str(sleeve_b),
     )
 
 
 def occupancy_dedicated_sleeves(
     trades: pd.DataFrame,
     *,
-    h2_cap: int,
-    l3_cap: int,
+    h2_cap: Optional[int] = None,
+    l3_cap: Optional[int] = None,
+    a_cap: Optional[int] = None,
+    b_cap: Optional[int] = None,
     unique_across: bool = True,
+    sleeve_a: str = SLEEVE_H2,
+    sleeve_b: str = SLEEVE_L3,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Reserved slot budgets. L3 can take while H2 is at cap if L3 slots are free.
+    """Reserved slot budgets. Sleeve B can take while A is at cap if B slots free.
 
     ``unique_across=True``: one lot per name in the account.
     ``unique_across=False``: independent books (same name may be in both).
     Each sleeve still unique-symbol versus itself.
+
+    Prefer ``a_cap`` / ``b_cap``. Legacy ``h2_cap`` / ``l3_cap`` still work.
     """
+    cap_a = int(a_cap if a_cap is not None else (h2_cap if h2_cap is not None else 0))
+    cap_b = int(b_cap if b_cap is not None else (l3_cap if l3_cap is not None else 0))
     return _walk(
         trades,
         mode="dedicated",
         max_open=0,
-        h2_cap=int(h2_cap),
-        l3_cap=int(l3_cap),
+        a_cap=cap_a,
+        b_cap=cap_b,
         unique_symbol=True,
         unique_across=bool(unique_across),
+        sleeve_a=str(sleeve_a),
+        sleeve_b=str(sleeve_b),
     )
 
 
@@ -111,18 +135,20 @@ def _walk(
     *,
     mode: str,
     max_open: int,
-    h2_cap: int,
-    l3_cap: int,
+    a_cap: int,
+    b_cap: int,
     unique_symbol: bool,
     unique_across: bool,
+    sleeve_a: str,
+    sleeve_b: str,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if trades is None or trades.empty:
         empty = trades.iloc[0:0].copy() if trades is not None else pd.DataFrame()
         return empty, pd.DataFrame(columns=["reason", "sleeve"])
 
     ordered = trades.sort_values(["_buy", "_stock", "sleeve"], kind="mergesort")
-    open_h2: List[Tuple[Any, str]] = []
-    open_l3: List[Tuple[Any, str]] = []
+    open_a: List[Tuple[Any, str]] = []
+    open_b: List[Tuple[Any, str]] = []
     open_all: List[Tuple[Any, str]] = []
     keep_idx: List[Any] = []
     skips: List[dict] = []
@@ -131,17 +157,17 @@ def _walk(
         buy_ts = row["_buy"]
         stock = str(row["_stock"])
         sleeve = str(row.get("sleeve") or "")
-        open_h2 = [p for p in open_h2 if p[0] > buy_ts]
-        open_l3 = [p for p in open_l3 if p[0] > buy_ts]
+        open_a = [p for p in open_a if p[0] > buy_ts]
+        open_b = [p for p in open_b if p[0] > buy_ts]
         open_all = [p for p in open_all if p[0] > buy_ts]
 
         if unique_symbol:
             if unique_across:
                 held = any(s == stock for _, s in open_all)
-            elif sleeve == SLEEVE_H2:
-                held = any(s == stock for _, s in open_h2)
+            elif sleeve == sleeve_a:
+                held = any(s == stock for _, s in open_a)
             else:
-                held = any(s == stock for _, s in open_l3)
+                held = any(s == stock for _, s in open_b)
             if held:
                 skips.append({"reason": SKIP_SYMBOL, "sleeve": sleeve})
                 continue
@@ -152,24 +178,24 @@ def _walk(
                 continue
             keep_idx.append(idx)
             open_all.append((row["_sell"], stock))
-            if sleeve == SLEEVE_H2:
-                open_h2.append((row["_sell"], stock))
+            if sleeve == sleeve_a:
+                open_a.append((row["_sell"], stock))
             else:
-                open_l3.append((row["_sell"], stock))
+                open_b.append((row["_sell"], stock))
             continue
 
-        cap = h2_cap if sleeve == SLEEVE_H2 else l3_cap
-        cur = open_h2 if sleeve == SLEEVE_H2 else open_l3
+        cap = a_cap if sleeve == sleeve_a else b_cap
+        cur = open_a if sleeve == sleeve_a else open_b
         if cap <= 0 or len(cur) >= cap:
             skips.append({"reason": SKIP_SLEEVE, "sleeve": sleeve})
             continue
         keep_idx.append(idx)
         cur.append((row["_sell"], stock))
         open_all.append((row["_sell"], stock))
-        if sleeve == SLEEVE_H2:
-            open_h2 = cur
+        if sleeve == sleeve_a:
+            open_a = cur
         else:
-            open_l3 = cur
+            open_b = cur
 
     kept = ordered.loc[keep_idx].copy()
     skip_df = pd.DataFrame(skips)
@@ -186,20 +212,31 @@ def skip_counts(skip_df: pd.DataFrame) -> Dict[str, int]:
     return out
 
 
-def sleeve_counts(kept: pd.DataFrame) -> Dict[str, int]:
+def sleeve_counts(
+    kept: pd.DataFrame,
+    *,
+    sleeve_a: str = SLEEVE_H2,
+    sleeve_b: str = SLEEVE_L3,
+) -> Dict[str, int]:
     if kept is None or kept.empty or "sleeve" not in kept.columns:
-        return {SLEEVE_H2: 0, SLEEVE_L3: 0, "n": 0}
+        return {sleeve_a: 0, sleeve_b: 0, "n": 0}
     vc = kept["sleeve"].astype(str).value_counts()
     return {
-        SLEEVE_H2: int(vc.get(SLEEVE_H2, 0)),
-        SLEEVE_L3: int(vc.get(SLEEVE_L3, 0)),
+        sleeve_a: int(vc.get(sleeve_a, 0)),
+        sleeve_b: int(vc.get(sleeve_b, 0)),
         "n": int(len(kept)),
     }
 
 
-def year_sleeve_counts(kept: pd.DataFrame, year: int) -> Dict[str, int]:
+def year_sleeve_counts(
+    kept: pd.DataFrame,
+    year: int,
+    *,
+    sleeve_a: str = SLEEVE_H2,
+    sleeve_b: str = SLEEVE_L3,
+) -> Dict[str, int]:
     if kept is None or kept.empty:
-        return {SLEEVE_H2: 0, SLEEVE_L3: 0}
+        return {sleeve_a: 0, sleeve_b: 0}
     d = pd.to_datetime(kept["buy_date"], errors="coerce")
     part = kept.loc[d.dt.year == int(year)]
-    return sleeve_counts(part)
+    return sleeve_counts(part, sleeve_a=sleeve_a, sleeve_b=sleeve_b)

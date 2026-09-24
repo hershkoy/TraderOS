@@ -1,0 +1,416 @@
+//@version=6
+// Bottom-pane P&L from pasted trades (HTML CSV export, JSON, or CTF).
+// Y-axis is P&L % (not price). Pine has no JSON.parse; objects/lines are split as text.
+// CSV: SYM,exit_unix_sec,gain_pct  or  exit_unix_sec,gain_pct  (one trade per line).
+// JSON times: unix seconds or ms (UTC). Daily midnight-UTC stamps show the UTC calendar date.
+indicator("Trade P&L Viewer", "TPV", overlay = false, precision = 2, max_bars_back = 5000, max_labels_count = 80)
+
+gJson = "Trades paste"
+gVis  = "Display"
+
+jsonIn = input.text_area("", "Trades CSV / JSON", group = gJson, tooltip = "Paste part 1 from the HTML Export trades JSON dialog. CSV: SYM,exit_unix_sec,gain_pct (symbol may be omitted on large books). Each TV box holds about 4k chars — use boxes 2-12 for the rest.")
+jsonIn2 = input.text_area("", "Trades (2)", group = gJson, tooltip = "Paste CSV/JSON part 2 if part 1 filled the first box.")
+jsonIn3 = input.text_area("", "Trades (3)", group = gJson)
+jsonIn4 = input.text_area("", "Trades (4)", group = gJson)
+jsonIn5 = input.text_area("", "Trades (5)", group = gJson)
+jsonIn6 = input.text_area("", "Trades (6)", group = gJson)
+jsonIn7 = input.text_area("", "Trades (7)", group = gJson)
+jsonIn8 = input.text_area("", "Trades (8)", group = gJson)
+jsonIn9 = input.text_area("", "Trades (9)", group = gJson)
+jsonIn10 = input.text_area("", "Trades (10)", group = gJson)
+jsonIn11 = input.text_area("", "Trades (11)", group = gJson)
+jsonIn12 = input.text_area("", "Trades (12)", group = gJson)
+
+thisSymOnly = input.bool(false, "This symbol only", group = gVis, tooltip = "When on, skip rows whose SYM does not match the chart ticker. Off = show the whole paste (use this on ES/SPY for a multi-name book).")
+placeAt = input.string("Exit", "Bar at", options = ["Exit", "Entry"], group = gVis, tooltip = "Histogram sits on the exit bar (P&L realized) or the entry bar.")
+amtMode = input.string("Percent", "Amount", options = ["Percent", "Points", "Both"], group = gVis, tooltip = "Percent is gain_pct. Points are exit-entry (short: entry-exit).")
+histWidth = input.int(4, "Histogram width", minval = 1, maxval = 8, group = gVis)
+showLabels = input.bool(false, "Bar labels", group = gVis, tooltip = "Off by default (Fear-and-Greed style). On = one tiny net-P&L tag per bar, not every trade.")
+showTable = input.bool(true, "Info table", group = gVis, tooltip = "Shows parsed vs kept vs on-chart counts. If Parsed is far below the HTML export, a paste box was truncated — use more boxes or the compact CSV.")
+maxDraw = input.int(80, "Max labels", minval = 1, maxval = 500, group = gVis)
+winColor = input.color(#26a69a, "Win", group = gVis)
+lossColor = input.color(#ef5350, "Loss", group = gVis)
+flatColor = input.color(#787b86, "Flat", group = gVis)
+dbgLog = input.bool(false, "Last-bar Pine logs", group = gVis)
+
+var table info = table.new(position.top_left, 2, 8, bgcolor = color.new(#111111, 10), border_width = 1, border_color = color.new(#ffffff, 70))
+
+var array<int> tArr = array.new_int()
+var array<float> gArr = array.new_float()
+var array<float> pArr = array.new_float()
+var int nParsed = 0
+var int nKept = 0
+var int nSkip = 0
+var int nWin = 0
+var int nLoss = 0
+var float sumG = 0.0
+
+f_norm_json(string src) =>
+    s = str.replace_all(src, "\n", "")
+    s := str.replace_all(s, "\r", "")
+    s := str.replace_all(s, "\t", "")
+    s := str.replace_all(s, ", ", ",")
+    s := str.replace_all(s, ": ", ":")
+    s := str.replace_all(s, " {", "{")
+    s := str.replace_all(s, "{ ", "{")
+    s := str.replace_all(s, " }", "}")
+    s := str.replace_all(s, "} ", "}")
+    s := str.replace_all(s, " [", "[")
+    s := str.replace_all(s, "[ ", "[")
+    s := str.replace_all(s, " ]", "]")
+    s := str.replace_all(s, "] ", "]")
+    s
+
+f_jraw(string src, string key) =>
+    string needle = '"' + key + '":'
+    int p = str.pos(src, needle)
+    string out = string(na)
+    if not na(p)
+        int i = p + str.length(needle)
+        int n = str.length(src)
+        if i < n and str.substring(src, i, i + 1) == '"'
+            int j = i + 1
+            int endq = j
+            for k = 0 to 48
+                if j >= n
+                    break
+                if str.substring(src, j, j + 1) == '"'
+                    endq := j
+                    break
+                j += 1
+            out := str.substring(src, i + 1, endq)
+        else
+            int j = i
+            int endn = i
+            for k = 0 to 40
+                if j >= n
+                    break
+                string c = str.substring(src, j, j + 1)
+                if c == "," or c == "}"
+                    endn := j
+                    break
+                j += 1
+                endn := j
+            out := str.substring(src, i, endn)
+    out
+
+f_jnum(string src, string key) =>
+    str.tonumber(f_jraw(src, key))
+
+f_jstr(string src, string key) =>
+    f_jraw(src, key)
+
+f_jstr_any(string src, string k1, string k2, string k3, string k4) =>
+    string v = f_jstr(src, k1)
+    if na(v) or v == ""
+        v := f_jstr(src, k2)
+    if na(v) or v == ""
+        v := f_jstr(src, k3)
+    if na(v) or v == ""
+        v := f_jstr(src, k4)
+    v
+
+f_jnum_any(string src, string k1, string k2, string k3, string k4) =>
+    float v = f_jnum(src, k1)
+    if na(v)
+        v := f_jnum(src, k2)
+    if na(v)
+        v := f_jnum(src, k3)
+    if na(v)
+        v := f_jnum(src, k4)
+    v
+
+f_iso_ms(string s) =>
+    int ms = int(na)
+    if not na(s) and str.length(s) >= 10
+        int y = int(str.tonumber(str.substring(s, 0, 4)))
+        int mo = int(str.tonumber(str.substring(s, 5, 7)))
+        int d = int(str.tonumber(str.substring(s, 8, 10)))
+        int h = 0
+        int mi = 0
+        if str.length(s) >= 16
+            h := int(str.tonumber(str.substring(s, 11, 13)))
+            mi := int(str.tonumber(str.substring(s, 14, 16)))
+        if not na(y) and not na(mo) and not na(d)
+            ms := timestamp("UTC", y, mo, d, h, mi)
+    ms
+
+f_ms(string src, string msKey, string tKey) =>
+    float n = f_jnum(src, msKey)
+    int ms = int(na)
+    if not na(n)
+        ms := int(n)
+    else
+        ms := f_iso_ms(f_jstr(src, tKey))
+    ms
+
+f_as_ms(int ts) =>
+    int out = ts
+    if not na(ts) and ts > 0 and ts < 100000000000
+        out := ts * 1000
+    out
+
+f_exit_ms(string src) =>
+    int ms = f_ms(src, "ex_ms", "ex")
+    if na(ms)
+        ms := f_ms(src, "x", "sell")
+    if na(ms)
+        ms := f_ms(src, "sell_ms", "sell_at")
+    if na(ms)
+        ms := f_iso_ms(f_jstr(src, "sell"))
+    f_as_ms(ms)
+
+f_entry_ms(string src) =>
+    int ms = f_ms(src, "en_ms", "en")
+    if na(ms)
+        ms := f_ms(src, "fill_ms", "fill")
+    if na(ms)
+        ms := f_ms(src, "buy_ms", "buy_at")
+    if na(ms)
+        ms := f_iso_ms(f_jstr(src, "buy"))
+    f_as_ms(ms)
+
+f_is_short(string src) =>
+    string side = str.lower(f_jstr_any(src, "side", "dir", "pos", "__none__"))
+    side == "short" or side == "s" or side == "-1"
+
+f_gain_pct(string src, float enp, float exp) =>
+    float g = f_jnum_any(src, "g", "gain", "gain_pct", "ret_pct")
+    if na(g)
+        g := f_jnum(src, "pnl")
+    if na(g) and not na(enp) and not na(exp) and enp != 0
+        g := (exp - enp) / enp * 100.0
+        if f_is_short(src)
+            g := -g
+    g
+
+f_points(string src, float enp, float exp) =>
+    float pts = float(na)
+    if not na(enp) and not na(exp)
+        pts := exp - enp
+        if f_is_short(src)
+            pts := -pts
+    pts
+
+f_amt_txt(float g, float pts) =>
+    string txt = ""
+    if amtMode == "Points"
+        if not na(pts)
+            txt := (pts > 0 ? "+" : "") + str.tostring(pts, "#.###")
+    else if amtMode == "Both"
+        if not na(g)
+            txt := (g > 0 ? "+" : "") + str.tostring(g, "#.##") + "%"
+        if not na(pts)
+            txt := txt + (txt == "" ? "" : " ") + "(" + (pts > 0 ? "+" : "") + str.tostring(pts, "#.###") + ")"
+    else
+        if not na(g)
+            txt := (g > 0 ? "+" : "") + str.tostring(g, "#.##") + "%"
+    txt
+
+f_pnl_color(float g) =>
+    na(g) ? flatColor : g > 0 ? winColor : g < 0 ? lossColor : flatColor
+
+f_join_two(string a, string b) =>
+    f_norm_json(a) + f_norm_json(b)
+
+f_payload(string src) =>
+    s = src
+    int p = str.pos(s, '"trades":[')
+    if not na(p)
+        s := str.substring(s, p + 9)
+    if str.length(s) >= 1 and str.substring(s, 0, 1) == "["
+        s := str.substring(s, 1)
+        int q = str.pos(s, "]")
+        if not na(q)
+            s := str.substring(s, 0, q)
+    s
+
+f_objects(string src) =>
+    array<string> out = array.new_string()
+    s = f_payload(src)
+    if str.length(s) < 5
+        out
+    else
+        sep = str.contains(s, "},{") ? "},{" : "}{"
+        parts = str.split(s, sep)
+        n = array.size(parts)
+        if n > 0
+            for i = 0 to n - 1
+                chunk = array.get(parts, i)
+                if str.length(chunk) < 5
+                    continue
+                if str.substring(chunk, 0, 1) != "{"
+                    chunk := "{" + chunk
+                int cl = str.length(chunk)
+                if str.substring(chunk, cl - 1, cl) != "}"
+                    chunk := chunk + "}"
+                array.push(out, chunk)
+        out
+
+f_csv_objects(string src) =>
+    array<string> out = array.new_string()
+    s = str.replace_all(src, "\r", "")
+    lines = str.split(s, "\n")
+    n = array.size(lines)
+    if n > 0
+        for i = 0 to n - 1
+            line = str.replace_all(array.get(lines, i), " ", "")
+            line := str.replace_all(line, "\t", "")
+            if str.length(line) < 3
+                continue
+            if str.substring(line, 0, 1) == "#"
+                continue
+            if str.contains(line, "{")
+                continue
+            parts = str.split(line, ",")
+            pn = array.size(parts)
+            string obj = ""
+            if pn >= 3
+                obj := '{"s":"' + array.get(parts, 0) + '","x":' + array.get(parts, 1) + ',"g":' + array.get(parts, 2) + '}'
+            else if pn == 2
+                obj := '{"x":' + array.get(parts, 0) + ',"g":' + array.get(parts, 1) + '}'
+            if obj != ""
+                array.push(out, obj)
+    out
+
+f_sym_ok(string src) =>
+    string sym = f_jstr_any(src, "sym", "symbol", "stock", "s")
+    bool ok = true
+    if thisSymOnly and not na(sym) and sym != ""
+        ok := str.upper(sym) == str.upper(syminfo.ticker)
+    ok
+
+f_in_bar(int ts) =>
+    bool hit = false
+    if not na(ts)
+        int tEnd = time + math.max(1, timeframe.in_seconds()) * 1000
+        if not na(time_close)
+            tEnd := math.max(tEnd, time_close)
+        hit := ts >= time and ts < tEnd
+    hit
+
+f_tbl(string status, string tone, string nParse, string nKeep, string nDraw, string wl, string note) =>
+    if showTable
+        lab = #ffffff
+        sz = size.small
+        stCol = tone == "ok" ? winColor : tone == "warn" ? color.yellow : lossColor
+        table.cell(info, 0, 0, "TPV", text_color = lab, text_size = sz)
+        table.cell(info, 1, 0, "Trade P&L %", text_color = lab, text_size = sz)
+        table.cell(info, 0, 1, "Status", text_color = lab, text_size = sz)
+        table.cell(info, 1, 1, status, text_color = stCol, text_size = sz)
+        table.cell(info, 0, 2, "Parsed", text_color = lab, text_size = sz)
+        table.cell(info, 1, 2, nParse, text_color = lab, text_size = sz)
+        table.cell(info, 0, 3, "Kept", text_color = lab, text_size = sz)
+        table.cell(info, 1, 3, nKeep, text_color = lab, text_size = sz)
+        table.cell(info, 0, 4, "On chart", text_color = lab, text_size = sz)
+        table.cell(info, 1, 4, nDraw, text_color = lab, text_size = sz)
+        table.cell(info, 0, 5, "W / L", text_color = lab, text_size = sz)
+        table.cell(info, 1, 5, wl, text_color = lab, text_size = sz)
+        table.cell(info, 0, 6, "Chart", text_color = lab, text_size = sz)
+        table.cell(info, 1, 6, syminfo.ticker + " " + timeframe.period, text_color = lab, text_size = sz)
+        table.cell(info, 0, 7, "Note", text_color = lab, text_size = sz)
+        table.cell(info, 1, 7, note, text_color = lab, text_size = sz)
+
+if barstate.isfirst
+    array.clear(tArr)
+    array.clear(gArr)
+    array.clear(pArr)
+    nParsed := 0
+    nKept := 0
+    nSkip := 0
+    nWin := 0
+    nLoss := 0
+    sumG := 0.0
+    csvSrc = jsonIn + "\n" + jsonIn2 + "\n" + jsonIn3 + "\n" + jsonIn4 + "\n" + jsonIn5 + "\n" + jsonIn6 + "\n" + jsonIn7 + "\n" + jsonIn8 + "\n" + jsonIn9 + "\n" + jsonIn10 + "\n" + jsonIn11 + "\n" + jsonIn12
+    array<string> objs = array.new_string()
+    if str.contains(csvSrc, "{")
+        jsonSrc = f_join_two(jsonIn, jsonIn2)
+        jsonSrc := jsonSrc + f_join_two(jsonIn3, jsonIn4)
+        jsonSrc := jsonSrc + f_join_two(jsonIn5, jsonIn6)
+        jsonSrc := jsonSrc + f_join_two(jsonIn7, jsonIn8)
+        jsonSrc := jsonSrc + f_join_two(jsonIn9, jsonIn10)
+        jsonSrc := jsonSrc + f_join_two(jsonIn11, jsonIn12)
+        jsonSrc := str.replace_all(jsonSrc, "][", ",")
+        jsonSrc := str.replace_all(jsonSrc, "}{", "},{")
+        objs := f_objects(jsonSrc)
+    else
+        objs := f_csv_objects(csvSrc)
+    nParsed := array.size(objs)
+    cap = math.min(nParsed, 3000)
+    if cap > 0
+        for i = 0 to cap - 1
+            obj = array.get(objs, i)
+            if not f_sym_ok(obj)
+                nSkip += 1
+                continue
+            tEx = f_exit_ms(obj)
+            tEn = f_entry_ms(obj)
+            float enp = f_jnum_any(obj, "enp", "entry", "buy_price", "__none__")
+            float exp = f_jnum_any(obj, "exp", "exit", "sell_price", "__none__")
+            float g = f_gain_pct(obj, enp, exp)
+            float pts = f_points(obj, enp, exp)
+            if na(tEx) and not na(tEn)
+                tEx := tEn
+            int tLab = placeAt == "Entry" and not na(tEn) ? tEn : tEx
+            string amt = f_amt_txt(g, pts)
+            if na(tLab) or na(g) or amt == ""
+                nSkip += 1
+                continue
+            array.push(tArr, tLab)
+            array.push(gArr, g)
+            array.push(pArr, na(pts) ? 0.0 : pts)
+            nKept += 1
+            sumG += g
+            if g > 0
+                nWin += 1
+            else if g < 0
+                nLoss += 1
+
+float barG = 0.0
+int nHit = 0
+n = array.size(tArr)
+if n > 0
+    for i = 0 to n - 1
+        ts = array.get(tArr, i)
+        if f_in_bar(ts)
+            g = array.get(gArr, i)
+            barG += amtMode == "Points" ? array.get(pArr, i) : g
+            nHit += 1
+
+float plotG = nHit > 0 ? barG : na
+col = na(plotG) ? color.new(flatColor, 100) : f_pnl_color(plotG)
+plot(plotG, "P&L", color = col, style = plot.style_histogram, linewidth = histWidth, histbase = 0)
+hline(0, "Zero", color = color.new(flatColor, 50), linestyle = hline.style_dotted)
+
+var int nOnChart = 0
+var int nLabMade = 0
+if barstate.isfirst
+    nOnChart := 0
+    nLabMade := 0
+if nHit > 0
+    nOnChart += nHit
+    if showLabels and nLabMade < maxDraw
+        string labTxt = (plotG > 0 ? "+" : "") + str.tostring(plotG, "#.##") + (amtMode == "Points" ? "" : "%")
+        if nHit > 1
+            labTxt := str.tostring(nHit) + "  " + labTxt
+        sty = plotG >= 0 ? label.style_label_down : label.style_label_up
+        label.new(bar_index, plotG, labTxt, xloc = xloc.bar_index, style = sty, color = col, textcolor = color.white, size = size.tiny, textalign = text.align_center)
+        nLabMade += 1
+
+if barstate.islast
+    if showTable
+        string st = nKept > 0 ? (nOnChart > 0 ? "drawn" : "none on chart") : (nParsed == 0 ? "paste CSV/JSON" : "bad paste")
+        string tone = nOnChart > 0 ? "ok" : "warn"
+        string note = nParsed == 0 ? "Settings > Trades CSV/JSON" : (nOnChart == 0 ? "No exits in loaded bars / timeframe" : "pane is P&L %, not price")
+        if nParsed >= 3000
+            note := "capped at 3000  " + note
+        if nSkip > 0
+            note := str.tostring(nSkip) + " skipped  " + note
+        string wl = str.tostring(nWin) + " / " + str.tostring(nLoss)
+        if nKept > 0
+            wl := wl + "  sum " + (sumG > 0 ? "+" : "") + str.tostring(sumG, "#.##") + "%"
+        f_tbl(st, tone, str.tostring(nParsed), str.tostring(nKept), str.tostring(nOnChart), wl, note)
+    else
+        table.clear(info, 0, 0, 1, 7)
+    if dbgLog
+        log.info("TPV parsed={0} kept={1} onChart={2} skip={3} ticker={4}", nParsed, nKept, nOnChart, nSkip, syminfo.ticker)

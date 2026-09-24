@@ -73,3 +73,61 @@ def test_unique_ohlcv_sql_dedupes_by_ts():
 
     assert "DISTINCT ON (ts)" in UNIQUE_OHLCV_SELECT
 
+
+def test_has_more_latest_window_needs_full_page():
+    from utils.charting.ohlcv_window import _has_more
+
+    short = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=pd.bdate_range("2026-08-31", periods=14, tz="UTC"),
+    )
+    assert _has_more(short, None, 50, 50) == (False, False)
+    full = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=pd.bdate_range("2026-01-01", periods=100, tz="UTC"),
+    )
+    assert _has_more(full, None, 50, 50) == (True, False)
+
+
+def test_load_ohlcv_window_unique_full_page_can_zoom_out(monkeypatch):
+    from utils.charting.ohlcv_window import load_ohlcv_window
+
+    idx = pd.bdate_range("2026-01-01", periods=100, tz="UTC")
+    df = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=idx,
+    )
+    seen = {}
+
+    def fake_unique(symbol, timeframe, **kwargs):
+        seen["symbol"] = symbol
+        seen["timeframe"] = timeframe
+        seen["before"] = kwargs.get("before")
+        seen["after"] = kwargs.get("after")
+        return df
+
+    class FakeClient:
+        def ensure_connection(self):
+            return True
+
+    monkeypatch.setattr("utils.charting.ohlcv_window.fetch_unique_ohlcv_window", fake_unique)
+    monkeypatch.setattr(
+        "utils.db.timescaledb_client.get_timescaledb_client", lambda: FakeClient()
+    )
+    win = load_ohlcv_window("SPY", "1d", before=50, after=50)
+    assert seen["symbol"] == "SPY"
+    assert seen["timeframe"] == "1d"
+    assert len(win["df"]) == 100
+    assert win["has_more_before"] is True
+    assert win["has_more_after"] is False
+
+
+def test_market_data_window_sql_limits_unique_ts():
+    import inspect
+
+    from utils.db.timescaledb_client import TimescaleDBClient
+
+    src = inspect.getsource(TimescaleDBClient.get_market_data_window)
+    assert "DISTINCT ON (ts)" in src
+    assert "created_at DESC NULLS LAST" in src
+

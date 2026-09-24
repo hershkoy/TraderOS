@@ -14,6 +14,44 @@ _TZ_SUFFIX = re.compile(r"\s+(ET|EDT|EST|NY|RTH|UTC|GMT)\s*$", re.I)
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HAS_TZ = re.compile(r"(Z|[+-]\d{2}:?\d{2})\s*$", re.I)
 
+# ETFs / indexes that have OHLCV in market_data but are not S&P/Nasdaq
+# constituents, so ticker_universe omits them from the Charts picker.
+CHART_EXTRA_SYMBOLS = (
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "VTI",
+    "GLD",
+    "TLT",
+    "USO",
+    "UUP",
+    "IEF",
+    "DBC",
+    "BIL",
+    "VIX",
+    "VIX3M",
+    "VVIX",
+)
+
+
+def merge_chart_symbols(
+    universe: Sequence[str],
+    extras: Sequence[str] = CHART_EXTRA_SYMBOLS,
+) -> List[str]:
+    """Union ticker_universe with extra ETFs/indexes; unique, sorted."""
+    seen = set()
+    out: List[str] = []
+    for src in (universe, extras):
+        for raw in src:
+            name = str(raw or "").strip().upper()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+    out.sort()
+    return out
+
 
 def filter_symbols(query: str, symbols: Sequence[str], limit: int = 40) -> List[str]:
     """Prefix matches first, then substring. Case-insensitive."""

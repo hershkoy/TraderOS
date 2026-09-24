@@ -109,3 +109,29 @@ def test_sma_needs_full_window():
     ma = sma(s, 3)
     assert pd.isna(ma.iloc[1])
     assert ma.iloc[2] == pytest.approx(2.0)
+
+
+def test_combine_h2_alt_short_sleeve():
+    from utils.research.h2_l3_blend_occupancy import SLEEVE_SHORT
+    from utils.research.last_15m_regime_switch import combine_h2_alt
+
+    h2 = pd.DataFrame(
+        [
+            {"stock": "H", "buy_date": "2022-01-03", "gain_pct": -2.0},
+            {"stock": "H2", "buy_date": "2022-06-01", "gain_pct": 5.0},
+        ]
+    )
+    short = pd.DataFrame(
+        [
+            {"stock": "S", "buy_date": "2022-01-03", "gain_pct": 0.3},
+            {"stock": "S2", "buy_date": "2022-06-01", "gain_pct": 0.1},
+        ]
+    )
+    out = combine_h2_alt(
+        h2,
+        short,
+        pd.Series([False, True], index=h2.index),
+        pd.Series([True, False], index=short.index),
+        alt_sleeve=SLEEVE_SHORT,
+    )
+    assert set(zip(out["stock"], out["sleeve"])) == {("H2", "last15m_h2"), ("S", SLEEVE_SHORT)}

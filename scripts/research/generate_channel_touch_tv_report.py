@@ -806,6 +806,277 @@ def load_comparison_json(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     return data
 
 
+# Injected into the HTML as plain JS (single braces). Do not put this inside an f-string.
+TPV_EXPORT_JS = r"""
+let copyModalToast = 'Copied channel JSON — paste into CTF Channel JSON';
+let copyModalFilename = 'channel.json';
+let copyModalFullText = '';
+
+function roundN(x, n) {
+  if (x == null || !Number.isFinite(Number(x))) return null;
+  return +Number(x).toFixed(n);
+}
+
+function tpvItem(t) {
+  const ch = t.ch || {};
+  const item = {};
+  const sym = String(t.symbol || ch.sym || '').toUpperCase();
+  if (sym) item.sym = sym;
+  const enp = ch.enp != null ? ch.enp : t.entry_price;
+  const exp = ch.exp != null ? ch.exp : t.exit_price;
+  const enpR = roundN(enp, 6);
+  const expR = roundN(exp, 6);
+  if (enpR != null) item.enp = enpR;
+  if (expR != null) item.exp = expR;
+  if (ch.en_ms != null) item.en_ms = ch.en_ms;
+  else if (ch.en) item.en = ch.en;
+  else if (t.entry_date) item.en = String(t.entry_date);
+  if (ch.ex_ms != null) item.ex_ms = ch.ex_ms;
+  else if (ch.ex) item.ex = ch.ex;
+  else if (t.exit_date) item.ex = String(t.exit_date);
+  const g = roundN(t.pnl_pct, 4);
+  if (g != null) item.g = g;
+  return item;
+}
+
+function tpvJsonForRows(rows) {
+  return JSON.stringify(rows.map(tpvItem));
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], {type: 'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || 'export.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 500);
+}
+
+function openCopyModal(opts) {
+  const modal = document.getElementById('chCopyModal');
+  const ta = document.getElementById('chCopyText');
+  const title = document.getElementById('chCopyTitle');
+  const hint = document.getElementById('chCopyHint');
+  if (title) title.textContent = opts.title || 'JSON';
+  if (hint) hint.textContent = opts.hint || '';
+  ta.value = opts.text || '';
+  copyModalToast = opts.toast || 'Copied JSON';
+  copyModalFilename = opts.filename || 'export.json';
+  copyModalFullText = opts.fullText != null ? opts.fullText : (opts.text || '');
+  ta.style.height = String(copyModalFilename).indexOf('trades_tpv') === 0 ? '280px' : '180px';
+  const parts = document.getElementById('chCopyParts');
+  if (parts) parts.style.display = 'none';
+  modal.classList.add('open');
+  ta.focus();
+  ta.select();
+}
+
+function openChModal(text) {
+  openCopyModal({
+    title: 'Channel JSON (CTF paste)',
+    hint: 'Paste into Channel Touch Fill Viewer → Channel JSON.',
+    text: text,
+    toast: 'Copied channel JSON — paste into CTF Channel JSON',
+    filename: 'channel.json'
+  });
+}
+
+function copyChannelJson(text, btn) {
+  openChModal(text);
+  copyText(text).then(() => {
+    if (btn) {
+      btn.classList.add('copied');
+      setTimeout(() => btn.classList.remove('copied'), 1200);
+    }
+    showCopyToast(copyModalToast);
+  }).catch(() => {
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  });
+}
+
+function exportTradesJson() {
+  const rows = sortTradeRows(filterTradeRows(tradeRowsAll));
+  if (!rows.length) {
+    showCopyToast('No trades to export (check filters)');
+    return;
+  }
+  const text = tpvJsonForRows(rows);
+  const n = rows.length;
+  const bytes = text.length;
+  let hint = 'Paste into Charts → Trades JSON / CSV (TPV pane). ' + n +
+    ' filtered table row' + (n === 1 ? '' : 's') +
+    '. g is table P&L % (after friction / win cap). Prefer UTC en_ms/ex_ms from Channel JSON.';
+  if (bytes > 3500) {
+    hint += ' Full book is ' + bytes + ' chars — Charts has no 4k cap; use Copy or Download .json.';
+  }
+  const fname = 'trades_tpv_' + n + '.json';
+  openCopyModal({
+    title: 'Trades JSON (TPV paste)',
+    hint: hint,
+    text: text,
+    fullText: text,
+    toast: 'Copied ' + n + ' trades JSON — paste into Charts TPV pane',
+    filename: fname
+  });
+  copyText(text).then(() => showCopyToast(copyModalToast)).catch(() => {
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  });
+}
+"""
+
+
+def upgrade_tpv_export_js(html: str) -> str:
+    """Replace an older TPV export JS block with the Charts-importable JSON version."""
+    start = html.find("let copyModalToast")
+    if start < 0:
+        start = html.find("function roundN(x, n)")
+    if start < 0:
+        start = html.find("function tpvItem(t)")
+    if start < 0:
+        return html
+    end = html.find("function closeChModal")
+    if end < 0:
+        end = html.find("document.getElementById('tradesTable')")
+    if end < 0:
+        return html
+    html = html[:start] + TPV_EXPORT_JS.strip() + "\n\n" + html[end:]
+    html = html.replace(
+        "  const text = document.getElementById('chCopyText').value || '';\n"
+        "  if (!text) return;\n"
+        "  downloadText(copyModalFilename, text);",
+        "  const text = (typeof copyModalFullText === 'string' && copyModalFullText)\n"
+        "    ? copyModalFullText\n"
+        "    : (document.getElementById('chCopyText').value || '');\n"
+        "  if (!text) return;\n"
+        "  downloadText(copyModalFilename, text);",
+        1,
+    )
+    return html
+
+
+def patch_html_tpv_export(html: str) -> str:
+    """Add Export trades JSON to an already-generated TV report. Idempotent."""
+    if 'id="tfPushEquity"' not in html and "function openChModal" not in html:
+        raise ValueError("HTML is not a channel-touch TV report (missing tfPushEquity/openChModal)")
+    if 'id="tfExportJson"' in html:
+        return upgrade_tpv_export_js(html)
+    if "function openChModal" not in html:
+        raise ValueError("HTML is not a channel-touch TV report (missing tfPushEquity/openChModal)")
+
+    html = html.replace(
+        '        <button class="btn" id="tfPushEquity" type="button" title="Copy Max P&amp;L into Win cap and re-run equity">Push Max P&amp;L to equity</button>',
+        '        <button class="btn" id="tfPushEquity" type="button" title="Copy Max P&amp;L into Win cap and re-run equity">Push Max P&amp;L to equity</button>\n'
+        '        <button class="btn secondary" id="tfExportJson" type="button" title="Copy filtered trades as TPV JSON">Export trades JSON</button>',
+        1,
+    )
+    html = html.replace(
+        '    <p class="muted">Paste into Channel Touch Fill Viewer → Channel JSON.</p>',
+        '    <p class="muted" id="chCopyHint">Paste into Channel Touch Fill Viewer → Channel JSON.</p>',
+        1,
+    )
+    html = html.replace(
+        '        <button class="btn" type="button" id="chCopyAgain">Copy</button>\n'
+        '        <button class="btn secondary" type="button" id="chCopyClose">Close</button>',
+        '        <button class="btn" type="button" id="chCopyAgain">Copy</button>\n'
+        '        <button class="btn secondary" type="button" id="chCopyDownload">Download .json</button>\n'
+        '        <button class="btn secondary" type="button" id="chCopyClose">Close</button>',
+        1,
+    )
+    html = html.replace(
+        "    note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';",
+        "    note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';\n"
+        "    note += ' · Export trades JSON copies filtered rows for TPV Trades JSON';",
+        1,
+    )
+    html = html.replace(
+        "document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);\n",
+        "document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);\n"
+        "document.getElementById('tfExportJson').addEventListener('click', exportTradesJson);\n",
+        1,
+    )
+    old_modal_js = """function openChModal(text) {
+  const modal = document.getElementById('chCopyModal');
+  const ta = document.getElementById('chCopyText');
+  ta.value = text;
+  modal.classList.add('open');
+  ta.focus();
+  ta.select();
+}"""
+    if old_modal_js not in html:
+        raise ValueError("Could not find openChModal block to patch")
+    html = html.replace(old_modal_js, TPV_EXPORT_JS.strip(), 1)
+    old_copy = """function copyChannelJson(text, btn) {
+  openChModal(text);
+  copyText(text).then(() => {
+    if (btn) {
+      btn.classList.add('copied');
+      setTimeout(() => btn.classList.remove('copied'), 1200);
+    }
+    showCopyToast('Copied channel JSON — paste into CTF Channel JSON');
+  }).catch(() => {
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  });
+}"""
+    if old_copy in html:
+        html = html.replace(old_copy, "/* copyChannelJson provided by TPV_EXPORT_JS */", 1)
+    html = html.replace(
+        "document.getElementById('chCopyAgain').addEventListener('click', () => {\n"
+        "  copyChannelJson(document.getElementById('chCopyText').value, null);\n"
+        "});",
+        "document.getElementById('chCopyAgain').addEventListener('click', () => {\n"
+        "  const text = document.getElementById('chCopyText').value;\n"
+        "  copyText(text).then(() => showCopyToast(copyModalToast)).catch(() => {\n"
+        "    showCopyToast('Select the JSON and copy (Ctrl+C)');\n"
+        "  });\n"
+        "});\n"
+        "document.getElementById('chCopyDownload').addEventListener('click', () => {\n"
+        "  const text = (typeof copyModalFullText === 'string' && copyModalFullText)\n"
+        "    ? copyModalFullText\n"
+        "    : (document.getElementById('chCopyText').value || '');\n"
+        "  if (!text) return;\n"
+        "  downloadText(copyModalFilename, text);\n"
+        "});",
+        1,
+    )
+    if 'id="tfExportJson"' not in html or "function exportTradesJson" not in html:
+        raise ValueError("TPV export patch did not land")
+    return upgrade_tpv_export_js(html)
+
+
+def patch_html_paths(path: Path) -> int:
+    """Patch one HTML file or every *.html in a directory. Returns 0 on success."""
+    if path.is_dir():
+        files = sorted(path.glob("*.html"))
+    elif path.is_file():
+        files = [path]
+    else:
+        logger.error("HTML path not found: %s", path)
+        return 1
+    if not files:
+        logger.error("No HTML files in %s", path)
+        return 1
+    n_ok = 0
+    n_skip = 0
+    for html_path in files:
+        raw = html_path.read_text(encoding="utf-8")
+        try:
+            patched = patch_html_tpv_export(raw)
+        except ValueError as exc:
+            logger.warning("Skip %s: %s", html_path.name, exc)
+            continue
+        if patched == raw:
+            logger.info("Already current: %s", html_path)
+            n_skip += 1
+            continue
+        html_path.write_text(patched, encoding="utf-8")
+        logger.info("Patched %s (+%d bytes)", html_path, len(patched) - len(raw))
+        n_ok += 1
+    if n_ok == 0 and n_skip == 0:
+        return 1
+    logger.info("Patched %d, already current %d", n_ok, n_skip)
+    return 0
+
+
 def render_html(
     *,
     raw_trades: List[dict],
@@ -838,7 +1109,7 @@ def render_html(
         else "No RS column in trades CSV; max/day keeps first N by original row order."
     )
 
-    return f"""<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -921,7 +1192,7 @@ def render_html(
     width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
     border-radius:4px; padding:7px 9px; font-size:12px;
   }}
-  .trade-filters .actions {{ display:flex; gap:8px; }}
+  .trade-filters .actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
   .metric-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:14px; }}
   .metric-grid .mh,.metric-grid .mc {{ padding:9px 12px; border-bottom:1px solid var(--border); border-right:1px solid var(--border); font-size:12px; }}
   .metric-grid .mh {{ background:var(--panel2); color:var(--muted); }}
@@ -956,7 +1227,7 @@ def render_html(
   #chCopyModal.open {{ display:flex; }}
   #chCopyModal .box {{
     background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    padding:14px 16px; width:min(560px,92vw);
+    padding:14px 16px; width:min(720px,92vw);
   }}
   #chCopyModal textarea {{
     width:100%; height:180px; margin:10px 0; background:var(--bg); color:var(--text);
@@ -1181,6 +1452,7 @@ def render_html(
       <div class="actions">
         <button class="btn secondary" id="tfClear" type="button">Clear filters</button>
         <button class="btn" id="tfPushEquity" type="button" title="Copy Max P&amp;L into Win cap and re-run equity">Push Max P&amp;L to equity</button>
+        <button class="btn secondary" id="tfExportJson" type="button" title="Copy filtered trades as TPV JSON">Export trades JSON</button>
       </div>
     </div>
     <p class="muted" id="tradesNote"></p>
@@ -1254,11 +1526,12 @@ def render_html(
 <div id="chCopyModal" role="dialog" aria-modal="true" aria-labelledby="chCopyTitle">
   <div class="box">
     <h2 id="chCopyTitle">Channel JSON (CTF paste)</h2>
-    <p class="muted">Paste into Channel Touch Fill Viewer → Channel JSON.</p>
+    <p class="muted" id="chCopyHint">Paste into Channel Touch Fill Viewer → Channel JSON.</p>
     <textarea id="chCopyText" readonly></textarea>
     <div class="trade-filters" style="margin:0">
       <div class="actions">
         <button class="btn" type="button" id="chCopyAgain">Copy</button>
+        <button class="btn secondary" type="button" id="chCopyDownload">Download .json</button>
         <button class="btn secondary" type="button" id="chCopyClose">Close</button>
       </div>
     </div>
@@ -2231,6 +2504,7 @@ function paintTradesTable() {{
   if ((RAW.trades || []).some(t => t.ch)) {{
     note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';
   }}
+  note += ' · Export trades JSON copies filtered rows for TPV Trades JSON';
   setHTML('tradesNote', note);
   updateSortHeaders();
   setHTML('tradesBody', slice.map(t => `
@@ -2413,6 +2687,7 @@ document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
 }});
 document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
+document.getElementById('tfExportJson').addEventListener('click', exportTradesJson);
 
 function showCopyToast(msg) {{
   const el = document.getElementById('copyToast');
@@ -2420,19 +2695,6 @@ function showCopyToast(msg) {{
   el.style.display = 'block';
   clearTimeout(showCopyToast._t);
   showCopyToast._t = setTimeout(() => {{ el.style.display = 'none'; }}, 2200);
-}}
-
-function openChModal(text) {{
-  const modal = document.getElementById('chCopyModal');
-  const ta = document.getElementById('chCopyText');
-  ta.value = text;
-  modal.classList.add('open');
-  ta.focus();
-  ta.select();
-}}
-
-function closeChModal() {{
-  document.getElementById('chCopyModal').classList.remove('open');
 }}
 
 function copyText(text) {{
@@ -2459,17 +2721,10 @@ function copyText(text) {{
   }});
 }}
 
-function copyChannelJson(text, btn) {{
-  openChModal(text);
-  copyText(text).then(() => {{
-    if (btn) {{
-      btn.classList.add('copied');
-      setTimeout(() => btn.classList.remove('copied'), 1200);
-    }}
-    showCopyToast('Copied channel JSON — paste into CTF Channel JSON');
-  }}).catch(() => {{
-    showCopyToast('Select the JSON and copy (Ctrl+C)');
-  }});
+__TPV_EXPORT_JS__
+
+function closeChModal() {{
+  document.getElementById('chCopyModal').classList.remove('open');
 }}
 
 document.getElementById('tradesTable').addEventListener('click', (e) => {{
@@ -2481,7 +2736,17 @@ document.getElementById('tradesTable').addEventListener('click', (e) => {{
   copyChannelJson(text, btn);
 }});
 document.getElementById('chCopyAgain').addEventListener('click', () => {{
-  copyChannelJson(document.getElementById('chCopyText').value, null);
+  const text = document.getElementById('chCopyText').value;
+  copyText(text).then(() => showCopyToast(copyModalToast)).catch(() => {{
+    showCopyToast('Select the JSON and copy (Ctrl+C)');
+  }});
+}});
+document.getElementById('chCopyDownload').addEventListener('click', () => {{
+  const text = (typeof copyModalFullText === 'string' && copyModalFullText)
+    ? copyModalFullText
+    : (document.getElementById('chCopyText').value || '');
+  if (!text) return;
+  downloadText(copyModalFilename, text);
 }});
 document.getElementById('chCopyClose').addEventListener('click', closeChModal);
 document.getElementById('chCopyModal').addEventListener('click', (e) => {{
@@ -2499,6 +2764,7 @@ resetDefaults();
 </body>
 </html>
 """
+    return html.replace("__TPV_EXPORT_JS__", TPV_EXPORT_JS)
 
 
 def main() -> int:
@@ -2520,6 +2786,12 @@ def main() -> int:
     ap.add_argument("--provider", default="ALPACA")
     ap.add_argument("--tag", default="")
     ap.add_argument(
+        "--patch-html",
+        type=Path,
+        default=None,
+        help="Patch an existing TV report HTML (or a folder of them) with Export trades JSON. Skips regenerate.",
+    )
+    ap.add_argument(
         "--title",
         default="Ascending Channel Touch Long — Strategy Report",
         help="HTML page title / header",
@@ -2537,6 +2809,9 @@ def main() -> int:
         help="Summary sidecar txt (default: next to --trades as *_trades_summary_*.txt or <stem>_summary.txt)",
     )
     args = ap.parse_args()
+
+    if args.patch_html is not None:
+        return patch_html_paths(args.patch_html)
 
     trades_path = args.trades or _latest_trades_csv(args.outdir)
     logger.info("Loading trades: %s", trades_path)

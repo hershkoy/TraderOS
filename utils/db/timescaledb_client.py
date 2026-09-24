@@ -444,10 +444,14 @@ class TimescaleDBClient:
             if provider:
                 where += " AND provider = %s"
                 params_base.append(provider.upper())
+            # DISTINCT ON (ts) so LIMIT is unique bars. Duplicate provider/ingest
+            # rows otherwise shrink a 100-row request to a handful of sessions.
             select = (
-                "SELECT ts, symbol, provider, timeframe, open, high, low, close, "
-                "volume, created_at FROM market_data WHERE "
+                "SELECT DISTINCT ON (ts) ts, symbol, provider, timeframe, open, high, "
+                "low, close, volume, created_at FROM market_data WHERE "
             ) + where
+            newest = "ORDER BY ts DESC, created_at DESC NULLS LAST"
+            oldest = "ORDER BY ts ASC, created_at DESC NULLS LAST"
 
             def _run(sql: str, params: List[Any]) -> list:
                 cursor.execute(sql, params)
@@ -456,20 +460,20 @@ class TimescaleDBClient:
             rows: list
             if before_ts is not None:
                 sql = (
-                    "SELECT * FROM (" + select + " AND ts < %s ORDER BY ts DESC LIMIT %s"
+                    "SELECT * FROM (" + select + " AND ts < %s " + newest + " LIMIT %s"
                     ") w ORDER BY ts"
                 )
                 rows = _run(sql, params_base + [before_ts, before_n])
             elif after_ts is not None:
-                sql = select + " AND ts > %s ORDER BY ts ASC LIMIT %s"
+                sql = select + " AND ts > %s " + oldest + " LIMIT %s"
                 rows = _run(sql, params_base + [after_ts, after_n])
             elif around is not None:
                 left_sql = (
-                    "SELECT * FROM (" + select + " AND ts <= %s ORDER BY ts DESC LIMIT %s"
+                    "SELECT * FROM (" + select + " AND ts <= %s " + newest + " LIMIT %s"
                     ") a"
                 )
                 right_sql = (
-                    "SELECT * FROM (" + select + " AND ts > %s ORDER BY ts ASC LIMIT %s"
+                    "SELECT * FROM (" + select + " AND ts > %s " + oldest + " LIMIT %s"
                     ") b"
                 )
                 left = _run(left_sql, params_base + [around, before_n + 1])
@@ -478,7 +482,7 @@ class TimescaleDBClient:
             else:
                 limit_n = max(1, before_n + after_n)
                 sql = (
-                    "SELECT * FROM (" + select + " ORDER BY ts DESC LIMIT %s"
+                    "SELECT * FROM (" + select + " " + newest + " LIMIT %s"
                     ") w ORDER BY ts"
                 )
                 rows = _run(sql, params_base + [limit_n])

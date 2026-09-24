@@ -950,7 +950,7 @@ def main():
                    help='Index to start from in the universe (for universe backtesting, default: 0)')
     ap.add_argument('--workers', type=int, default=1,
                    help='Parallel workers for --universe (process pool; default 1=serial)')
-    ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB'], default='ALPACA',
+    ap.add_argument('--provider', type=str, choices=['ALPACA', 'IB', 'TRADINGVIEW'], default='ALPACA',
                    help='Data provider (default: ALPACA)')
     ap.add_argument('--timeframe', type=str, choices=['15m', '1h', '1d'], default='1h',
                    help='Data timeframe (default: 1h; new option: 15m)')

@@ -2,6 +2,10 @@
 
 Short notes. Add as needed.
 
+**ROC** — Rate of Change: `(close / close[n] − 1) × 100` over n trading days. Positive = up over the window; negative = down.
+
+**ROC rebound (SPY)** — Quantified Strategies rule: buy next open when 7d ROC closes below −3%; sell next open when 7d ROC closes above +3%; no stop/TP. Yahoo claim-check ~n=147 WR 71% PF 2.40 MDD ~29%. Research only — not a Sharpe>1 promote. See `docs/strategies/roc_rebound/`.
+
 **CAGR** — Compound Annual Growth Rate: geometric mean annual return of an equity curve, `(end/start)^(1/years) − 1`. Reported on edge-hunt books; not the ranking objective (Sharpe/MDD vs SPY gate).
 
 **MTM** — Mark-to-market: equity *while a trade is still open*, `last closed equity × (today's close / entry)`. Overview MDD uses this (Deep Pullback ~14%; the 2011 loser is the usual driver). Not closed-trade MDD (Leverage tab ~10% unlevered / ~31% at 3× — compounds only after the exit). Leverage scales the Overview number: ~14% × 3 ≈ 40%+ → ~$20k hole on a $50k sleeve if a 2011-style loser prints while you are in it. Futures variation margin is this cash P&L every day, not a paper SPY line.
@@ -23,6 +27,8 @@ Short notes. Add as needed.
 **Failed-breakout exit** — After an H2 fill, the first later session whose close is at/below the projected resist rail; sell the next 15m mid if that is earlier than ATR/trail. Not the delayed 2nd-close *re-entry* (overlay C).
 
 **N+1 mid (sell)** — Decision on completed bar N (15m low tagged the ATR/trail stop); fill is the next RTH 15m midpoint. Overnight to the next 09:30 ET bar is allowed because you already have a position. Not the same as a buy next-mid (last RTH 15:45 has no same-session next bar and cancels).
+
+**MOC DCA (last-15m)** — Split allocated size into 3 equal session-close buys (signal day + next 2). Pause a tranche if that close is below the projected resist rail; ATR k=2 from first fill can stop out during scale-in. Score on allocated capital (idle cash = 0%). No promote vs last-15m n=2297 E +0.27 PF 1.09 (`2026-09-23_last15m_moc_dca.md`).
 
 **Outside-area ratio** — For an ascending channel, the yellow region below support: `sum(max(0, support − low))` on daily bars from L1 through the buy day, divided by channel area `width × n_bars` (bar-index parallelogram). Peak analog is `max(support − low) / width`. Not the same as `max_beyond_width` (overshoot *above* resist).
 
@@ -55,6 +61,10 @@ Short notes. Add as needed.
 **LOD / 9 EMA x VWAP reclaim** — Intraday long after the session low is in and 9 EMA crosses up through session VWAP. Unit = LOD to VWAP at the cross; target +1 unit, stop unit/3. Research clock is IB 15m: buy next-mid (or signal-close) after the completed cross, sell next same-session 15m mid (EOD close if no next bar). Not the video's intra-bar line-cross. 300 ADV names next-mid n=227915 E +0.005 PF 1.02; fric 0.10 E −0.10 PF 0.67. Daily top1 ~100x n=1959 E −0.11 PF 0.85; unit>=5 n=867 E +0.01 PF 1.01 geo 0.92 (drop-top-3 red, 2022 PF 0.84). No promote.
 
 **3-day pullback (limit)** — Evening setup: close > SMA100, exactly three consecutive lower lows, close < SMA5. Next-session GTC limit = close − 0.5 × ATR(10); gap-through fills at the open. First up-close vs the prior close sells the next morning open. Refine default time stop 6 sessions. Unique n=4564 E +0.27 PF 1.24; 2023 n=1193 E −0.40 PF 0.70. First book (no time stop) n=4536 E +0.26 PF 1.23; 2022-23 PF 0.77. Close-loc 0.7 (setup close in top 30% of the bar) n=1104 E +0.01 PF 1.01; 2023 PF 0.49. No promote.
+
+**HA EMA channel (Animesh/Dhan)** — Daily swing claim-check: Heikin-Ashi signals, EMA(55) of High and Low as a band, MACD(12,26,9) on HA close, next-open fill, stop below EMA Low, 3R / Friday close / MACD-signal cross. Primary unique n=4047 E +0.23 PF 1.20; Friday exits 75% so median hold is 1 day; occ-15 Sharpe 0.51 vs SPY 0.67. No promote.
+
+**TPV** — Trade P&L Viewer. Primary: Charts page (`charting_server.py` `/`) bottom pane — paste or load the HTML Export trades JSON/CSV once (no TV 4k cap). Green/red P&L % histogram on the loaded bars. Pine `indicators/pine/trade_pnl_viewer.pine` still exists but settings boxes cannot hold a full book. Not CTD and not CTF.
 
 
 

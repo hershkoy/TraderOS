@@ -139,12 +139,33 @@ def combine_h2_l3(
     l3_on: pd.Series,
 ) -> pd.DataFrame:
     """Take last-15m when H2 is ON, 15m L3 when H2 is OFF. Occupancy not re-walked."""
+    return combine_h2_alt(
+        h2,
+        l3,
+        h2_on,
+        l3_on,
+        alt_sleeve="l3_wait12",
+    )
+
+
+def combine_h2_alt(
+    h2: pd.DataFrame,
+    alt: pd.DataFrame,
+    h2_on: pd.Series,
+    alt_on: pd.Series,
+    *,
+    alt_sleeve: str = "alt",
+) -> pd.DataFrame:
+    """Take last-15m when H2 is ON, alternate sleeve when H2 is OFF.
+
+    Occupancy is not re-walked. ``alt`` may be L3 long or resist-short.
+    """
     keep_h2 = h2_on.reindex(h2.index).fillna(True).astype(bool)
-    keep_l3 = l3_on.reindex(l3.index).fillna(False).astype(bool)
+    keep_alt = alt_on.reindex(alt.index).fillna(False).astype(bool)
     a = h2.loc[keep_h2].copy()
     a["sleeve"] = "last15m_h2"
-    b = l3.loc[keep_l3].copy()
-    b["sleeve"] = "l3_wait12"
+    b = alt.loc[keep_alt].copy()
+    b["sleeve"] = str(alt_sleeve)
     if a.empty and b.empty:
         return pd.DataFrame()
     return pd.concat([a, b], ignore_index=True, sort=False)
@@ -220,3 +241,32 @@ def keep_unless_uup_roc_pos(trades: pd.DataFrame) -> pd.Series:
     roc_s = pd.to_numeric(trades["uup_roc"], errors="coerce")
     skip = roc_s.notna() & (roc_s > 0)
     return ~skip.fillna(False)
+
+
+def keep_unless_spy_below_sma(trades: pd.DataFrame) -> pd.Series:
+    """Keep when SPY missing or SPY close >= SMA. Skip bear market."""
+    px = pd.to_numeric(trades["spy_px"], errors="coerce")
+    ma = pd.to_numeric(trades["spy_sma"], errors="coerce")
+    skip = px.notna() & ma.notna() & (px < ma)
+    return ~skip.fillna(False)
+
+
+def keep_when_spy_below_sma(trades: pd.DataFrame) -> pd.Series:
+    """Alternate sleeve ON only when SPY is below SMA (missing stays OFF)."""
+    px = pd.to_numeric(trades["spy_px"], errors="coerce")
+    ma = pd.to_numeric(trades["spy_sma"], errors="coerce")
+    return (px.notna() & ma.notna() & (px < ma)).fillna(False)
+
+
+def keep_when_tlt_below_sma(trades: pd.DataFrame) -> pd.Series:
+    """Alternate sleeve ON when TLT is below SMA (missing stays OFF)."""
+    px = pd.to_numeric(trades["tlt_px"], errors="coerce")
+    ma = pd.to_numeric(trades["tlt_sma"], errors="coerce")
+    return (px.notna() & ma.notna() & (px < ma)).fillna(False)
+
+
+def keep_when_uup_above_sma(trades: pd.DataFrame) -> pd.Series:
+    """Alternate sleeve ON when UUP is above SMA (missing stays OFF)."""
+    px = pd.to_numeric(trades["uup_px"], errors="coerce")
+    ma = pd.to_numeric(trades["uup_sma"], errors="coerce")
+    return (px.notna() & ma.notna() & (px > ma)).fillna(False)

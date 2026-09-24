@@ -71,6 +71,20 @@
             margin-top: 14px;
         }
 
+        .controls.channel-row.tpv-row {
+            grid-template-columns: 1fr auto auto auto auto;
+        }
+
+        .tpv-check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #4a5568;
+            white-space: nowrap;
+            padding-bottom: 8px;
+        }
+
         .control-group {
             display: flex;
             flex-direction: column;
@@ -82,7 +96,8 @@
             color: #4a5568;
         }
 
-        .control-group select, .control-group input:not(#goto-picker) {
+        .control-group select,
+        .control-group input:not(#goto-picker):not([type="checkbox"]):not([type="file"]) {
             padding: 10px;
             border: 2px solid #e2e8f0;
             border-radius: 8px;
@@ -90,7 +105,8 @@
             transition: all 0.3s ease;
         }
 
-        .control-group select:focus, .control-group input:not(#goto-picker):focus {
+        .control-group select:focus,
+        .control-group input:not(#goto-picker):not([type="checkbox"]):not([type="file"]):focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
@@ -533,6 +549,32 @@
                     <button class="btn secondary" type="button" onclick="clearChannel()">Clear</button>
                 </div>
             </div>
+            <div class="controls channel-row tpv-row">
+                <div class="control-group">
+                    <label for="tpv-json">Trades JSON / CSV (TPV pane)</label>
+                    <textarea id="tpv-json" class="channel-json" rows="2"
+                              placeholder="Paste Export trades JSON/CSV, or load the .csv file"></textarea>
+                </div>
+                <div class="control-group">
+                    <label class="tpv-check" title="Off = whole book on this chart (use on ES/SPY). On = only rows matching the loaded symbol.">
+                        <input type="checkbox" id="tpv-this-sym">
+                        This symbol only
+                    </label>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn" type="button" onclick="drawTpv()">Draw TPV</button>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn secondary" type="button" onclick="document.getElementById('tpv-file').click()">Load file</button>
+                    <input id="tpv-file" type="file" accept=".json,.csv,.txt,text/plain,application/json" hidden>
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button class="btn secondary" type="button" onclick="clearTpv()">Clear TPV</button>
+                </div>
+            </div>
         </div>
 
         <div class="main-content">
@@ -616,6 +658,7 @@
         let lastChartData = null;
         let lastOverlay = null;
         let pendingOverlay = null;
+        let lastTpv = null;
         let symbolHi = -1;
         const VIEW_PAD = 50;
         const PRELOAD_PAD = 400;
@@ -704,6 +747,10 @@
                 if (u.startsWith(q)) starts.push(s);
                 else if (u.indexOf(q) !== -1) contains.push(s);
             });
+            // Typed ticker not in ticker_universe (SPY vs KGSPY): keep it first
+            // so Enter does not steal a substring match. Skip when a prefix
+            // match exists so "AA" + Enter still completes to AAPL.
+            if (!seen[q] && starts.length === 0) starts.unshift(q);
             return starts.concat(contains).slice(0, 40);
         }
 
@@ -861,6 +908,42 @@
                     drawChannel();
                 }
             });
+
+            const tpvBox = document.getElementById('tpv-json');
+            const tpvFile = document.getElementById('tpv-file');
+            if (tpvBox) {
+                tpvBox.addEventListener('paste', function() {
+                    setTimeout(function() {
+                        const text = tpvBox.value || '';
+                        if (looksLikeTpv(text)) drawTpv();
+                    }, 0);
+                });
+                tpvBox.addEventListener('keydown', function(ev) {
+                    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+                        ev.preventDefault();
+                        drawTpv();
+                    }
+                });
+            }
+            if (tpvFile) {
+                tpvFile.addEventListener('change', function() {
+                    const f = tpvFile.files && tpvFile.files[0];
+                    if (!f) return;
+                    const reader = new FileReader();
+                    reader.onload = function() {
+                        tpvBox.value = String(reader.result || '');
+                        drawTpv();
+                    };
+                    reader.readAsText(f);
+                    tpvFile.value = '';
+                });
+            }
+            const tpvSym = document.getElementById('tpv-this-sym');
+            if (tpvSym) {
+                tpvSym.addEventListener('change', function() {
+                    if (lastTpv && lastTpv.trades) applyTpvPane(lastTpv);
+                });
+            }
 
             const indList = document.getElementById('indicators-list');
             if (indList) {
@@ -1216,6 +1299,7 @@
                     drewRails = !!applyChannelOverlay(overlay);
                     if (drewRails && !opts.keepView && !isBg) fitViewToOverlay(overlay);
                 }
+                applyTpvIfAny();
                 if (!opts.keepView && !isBg) {
                     showSuccess(drewRails
                         ? `Chart loaded for ${symbol} (${timeframe}) with channel rails`
@@ -2368,6 +2452,190 @@
             const drop = overlayTraceIndices(gd);
             if (drop.length) Plotly.deleteTraces(gd, drop);
             showSuccess('Cleared channel overlay');
+        }
+
+        function looksLikeTpv(text) {
+            const s = String(text || '').trim();
+            if (!s || s.indexOf('"l1p"') !== -1) return false;
+            if (s.indexOf('"g"') !== -1 || s.indexOf('"ex_ms"') !== -1) return true;
+            const line = s.split(/\r?\n/)[0] || '';
+            return /^-?\d+(\.\d+)?\s*,\s*-?\d/.test(line) || /^[A-Z][A-Z0-9.]*\s*,\s*\d{9,}/.test(line);
+        }
+
+        function tpvTraceIndices(gd) {
+            const inds = [];
+            (gd.data || []).forEach(function(tr, i) {
+                if (tr && tr.name === 'TPV') inds.push(i);
+            });
+            return inds;
+        }
+
+        function dropTpvTraces(gd) {
+            const drop = tpvTraceIndices(gd);
+            if (drop.length) Plotly.deleteTraces(gd, drop);
+        }
+
+        function msToUtcNaive(ms) {
+            if (!isFinite(ms)) return '';
+            const d = new Date(ms);
+            const p = function(n) { return String(n).padStart(2, '0'); };
+            return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate())
+                + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+        }
+
+        function bucketTpvY(xs, trades, thisSym, ticker) {
+            const times = xs.map(chartTsMs);
+            const y = xs.map(function() { return null; });
+            let on = 0;
+            let skip = 0;
+            for (let k = 0; k < trades.length; k++) {
+                const tr = trades[k];
+                if (thisSym && tr.s && tr.s !== ticker) {
+                    skip += 1;
+                    continue;
+                }
+                const t = Number(tr.t_ms);
+                if (!isFinite(t)) {
+                    skip += 1;
+                    continue;
+                }
+                let lo = 0;
+                let hi = times.length - 1;
+                let i = -1;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (times[mid] <= t) {
+                        i = mid;
+                        lo = mid + 1;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                if (i < 0) {
+                    skip += 1;
+                    continue;
+                }
+                if (y[i] == null) y[i] = 0;
+                y[i] += Number(tr.g) || 0;
+                on += 1;
+            }
+            const colors = y.map(function(v) {
+                if (v == null) return 'rgba(0,0,0,0)';
+                if (v > 0) return '#26a69a';
+                if (v < 0) return '#ef5350';
+                return '#787b86';
+            });
+            return { y: y, colors: colors, on: on, skip: skip };
+        }
+
+        function applyTpvPane(payload) {
+            const gd = document.getElementById('chart');
+            const xs = lastChartData && lastChartData.chart_data && lastChartData.chart_data.datetime;
+            if (!gd || !xs || !xs.length || !payload || !payload.trades) return { on: 0, skip: 0 };
+            const ticker = String(lastChartData.symbol || getSymbol() || '').toUpperCase();
+            const thisSym = !!(document.getElementById('tpv-this-sym') && document.getElementById('tpv-this-sym').checked);
+            const bucket = bucketTpvY(xs, payload.trades, thisSym, ticker);
+            dropTpvTraces(gd);
+            Plotly.relayout(gd, {
+                'yaxis.domain': [0.28, 1],
+                'yaxis5.domain': [0, 0.22],
+                'yaxis5.anchor': 'x',
+                'yaxis5.side': 'right',
+                'yaxis5.title.text': 'P&L %',
+                'yaxis5.zeroline': true,
+                'yaxis5.zerolinecolor': '#787b86',
+                'yaxis5.showgrid': true,
+                height: 760
+            });
+            Plotly.addTraces(gd, [{
+                x: xs,
+                y: bucket.y,
+                type: 'bar',
+                name: 'TPV',
+                yaxis: 'y5',
+                marker: { color: bucket.colors },
+                hovertemplate: '%{customdata}<br>P&L %{y:.2f}%<extra>TPV</extra>',
+                customdata: (lastChartData.chart_data && lastChartData.chart_data.datetime || []).map(function(s) {
+                    return formatBarTick(s, lastChartData.timeframe);
+                })
+            }]);
+            lastTpv = payload;
+            chartLog('applyTpvPane', { n: payload.trades.length, on: bucket.on, skip: bucket.skip, thisSym: thisSym });
+            return bucket;
+        }
+
+        function applyTpvIfAny() {
+            if (lastTpv && lastTpv.trades && lastTpv.trades.length) applyTpvPane(lastTpv);
+        }
+
+        function clearTpvPaneLayout(gd) {
+            dropTpvTraces(gd);
+            try {
+                Plotly.relayout(gd, {
+                    'yaxis.domain': [0, 1],
+                    'yaxis5.visible': false,
+                    height: 600
+                });
+            } catch (err) {
+                chartLog('clearTpv.relayout-fail', { message: err && err.message });
+            }
+        }
+
+        async function drawTpv() {
+            const text = (document.getElementById('tpv-json').value || '').trim();
+            chartLog('drawTpv.start', { nText: text.length, hasChart: !!(lastChartData && lastChartData.chart_data) });
+            if (!text) {
+                showError('Paste trades JSON/CSV or load the export file');
+                return;
+            }
+            if (!lastChartData || !lastChartData.chart_data) {
+                showError('Load a chart first, then draw TPV');
+                return;
+            }
+            let payload;
+            try {
+                const response = await fetch('/api/tpv-overlay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        symbol: lastChartData.symbol,
+                        this_sym_only: !!(document.getElementById('tpv-this-sym') && document.getElementById('tpv-this-sym').checked)
+                    })
+                });
+                payload = await response.json();
+                if (!response.ok || payload.error) {
+                    showError(payload.error || ('TPV parse failed (' + response.status + ')'));
+                    return;
+                }
+            } catch (err) {
+                chartLog('drawTpv.parse-fail', { message: err && err.message });
+                showError('Could not parse trades JSON/CSV');
+                return;
+            }
+            lastTpv = payload;
+            const bucket = applyTpvPane(payload);
+            if (!bucket.on && payload.trades && payload.trades.length) {
+                const first = payload.trades[0] && payload.trades[0].t_ms;
+                const around = msToUtcNaive(first);
+                chartLog('drawTpv.goto', { around: around, n: payload.n });
+                if (around) {
+                    const gotoEl = document.getElementById('goto-date');
+                    if (gotoEl) gotoEl.value = around;
+                    showSuccess('No TPV bars in this window, loading ' + around);
+                    await loadChart({ around: around, before: PRELOAD_PAD, after: PRELOAD_PAD });
+                    return;
+                }
+            }
+            const msg = 'TPV ' + bucket.on + ' / ' + payload.n + ' trades on this window';
+            showSuccess(bucket.on < payload.n ? msg + '. Zoom the X-axis out to see more.' : msg);
+        }
+
+        function clearTpv() {
+            lastTpv = null;
+            const gd = document.getElementById('chart');
+            clearTpvPaneLayout(gd);
+            showSuccess('Cleared TPV pane');
         }
 
         function setLoadingProgress(pct, msg) {

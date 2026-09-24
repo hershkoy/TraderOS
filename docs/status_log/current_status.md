@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-19**
+Last updated: **2026-09-23**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -65,6 +65,10 @@ Status: **`docs/status_log/edge_hunt/`**
 
 Promotion gate (vs SPY): Sharpe > 1.0, Sharpe ≥ SPY, MDD better than SPY (CAGR reported, not ranking objective).
 
+### HA + 55 EMA + MACD swing (Animesh / Dhan)
+
+Status: [2026-09-19_ha_ema_macd_swing](edge_hunt/2026-09-19_ha_ema_macd_swing.md). Strategy: [README](../strategies/ha_ema_macd_swing/README.md). Causal daily HA break above EMA(55) High + MACD>0; next-open fill; stop EMA Low; 3R / Friday / MACD-signal cross. ALPACA 1d unique **n=4047 E +0.23 PF 1.20** geo 1.26; **75% Friday exits**, median hold **1 day**; occ-15 Sharpe **0.51** vs SPY 0.67; fric0.25 E −0.02 PF 0.99. Weekly resample n=634 E +2.64 PF 1.55 is a 2023 leftover (2022 n=2). **No promote.**
+
 ### Weekly BigVol + TTM Squeeze
 
 Status: **`docs/status_log/weekly_bigvol/`** — Phase 1 TV verify + Phase 2 edge smoke done. Research execution default: no fixed TP + ~10% stop (+ MA exit). Scanner `squeeze` is TTM zero-cross only.
@@ -91,6 +95,22 @@ Universe TimescaleDB scan (306 names, fric 0, 2006+): all **n=6156 E +0.75 PF 1.
 
 **Live `/hot` Detector DP** (`timeframe=dp`; CronRunner `deep_pullback_spy` ~5m RTH, every minute **15:45–16:00** ET). Developing armed uses Alpaca last as today’s close proxy. Telegram **approaching** from **15:45** with MOC target (`moc_max` on Resist; SMA200 on Support); **BUY NOW** at **15:57** only if still green (Arca MOC locks 15:59 — leave ~2 min). Code: `utils/scanning/deep_pullback_spy.py` / `scripts/scanners/deep_pullback_spy.py`.
 
+### ROC Rebound SPY (research claim-check)
+
+Status: [2026-09-22](edge_hunt/2026-09-22_roc_rebound_spy.md). Strategy: [README](../strategies/roc_rebound/README.md).
+
+QS rules: buy next open when 7d ROC closes below −3%; sell next open when ROC closes above +3%; no stop/TP. Yahoo ~1993–2026 fric 0 **n=147 WR 71.4% E +1.65% PF 2.40** eq 9.11 MDD 29% — **replicates** claim (n=146 WR 71.2% PF 2.40 eq ~9.15 MDD ~29%). All three eras PF > 2. Friction 0.25%: PF 2.12. **No promote** (thin n, large MDD, in-sample). Code: `utils/research/roc_rebound.py` / `scripts/research/backtest_roc_rebound.py`.
+
+**Universe sample (2026-09-22):** seed 42, 50 names (12 ETF / 19 large / 19 small) with RT slippage 0.10 / 0.25 / 0.40%. Pooled PF **1.54 / 1.34 / 1.12** — edge thins off SPY; **no universe promote**. Status: [universe](edge_hunt/2026-09-22_roc_rebound_universe.md). Runner: `scripts/research/run_roc_rebound_universe.py`.
+
+**ETF overlay grid (2026-09-22):** 18 ETFs, fric 0.10%. **A3 SMA200+vol-scale** n=781 PF **2.38** E +1.42 MDD -32 (vs A0 1.69 / +1.04 / -66); eras PF>2; drop-top-3 holds. Time-stops no promote. **Soft-interesting** research sleeve, not live-wired. Status: [etf grid](edge_hunt/2026-09-22_roc_rebound_etf_grid.md).
+
+**Walk-forward (2026-09-22):** Expanding OOS 2005–26 frozen A3 **n=694 PF 2.34**; holdout 2016+ PF **2.49**; IS always picks A3. Fragile 2008/2011/2020. Verdict **SOFT_PASS_OOS_FRAGILE_YEAR**. Status: [walk-forward](edge_hunt/2026-09-22_roc_rebound_walkforward.md).
+
+**Single-slot vs SPY (2026-09-22):** Holdout 2018–26 occ n=56 PF **1.20**; Sharpe 0.12 vs SPY 0.72; MDD worse than SPY. **FAIL** Phase-5 gates — pooled PF~2.3 does not survive max_open=1. Status: [occupancy](edge_hunt/2026-09-22_roc_rebound_occupancy.md).
+
+**Capital fixes (2026-09-22):** time-stop 7 is the main lift; best B9 (regime+tstop+4slot+Rf4%) Sharpe **0.93** MDD −9% beats SPY but **FAIL** Sharpe>1. Verdict **SOFT_IMPROVE_NO_GATE**. Status: [capital fix](edge_hunt/2026-09-22_roc_rebound_capital_fix.md).
+
 ### QS Five Swing SPY (live selective sleeve)
 
 Status: [claim-check](edge_hunt/2026-09-18_qs_five_swing.md), [5m/15m realism](edge_hunt/2026-09-18_qs_five_swing_realism.md), [1m MOC clocks](edge_hunt/2026-09-18_qs_five_swing_1m_moc.md). Strategy: [README](../strategies/qs_five_swing/README.md).
@@ -105,7 +125,13 @@ Five short-term MR sleeves on **SPY** (S1 Band+IBS, S2 Turnaround Tuesday, S3 5-
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-16):** Short H3+ resistance fade after causal H2 (cover support + ATR k=2). Daily unique span365 **n=250 E +0.06 PF 1.02** — **no promote**. 15m unique span10 **n=7004 E +0.21 PF 1.47** geo 1.45 (all years +; drop-top-50 holds; fric0.25 fragile E +0.06) — research-interesting, **not a hard promote**. See [resist short H3](edge_hunt/channel_touch/2026-09-16_resist_short_h3.md).
+**Latest (2026-09-23):** 3x MOC DCA on current_best last-15m (signal day + next 2 closes; pause below rail; ATR stop during scale-in). Allocated n=2295 E **+0.03** PF **1.01** geo **1.03** vs baseline +0.27 / 1.09 / 1.10; deployed E **−0.37**; 2022 still red. **No promote.** See [MOC DCA](edge_hunt/channel_touch/2026-09-23_last15m_moc_dca.md).
+
+**Prior (2026-09-19):** Causal last-15m long ↔ short H3+ regime switch (WR/PF, TLT, UUP, SPY SMA). Same sensors as the L3 switch; WR leftover 2022 still red; PF20 greens 2022 only by becoming ~82% short; macros leave 2023 red or blunt 2020-21. **No promote.** See [short regime switch](edge_hunt/channel_touch/2026-09-19_last15m_short_regime_switch.md).
+
+**Prior (2026-09-19):** Portfolio occupancy overlay of current_best last-15m long H2 + 15m short H3+. Concat flattens 2022 only by short n-weight (117 long / 1031 short). Equalized fric0.25 keeps 2022 red (UNIFIED 15 E −0.17). **No promote.** See [last15m + short blend](edge_hunt/channel_touch/2026-09-19_last15m_resist_short_blend.md).
+
+**Prior (2026-09-16):** Short H3+ resistance fade after causal H2 (cover support + ATR k=2). Daily unique span365 **n=250 E +0.06 PF 1.02** — **no promote**. 15m unique span10 **n=7004 E +0.21 PF 1.47** geo 1.45 (all years +; drop-top-50 holds; fric0.25 fragile E +0.06) — research-interesting, **not a hard promote**. See [resist short H3](edge_hunt/channel_touch/2026-09-16_resist_short_h3.md).
 
 **Prior (2026-09-16):** Causal consecutive-loss sit-out on last-15m n=2297 (L5/S3/P2, L5/S3/P3, dollar ≤−15). Diagnostic: 2022-23 is **not** longer-tailed vs 2020-21 (max 21 vs 26). Locked L5/S3/P2 lifts geo to 1.20 but leftover 2022 **E −2.62** (worse); 2022-23 stays red. **No promote.** Do not fish L/S/P. See [loss streak](edge_hunt/channel_touch/2026-09-16_last_15m_loss_streak.md).
 
@@ -224,7 +250,7 @@ Status: **`docs/status_log/edge_hunt/channel_touch/`**
 ### What is frozen vs in motion
 
 - **Frozen / prefer ship:** Phase 6b near-KEEP blend; channel-touch **H2 resist-break** nightly (min-wait 6 / span365 / unique-symbol/day / `--shakeout-breakout`; no RSI/in-channel/beyond; **unrealistic** same-bar rail clip, not the realistic purchaser). **Deep Pullback** and **QS Five Swing** live on `/hot` (DP / QS) as selective SPY MOC sleeves — not edge-hunt Sharpe>1 promotes.
-- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; **causal VIX backwardation / expanding HMM skip on last-15m** (same bear-rally leftover as SMA; HMM3 zeros 2022 by wrecking 2020-21); **Pine VX2/VX1 slope<4 (TV `CBOE_DLY:VX1!`/`VX2!` dumps, ratio in Python; VX12_lt4 n=1645 E −0.00; leftover 2022 worse, 2020-21 blunt; do not fish 5/8)**; **universe SMA20 breadth or last-15m RTH run/ATR skip** (B50 blunt; X_d1 2022 leftover worse); **AND last-15m H2 with Deepvue weekend take-4** (n=1 MRNA; ever-focused wrecks 2020-21; do not occupancy-walk Deepvue RS/RMV/QQQ onto last-15m); **last-15m H2 vs L3 causal switch via rolling WR/PF, TLT SMA, or UUP SMA** (WR leftover 2022 worse; TLT blunt 2020-21; UUP leaves 2023 red); **TLT last-15m global gate / calendar sit-2022** (oracle cash n=2180 E +0.41 still leaves 2023 −0.33; live SMA100/200/ROC63 not a 2022-only switch); **last-15m H2 + 15m L3 occupancy blend** (unified FCFS vs dedicated sleeves; 2022 red; do not cap-fish); **last-15m consecutive-loss sit-out** (L5/S3/P2 geo 1.20 but leftover 2022 E −2.62; 2022-23 not longer-tailed vs 2020-21; do not fish L/S/P); lower-40% geometry; l3_touch max-age/max-wait caps; bb%B 0.2; 15m `min_close_loc` wick filter (leaky or lagged); 15m entry MLP as a hard gate; ridge P&L confidence sizing (RS-top1 OOS); **1d unique next-mid loser-filter ridge/logistic as a hard gate** (2023 holdout E does not lift; expanding-WF spike is 2024–26 only); copying daily beyond-0.25 onto 15m L3; daily `--intraday-fill 15m` hybrid until it beats wait-6/RSI-50 without fill-bar close; L3 shakeout rebuy (5/10/15 bars); L3 in-channel / RSI 50 on H2 breakouts; **15m H2 resist-break as a replacement for wait-12 L3 on the full IB 15m set**; **15m L3 min-wait 1 (textbook first-tag) vs wait-12 on realistic fill**; 15m unique H1–H4 (tight-break / RS floor / ATR ceiling / quiet-day); logistic-on-H5 as a hard gate; wiring any 15m book into nightly; H2 shakeout-breakout **hard-stop-only** and **min_inside=5** vs any-closed min_inside=1; **1d `open-cross` / `next-open` / daily tick-above (`--touch-error-pct 0`) vs the B12 close-fill keeper**; **1d `--intraday-trigger hot-cross` buy-now vs nightly clip**; **choppy-regime RSI-2 MOC / 3-day pullback** (occ-15 fric0.25 PF 0.96; pullback 2022-23 PF 0.77; not a last-15m overlay); **QS 15m@15:45 as an early MOC decision** (bar spans into the close; use 1m 15:57, not 5m@15:55).
+- **Not fishing further (same windows):** Edge-hunt Sharpe>1 on Phase 5/6/6c overlays; reclaim until look-ahead fixed; SPY SMA hard filter; **causal VIX backwardation / expanding HMM skip on last-15m** (same bear-rally leftover as SMA; HMM3 zeros 2022 by wrecking 2020-21); **Pine VX2/VX1 slope<4 (TV `CBOE_DLY:VX1!`/`VX2!` dumps, ratio in Python; VX12_lt4 n=1645 E −0.00; leftover 2022 worse, 2020-21 blunt; do not fish 5/8)**; **universe SMA20 breadth or last-15m RTH run/ATR skip** (B50 blunt; X_d1 2022 leftover worse); **AND last-15m H2 with Deepvue weekend take-4** (n=1 MRNA; ever-focused wrecks 2020-21; do not occupancy-walk Deepvue RS/RMV/QQQ onto last-15m); **last-15m H2 vs L3 causal switch via rolling WR/PF, TLT SMA, or UUP SMA** (WR leftover 2022 worse; TLT blunt 2020-21; UUP leaves 2023 red); **last-15m H2 vs short H3+ regime switch via same sensors** (WR 2022 still red; PF20 greens only as ~82% short; macros leave 2023 red); **TLT last-15m global gate / calendar sit-2022** (oracle cash n=2180 E +0.41 still leaves 2023 −0.33; live SMA100/200/ROC63 not a 2022-only switch); **last-15m H2 + 15m L3 occupancy blend** (unified FCFS vs dedicated sleeves; 2022 red; do not cap-fish); **last-15m consecutive-loss sit-out** (L5/S3/P2 geo 1.20 but leftover 2022 E −2.62; 2022-23 not longer-tailed vs 2020-21; do not fish L/S/P); lower-40% geometry; l3_touch max-age/max-wait caps; bb%B 0.2; 15m `min_close_loc` wick filter (leaky or lagged); 15m entry MLP as a hard gate; ridge P&L confidence sizing (RS-top1 OOS); **1d unique next-mid loser-filter ridge/logistic as a hard gate** (2023 holdout E does not lift; expanding-WF spike is 2024–26 only); copying daily beyond-0.25 onto 15m L3; daily `--intraday-fill 15m` hybrid until it beats wait-6/RSI-50 without fill-bar close; L3 shakeout rebuy (5/10/15 bars); L3 in-channel / RSI 50 on H2 breakouts; **15m H2 resist-break as a replacement for wait-12 L3 on the full IB 15m set**; **15m L3 min-wait 1 (textbook first-tag) vs wait-12 on realistic fill**; 15m unique H1–H4 (tight-break / RS floor / ATR ceiling / quiet-day); logistic-on-H5 as a hard gate; wiring any 15m book into nightly; H2 shakeout-breakout **hard-stop-only** and **min_inside=5** vs any-closed min_inside=1; **1d `open-cross` / `next-open` / daily tick-above (`--touch-error-pct 0`) vs the B12 close-fill keeper**; **1d `--intraday-trigger hot-cross` buy-now vs nightly clip**; **choppy-regime RSI-2 MOC / 3-day pullback** (occ-15 fric0.25 PF 0.96; pullback 2022-23 PF 0.77; not a last-15m overlay); **QS 15m@15:45 as an early MOC decision** (bar spans into the close; use 1m 15:57, not 5m@15:55).
 - **Next (optional):** Beat `current_best/` 1d last-15m **n=2297 E +0.27 PF 1.09** (fric0.25 E +0.02 PF 1.01) with a live-executable causal fill **and** realistic sells (do not grade vs clip or clip-exit hot-cross n=4079 E −0.19). Honest next-mid unique is **n=1986 E +2.24 PF 1.89** (still a post-EOD overlay). Optional live cap of 2 unique names/day ranked by `wait_bars` lost its +3.01 / 2.25 lift on the rebuild (honest n=1395 E +2.29 PF 1.91) — do not wire. Greedy max concurrent ~8 is the equal-dollar capital book (unconstrained med 18 / max 85). Run `backfill_ib_15m_universe.py` with Gateway up; then dry-run `channel_touch_15m.py`. Bootstrap / max-open on the 15m H5 book; ADV-tiered friction.
 - **Ops cadence:** Daily EOD scan on stored bars. 15m: armed watchlist + Alpaca last price + `/hot` dashboard; do not stream the IB 15m universe.
 
