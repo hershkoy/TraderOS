@@ -4,6 +4,7 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-26 | [Last-15m short put Black–Scholes gate](2026-09-26_last15m_short_put_bs.md) |
 | 2026-09-23 | [Last-15m 3x MOC DCA (pause below rail)](2026-09-23_last15m_moc_dca.md) |
 | 2026-09-19 | [Last-15m vs short H3+ regime switch](2026-09-19_last15m_short_regime_switch.md) |
 | 2026-09-19 | [Last-15m + short H3+ occupancy blend](2026-09-19_last15m_resist_short_blend.md) |

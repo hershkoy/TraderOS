@@ -4,6 +4,7 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-09-25 | [Cup & Handle swing claim-check (no promote)](2026-09-25_cup_handle.md) |
 | 2026-09-22 | [SPY 7d ROC rebound claim-check](2026-09-22_roc_rebound_spy.md) |
 | 2026-09-22 | [ROC rebound 50-name ETF/large/small sample](2026-09-22_roc_rebound_universe.md) |
 | 2026-09-22 | [ROC rebound ETF overlay grid (A1/A3 soft-interesting)](2026-09-22_roc_rebound_etf_grid.md) |
@@ -55,6 +56,7 @@ python scripts\research\overlay_vwap_ema_filters.py
 python scripts\research\run_phase6_overlays.py
 python scripts\research\run_voltarget_bigvol_blend.py
 python scripts\research\run_vix_curve_overlay.py
+python scripts\research\backtest_cup_handle.py --n-symbols 300 --skip-keeper
 ```
 
 Outputs: `docs/status_log/edge_hunt/`, `reports/edge_hunt/`, `reports/edge_hunt_phase2/`, `reports/edge_hunt_phase3/`, `reports/edge_hunt_phase4/`, `reports/edge_hunt_phase5/`, `reports/edge_hunt_phase6/`, `reports/edge_hunt_phase6b/`, `reports/edge_hunt_phase6c/`.

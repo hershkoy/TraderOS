@@ -150,14 +150,23 @@ def load_wide_panels(
     cache_root: Path = DEFAULT_PANEL_ROOT,
     workers: int = 4,
     chunk_size: int = 50,
+    fallback_provider: Optional[str] = None,
+    merge_mode: Optional[str] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
     Load aligned wide panels, caching each field as parquet under data/cache/panels/.
+
+    Optional ``fallback_provider`` + ``merge_mode="prefix"`` stitches earlier IB
+    bars (same as load_ohlcv_many); cache provider key becomes e.g. ALPACA_IB.
     """
     fields_u = tuple(fields)
     skey = _symbol_key(symbols)
+    cache_provider = provider
+    if fallback_provider and (merge_mode or "").strip().lower() == "prefix":
+        cache_provider = f"{provider.upper()}_{fallback_provider.upper()}"
     paths = {
-        f: panel_cache_path(cache_root, provider, timeframe, f, start, end, skey) for f in fields_u
+        f: panel_cache_path(cache_root, cache_provider, timeframe, f, start, end, skey)
+        for f in fields_u
     }
     if use_cache and all(p.exists() for p in paths.values()):
         logger.info("Wide panel cache hit (%d fields) under %s", len(paths), cache_root)
@@ -189,6 +198,8 @@ def load_wide_panels(
         use_cache=True,
         workers=workers,
         chunk_size=chunk_size,
+        fallback_provider=fallback_provider,
+        merge_mode=merge_mode,
     )
     wide = {f: frames_to_wide(frames, f) for f in fields_u}
     if use_cache:
