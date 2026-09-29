@@ -146,6 +146,56 @@ def prepare_put_trades(df: pd.DataFrame) -> pd.DataFrame:
     return t.reset_index(drop=True)
 
 
+def attach_polygon_spot(
+    raw_trades: List[dict],
+    spot_path: Optional[Path],
+) -> int:
+    """Attach live Polygon EOD marks onto matching raw trades. Returns n tagged."""
+    if spot_path is None or not Path(spot_path).exists():
+        return 0
+    spot = pd.read_csv(spot_path)
+    ok = spot[spot["status"].astype(str) == "ok"].copy()
+    if ok.empty:
+        return 0
+
+    def _key(sym: object, day: object) -> tuple:
+        return (str(sym).upper(), str(day)[:10])
+
+    by_key: Dict[tuple, dict] = {}
+    for _, r in ok.iterrows():
+        by_key[_key(r["stock"], r["buy_date"])] = {
+            "ticker": None if pd.isna(r.get("ticker")) else str(r["ticker"]),
+            "expiry": None if pd.isna(r.get("expiry")) else str(r["expiry"])[:10],
+            "bs_entry": float(r["bs_credit"]) if pd.notna(r.get("bs_credit")) else None,
+            "bs_exit": float(r["bs_exit"]) if pd.notna(r.get("bs_exit")) else None,
+            "live_entry": float(r["live_entry"]) if pd.notna(r.get("live_entry")) else None,
+            "live_exit": float(r["live_exit"]) if pd.notna(r.get("live_exit")) else None,
+            "live_entry_date": (
+                None
+                if pd.isna(r.get("live_entry_date"))
+                else str(r["live_entry_date"])[:10]
+            ),
+            "live_exit_date": (
+                None
+                if pd.isna(r.get("live_exit_date"))
+                else str(r["live_exit_date"])[:10]
+            ),
+            "entry_vs_bs": float(r["entry_vs_bs"]) if pd.notna(r.get("entry_vs_bs")) else None,
+            "exit_vs_bs": float(r["exit_vs_bs"]) if pd.notna(r.get("exit_vs_bs")) else None,
+            "live_gain_cs": float(r["live_gain_cs"]) if pd.notna(r.get("live_gain_cs")) else None,
+            "bs_gain_cs": float(r["bs_gain_cs"]) if pd.notna(r.get("bs_gain_cs")) else None,
+        }
+
+    n = 0
+    for t in raw_trades:
+        hit = by_key.get(_key(t.get("symbol"), t.get("buy")))
+        if hit is None:
+            continue
+        t["poly"] = hit
+        n += 1
+    return n
+
+
 def build_comparison(spot_path: Optional[Path]) -> Dict[str, Any]:
     rows = [
         {
@@ -255,6 +305,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     comparison_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
 
     raw_trades = trades_to_raw(df)
+    n_poly = attach_polygon_spot(raw_trades, Path(args.spot) if args.spot else None)
+    logger.info("Tagged Polygon sample on %d / %d trades", n_poly, len(raw_trades))
     buy_min = pd.to_datetime(df["buy_date"]).min()
     sell_max = pd.to_datetime(df["sell_date"]).max()
     spy_closes: List[dict] = []
@@ -285,6 +337,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "n_trades_embedded": len(raw_trades),
         "book": "last_15m_short_put_bs_atm45",
         "pnl_unit": "cash_secured_pct",
+        "polygon_sample_n": n_poly,
     }
     run_meta = build_run_meta(trades_path, extra=extra_meta, summary_path=summary_path)
     run_meta["detector"] = {**DETECTOR_META}

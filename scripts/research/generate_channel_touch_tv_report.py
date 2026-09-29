@@ -1096,6 +1096,7 @@ def render_html(
             "source": source,
             "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "comparison": comparison or {},
+            "hasPolygon": any(isinstance(t.get("poly"), dict) for t in raw_trades),
         },
         separators=(",", ":"),
     )
@@ -1429,6 +1430,14 @@ def render_html(
           <option value="loss">Losers</option>
         </select>
       </div>
+      <div id="tfDataSrcWrap" style="display:none">
+        <label for="tfDataSrc">Data source</label>
+        <select id="tfDataSrc">
+          <option value="all">All</option>
+          <option value="polygon">Polygon sample</option>
+          <option value="bs_only">BS only (no live quote)</option>
+        </select>
+      </div>
       <div>
         <label for="tfExit">Exit reason</label>
         <select id="tfExit"><option value="all">All</option></select>
@@ -1468,6 +1477,14 @@ def render_html(
             <th class="sortable" data-sort="exit_date">Exit</th>
             <th class="sortable" data-sort="entry_price">Entry px</th>
             <th class="sortable" data-sort="exit_price">Exit px</th>
+            <th class="sortable poly-col" data-sort="live_entry_date" style="display:none">Live entry date</th>
+            <th class="sortable poly-col" data-sort="live_entry" style="display:none">Live entry</th>
+            <th class="sortable poly-col" data-sort="bs_entry" style="display:none">BS entry</th>
+            <th class="sortable poly-col" data-sort="live_exit_date" style="display:none">Live exit date</th>
+            <th class="sortable poly-col" data-sort="live_exit" style="display:none">Live exit</th>
+            <th class="sortable poly-col" data-sort="bs_exit_px" style="display:none">BS exit</th>
+            <th class="sortable poly-col" data-sort="exit_vs_bs" style="display:none">Live/BS exit</th>
+            <th class="sortable poly-col" data-sort="live_gain_cs" style="display:none">Live CS %</th>
             <th class="sortable" data-sort="pnl">P&amp;L $</th>
             <th class="sortable" data-sort="pnl_pct">P&amp;L %</th>
             <th class="sortable" data-sort="cum_pnl">Cum. P&amp;L</th>
@@ -1707,7 +1724,16 @@ function simulate(trades, p) {{
       n: i + 1, symbol: t.symbol, signal: t.resist_break ? 'Resist-break' : (t.touch != null ? ('Touch ' + t.touch) : 'Long'),
       entry_date: stampBuy(t), exit_date: stampSell(t), entry_price: t.entry, exit_price: t.exit,
       pnl, pnl_pct: gainPct, cum_pnl: cum, hold_days: t.hold, exit_reason: t.reason,
-      ch: t.ch || null
+      ch: t.ch || null,
+      poly: t.poly || null,
+      live_entry_date: (t.poly && t.poly.live_entry_date) ? t.poly.live_entry_date : null,
+      live_exit_date: (t.poly && t.poly.live_exit_date) ? t.poly.live_exit_date : null,
+      live_entry: (t.poly && t.poly.live_entry != null) ? Number(t.poly.live_entry) : null,
+      live_exit: (t.poly && t.poly.live_exit != null) ? Number(t.poly.live_exit) : null,
+      bs_entry: (t.poly && t.poly.bs_entry != null) ? Number(t.poly.bs_entry) : null,
+      bs_exit_px: (t.poly && t.poly.bs_exit != null) ? Number(t.poly.bs_exit) : null,
+      exit_vs_bs: (t.poly && t.poly.exit_vs_bs != null) ? Number(t.poly.exit_vs_bs) : null,
+      live_gain_cs: (t.poly && t.poly.live_gain_cs != null) ? Number(t.poly.live_gain_cs) : null,
     }});
   }}
 
@@ -2429,10 +2455,12 @@ function render(sim, spy) {{
 function readTradeFilters() {{
   const minRaw = document.getElementById('tfMinPnl').value;
   const maxRaw = document.getElementById('tfMaxPnl').value;
+  const dataSrcEl = document.getElementById('tfDataSrc');
   return {{
     symbol: (document.getElementById('tfSymbol').value || '').trim().toUpperCase(),
     outcome: document.getElementById('tfOutcome').value,
     exit: document.getElementById('tfExit').value,
+    dataSrc: dataSrcEl ? dataSrcEl.value : 'all',
     minPnl: minRaw === '' ? null : Number(minRaw),
     maxPnl: maxRaw === '' ? null : Number(maxRaw),
     from: document.getElementById('tfFrom').value || '',
@@ -2450,6 +2478,8 @@ function filterTradeRows(rows) {{
     if (f.outcome === 'win' && !(t.pnl > 0)) return false;
     if (f.outcome === 'loss' && !(t.pnl <= 0)) return false;
     if (f.exit !== 'all' && t.exit_reason !== f.exit) return false;
+    if (f.dataSrc === 'polygon' && !t.poly) return false;
+    if (f.dataSrc === 'bs_only' && t.poly) return false;
     if (f.minPnl != null && !Number.isNaN(f.minPnl) && t.pnl_pct < f.minPnl) return false;
     if (f.maxPnl != null && !Number.isNaN(f.maxPnl) && t.pnl_pct > f.maxPnl) return false;
     const entryDay = String(t.entry_date || '').slice(0, 10);
@@ -2477,7 +2507,11 @@ function sortTradeRows(rows) {{
 function updateSortHeaders() {{
   const labels = {{
     n:'#', symbol:'Symbol', signal:'Signal', entry_date:'Entry', exit_date:'Exit',
-    entry_price:'Entry px', exit_price:'Exit px', pnl:'P&amp;L $', pnl_pct:'P&amp;L %',
+    entry_price:'Entry px', exit_price:'Exit px',
+    live_entry_date:'Live entry date', live_entry:'Live entry', bs_entry:'BS entry',
+    live_exit_date:'Live exit date', live_exit:'Live exit', bs_exit_px:'BS exit',
+    exit_vs_bs:'Live/BS exit', live_gain_cs:'Live CS %',
+    pnl:'P&amp;L $', pnl_pct:'P&amp;L %',
     cum_pnl:'Cum. P&amp;L', hold_days:'Bars', exit_reason:'Exit'
   }};
   document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
@@ -2487,6 +2521,30 @@ function updateSortHeaders() {{
       ? ('<span class="sort-ind">' + (tradeSort.dir === 'asc' ? '▲' : '▼') + '</span>')
       : '');
   }});
+}}
+
+function fmtPx(x) {{
+  if (x == null || !Number.isFinite(Number(x))) return '—';
+  return Number(x).toFixed(4);
+}}
+function fmtRatio(x) {{
+  if (x == null || !Number.isFinite(Number(x))) return '—';
+  return Number(x).toFixed(3);
+}}
+function polyCells(t) {{
+  if (!RAW.hasPolygon) return '';
+  const tip = t.poly && t.poly.ticker
+    ? (' title="' + esc(t.poly.ticker) + (t.poly.expiry ? (' exp ' + t.poly.expiry) : '') + '"')
+    : '';
+  return `
+      <td class="when poly-col"${{tip}}>${{t.live_entry_date || '—'}}</td>
+      <td class="num poly-col">${{fmtPx(t.live_entry)}}</td>
+      <td class="num poly-col">${{fmtPx(t.bs_entry)}}</td>
+      <td class="when poly-col">${{t.live_exit_date || '—'}}</td>
+      <td class="num poly-col">${{fmtPx(t.live_exit)}}</td>
+      <td class="num poly-col">${{fmtPx(t.bs_exit_px)}}</td>
+      <td class="num poly-col">${{fmtRatio(t.exit_vs_bs)}}</td>
+      <td class="num poly-col ${{cls(t.live_gain_cs)}}">${{t.live_gain_cs == null ? '—' : pct(t.live_gain_cs, true)}}</td>`;
 }}
 
 function paintTradesTable() {{
@@ -2504,6 +2562,10 @@ function paintTradesTable() {{
   if ((RAW.trades || []).some(t => t.ch)) {{
     note += ' · Channel i copies JSON for CTF Channel JSON (one paste)';
   }}
+  if (RAW.hasPolygon) {{
+    const nPoly = tradeRowsAll.filter(t => t.poly).length;
+    note += ' · Polygon sample: ' + nPoly + ' trades with live EOD option day-bars (dates only; no intraday clock)';
+  }}
   note += ' · Export trades JSON copies filtered rows for TPV Trades JSON';
   setHTML('tradesNote', note);
   updateSortHeaders();
@@ -2514,6 +2576,7 @@ function paintTradesTable() {{
       <td>${{t.signal}}</td>
       <td class="when">${{t.entry_date}}</td><td class="when">${{t.exit_date}}</td>
       <td class="num">${{t.entry_price.toFixed(4)}}</td><td class="num">${{t.exit_price.toFixed(4)}}</td>
+      ${{polyCells(t)}}
       <td class="num ${{cls(t.pnl)}}">${{money(t.pnl,true)}}</td>
       <td class="num ${{cls(t.pnl_pct)}}">${{pct(t.pnl_pct,true)}}</td>
       <td class="num">${{money(t.cum_pnl,true)}}</td>
@@ -2526,6 +2589,8 @@ function clearTradeFilters() {{
   document.getElementById('tfSymbol').value = '';
   document.getElementById('tfOutcome').value = 'all';
   document.getElementById('tfExit').value = 'all';
+  const ds = document.getElementById('tfDataSrc');
+  if (ds) ds.value = 'all';
   document.getElementById('tfMinPnl').value = '';
   document.getElementById('tfMaxPnl').value = '';
   document.getElementById('tfFrom').value = '';
@@ -2680,14 +2745,23 @@ document.querySelectorAll('#tradesTable th.sortable').forEach(th => {{
     paintTradesTable();
   }});
 }});
-['tfSymbol','tfOutcome','tfExit','tfMinPnl','tfMaxPnl','tfFrom','tfTo'].forEach(id => {{
+['tfSymbol','tfOutcome','tfExit','tfDataSrc','tfMinPnl','tfMaxPnl','tfFrom','tfTo'].forEach(id => {{
   const el = document.getElementById(id);
+  if (!el) return;
   el.addEventListener('input', paintTradesTable);
   el.addEventListener('change', paintTradesTable);
 }});
 document.getElementById('tfClear').addEventListener('click', clearTradeFilters);
 document.getElementById('tfPushEquity').addEventListener('click', pushMaxPnlToEquity);
 document.getElementById('tfExportJson').addEventListener('click', exportTradesJson);
+
+function showPolygonUi() {{
+  if (!RAW.hasPolygon) return;
+  const wrap = document.getElementById('tfDataSrcWrap');
+  if (wrap) wrap.style.display = '';
+  document.querySelectorAll('.poly-col').forEach(el => {{ el.style.display = ''; }});
+}}
+showPolygonUi();
 
 function showCopyToast(msg) {{
   const el = document.getElementById('copyToast');

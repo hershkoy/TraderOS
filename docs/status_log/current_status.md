@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-23**
+Last updated: **2026-09-27**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -94,6 +94,13 @@ QS rules on **SPY**: 15d lowest close + 10d lowest 1d return + close > SMA200; e
 Universe TimescaleDB scan (306 names, fric 0, 2006+): all **n=6156 E +0.75 PF 1.59** geo 1.68; indexes n=484 E +0.47 PF 1.96; 2022-23 n=1280 E +0.26 PF 1.16. **Not a Sharpe>1 promote** — small selective sleeve (~95% cash).
 
 **Live `/hot` Detector DP** (`timeframe=dp`; CronRunner `deep_pullback_spy` ~5m RTH, every minute **15:45–16:00** ET). Developing armed uses Alpaca last as today’s close proxy. Telegram **approaching** from **15:45** with MOC target (`moc_max` on Resist; SMA200 on Support); **BUY NOW** at **15:57** only if still green (Arca MOC locks 15:59 — leave ~2 min). Code: `utils/scanning/deep_pullback_spy.py` / `scripts/scanners/deep_pullback_spy.py`.
+
+### QS RSI+IBS Nasdaq-100 stocks (research claim-check)
+
+Status: [2026-09-27](edge_hunt/2026-09-27_qs_rsi_ndx_claimcheck.md). Video tjL4wcI403E / Substack 2026-09-14.
+Public rules: SMA200 + RSI(3)&lt;20 + IBS&lt;0.3, QS exit, next-open, max 5.
+Ours (current NDX, panel ~2018-11→2026-09) occ-5 fric0: **n=1185 E +0.38 PF 1.26** WR 62% CAGR 10.6% exposure **57%** MDD 26% Sharpe **0.53** vs claim n=1321 E +1.1 PF 2 WR 68% CAGR 11% exp 16% MDD 17%.
+fric0.25: E **−0.12** PF **0.93** CAGR **−5%**. **No promote** (does not replicate; friction kills).
 
 ### ROC Rebound SPY (research claim-check)
 
