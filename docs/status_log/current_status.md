@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-27**
+Last updated: **2026-09-29**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -101,6 +101,11 @@ Status: [2026-09-27](edge_hunt/2026-09-27_qs_rsi_ndx_claimcheck.md). Video tjL4w
 Public rules: SMA200 + RSI(3)&lt;20 + IBS&lt;0.3, QS exit, next-open, max 5.
 Ours (current NDX, panel ~2018-11→2026-09) occ-5 fric0: **n=1185 E +0.38 PF 1.26** WR 62% CAGR 10.6% exposure **57%** MDD 26% Sharpe **0.53** vs claim n=1321 E +1.1 PF 2 WR 68% CAGR 11% exp 16% MDD 17%.
 fric0.25: E **−0.12** PF **0.93** CAGR **−5%**. **No promote** (does not replicate; friction kills).
+
+### Post-earnings bull put credit spreads (research claim-check)
+
+Status: [2026-09-29](edge_hunt/2026-09-29_post_earnings_pcs_claimcheck.md). Brian Terry / Theta Profits H2G8_jisZP8 (2–3mo personal track: WR~80%, hold~8d, RoR 8–10%).
+Mechanical BS+IV-decay on 49 liquid names: with hist+IV elev **n=178 WR 92% hold 11.5 RoR 11.1 PF 5.5** (optimistic); no-IV-elev **n=166 WR 79.5% hold 14.3 RoR 5.3 PF 1.97** (WR matches, RoR/hold do not). Winner 8–10% RoR is nearly mechanical at TP50. Polygon listed vertical spot-check (2024-10+, honest n=25): mid E **−1.1 PF 0.61**; half-spread WR **16%** E **−3.1 PF 0.11** (entry mid ≈0.32× BS credit). Open+mid-implied 20Δ on 9 liquid earns: med open credit **$1.60** (78% meet ≥0.16×width) vs close $1.10 (44%). **Starter minute pilot** (2026-09-30, n=15 liquid): RTH-open mid credits med **$1.70** (60% meet min; open>close **73%**); RTH-open TP50/SL2x mid book **WR 80% hold 3.6d RoR +8.4% PF 3.66** vs day-close **WR 67% RoR +0.8% PF 1.17** — open clock matters; still **no promote** (tiny n, prints≠NBBO, no spread haircut). Code: `utils/research/post_earnings_pcs*.py` / `scripts/research/run_post_earnings_pcs_minute_pilot.py`.
 
 ### ROC Rebound SPY (research claim-check)
 
