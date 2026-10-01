@@ -1,6 +1,6 @@
 """Per-detector Telegram / browser notification preferences for /hot.
 
-Matrix: detector (15m | 1d | dp | qs) x event (hot | armed | approaching | fill | sell)
+Matrix: detector (15m | 1d | dp | qs | lg) x event (hot | armed | approaching | fill | sell)
 x channel (telegram | browser).
 
 Legacy flat flags (telegram_on_fill / telegram_on_hot / telegram_on_sell /
@@ -12,7 +12,7 @@ import copy
 import json
 from typing import Any, Dict, Optional
 
-NOTIFY_DETECTORS = ("15m", "1d", "dp", "qs")
+NOTIFY_DETECTORS = ("15m", "1d", "dp", "qs", "lg")
 NOTIFY_EVENTS = ("hot", "armed", "approaching", "fill", "sell")
 NOTIFY_CHANNELS = ("telegram", "browser")
 
@@ -46,6 +46,13 @@ NOTIFY_APPLICABLE: Dict[str, Dict[str, bool]] = {
         "fill": False,
         "sell": True,
     },
+    "lg": {
+        "hot": True,
+        "armed": True,
+        "approaching": True,
+        "fill": False,
+        "sell": False,
+    },
 }
 
 _CHANNEL_DEFAULTS = {"telegram": False, "browser": False}
@@ -78,6 +85,14 @@ DEFAULT_NOTIFY_PREFS: Dict[str, Dict[str, Dict[str, bool]]] = {
         "approaching": {"telegram": False, "browser": False},
         "fill": {"telegram": False, "browser": False},
         "sell": {"telegram": True, "browser": True},
+    },
+    "lg": {
+        # Default on: soft gap near -1%/-2% (hot/approaching) + confirmed open BUY
+        "hot": {"telegram": True, "browser": True},
+        "armed": {"telegram": True, "browser": True},
+        "approaching": {"telegram": True, "browser": True},
+        "fill": {"telegram": False, "browser": False},
+        "sell": {"telegram": False, "browser": False},
     },
 }
 
@@ -121,6 +136,9 @@ def prefs_from_legacy(
     prefs["dp"]["approaching"]["telegram"] = bool(telegram_on_hot)
     prefs["qs"]["armed"]["telegram"] = bool(telegram_on_fill)
     prefs["qs"]["approaching"]["telegram"] = bool(telegram_on_hot)
+    prefs["lg"]["armed"]["telegram"] = bool(telegram_on_fill)
+    prefs["lg"]["approaching"]["telegram"] = bool(telegram_on_hot)
+    prefs["lg"]["hot"]["telegram"] = bool(telegram_on_hot)
     for det in NOTIFY_DETECTORS:
         prefs[det]["sell"]["telegram"] = bool(telegram_on_sell)
     # Browser historically gated fills/sells (and DP/QS alerts when desktop was on).
@@ -130,6 +148,9 @@ def prefs_from_legacy(
     prefs["dp"]["approaching"]["browser"] = bool(desktop_notify)
     prefs["qs"]["armed"]["browser"] = bool(desktop_notify)
     prefs["qs"]["approaching"]["browser"] = bool(desktop_notify)
+    prefs["lg"]["armed"]["browser"] = bool(desktop_notify)
+    prefs["lg"]["approaching"]["browser"] = bool(desktop_notify)
+    prefs["lg"]["hot"]["browser"] = bool(desktop_notify)
     for det in NOTIFY_DETECTORS:
         prefs[det]["sell"]["browser"] = bool(desktop_notify)
     return prefs
@@ -144,9 +165,13 @@ def legacy_from_prefs(prefs: Dict[str, Dict[str, Dict[str, bool]]]) -> Dict[str,
             or p["1d"]["fill"]["telegram"]
             or p["dp"]["armed"]["telegram"]
             or p["qs"]["armed"]["telegram"]
+            or p["lg"]["armed"]["telegram"]
         ),
         "telegram_on_hot": bool(
-            p["dp"]["approaching"]["telegram"] or p["qs"]["approaching"]["telegram"]
+            p["dp"]["approaching"]["telegram"]
+            or p["qs"]["approaching"]["telegram"]
+            or p["lg"]["approaching"]["telegram"]
+            or p["lg"]["hot"]["telegram"]
         ),
         "telegram_on_sell": bool(
             p["15m"]["sell"]["telegram"]

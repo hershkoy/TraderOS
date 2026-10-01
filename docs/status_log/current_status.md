@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-09-29**
+Last updated: **2026-10-01**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -105,7 +105,14 @@ fric0.25: E **−0.12** PF **0.93** CAGR **−5%**. **No promote** (does not rep
 ### Post-earnings bull put credit spreads (research claim-check)
 
 Status: [2026-09-29](edge_hunt/2026-09-29_post_earnings_pcs_claimcheck.md). Brian Terry / Theta Profits H2G8_jisZP8 (2–3mo personal track: WR~80%, hold~8d, RoR 8–10%).
-Mechanical BS+IV-decay on 49 liquid names: with hist+IV elev **n=178 WR 92% hold 11.5 RoR 11.1 PF 5.5** (optimistic); no-IV-elev **n=166 WR 79.5% hold 14.3 RoR 5.3 PF 1.97** (WR matches, RoR/hold do not). Winner 8–10% RoR is nearly mechanical at TP50. Polygon listed vertical spot-check (2024-10+, honest n=25): mid E **−1.1 PF 0.61**; half-spread WR **16%** E **−3.1 PF 0.11** (entry mid ≈0.32× BS credit). Open+mid-implied 20Δ on 9 liquid earns: med open credit **$1.60** (78% meet ≥0.16×width) vs close $1.10 (44%). **Starter minute pilot** (2026-09-30, n=15 liquid): RTH-open mid credits med **$1.70** (60% meet min; open>close **73%**); RTH-open TP50/SL2x mid book **WR 80% hold 3.6d RoR +8.4% PF 3.66** vs day-close **WR 67% RoR +0.8% PF 1.17** — open clock matters; still **no promote** (tiny n, prints≠NBBO, no spread haircut). Code: `utils/research/post_earnings_pcs*.py` / `scripts/research/run_post_earnings_pcs_minute_pilot.py`.
+Mechanical BS+IV-decay on 49 liquid names: with hist+IV elev **n=178 WR 92% hold 11.5 RoR 11.1 PF 5.5** (optimistic); no-IV-elev **n=166 WR 79.5% hold 14.3 RoR 5.3 PF 1.97**. Polygon listed close mid n=25 E **−1.1 PF 0.61**. Starter minute prints RTH-open n=15 WR **80% RoR +8.4% PF 3.66**. **ThetaData Standard NBBO** (2026-09-30, same 15): first-RTH **short_bid−long_ask med −$0.55 / 0% meet min**; **@10:00** med **+$0.50 / 7% meet min**. **Scale (first meet-min 09:30–11:00 + daily 15:45 NBBO debit, entry≥2020 n=155):** meet-min **n=3** WR 100% RoR +10.3 PF inf; any-positive diagnostic **n=76 WR 16% RoR −0.93 PF 0.40**; funnel no_credit 110 / no_aligned 42 — **no promote**. Code: `run_post_earnings_pcs_thetadata_scale.py`; `/hot` `/api/research-jobs`.
+
+### QQQ LEAPS gap (Ravish / OptionsKit) — 2026-09-30 / 2026-10-01 hedge
+
+Status: [BS](edge_hunt/2026-09-30_qqq_leaps_gap_claimcheck.md), **[Theta listed](edge_hunt/2026-09-30_qqq_leaps_gap_theta_claimcheck.md)**, **[low-VIX hedges](edge_hunt/2026-10-01_qqq_leaps_gap_hedge_claimcheck.md)**. YouTube dY2ralsWdQ8.
+**Theta mid/mid uncapped reprints claim:** combined **n=97 WR 96.9 PnL $178k** (strat1 66/97%/$100k; strat2 31/97%/$79k; 2+1 losses). **Ask/bid uncapped** still **WR 95.9 PnL $184k**. **Max-open=3** cuts combined to ~$98–107k WR ~93–95%. BS earlier undershot WR (ATR-IV rich vs mid). **No promote** (uncapped concurrent / fat left tail / no Sharpe>1 vs QQQ). Code: `claimcheck_qqq_leaps_gap_theta.py`. HTML: `reports/research/qqq_leaps_gap/current_best/`.
+**Low-VIX hedges (2026-10-01):** H1 QQQ put debit / H2 VIX call debit / H3 collar × while_open/continuous/entry_day on mid/mid **max_open=10** (n=89 PnL $165k MDD $13.3k). Theta VIX options available. **No MDD lift on any combo**; H1/H2 small bleed (H2 entry_day mid +$140 flips to −$284 ask/bid); H3 0 fills (`no_nbbo` / debit&gt;$0.10). Gap entries rarely arm (VIX already elevated). **No promote.** HTML: `reports/research/qqq_leaps_gap/2026-10-01_hedge/qqq_leaps_gap_hedge_matrix.html`.
+**Live `/hot` Detector LG** (`timeframe=lg`; CronRunner `qqq_leaps_gap_live` 08:00–11:00 ET): soft HOT when gap est nears −0.7%/−1.5%; BUY NOW on confirmed open −1%/−2%. Telegram + browser. Docs: [qqq_leaps_gap_live](../features/qqq_leaps_gap_live.md).
 
 ### ROC Rebound SPY (research claim-check)
 

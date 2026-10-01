@@ -499,6 +499,21 @@ def _kick_price_hub():
     kick_price_service()
 
 
+@app.route('/api/research-jobs')
+def api_research_jobs():
+    """Long-running research job heartbeats (e.g. PCS ThetaData scale)."""
+    try:
+        from utils.research.pcs_thetadata_scale_status import public_status
+
+        jobs = []
+        pcs = public_status()
+        if pcs is not None:
+            jobs.append(pcs)
+        return jsonify({'jobs': jobs, 'n': len(jobs)})
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'jobs': [], 'n': 0}), 500
+
+
 @app.route('/hot')
 def hot_candidates_page():
     """15m + 1d channel-touch hot candidates dashboard."""

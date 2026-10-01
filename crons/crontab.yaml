@@ -73,6 +73,18 @@ jobs:
     MOC target; minute SPY pulls keep current vs target (green=buy-ok). BUY NOW from
     15:57 if still at/below target. DB 1d + optional 1m + Alpaca last.
   timezone: America/New_York
+- name: qqq_leaps_gap_live
+  enabled: true
+  schedule:
+  - '*/1 8-9 * * 1-5'
+  - 0-30 10 * * 1-5
+  - '*/5 10-11 * * 1-5'
+  command: crons\qqq_leaps_gap_live.bat
+  description: QQQ LEAPS gap for /hot (timeframe=lg). Soft HOT/approaching when
+    estimated gap nears -1% (strat1+SMA100) or -2% (strat2) in premarket/early RTH;
+    BUY NOW when official open confirms. DB QQQ 1d + Alpaca last/open. Dense 08:00-10:30
+    ET then every 5m to 11:00.
+  timezone: America/New_York
 - name: backfill_ib_15m_universe
   enabled: false
   schedule: 30 2 * * *

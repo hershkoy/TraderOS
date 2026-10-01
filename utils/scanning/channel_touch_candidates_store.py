@@ -147,7 +147,7 @@ _BOOL_KEYS = {
     "hot",
 }
 _TZ_MODES = ("exchange", "utc", "local")
-TIMEFRAME_FILTER_VALUES = ("15m", "1d", "dp", "qs")
+TIMEFRAME_FILTER_VALUES = ("15m", "1d", "dp", "qs", "lg")
 STATUS_FILTER_VALUES = ("armed", "waiting", "filled", "exit_signal", "hot")
 _INT_KEYS = {"wait_bars", "support_x0", "h2_idx", "as_of_i", "n_universe"}
 _FLOAT_KEYS = {

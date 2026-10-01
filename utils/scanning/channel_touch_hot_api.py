@@ -217,13 +217,14 @@ def hot_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     return keys
 
 
-_MOC_DETECTORS = ("dp", "qs")
+# Sleeve detectors that use sticky :approach / :arm notify tags (not 15m H5).
+_MOC_DETECTORS = ("dp", "qs", "lg")
 
 
 def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
     """Keys for currently armed setups (stock|tf|h2_time).
 
-    MOC sleeves (dp/qs) only after buy-now notify (hot_notified_on ends with :arm).
+    Sleeve detectors (dp/qs/lg) only after buy-now notify (hot_notified_on ends with :arm).
     """
     keys: List[str] = []
     for row in rows:
@@ -243,7 +244,7 @@ def armed_keys_from_rows(rows: Sequence[dict]) -> List[str]:
 
 
 def approaching_keys_from_rows(rows: Sequence[dict]) -> List[str]:
-    """Keys for MOC approaching notify (:approach), including early armed."""
+    """Keys for approaching notify (:approach), including early armed."""
     keys: List[str] = []
     for row in rows:
         tf = str(row.get("timeframe") or "")
@@ -528,6 +529,9 @@ def candidates_payload(
     n_armed_qs = sum(
         1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "") == "qs"
     )
+    n_armed_lg = sum(
+        1 for r in rows if r.get("status") == "armed" and str(r.get("timeframe") or "") == "lg"
+    )
     price_ts = None
     for row in rows:
         ts = row.get("last_price_ts")
@@ -574,6 +578,7 @@ def candidates_payload(
         "n_armed_1d": n_armed_1d,
         "n_armed_dp": n_armed_dp,
         "n_armed_qs": n_armed_qs,
+        "n_armed_lg": n_armed_lg,
         "n_hot": n_hot,
         "hot_keys": hot_keys_from_rows(rows),
         "armed_keys": armed_keys_from_rows(rows),

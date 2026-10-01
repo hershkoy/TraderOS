@@ -2,9 +2,9 @@
 
 **Source:** Theta Profits / Brian Terry — YouTube [H2G8_jisZP8](https://www.youtube.com/watch?v=H2G8_jisZP8) (2025-07-20).
 
-**Verdict: interesting mechanical sketch / no promote.**
+**Verdict: no promote** (BS looked claim-like; honest listed / NBBO marks do not).
 
-Claim is a **2–3 month personal track** (~80% WR, ~8d hold, 8–10% RoR), not a multi-year backtest. Our book uses BS marks + IV-decay, not listed option quotes.
+Claim is a **2–3 month personal track** (~80% WR, ~8d hold, 8–10% RoR), not a multi-year backtest. Progression: BS+IV-decay → Polygon day mid/half-spread → Starter minute prints → ThetaData marketable NBBO (first RTH / 10:00 / scale first-meet-min + 15:45 debit exits).
 
 ## Claimed
 
@@ -62,11 +62,11 @@ n=**652** WR **93.7** hold 10.8 avg RoR **11.8** PF **7.0** — more trades, sti
 
 ## Interpretation
 
-1. **Headline 80% WR is easy to paraphrase** once you only sell puts after non-negative post-earn gaps and manage TP50/SL2x — especially under BS. Ablation C lands ~80% WR without elevated IV.
+1. **Headline 80% WR is easy to paraphrase** under BS once you only sell puts after non-negative post-earn gaps and manage TP50/SL2x. Ablation C lands ~80% WR without elevated IV.
 2. **8–10% RoR on winners is nearly mechanical** at TP50: credit $0.80 on $5 wide → profit $0.40 / risk $4.20 ≈ **9.5% RoR**. Reporting winner RoR ≈ claiming “we hit TP a lot,” not a separate edge metric.
 3. **Avg hold ~8d needs fast IV crush** in the mark model. Constant-IV book holds ~14d and loses the RoR band; elev+decay prints faster TPs and inflated PF.
 4. **Hist filter** cuts n hard (1094 skips) and is only a coarse OptionSlam proxy (no fundamentals / liquidity / overbought screen).
-5. **Not a promote:** no listed bid/ask (Polygon spot-check still needed), BS+decay is friendly to short premium after gap-ups, claim sample is tiny, occupancy/capital not walked, Sharpe-vs-SPY gate not applicable until live marks exist.
+5. **Listed / NBBO kills the promote:** Polygon day mid/half-spread reverses BS; Starter minute prints look claim-like but are not marketable; Theta first-RTH / 10:00 / scale first-meet-min show Brian’s ≥$0.80 screen almost never clears on `short_bid−long_ask`, and any-positive fills walk to **negative** RoR/PF on honest 15:45 debits. Occupancy/Sharpe-vs-SPY not worth walking until a real fill book exists.
 
 ## Reproduce
 
@@ -81,7 +81,11 @@ python scripts\research\claimcheck_post_earnings_pcs.py --symbols ... --iv-elev 
 
 ## Next (only if revisiting)
 
-- ~~Polygon listed vertical mid/half-spread spot-check on a recent subset~~ **done 2026-09-29** — see below.
+- ~~Polygon listed vertical mid/half-spread~~ **done 2026-09-29**
+- ~~Starter minute open / first-hour~~ **done 2026-09-30**
+- ~~ThetaData NBBO first-RTH + 10:00~~ **done 2026-09-30**
+- ~~Scale first meet-min entry + NBBO debit exits~~ **done 2026-09-30** — **no promote**
+- Optional later: Theta greeks re-pick ~20Δ (only if BS strikes look systematically wrong); occupancy/Sharpe gate not queued
 
 ## Polygon listed vertical realism (2026-09-29)
 
@@ -166,4 +170,82 @@ venv\Scripts\activate
 set PYTHONPATH=.
 set POLYGON_REQUESTS_PER_MINUTE=30
 python scripts\research\run_post_earnings_pcs_minute_pilot.py --n 20
+```
+
+## ThetaData NBBO RTH-open (2026-09-30)
+
+ThetaData **Options Standard** via local Terminal v3 (`scripts/pipeline/thetadata_terminal.py`, `THETADATA_API_KEY` in `.env`).  
+Client: `utils/api/thetadata/thetadata_client.py`  
+Runner: `scripts/research/run_post_earnings_pcs_thetadata_nbbo.py`  
+Artifacts: `reports/research/post_earnings_pcs/2026-09-30_thetadata_nbbo/`  
+Same 15 liquid minute-pilot verticals; first usable 1m NBBO with bid&ask>0; exits still Polygon day closes.
+
+| entry mark | med credit | meet min% | book n | WR% | hold | RoR% | PF |
+|------------|-----------:|----------:|-------:|----:|-----:|-----:|---:|
+| short_bid − long_ask | **−0.55** | **0** | 7* | 43 | 3.9d | **−1.45** | **0.66** |
+| NBBO mid | 1.65 | 67 | 15 | 93 | 5.9d | +8.58 | 5.08 |
+| Polygon minute print (prior) | 1.70 | 60 | 15 | 80 | 3.6d | +8.44 | 3.66 |
+
+\*Only rows with positive bid/ask credit are walkable; most first-RTH books are **crossed / negative** (wide post-earn spreads).
+
+- COST example: 850P 09:31 bid **4.20** / ask **9.50** vs Polygon trade print **8.38** — print was ask-side; sell-to-open would be nearer the bid.
+- **Honest marketable credit at first RTH NBBO does not clear Brian’s ≥$0.80 screen** on this sample; mid/print books still look claim-like.
+- Still **no promote**; later clocks / scale first-meet-min (below) confirm the min-credit screen fails at marketable NBBO.
+
+### 10:00 ET clock (same 15)
+
+Artifacts: `reports/research/post_earnings_pcs/2026-09-30_thetadata_nbbo_1000/`
+
+| entry mark | med credit | meet min% | book n | WR% | hold | RoR% | PF |
+|------------|-----------:|----------:|-------:|----:|-----:|-----:|---:|
+| short_bid − long_ask @10:00 | **+0.50** | **7** | 9 | 78 | 6.3d | +3.79 | 3.81 |
+| first RTH bid/ask (prior) | −0.55 | 0 | 7 | 43 | 3.9d | −1.45 | 0.66 |
+
+- Spreads tighten enough that med marketable credit flips positive, but **only 1/15 meets min** (≥0.16×width).
+- Walkable ba book looks nicer (WR 78% / PF 3.81) on the 9 that had any positive credit — selection bias; still not Brian’s “≥$0.80 often.”
+- **No promote** — open/first-hour marketable NBBO does not recover the claim on this liquid sample.
+
+```bat
+venv\Scripts\activate
+set PYTHONPATH=.
+python scripts\pipeline\thetadata_terminal.py
+REM other shell:
+python scripts\research\run_post_earnings_pcs_thetadata_nbbo.py --n 15
+```
+
+## Scale-up: first meet-min entry + honest NBBO exits (2026-09-30)
+
+Fixed 10:00 was only a spot-check convenience on n=15. Scale replaces it with first marketable fill in-window + Theta exits (no Polygon).
+
+- **Universe:** hist+IV `trades.csv` rows with entry ≥ **2020-01-01** (49-name panel; not mega-liquid-only) → **155** attempted.
+- **Entry:** first meet-min marketable credit (`short_bid − long_ask ≥ 0.16×width`) on 1m NBBO **09:30–11:00 ET**; else `no_credit`. Diagnostic any-positive book separate (never pooled).
+- **Exit:** daily **15:45 ET** marketable debit (`short_ask − long_bid`) until TP50 / SL 2× / expiry.
+- **Ops:** resume jsonl cache; heartbeat `logs/research/pcs_thetadata_scale_status.json`; `/hot` via `/api/research-jobs`; Telegram start/fail/stop/complete. Wall ~43s after cache (morning-only quotes; exit ranges only on fills — not multi-hour).
+
+Code: `utils/research/post_earnings_pcs_thetadata.py`, `scripts/research/run_post_earnings_pcs_thetadata_scale.py`, `utils/research/pcs_thetadata_scale_status.py`  
+Artifacts: `reports/research/post_earnings_pcs/2026-09-30_thetadata_scale/`
+
+| Funnel | n |
+|--------|--:|
+| attempted | 155 |
+| meet-min ok | **3** |
+| no_credit (aligned, credit &lt; min) | 110 |
+| no_aligned_minutes (leg missing / Theta 472) | 42 |
+
+| Book | n | WR% | hold | RoR% | PF |
+|------|--:|----:|-----:|-----:|---:|
+| **Meet-min** (primary) | **3** | 100 | 2.7d | +10.26 | inf |
+| Any-positive diagnostic | 76 | 16 | 2.0d | **−0.93** | **0.40** |
+
+- Meet-min fills (all TP50): NVDA 2022-05-26 @09:31 credit 0.95; JPM 2023-01-13 @09:35 credit 0.80; AVGO 2025-03-07 @10:36 credit 0.80.
+- Of 110 `no_credit`, **73** had some positive marketable credit in-window (med ~$0.10, max **$0.77** — still under Brian’s screen).
+- Any-positive walk on honest 15:45 debits is **deeply negative** — small credits lose to debit/SL.
+- **No promote.** Meet-min n=3 is too thin; dropping the min screen destroys PF. Greeks re-pick only if BS strikes look systematically wrong — evidence so far is marketable credits rarely clear min.
+
+```bat
+venv\Scripts\activate
+set PYTHONPATH=.
+python scripts\pipeline\thetadata_terminal.py
+REM other shell:
+python scripts\research\run_post_earnings_pcs_thetadata_scale.py --workers 4
 ```

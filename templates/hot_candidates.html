@@ -83,6 +83,17 @@
             font-weight: 600;
         }
         .banner.fill-data strong { display: block; margin-bottom: 4px; font-size: 13px; }
+        .banner.research-job {
+            background: #e0e7ff;
+            color: #3730a3;
+            margin-top: 8px;
+        }
+        .banner.research-job.running { background: #e0e7ff; color: #3730a3; }
+        .banner.research-job.completed { background: #d1fae5; color: #065f46; }
+        .banner.research-job.failed,
+        .banner.research-job.stale,
+        .banner.research-job.stopped { background: #fed7d7; color: #9b2c2c; }
+        .banner.research-job strong { display: block; margin-bottom: 4px; font-size: 13px; }
         .meta span.warn { color: #c53030; font-weight: 700; }
         .controls {
             display: grid;
@@ -266,6 +277,7 @@
         .pill.tf-1d { background: #bee3f8; color: #2c5282; }
         .pill.tf-dp { background: #faf089; color: #744210; }
         .pill.tf-qs { background: #c3dafe; color: #2a4365; }
+        .pill.tf-lg { background: #e9d8fd; color: #553c9a; }
         .pos { color: #276749; font-weight: 600; }
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
@@ -407,6 +419,7 @@
                 </table>
             </div>
             <div id="banner" class="banner" style="display:none;"></div>
+            <div id="research-jobs-banner" class="banner research-job" style="display:none;"></div>
             <div id="error" class="error" style="display:none;margin-top:12px;"></div>
         </div>
 
@@ -431,6 +444,7 @@
                             <label><input type="checkbox" value="1d" data-short="1d" checked> 1d</label>
                             <label><input type="checkbox" value="dp" data-short="DP" checked> DP (SPY pullback)</label>
                             <label><input type="checkbox" value="qs" data-short="QS" checked> QS (SPY five-swing)</label>
+                            <label><input type="checkbox" value="lg" data-short="LG" checked> LG (QQQ LEAPS gap)</label>
                         </div>
                     </div>
                 </div>
@@ -545,14 +559,17 @@
         const APPROACH_SEEN_KEY = 'hotCandidates.seenApproach';
         const CTF_COPIED_KEY = 'hotCandidates.ctfCopied';
         const FETCH_OPTS = { cache: 'no-store' };
-        const NOTIFY_DETECTORS = ['15m', '1d', 'dp', 'qs'];
+        const NOTIFY_DETECTORS = ['15m', '1d', 'dp', 'qs', 'lg'];
         const NOTIFY_EVENTS = ['hot', 'armed', 'approaching', 'fill', 'sell'];
-        const NOTIFY_LABELS = { '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)', 'qs': 'QS (SPY)' };
+        const NOTIFY_LABELS = {
+            '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)', 'qs': 'QS (SPY)', 'lg': 'LG (QQQ gap)'
+        };
         const DEFAULT_NOTIFY_APPLICABLE = {
             '15m': { hot: true, armed: true, approaching: false, fill: true, sell: true },
             '1d': { hot: true, armed: true, approaching: false, fill: true, sell: true },
             'dp': { hot: false, armed: true, approaching: true, fill: false, sell: true },
-            'qs': { hot: false, armed: true, approaching: true, fill: false, sell: true }
+            'qs': { hot: false, armed: true, approaching: true, fill: false, sell: true },
+            'lg': { hot: true, armed: true, approaching: true, fill: false, sell: false }
         };
         const DEFAULT_NOTIFY_PREFS = {
             '15m': {
@@ -582,6 +599,13 @@
                 approaching: { telegram: false, browser: false },
                 fill: { telegram: false, browser: false },
                 sell: { telegram: true, browser: true }
+            },
+            'lg': {
+                hot: { telegram: true, browser: true },
+                armed: { telegram: true, browser: true },
+                approaching: { telegram: true, browser: true },
+                fill: { telegram: false, browser: false },
+                sell: { telegram: false, browser: false }
             }
         };
         let notifyApplicable = DEFAULT_NOTIFY_APPLICABLE;
@@ -1168,7 +1192,7 @@
                 alertsField: 'approaching_alerts',
                 event: 'approaching',
                 titleVerb: 'APPROACHING',
-                detailSuffix: 'DP/QS approaching MOC',
+                detailSuffix: 'DP/QS/LG approaching',
                 seen: seenApproach,
                 primed: { get value() { return primedApproach; }, set value(v) { primedApproach = v; } },
                 remember: function(next) { seenApproach = next; saveSeenSet(APPROACH_SEEN_KEY, seenApproach); }
@@ -1267,21 +1291,27 @@
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
-                const chartTf = (tf === '1d' || tf === 'dp' || tf === 'qs') ? '1d' : '15m';
-                const tfClass = tf === '1d' ? 'tf-1d' : (tf === 'dp' ? 'tf-dp' : (tf === 'qs' ? 'tf-qs' : 'tf-15m'));
-                const tfLabel = tf === 'dp' ? 'DP' : (tf === 'qs' ? 'QS' : tf);
+                const chartTf = (tf === '1d' || tf === 'dp' || tf === 'qs' || tf === 'lg') ? '1d' : '15m';
+                const tfClass = tf === '1d' ? 'tf-1d'
+                    : (tf === 'dp' ? 'tf-dp'
+                    : (tf === 'qs' ? 'tf-qs'
+                    : (tf === 'lg' ? 'tf-lg' : 'tf-15m')));
+                const tfLabel = tf === 'dp' ? 'DP' : (tf === 'qs' ? 'QS' : (tf === 'lg' ? 'LG' : tf));
                 const stock = r.stock || '';
                 const boughtCell = r.bought
                     ? '<span class="pill owned">bought</span>'
                     : '<button type="button" class="btn-bought" data-bought-stock="' + stock +
                         '" data-bought-tf="' + tf + '">Bought</button>';
                 let lastCell = fmtNum(r.last_price, 2);
-                if (tf === 'dp' || tf === 'qs') {
+                if (tf === 'dp' || tf === 'qs' || tf === 'lg') {
                     const ok = !!r.wait_ok;
                     const cur = fmtNum(r.last_price, 2);
                     const tgt = fmtNum(r.resist, 2);
+                    const tip = tf === 'lg'
+                        ? 'current / gap-trigger open (green = gap already meets rule)'
+                        : 'current / MOC target (green = still buy-ok)';
                     lastCell = '<span class="' + (ok ? 'moc-buy-ok' : 'moc-buy-bad') +
-                        '" title="current / MOC target (green = still buy-ok)">' +
+                        '" title="' + tip + '">' +
                         cur + ' / ' + tgt + '</span>';
                 }
                 return '<tr>' +
@@ -1403,6 +1433,47 @@
             maybeHotAlerts(data);
             maybeArmedAlerts(data);
             maybeApproachAlerts(data);
+            pollResearchJobs();
+        }
+
+        function renderResearchJobs(jobs) {
+            const el = document.getElementById('research-jobs-banner');
+            if (!el) return;
+            el.replaceChildren();
+            if (!jobs || !jobs.length) {
+                el.style.display = 'none';
+                el.className = 'banner research-job';
+                return;
+            }
+            const job = jobs[0];
+            const state = String(job.state || 'unknown');
+            el.className = 'banner research-job ' + state;
+            el.style.display = 'block';
+            const title = document.createElement('strong');
+            title.textContent = 'Research: ' + (job.job || 'job') + ' — ' + state.toUpperCase();
+            el.appendChild(title);
+            const done = job.done != null ? job.done : '?';
+            const total = job.total != null ? job.total : '?';
+            let line = 'Progress ' + done + '/' + total;
+            if (job.ok != null) line += ' | ok=' + job.ok;
+            if (job.no_credit != null) line += ' | no_credit=' + job.no_credit;
+            if (job.last_key) line += ' | last=' + job.last_key;
+            el.appendChild(document.createTextNode(line));
+            if (job.last_error) {
+                el.appendChild(document.createElement('br'));
+                el.appendChild(document.createTextNode('Error: ' + String(job.last_error).slice(0, 200)));
+            }
+        }
+
+        async function pollResearchJobs() {
+            try {
+                const res = await fetch('/api/research-jobs', FETCH_OPTS);
+                if (!res.ok) return;
+                const data = await res.json();
+                renderResearchJobs((data && data.jobs) || []);
+            } catch (_) {
+                /* ignore — fill banner is primary */
+            }
         }
 
         async function poll() {

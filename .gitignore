@@ -21,4 +21,10 @@ __pycache__
 failed.txt
 /temp/
 /.cursor/hooks/state/
-.cursor/mcp.json
+.cursor/mcp.json 
+/tools/thetadata/*.jar 
+/tools/thetadata/lib/ 
+/tools/thetadata/logs/ 
+/tools/thetadata/*.toml 
+/tools/thetadata/creds.txt 
+/tools/thetadata/_probe* 

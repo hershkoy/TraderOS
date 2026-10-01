@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>__TITLE__</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0d1421; --panel:#131722; --panel2:#1e222d; --border:#2a2e39;
+    --text:#d1d4dc; --muted:#787b86; --accent:#2962ff; --pos:#26a69a; --neg:#ef5350; --spy:#f7931a;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Trebuchet MS",Roboto,Ubuntu,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.45; }
+  .wrap { max-width:1280px; margin:0 auto; padding:20px; }
+  .header { background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:18px 20px; margin-bottom:12px; }
+  .header h1 { font-size:20px; font-weight:600; color:#fff; }
+  .header .sub { color:var(--muted); font-size:13px; margin-top:6px; }
+  .pill { display:inline-block; margin-left:10px; padding:2px 10px; border-radius:999px;
+    font-size:12px; font-weight:600; background:#3a2a1b; color:var(--spy); vertical-align:middle; }
+  .controls {
+    background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:14px 16px; margin-bottom:14px; display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px 14px; align-items:end;
+  }
+  .controls label { display:block; font-size:11px; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.04em; margin-bottom:4px; }
+  .controls input, .controls select {
+    width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
+    border-radius:4px; padding:8px 10px; font-size:13px;
+  }
+  .controls .actions { display:flex; gap:8px; align-items:end; }
+  .btn {
+    background:var(--accent); color:#fff; border:none; border-radius:4px; padding:9px 14px;
+    font-size:13px; font-weight:600; cursor:pointer;
+  }
+  .btn.secondary { background:#2a2e39; color:var(--text); }
+  .btn:hover { filter:brightness(1.08); }
+  .checkrow { display:flex; align-items:center; gap:8px; padding-bottom:8px; }
+  .checkrow input { width:auto; }
+  .hint { grid-column:1/-1; color:var(--muted); font-size:12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:10px; margin:14px 0; }
+  .card { background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px 14px; }
+  .card .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .value { font-size:17px; font-weight:600; margin-top:4px; }
+  .card .claim { color:var(--muted); font-size:11px; margin-top:4px; }
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:12px; }
+  .panel h2 { font-size:15px; color:#fff; margin-bottom:10px; font-weight:600; }
+  .chart-box { background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    padding:12px; height:360px; margin-bottom:8px; }
+  .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:900px) { .chart-grid { grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; position:sticky; top:0; background:var(--panel); }
+  tr:hover td { background:rgba(41,98,255,.06); }
+  .table-wrap { max-height:520px; overflow:auto; border:1px solid var(--border); border-radius:6px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .rules { margin:0; padding-left:18px; color:var(--text); font-size:13px; }
+  .rules li { margin:4px 0; }
+  .tabs { display:flex; gap:4px; margin:0 0 12px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .tab { background:transparent; border:none; color:var(--muted); padding:10px 14px; cursor:pointer;
+    font-size:13px; font-weight:500; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab.active { color:#fff; border-bottom-color:var(--accent); }
+  .tabpanel { display:none; }
+  .tabpanel.active { display:block; }
+  .mono { font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <h1>__TITLE__ <span class="pill" id="verdictPill">no promote</span></h1>
+    <div class="sub" id="headerSub"></div>
+    <div class="sub" id="filterSub"></div>
+  </div>
+
+  <div class="controls">
+    <div>
+      <label for="bookSel">Trade pool</label>
+      <select id="bookSel"></select>
+    </div>
+    <div>
+      <label for="modeFilter">Strategy filter</label>
+      <select id="modeFilter">
+        <option value="all">Combined (strat1+strat2)</option>
+        <option value="strat1">Strat1 only (gap1+SMA)</option>
+        <option value="strat2">Strat2 only (gap2)</option>
+      </select>
+    </div>
+    <div>
+      <label for="capital">Account size ($)</label>
+      <input id="capital" type="number" min="1000" step="1000" />
+    </div>
+    <div>
+      <label for="maxOpen">Max concurrent</label>
+      <input id="maxOpen" type="number" min="0" max="50" step="1" />
+    </div>
+    <div class="checkrow">
+      <input id="requireCash" type="checkbox" checked />
+      <label for="requireCash" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">Require free cash for debit</label>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnApply" type="button">Apply</button>
+      <button class="btn secondary" id="btnReset" type="button">Reset</button>
+    </div>
+    <div class="hint">
+      Debit = premium &times; 100 &times; contracts. Max concurrent + cash check re-walk FCFS.
+      Equity marks opens at cost and steps on exits. Orange = SPY buy&amp;hold with the same starting capital.
+      <b>PF</b> = gross winning $ / gross losing $ on kept trades. Default max concurrent = 3 (video risk note).
+    </div>
+  </div>
+
+  <div class="cards" id="metricCards"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="years">By year</button>
+    <button class="tab" data-tab="trades">List of trades</button>
+    <button class="tab" data-tab="compare">vs claim / SPY</button>
+    <button class="tab" data-tab="runinfo">Run info</button>
+    <button class="tab" data-tab="rules">Rules</button>
+  </div>
+
+  <div class="tabpanel active" id="tab-overview">
+    <div class="panel">
+      <h2>Account equity vs SPY buy&amp;hold</h2>
+      <div class="chart-box"><canvas id="eqChart"></canvas></div>
+      <div class="muted" id="eqNote">Blue = strategy equity (capital + realized). Orange = SPY buy&amp;hold.</div>
+    </div>
+    <div class="panel">
+      <h2>Monthly realized P&amp;L</h2>
+      <div class="chart-box"><canvas id="monthChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-years">
+    <div class="chart-grid">
+      <div class="panel">
+        <h2>Trades per year</h2>
+        <div class="chart-box"><canvas id="yearNChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Win rate by year</h2>
+        <div class="chart-box"><canvas id="yearWrChart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Year table</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Year</th><th>n</th><th>WR %</th><th>PnL $</th><th>PF</th><th>Avg hold</th></tr></thead>
+        <tbody id="yearBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-trades">
+    <div class="panel">
+      <h2>Kept trades <span class="muted" id="tradeCount"></span></h2>
+      <div class="muted" id="skipNote" style="margin-bottom:8px"></div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr>
+            <th>#</th><th>Mode</th><th>Entry</th><th>Exit</th><th>QQQ</th><th>K</th>
+            <th>Debit $</th><th>Exit mark</th><th>Ctr</th><th>P&amp;L $</th><th>Gain %</th><th>Hold</th><th>Exit</th><th>Equity</th>
+          </tr>
+        </thead>
+        <tbody id="tradeBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-compare">
+    <div class="panel">
+      <h2>Strategy vs SPY buy&amp;hold (same capital / window)</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <thead><tr><th>Metric</th><th>Strategy</th><th>SPY B&amp;H</th><th>Delta</th></tr></thead>
+        <tbody id="spyBody"></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <h2>Video claim vs current kept book</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <thead><tr><th>Metric</th><th>Claim</th><th>Current</th><th>Delta</th></tr></thead>
+        <tbody id="compareBody"></tbody>
+      </table></div>
+      <div class="muted" style="margin-top:8px">Claim is OptionsKit uncapped slide (~$180k / 96%). Cap-3 + cash is the realistic live path.</div>
+    </div>
+    <div class="panel">
+      <h2>All precomputed pools (raw, no UI capital walk)</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <thead><tr><th>Book</th><th>n</th><th>WR %</th><th>PnL $</th><th>PF</th><th>Avg d</th><th>MDD $</th></tr></thead>
+        <tbody id="booksBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-runinfo">
+    <div class="panel">
+      <h2>Run info</h2>
+      <div class="table-wrap" style="max-height:none"><table>
+        <tbody id="runBody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-rules">
+    <div class="panel">
+      <h2>Rules</h2>
+      <ul class="rules" id="rulesList"></ul>
+      <div class="muted" style="margin-top:12px">Historical claim-check only. Project verdict: no promote.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATA = __DATA_JSON__;
+
+let eqChart = null, monthChart = null, yearNChart = null, yearWrChart = null;
+
+function fmt(n, d) {
+  if (d === undefined) d = 2;
+  if (n === null || n === undefined || Number.isNaN(n)) return "-";
+  return Number(n).toFixed(d);
+}
+function pct(n, d) {
+  if (n === null || n === undefined || Number.isNaN(n)) return "-";
+  return Number(n).toFixed(d === undefined ? 1 : d) + "%";
+}
+function money(x, signed) {
+  if (x === null || x === undefined || Number.isNaN(x)) return "-";
+  const a = Math.abs(x);
+  const s = a.toLocaleString(undefined, {maximumFractionDigits:0});
+  if (!signed) return "$" + s;
+  return (x >= 0 ? "+$" : "-$") + s;
+}
+function cls(x) { return x >= 0 ? "pos" : "neg"; }
+
+function bookKeys() { return Object.keys(DATA.books); }
+function currentBookKey() {
+  return document.getElementById("bookSel").value || bookKeys()[0];
+}
+function rawTrades() {
+  return (DATA.books[currentBookKey()] || {}).trades || [];
+}
+
+function readParams() {
+  const d = DATA.defaults || {};
+  return {
+    capital: Math.max(1000, Number(document.getElementById("capital").value) || d.capital || 100000),
+    maxOpen: Math.max(0, Math.floor(Number(document.getElementById("maxOpen").value) || 0)),
+    requireCash: !!document.getElementById("requireCash").checked,
+    mode: document.getElementById("modeFilter").value || "all",
+  };
+}
+
+function filterMode(trades, mode) {
+  if (!mode || mode === "all") return trades.slice();
+  return trades.filter(t => t.mode === mode);
+}
+
+function debitOf(t) {
+  if (t.debit_cash != null && !Number.isNaN(Number(t.debit_cash))) return Number(t.debit_cash);
+  return Number(t.entry_premium || 0) * 100 * Number(t.contracts || 1);
+}
+
+function tradeStats(trades) {
+  const filled = trades.filter(t => t.pnl_cash !== null && t.pnl_cash !== undefined);
+  if (!filled.length) {
+    return {n:0, wins:0, losses:0, win_rate_pct:null, total_pnl:0, pf:null, avg_days:null,
+      gp:0, gl:0, tp_pct:null, avg_entry_premium:null, avg_win:null, avg_loss:null};
+  }
+  const pnls = filled.map(t => Number(t.pnl_cash));
+  const wins = pnls.filter(x => x > 0);
+  const losses = pnls.filter(x => x <= 0);
+  const gp = wins.reduce((a,b)=>a+b,0);
+  const gl = Math.abs(losses.reduce((a,b)=>a+b,0));
+  const holds = filled.map(t => Number(t.hold_days)).filter(x => !Number.isNaN(x));
+  const tps = filled.filter(t => t.exit_reason === "tp50").length;
+  const debits = filled.map(t => Number(t.entry_premium));
+  return {
+    n: filled.length,
+    wins: wins.length,
+    losses: losses.length,
+    win_rate_pct: Math.round(1000 * wins.length / filled.length) / 10,
+    total_pnl: Math.round(pnls.reduce((a,b)=>a+b,0)),
+    pf: gl > 1e-9 ? Math.round(100 * gp / gl) / 100 : (gp > 0 ? Infinity : null),
+    gp: Math.round(gp),
+    gl: Math.round(gl),
+    avg_days: holds.length ? Math.round(10 * holds.reduce((a,b)=>a+b,0) / holds.length) / 10 : null,
+    tp_pct: Math.round(1000 * tps / filled.length) / 10,
+    avg_entry_premium: Math.round(100 * debits.reduce((a,b)=>a+b,0) / debits.length) / 100,
+    avg_win: wins.length ? Math.round(wins.reduce((a,b)=>a+b,0) / wins.length) : null,
+    avg_loss: losses.length ? Math.round(Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length)) : null,
+  };
+}
+
+function yearsBetween(a, b) {
+  const da = new Date(a + "T00:00:00");
+  const db = new Date(b + "T00:00:00");
+  return Math.max(1 / 365.25, (db - da) / (365.25 * 86400000));
+}
+
+function cagrPct(startEq, endEq, startDate, endDate) {
+  if (!startEq || !endEq || !startDate || !endDate) return null;
+  const y = yearsBetween(startDate, endDate);
+  if (y <= 0 || startEq <= 0 || endEq <= 0) return null;
+  return (Math.pow(endEq / startEq, 1 / y) - 1) * 100;
+}
+
+function maxDdFromEquitySeries(points) {
+  let peak = -Infinity, maxDd = 0, maxDdPct = 0;
+  for (const p of points) {
+    const y = p.y;
+    peak = Math.max(peak, y);
+    const dd = peak - y;
+    maxDd = Math.max(maxDd, dd);
+    if (peak > 0) maxDdPct = Math.max(maxDdPct, (dd / peak) * 100);
+  }
+  return { max_dd: Math.round(maxDd), max_dd_pct: Math.round(10 * maxDdPct) / 10 };
+}
+
+/** FCFS occupancy + optional cash debit check. Equity = capital + realized (opens at cost). */
+function simulateCollect(pool, p) {
+  const ordered = pool.slice().sort((a, b) => {
+    if (a.entry_date !== b.entry_date) return a.entry_date < b.entry_date ? -1 : 1;
+    if ((a.mode || "") !== (b.mode || "")) return (a.mode || "") < (b.mode || "") ? -1 : 1;
+    return 0;
+  });
+
+  const open = [];
+  const kept = [];
+  let cash = p.capital;
+  let realized = 0;
+  let peakOpen = 0;
+  let skippedOcc = 0;
+  let skippedCash = 0;
+  const events = []; // {date, equity, kind}
+
+  const firstDate = ordered.length ? ordered[0].entry_date : (DATA.spy_bh && DATA.spy_bh.start);
+  if (firstDate) events.push({ x: firstDate, y: p.capital });
+
+  function closeDue(beforeOrOn, inclusive) {
+    open.sort((a, b) => a.exit < b.exit ? -1 : a.exit > b.exit ? 1 : 0);
+    while (open.length) {
+      const ex = open[0].exit;
+      if (inclusive ? ex > beforeOrOn : ex >= beforeOrOn) break;
+      const lot = open.shift();
+      cash += lot.debit + lot.pnl;
+      realized += lot.pnl;
+      lot.trade.equity_after = p.capital + realized;
+      kept.push(lot.trade);
+      events.push({ x: lot.exit, y: p.capital + realized });
+    }
+  }
+
+  for (const t of ordered) {
+    closeDue(t.entry_date, false);
+    // also close same-day exits before new entries? use exit < entry already; same-day exit then enter ok if exit <= entry
+    closeDue(t.entry_date, true);
+
+    if (p.maxOpen > 0 && open.length >= p.maxOpen) {
+      skippedOcc += 1;
+      continue;
+    }
+    const debit = debitOf(t);
+    if (p.requireCash && debit > cash + 1e-6) {
+      skippedCash += 1;
+      continue;
+    }
+    cash -= debit;
+    const row = Object.assign({}, t, { debit_cash: Math.round(debit * 100) / 100 });
+    open.push({ exit: t.exit_date, debit: debit, pnl: Number(t.pnl_cash), trade: row });
+    peakOpen = Math.max(peakOpen, open.length);
+    events.push({ x: t.entry_date, y: p.capital + realized });
+  }
+  closeDue("9999-12-31", true);
+
+  const ts = tradeStats(kept);
+  const dd = maxDdFromEquitySeries(events);
+  const startDate = events.length ? events[0].x : null;
+  const endDate = events.length ? events[events.length - 1].x : null;
+  const finalEq = p.capital + realized;
+  const retPct = ((finalEq / p.capital) - 1) * 100;
+  const cagr = cagrPct(p.capital, finalEq, startDate, endDate);
+
+  return {
+    kept,
+    events,
+    metrics: Object.assign({}, ts, {
+      capital: p.capital,
+      final_equity: Math.round(finalEq),
+      net_pnl: Math.round(realized),
+      return_pct: Math.round(10 * retPct) / 10,
+      cagr_pct: cagr !== null ? Math.round(10 * cagr) / 10 : null,
+      max_dd: dd.max_dd,
+      max_dd_pct: dd.max_dd_pct,
+      peak_open: peakOpen,
+      skipped_occ: skippedOcc,
+      skipped_cash: skippedCash,
+      start_date: startDate,
+      end_date: endDate,
+      pf_display: ts.pf === Infinity ? "inf" : ts.pf,
+    }),
+  };
+}
+
+function spyMetrics(capital, startDate, endDate) {
+  const daily = (DATA.spy_bh && DATA.spy_bh.daily) || [];
+  if (!daily.length) return null;
+  let start = daily[0];
+  let end = daily[daily.length - 1];
+  if (startDate) {
+    for (const r of daily) { if (r.date >= startDate) { start = r; break; } }
+  }
+  if (endDate) {
+    for (let i = daily.length - 1; i >= 0; i--) {
+      if (daily[i].date <= endDate) { end = daily[i]; break; }
+    }
+  }
+  const eqStart = capital;
+  const eqEnd = capital * (end.equity / start.equity);
+  // MDD on SPY over same window
+  let peak = -Infinity, maxDd = 0, maxDdPct = 0;
+  const slice = daily.filter(r => r.date >= start.date && r.date <= end.date);
+  for (const r of slice) {
+    const y = capital * (r.equity / start.equity);
+    peak = Math.max(peak, y);
+    const dd = peak - y;
+    maxDd = Math.max(maxDd, dd);
+    if (peak > 0) maxDdPct = Math.max(maxDdPct, (dd / peak) * 100);
+  }
+  const retPct = ((eqEnd / eqStart) - 1) * 100;
+  const cagr = cagrPct(eqStart, eqEnd, start.date, end.date);
+  return {
+    start_date: start.date,
+    end_date: end.date,
+    final_equity: Math.round(eqEnd),
+    net_pnl: Math.round(eqEnd - capital),
+    return_pct: Math.round(10 * retPct) / 10,
+    cagr_pct: cagr !== null ? Math.round(10 * cagr) / 10 : null,
+    max_dd: Math.round(maxDd),
+    max_dd_pct: Math.round(10 * maxDdPct) / 10,
+    curve: slice.map(r => ({ x: r.date, y: capital * (r.equity / start.equity) })),
+  };
+}
+
+function alignSpyToLabels(labels, spyCurve, capital) {
+  if (!spyCurve || !spyCurve.length) return labels.map(() => null);
+  const m = {};
+  for (const p of spyCurve) m[p.x] = p.y;
+  let last = capital;
+  // also allow forward-fill from full daily
+  const daily = (DATA.spy_bh && DATA.spy_bh.daily) || [];
+  const firstLab = labels.find(Boolean);
+  let baseEq = null;
+  if (firstLab && daily.length) {
+    for (const r of daily) {
+      if (r.date >= firstLab) { baseEq = r.equity; break; }
+    }
+  }
+  return labels.map(d => {
+    if (!d) return last;
+    if (m[d] != null) { last = m[d]; return last; }
+    // forward fill from daily
+    if (baseEq != null) {
+      for (let i = daily.length - 1; i >= 0; i--) {
+        if (daily[i].date <= d) {
+          last = capital * (daily[i].equity / baseEq);
+          break;
+        }
+      }
+    }
+    return last;
+  });
+}
+
+function monthlyPnls(trades) {
+  const map = {};
+  for (const t of trades) {
+    const m = String(t.exit_date || "").slice(0, 7);
+    if (!m) continue;
+    map[m] = (map[m] || 0) + Number(t.pnl_cash);
+  }
+  const labels = Object.keys(map).sort();
+  return { labels, vals: labels.map(k => map[k]) };
+}
+
+function byYear(trades) {
+  const map = {};
+  for (const t of trades) {
+    const y = String(t.entry_date || "").slice(0, 4);
+    if (!y) continue;
+    if (!map[y]) map[y] = [];
+    map[y].push(t);
+  }
+  return Object.keys(map).sort().map(y => ({ year: y, ...tradeStats(map[y]) }));
+}
+
+function destroyCharts() {
+  [eqChart, monthChart, yearNChart, yearWrChart].forEach(c => { if (c) c.destroy(); });
+  eqChart = monthChart = yearNChart = yearWrChart = null;
+}
+
+function renderCards(m, spy) {
+  const pfVal = m.pf === Infinity ? "inf" : (m.pf ?? "-");
+  const items = [
+    ["n kept", m.n, `skip occ ${m.skipped_occ} / cash ${m.skipped_cash}`],
+    ["Win rate", m.win_rate_pct != null ? m.win_rate_pct + "%" : "-", `TP ${m.tp_pct ?? "-"}%`],
+    ["Profit factor", pfVal, `W ${money(m.gp)} / L ${money(m.gl)}`],
+    ["Final equity", money(m.final_equity), `start ${money(m.capital)}`],
+    ["Net P&L", money(m.net_pnl, true), `ret ${pct(m.return_pct)}`],
+    ["CAGR", m.cagr_pct != null ? pct(m.cagr_pct) : "-", spy ? `SPY ${pct(spy.cagr_pct)}` : ""],
+    ["Max DD", money(m.max_dd), pct(m.max_dd_pct)],
+    ["vs SPY final", spy ? money(m.final_equity - spy.final_equity, true) : "-", spy ? `SPY ${money(spy.final_equity)}` : ""],
+    ["Peak open", m.peak_open, `maxOpen set`],
+    ["Avg debit/sh", m.avg_entry_premium != null ? "$" + fmt(m.avg_entry_premium, 2) : "-", `avg win ${money(m.avg_win)}`],
+  ];
+  document.getElementById("metricCards").innerHTML = items.map(([lab, v, sub]) => `
+    <div class="card">
+      <div class="label">${lab}</div>
+      <div class="value mono ${typeof v === "string" && v.startsWith("+") ? "pos" : (typeof v === "string" && v.startsWith("-") && v !== "-" ? "neg" : "")}">${v}</div>
+      <div class="claim">${sub || ""}</div>
+    </div>`).join("");
+}
+
+function renderEquity(sim, spy) {
+  const labels = sim.events.map(e => e.x);
+  const strat = sim.events.map(e => e.y);
+  const spyAligned = alignSpyToLabels(labels, spy ? spy.curve : [], sim.metrics.capital);
+  eqChart = new Chart(document.getElementById("eqChart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Strategy equity",
+          data: strat,
+          borderColor: "#2962ff",
+          backgroundColor: "rgba(41,98,255,.12)",
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 2,
+          tension: 0.05,
+        },
+        {
+          label: "SPY buy & hold",
+          data: spyAligned,
+          borderColor: "#f7931a",
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          tension: 0.05,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#d1d4dc" } } },
+      scales: {
+        x: { ticks: { color: "#787b86", maxTicksLimit: 10 }, grid: { color: "#2a2e39" } },
+        y: { ticks: { color: "#787b86" }, grid: { color: "#2a2e39" } },
+      },
+    },
+  });
+  document.getElementById("eqNote").textContent =
+    `Blue = strategy (opens at cost). Orange = SPY B&H from ${spy ? spy.start_date : "?"} on same capital. ` +
+    `PF ${sim.metrics.pf_display} = ${money(sim.metrics.gp)} winners / ${money(sim.metrics.gl)} losers.`;
+}
+
+function renderMonthly(trades) {
+  const m = monthlyPnls(trades);
+  monthChart = new Chart(document.getElementById("monthChart"), {
+    type: "bar",
+    data: {
+      labels: m.labels,
+      datasets: [{
+        label: "Month P&L $",
+        data: m.vals,
+        backgroundColor: m.vals.map(v => v >= 0 ? "rgba(38,166,154,.75)" : "rgba(239,83,80,.75)"),
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#787b86", maxTicksLimit: 16 }, grid: { display: false } },
+        y: { ticks: { color: "#787b86" }, grid: { color: "#2a2e39" } },
+      },
+    },
+  });
+}
+
+function renderYears(trades) {
+  const rows = byYear(trades);
+  yearNChart = new Chart(document.getElementById("yearNChart"), {
+    type: "bar",
+    data: { labels: rows.map(r => r.year), datasets: [{ data: rows.map(r => r.n), backgroundColor: "#2962ff", label: "n" }] },
+    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:"#787b86"}, grid:{display:false}}, y:{ticks:{color:"#787b86"}, grid:{color:"#2a2e39"}} } },
+  });
+  yearWrChart = new Chart(document.getElementById("yearWrChart"), {
+    type: "bar",
+    data: { labels: rows.map(r => r.year), datasets: [{ data: rows.map(r => r.win_rate_pct), backgroundColor: "#26a69a", label: "WR%" }] },
+    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:"#787b86"}, grid:{display:false}}, y:{ticks:{color:"#787b86"}, grid:{color:"#2a2e39"}, suggestedMax:100} } },
+  });
+  document.getElementById("yearBody").innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.year}</td><td class="mono">${r.n}</td>
+      <td class="mono">${r.win_rate_pct ?? "-"}</td>
+      <td class="mono ${cls(r.total_pnl)}">${money(r.total_pnl, true)}</td>
+      <td class="mono">${r.pf === Infinity ? "inf" : (r.pf ?? "-")}</td>
+      <td class="mono">${r.avg_days ?? "-"}</td>
+    </tr>`).join("");
+}
+
+function renderTrades(sim) {
+  const ordered = sim.kept.slice().sort((a,b) => a.entry_date < b.entry_date ? -1 : a.entry_date > b.entry_date ? 1 : 0);
+  document.getElementById("tradeCount").textContent = `(${ordered.length})`;
+  document.getElementById("skipNote").textContent =
+    `Skipped occupancy ${sim.metrics.skipped_occ}, skipped cash ${sim.metrics.skipped_cash}. Peak concurrent ${sim.metrics.peak_open}.`;
+  document.getElementById("tradeBody").innerHTML = ordered.map((t,i) => `
+    <tr>
+      <td class="mono">${i+1}</td>
+      <td>${t.mode}</td>
+      <td class="mono">${t.entry_date}</td>
+      <td class="mono">${t.exit_date}</td>
+      <td class="mono">${fmt(t.entry_px, 2)}</td>
+      <td class="mono">${fmt(t.strike, 1)}</td>
+      <td class="mono">${money(t.debit_cash)}</td>
+      <td class="mono">${fmt(t.exit_premium, 2)}</td>
+      <td class="mono">${t.contracts}</td>
+      <td class="mono ${cls(t.pnl_cash)}">${money(t.pnl_cash, true)}</td>
+      <td class="mono ${cls(t.gain_pct)}">${fmt(t.gain_pct, 1)}%</td>
+      <td class="mono">${t.hold_days}</td>
+      <td>${t.exit_reason || ""}</td>
+      <td class="mono">${money(t.equity_after)}</td>
+    </tr>`).join("");
+}
+
+function renderCompare(m, spy) {
+  const c = DATA.claimed_combined;
+  document.getElementById("spyBody").innerHTML = [
+    ["Final equity", m.final_equity, spy && spy.final_equity],
+    ["Net P&L $", m.net_pnl, spy && spy.net_pnl],
+    ["Total return %", m.return_pct, spy && spy.return_pct],
+    ["CAGR %", m.cagr_pct, spy && spy.cagr_pct],
+    ["Max DD $", m.max_dd, spy && spy.max_dd],
+    ["Max DD %", m.max_dd_pct, spy && spy.max_dd_pct],
+    ["Profit factor", m.pf === Infinity ? "inf" : m.pf, "n/a (B&H)"],
+  ].map(([lab, a, b]) => {
+    const da = typeof a === "number" && typeof b === "number" ? a - b : null;
+    const moneyish = lab.includes("$") || lab.includes("equity") || lab.includes("P&L");
+    const pctish = lab.includes("%") || lab.includes("CAGR") || lab.includes("return");
+    const fmtA = moneyish ? money(a, lab.includes("P&L")) : (pctish ? (a == null ? "-" : pct(a)) : (a ?? "-"));
+    const fmtB = b === "n/a (B&H)" ? b : (moneyish ? money(b, lab.includes("P&L")) : (pctish ? (b == null ? "-" : pct(b)) : (b ?? "-")));
+    const fmtD = da == null ? "-" : (moneyish ? money(da, true) : pct(da));
+    return `<tr>
+      <td>${lab}</td>
+      <td class="mono">${fmtA}</td>
+      <td class="mono">${fmtB}</td>
+      <td class="mono ${da == null ? "" : cls(lab.includes("DD") ? -da : da)}">${fmtD}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("compareBody").innerHTML = [
+    ["n", c.n, m.n],
+    ["Win rate %", c.win_rate_pct, m.win_rate_pct],
+    ["Total P&L $", c.total_pnl, m.net_pnl],
+    ["Profit factor", c.pf, m.pf === Infinity ? "inf" : m.pf],
+    ["Avg days", c.avg_days, m.avg_days],
+    ["Max DD $", c.max_dd, m.max_dd],
+  ].map(([lab, claim, ours]) => {
+    const d = (typeof ours === "number" && typeof claim === "number") ? ours - claim : null;
+    return `<tr>
+      <td>${lab}</td>
+      <td class="mono">${typeof claim === "number" && lab.includes("$") ? money(claim) : (claim ?? "-")}</td>
+      <td class="mono">${typeof ours === "number" && lab.includes("$") ? money(ours) : (ours ?? "-")}</td>
+      <td class="mono ${d === null ? "" : cls(lab.includes("DD") ? -d : d)}">${d === null ? "-" : (lab.includes("$") ? money(d, true) : fmt(d, 1))}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("booksBody").innerHTML = bookKeys().map(k => {
+    const b = DATA.books[k];
+    const st = b.summary || {};
+    return `<tr>
+      <td>${b.label || k}</td>
+      <td class="mono">${st.n ?? "-"}</td>
+      <td class="mono">${st.win_rate_pct ?? "-"}</td>
+      <td class="mono ${cls(st.total_pnl || 0)}">${money(st.total_pnl, true)}</td>
+      <td class="mono">${st.pf ?? "-"}</td>
+      <td class="mono">${st.avg_days ?? "-"}</td>
+      <td class="mono">${money(st.max_dd)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderRunInfo() {
+  const meta = DATA.meta || {};
+  const rows = Object.entries(meta).map(([k,v]) =>
+    `<tr><td>${k}</td><td class="mono">${v}</td></tr>`).join("");
+  document.getElementById("runBody").innerHTML = rows;
+}
+
+function renderRules() {
+  document.getElementById("rulesList").innerHTML =
+    (DATA.rules || []).map(r => `<li>${r}</li>`).join("");
+}
+
+function apply() {
+  destroyCharts();
+  const p = readParams();
+  let pool = filterMode(rawTrades(), p.mode);
+  const sim = simulateCollect(pool, p);
+  const spy = spyMetrics(p.capital, sim.metrics.start_date, sim.metrics.end_date);
+  const book = DATA.books[currentBookKey()] || {};
+  document.getElementById("headerSub").textContent =
+    `${book.label || currentBookKey()} · ${DATA.meta.window || ""} · generated ${DATA.meta.generated || ""}`;
+  document.getElementById("filterSub").textContent =
+    `Account ${money(p.capital)} · maxOpen=${p.maxOpen || "off"} · cashCheck=${p.requireCash ? "on" : "off"} · ` +
+    `mode=${p.mode} · kept n=${sim.metrics.n} · PF=${sim.metrics.pf_display}`;
+  document.getElementById("verdictPill").textContent = DATA.meta.verdict || "no promote";
+  renderCards(sim.metrics, spy);
+  renderEquity(sim, spy);
+  renderMonthly(sim.kept);
+  renderYears(sim.kept);
+  renderTrades(sim);
+  renderCompare(sim.metrics, spy);
+}
+
+function init() {
+  const d = DATA.defaults || {};
+  const sel = document.getElementById("bookSel");
+  bookKeys().forEach(k => {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = DATA.books[k].label || k;
+    sel.appendChild(o);
+  });
+  if (DATA.default_book) sel.value = DATA.default_book;
+  document.getElementById("capital").value = d.capital || 100000;
+  document.getElementById("maxOpen").value = d.max_open != null ? d.max_open : 3;
+  document.getElementById("requireCash").checked = d.require_cash !== false;
+  if (d.mode) document.getElementById("modeFilter").value = d.mode;
+
+  renderRunInfo();
+  renderRules();
+  document.getElementById("btnApply").onclick = apply;
+  document.getElementById("btnReset").onclick = () => {
+    if (DATA.default_book) sel.value = DATA.default_book;
+    document.getElementById("modeFilter").value = d.mode || "all";
+    document.getElementById("capital").value = d.capital || 100000;
+    document.getElementById("maxOpen").value = d.max_open != null ? d.max_open : 3;
+    document.getElementById("requireCash").checked = d.require_cash !== false;
+    apply();
+  };
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tabpanel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+  apply();
+}
+
+init();
+</script>
+</body>
+</html>
