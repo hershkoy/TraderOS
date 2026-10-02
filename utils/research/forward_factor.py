@@ -230,7 +230,15 @@ def quote_on_day(
         except Exception as exc:
             last_err = exc
             msg = str(exc)
-            if "429" in msg or "Too Many" in msg or "timed out" in msg.lower():
+            retryable = (
+                "429" in msg
+                or "Too Many" in msg
+                or "503" in msg
+                or "Service Unavailable" in msg
+                or "timed out" in msg.lower()
+                or "Timeout" in msg
+            )
+            if retryable:
                 _time.sleep(2.0 * (attempt + 1))
                 continue
             raise

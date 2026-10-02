@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-10-01**
+Last updated: **2026-10-02**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -114,10 +114,10 @@ Status: [BS](edge_hunt/2026-09-30_qqq_leaps_gap_claimcheck.md), **[Theta listed]
 **Low-VIX hedges (2026-10-01):** H1 QQQ put debit / H2 VIX call debit / H3 collar × while_open/continuous/entry_day on mid/mid **max_open=10** (n=89 PnL $165k MDD $13.3k). Theta VIX options available. **No MDD lift on any combo**; H1/H2 small bleed (H2 entry_day mid +$140 flips to −$284 ask/bid); H3 0 fills (`no_nbbo` / debit&gt;$0.10). Gap entries rarely arm (VIX already elevated). **No promote.** HTML: `reports/research/qqq_leaps_gap/2026-10-01_hedge/qqq_leaps_gap_hedge_matrix.html`.
 **Live `/hot` Detector LG** (`timeframe=lg`; CronRunner `qqq_leaps_gap_live` 08:00–11:00 ET): soft HOT when gap est nears −0.7%/−1.5%; BUY NOW on confirmed open −1%/−2%. Telegram + browser. Docs: [qqq_leaps_gap_live](../features/qqq_leaps_gap_live.md).
 
-### Forward Factor calendars (Volatility Vibes) — 2026-10-01 claim-check
+### Forward Factor calendars (Volatility Vibes) — 2026-10-02 Theta retest
 
-Status: [2026-10-01](edge_hunt/2026-10-01_forward_factor_claimcheck.md). YouTube 6ao3uXE5KhU (claim ATM 60/90 quarter-Kelly ~26.7% CAGR / Sharpe 2.4).
-Theta listed ATM call calendar 60/90: SPY ask/bid unfiltered **n=32 mean −8.3% PF 0.74** (blind loses); 15-name mid FF≥0.20 **n=15 mean +30% PF 1.6 Sharpe~0.62** (filter helps on mid, not claim-sized). **No promote.** Code: `utils/research/forward_factor.py` / `claimcheck_forward_factor.py`.
+Status: [2026-10-02](edge_hunt/2026-10-02_forward_factor_thetadata.md), [2026-10-01](edge_hunt/2026-10-01_forward_factor_claimcheck.md). YouTube 6ao3uXE5KhU (claim ATM 60/90 quarter-Kelly ~26.7% CAGR / Sharpe 2.4).
+Theta listed ATM call calendar 60/90: SPY ask/bid unfiltered **n=32 mean −8.3% PF 0.74**; panel mid unfiltered n=192 PF 0.76; mid FF≥0.20 **n=10 mean +12.3% PF 1.27 Sharpe~0.32**; **ask/bid FF≥0.20 n=9 mean −50% PF 0.31 Sharpe~−1.08**. Massive/Polygon Starter: NBBO quotes 403 + older option day-aggs 403 — cannot host. **No promote.** Code: `utils/research/forward_factor.py` / `claimcheck_forward_factor.py`.
 
 ### ROC Rebound SPY (research claim-check)
 

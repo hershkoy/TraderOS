@@ -28,10 +28,10 @@ TRADES_CSV = (
     / "reports"
     / "research"
     / "forward_factor"
-    / "2026-10-01_panel"
-    / "SPY_QQQ_IWM_panel_60_90_mid_ff0.2_trades.csv"
+    / "2026-10-02_panel"
+    / "panel_mid_ff0.2_from_unfiltered.csv"
 )
-OUTDIR = ROOT / "reports" / "research" / "forward_factor" / "2026-10-01_panel"
+OUTDIR = ROOT / "reports" / "research" / "forward_factor" / "2026-10-02_panel"
 
 
 def _d(s: str) -> date:
