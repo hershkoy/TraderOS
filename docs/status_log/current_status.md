@@ -114,6 +114,11 @@ Status: [BS](edge_hunt/2026-09-30_qqq_leaps_gap_claimcheck.md), **[Theta listed]
 **Low-VIX hedges (2026-10-01):** H1 QQQ put debit / H2 VIX call debit / H3 collar × while_open/continuous/entry_day on mid/mid **max_open=10** (n=89 PnL $165k MDD $13.3k). Theta VIX options available. **No MDD lift on any combo**; H1/H2 small bleed (H2 entry_day mid +$140 flips to −$284 ask/bid); H3 0 fills (`no_nbbo` / debit&gt;$0.10). Gap entries rarely arm (VIX already elevated). **No promote.** HTML: `reports/research/qqq_leaps_gap/2026-10-01_hedge/qqq_leaps_gap_hedge_matrix.html`.
 **Live `/hot` Detector LG** (`timeframe=lg`; CronRunner `qqq_leaps_gap_live` 08:00–11:00 ET): soft HOT when gap est nears −0.7%/−1.5%; BUY NOW on confirmed open −1%/−2%. Telegram + browser. Docs: [qqq_leaps_gap_live](../features/qqq_leaps_gap_live.md).
 
+### Forward Factor calendars (Volatility Vibes) — 2026-10-01 claim-check
+
+Status: [2026-10-01](edge_hunt/2026-10-01_forward_factor_claimcheck.md). YouTube 6ao3uXE5KhU (claim ATM 60/90 quarter-Kelly ~26.7% CAGR / Sharpe 2.4).
+Theta listed ATM call calendar 60/90: SPY ask/bid unfiltered **n=32 mean −8.3% PF 0.74** (blind loses); 15-name mid FF≥0.20 **n=15 mean +30% PF 1.6 Sharpe~0.62** (filter helps on mid, not claim-sized). **No promote.** Code: `utils/research/forward_factor.py` / `claimcheck_forward_factor.py`.
+
 ### ROC Rebound SPY (research claim-check)
 
 Status: [2026-09-22](edge_hunt/2026-09-22_roc_rebound_spy.md). Strategy: [README](../strategies/roc_rebound/README.md).
