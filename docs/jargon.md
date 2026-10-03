@@ -72,7 +72,13 @@ Short notes. Add as needed.
 
 **SOQ** — Special opening quotation. VIX options and futures settle to this opening print on expiration morning. An end-of-day mark a few days earlier is not the SOQ.
 
+**Expected move (earnings)** — Dollar width of the at-the-money straddle on the first listed expiry after the report, marked at 15:45 ET (not report-day EOD). The Ravish NVDA video treats that as the band the stock "should" open inside. NVDA claim-check: 12 reports, inside 9/12, downside never broken; iron condor loses on the morning quote. Large-cap hunt: trailing containment then the next report; COST is 14/14 inside but walk-forward PCS still loses on natural marks. No promote. See `docs/status_log/edge_hunt/2026-10-03_nvda_earnings_em_claimcheck.md` and `2026-10-03_earnings_em_largecap.md`.
+
+**IV crush** — Implied volatility (and therefore option premium) drops after the event that was inflating it. Selling premium into an earnings report and buying it back at the next open is an attempt to collect that drop. The drop is real on NVDA; it does not pay the iron condor if the open is near the short call.
+
 **TPV** — Trade P&L Viewer. Primary: Charts page (`charting_server.py` `/`) bottom pane — paste or load the HTML Export trades JSON/CSV once (no TV 4k cap). Green/red P&L % histogram on the loaded bars. Pine `indicators/pine/trade_pnl_viewer.pine` still exists but settings boxes cannot hold a full book. Not CTD and not CTF.
+
+**Silent Flip** — ProRealAlgos 15m open-range: prior RTH high/low plus the most recent session extreme beyond that range (Flip High/Low). Trade only a 3-candle open that tags a line, holds the close, then an opposite-color silent candle; fill a stop at that silent extreme. Target is the opposite inner range rail. Claim-check 300 ADV n=39090 E +0.00 PF 1.01; fric0.10 PF 0.79 — no promote (`docs/status_log/edge_hunt/2026-10-03_silent_flip_claimcheck.md`).
 
 
 

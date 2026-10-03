@@ -124,10 +124,24 @@ SPXW proxy (no MES root on Theta), hold to expiry, listed 14Δ/10Δ: **n=233, 2 
 Status: [2026-10-03](edge_hunt/2026-10-03_spx_bull_put_45dte.md). Monday ~22-delta put, 25-wide, TP 50% credit, SL debit>=2x credit, time-stop 21 DTE. Theta SPXW EOD, Yahoo `^GSPC` spot (Theta index history 403 on FREE).
 Spec mid ±$0.05, one at a time: **n=55 WR 67.3% mean RoR −1.21% med +9.46% PF 0.88** PnL −$1,173; 2022 PF **0.48**. Zero-slip mid PF **0.90**. Natural ask/bid PF **0.25** (median half-spread to cross both legs **$0.80**, p90 **$1.23**). No-stop PF **0.74**. Stack of 4: n=89 PF **1.24** Sharpe~ **0.43**, 2022 PF **0.70**. **No promote.** Code: `claimcheck_spx_bull_put.py`.
 
+### NVDA earnings expected-move sale (Ravish) — 2026-10-03
+
+Status: [2026-10-03](edge_hunt/2026-10-03_nvda_earnings_em_claimcheck.md). YouTube FtX1JshVLvg. ATM straddle of the next expiry, short strike just outside it, enter 15:45 ET, exit first 09:30 NBBO. Theta 1m NBBO; Yahoo OHLC x10 before the 2024-06-10 split.
+Claim window 12 reports: inside the expected move **9/12**, downside broken **0/12** (those match). Opened green **9/12**, not 11/12 (2024-08-28 was −3.4%). Expected-move short put and put credit spread: **12/12** mid and natural. Cash-secured RoR ~1%. PCS mean RoR **+16.6%** mid / **+15.5%** natural. Iron condor stock-inside **9/12**; 09:30 mid WR **67%** total **+$110** PF **1.11**; natural **−$483** PF **0.67**. **No promote.**
+
+### Large-cap expected-move ticker hunt — 2026-10-03
+
+Status: [2026-10-03](edge_hunt/2026-10-03_earnings_em_largecap.md). Same clocks, 12 liquid weeklies. Trailing 6–12 reports (inside ≥75%, broke-down 0 → PCS; inside ≥75% with downs → IC); price the **next** event from 2025-01-01. Inventory n=173. COST is the NVDA-like tape (**14/14** inside, **0** down). Holdout fills n=19 mid **−$1,114 PF 0.47** / natural **−$1,846 PF 0.30**. COST PCS n=6 spot held 6/6 but natural **−$550**. **No promote.** Code: `scan_earnings_em_tickers.py` / `claimcheck_earnings_em_panel.py`.
+
 ### VIX spike call credit spread — 2026-10-03
 
 Status: [2026-10-03](edge_hunt/2026-10-03_vix_spike_call_claimcheck.md). Cash VIX cross (default 32), Wednesday monthly 30–60 DTE, short call +10 pts, 10-wide, TP at 40% of credit, no stop. Yahoo `^VIX` spot. Theta VIX EOD.
 Spot+10 mid ±$0.10: **n=8 /yr 1.9 WR 100% mean RoR +7.8% avg credit $1.11 PnL +$545**. Crash days (2018-02-05, 2020-03-05, 2025-04-04) never cleared the $0.80 credit. Forward+10 same slip: **n=11 WR 90.9% mean RoR +2.4% PF 1.57**; the 2020-03-05 hold is **−$410**. Trigger 35 forward **PF 0.72**. **No promote.** Code: `claimcheck_vix_spike_call.py`.
+
+### Silent Flip 15m open-range (ProRealAlgos) — 2026-10-03
+
+Status: [2026-10-03](edge_hunt/2026-10-03_silent_flip_claimcheck.md). YouTube Q2QjB5jBTro. Prior-day range + flip session extremes; 3-candle open (tag, opposite silent candle, stop at silent extreme); stop beyond the line; target opposite inner range; day-trade flatten 15:45 ET.
+IB 15m 300 ADV **n=39090 E +0.003 PF 1.01** geo 1.00; fric0.10 **E −0.10 PF 0.79**; occ-8 PF 0.97. Open-only / no-body / breakeven trail stay ~1.00 gross. Video names (no NVDA 15m) n=612 E +0.06 PF 1.17; UBER mean **−0.06**. **No promote.** Code: `claimcheck_silent_flip.py`.
 
 ### Forward Factor calendars (Volatility Vibes) — 2026-10-01 / v2 2026-10-02
 
