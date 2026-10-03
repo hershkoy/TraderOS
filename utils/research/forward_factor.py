@@ -125,21 +125,33 @@ def forward_factor(iv_front: float, iv_fwd: float) -> Optional[float]:
 
 
 def list_expirations(client: ThetaDataClient, symbol: str) -> List[date]:
-    r = client.session.get(
-        f"{client.base_url}/v3/option/list/expirations",
-        params={"symbol": str(symbol).upper()},
-        timeout=60,
-    )
-    r.raise_for_status()
-    df = pd.read_csv(StringIO(r.text))
-    col = "expiration" if "expiration" in df.columns else df.columns[-1]
-    out: List[date] = []
-    for x in df[col].tolist():
-        try:
-            out.append(date.fromisoformat(str(x)[:10]))
-        except ValueError:
+    import time as _time
+
+    last_err: Optional[Exception] = None
+    for attempt in range(4):
+        r = client.session.get(
+            f"{client.base_url}/v3/option/list/expirations",
+            params={"symbol": str(symbol).upper()},
+            timeout=60,
+        )
+        if r.status_code == 429 or r.status_code == 478:
+            last_err = RuntimeError(f"{r.status_code} list_expirations {symbol}")
+            _time.sleep(2.0 * (attempt + 1))
             continue
-    return sorted(set(out))
+        if r.status_code != 200 or not r.content:
+            return []
+        df = pd.read_csv(StringIO(r.text))
+        col = "expiration" if "expiration" in df.columns else df.columns[-1]
+        out: List[date] = []
+        for x in df[col].tolist():
+            try:
+                out.append(date.fromisoformat(str(x)[:10]))
+            except ValueError:
+                continue
+        return sorted(set(out))
+    if last_err:
+        raise last_err
+    return []
 
 
 def list_strikes(client: ThetaDataClient, symbol: str, exp: date) -> List[float]:
@@ -173,6 +185,35 @@ def is_monthly_expiry(ed: date) -> bool:
     return ed.month != (ed + timedelta(days=1)).month
 
 
+def pick_expiry_candidates(
+    exps: Sequence[date],
+    day: date,
+    target_dte: int,
+    tol: int,
+    *,
+    friday_only: bool = True,
+    monthly_only: bool = False,
+    limit: int = 5,
+) -> List[date]:
+    pool = list(exps)
+    if monthly_only:
+        pool = [e for e in pool if is_monthly_expiry(e)]
+    elif friday_only:
+        # Fridays first, then monthlies as fallback candidates
+        fridays = [e for e in pool if is_friday_expiry(e)]
+        monthlies = [e for e in pool if is_monthly_expiry(e) and e not in fridays]
+        pool = fridays + monthlies
+    cands = []
+    for ed in pool:
+        dte = (ed - day).days
+        if abs(dte - target_dte) <= tol and dte > 5:
+            # prefer friday over monthly at same distance
+            fri_pen = 0 if is_friday_expiry(ed) else 1
+            cands.append((abs(dte - target_dte), fri_pen, ed))
+    cands.sort(key=lambda x: (x[0], x[1]))
+    return [c[2] for c in cands[:limit]]
+
+
 def pick_expiry(
     exps: Sequence[date],
     day: date,
@@ -182,22 +223,16 @@ def pick_expiry(
     friday_only: bool = True,
     monthly_only: bool = False,
 ) -> Optional[date]:
-    pool = list(exps)
-    if monthly_only:
-        pool = [e for e in pool if is_monthly_expiry(e)]
-    elif friday_only:
-        pool = [e for e in pool if is_friday_expiry(e)]
-    if not pool:
-        pool = list(exps)
-    cands = []
-    for ed in pool:
-        dte = (ed - day).days
-        if abs(dte - target_dte) <= tol and dte > 5:
-            cands.append((abs(dte - target_dte), ed))
-    if not cands:
-        return None
-    cands.sort(key=lambda x: x[0])
-    return cands[0][1]
+    cands = pick_expiry_candidates(
+        exps,
+        day,
+        target_dte,
+        tol,
+        friday_only=friday_only,
+        monthly_only=monthly_only,
+        limit=1,
+    )
+    return cands[0] if cands else None
 
 
 def strike_for_abs_delta(
@@ -226,6 +261,74 @@ def strike_for_abs_delta(
             best_err = err
             best = float(k)
     return best
+
+
+def quote_on_day(
+    client: ThetaDataClient,
+    *,
+    symbol: str,
+    expiration: date,
+    strike: float,
+    right: str,
+    day: date,
+    cache: Dict[Tuple[Any, ...], pd.DataFrame],
+) -> Optional[Dict[str, float]]:
+    """Prefer Theta EOD; fall back to 15:45 ET 1m NBBO (needed for many weeklies)."""
+    import time as _time
+    from datetime import time as dtime
+
+    last_err: Optional[Exception] = None
+    for attempt in range(4):
+        try:
+            eod = fetch_eod(
+                client,
+                symbol=symbol,
+                expiration=expiration,
+                strike=float(strike),
+                right=right,
+                start=day,
+                end=day,
+                cache=cache,
+            )
+            row = eod_on(eod, day)
+            if row is not None:
+                return row
+            nbbo = client.nbbo_at_or_after(
+                symbol=symbol,
+                expiration=expiration,
+                strike=float(strike),
+                right=right,
+                day=day,
+                clock=dtime(15, 45),
+            )
+            if nbbo is None:
+                return None
+            bid, ask = float(nbbo["bid"]), float(nbbo["ask"])
+            return {
+                "bid": bid,
+                "ask": ask,
+                "mid": 0.5 * (bid + ask),
+                "spread": ask - bid,
+            }
+        except Exception as exc:
+            last_err = exc
+            msg = str(exc)
+            # 478 = Theta MDDS/permission blip; treat as missing quote, not fatal
+            if (
+                "429" in msg
+                or "478" in msg
+                or "Too Many" in msg
+                or "timed out" in msg.lower()
+            ):
+                _time.sleep(2.0 * (attempt + 1))
+                continue
+            LOG.warning(
+                "quote_on_day hard-fail %s %s %s: %s", symbol, expiration, day, last_err
+            )
+            return None
+    if last_err:
+        LOG.warning("quote_on_day failed %s %s %s: %s", symbol, expiration, day, last_err)
+    return None
 
 
 def fetch_eod(
@@ -654,77 +757,106 @@ def run_ff_book(
         if spot is None or spot <= 0:
             continue
 
-        front = pick_expiry(
+        front = None
+        back = None
+        atm = None
+        fe0 = None
+        be0 = None
+        fc_atm = pd.DataFrame()
+        bc_atm = pd.DataFrame()
+        front_cands = pick_expiry_candidates(
             exps,
             day,
             dte_front,
             dte_tol,
             friday_only=friday_only,
             monthly_only=monthly_only,
+            limit=5,
         )
-        back = pick_expiry(
+        back_cands = pick_expiry_candidates(
             exps,
             day,
             dte_back,
             dte_tol,
             friday_only=friday_only,
             monthly_only=monthly_only,
+            limit=5,
         )
-        if front is None or back is None or back <= front:
-            book.skipped.append({"date": str(day), "reason": "no_expiry_pair"})
-            continue
+        found_pair = False
+        for f_exp in front_cands:
+            for b_exp in back_cands:
+                if b_exp <= f_exp:
+                    continue
+                if skip_earnings and has_earnings_in_window(
+                    symbol, day, f_exp, earnings_map
+                ):
+                    continue
+                if f_exp not in strike_cache:
+                    strike_cache[f_exp] = list_strikes(client, symbol, f_exp)
+                if b_exp not in strike_cache:
+                    strike_cache[b_exp] = list_strikes(client, symbol, b_exp)
+                common = sorted(set(strike_cache[f_exp]) & set(strike_cache[b_exp]))
+                if not common:
+                    continue
+                atm_try = nearest_strike(common, spot)
+                if atm_try is None:
+                    continue
+                hard_exit_try = f_exp - timedelta(days=1)
+                while hard_exit_try.weekday() >= 5:
+                    hard_exit_try -= timedelta(days=1)
+                if hard_exit_try <= day:
+                    continue
+                fc_try = fetch_eod(
+                    client,
+                    symbol=symbol,
+                    expiration=f_exp,
+                    strike=float(atm_try),
+                    right="call",
+                    start=day,
+                    end=hard_exit_try,
+                    cache=cache,
+                )
+                bc_try = fetch_eod(
+                    client,
+                    symbol=symbol,
+                    expiration=b_exp,
+                    strike=float(atm_try),
+                    right="call",
+                    start=day,
+                    end=hard_exit_try,
+                    cache=cache,
+                )
+                fe_try = eod_on(fc_try, day) or quote_on_day(
+                    client,
+                    symbol=symbol,
+                    expiration=f_exp,
+                    strike=float(atm_try),
+                    right="call",
+                    day=day,
+                    cache=cache,
+                )
+                be_try = eod_on(bc_try, day) or quote_on_day(
+                    client,
+                    symbol=symbol,
+                    expiration=b_exp,
+                    strike=float(atm_try),
+                    right="call",
+                    day=day,
+                    cache=cache,
+                )
+                if fe_try is None or be_try is None:
+                    continue
+                front, back, atm = f_exp, b_exp, float(atm_try)
+                fe0, be0 = fe_try, be_try
+                fc_atm, bc_atm = fc_try, bc_try
+                hard_exit = hard_exit_try
+                found_pair = True
+                break
+            if found_pair:
+                break
 
-        if skip_earnings and has_earnings_in_window(symbol, day, front, earnings_map):
-            book.skipped.append({"date": str(day), "reason": "earnings_in_window"})
-            continue
-
-        if front not in strike_cache:
-            strike_cache[front] = list_strikes(client, symbol, front)
-        if back not in strike_cache:
-            strike_cache[back] = list_strikes(client, symbol, back)
-        common = sorted(set(strike_cache[front]) & set(strike_cache[back]))
-        if not common:
-            book.skipped.append({"date": str(day), "reason": "no_common_strike"})
-            continue
-
-        # Seed IV from ATM call mids on both expiries for FF + delta snaps
-        atm = nearest_strike(common, spot)
-        if atm is None:
-            book.skipped.append({"date": str(day), "reason": "no_strike"})
-            continue
-
-        hard_exit = front - timedelta(days=1)
-        while hard_exit.weekday() >= 5:
-            hard_exit -= timedelta(days=1)
-        if hard_exit <= day:
-            book.skipped.append({"date": str(day), "reason": "exit_before_entry"})
-            continue
-
-        # Prefetch ATM call path for FF gate (and atm_call structure)
-        fc_atm = fetch_eod(
-            client,
-            symbol=symbol,
-            expiration=front,
-            strike=float(atm),
-            right="call",
-            start=day,
-            end=hard_exit,
-            cache=cache,
-        )
-        bc_atm = fetch_eod(
-            client,
-            symbol=symbol,
-            expiration=back,
-            strike=float(atm),
-            right="call",
-            start=day,
-            end=hard_exit,
-            cache=cache,
-        )
-        fe0 = eod_on(fc_atm, day)
-        be0 = eod_on(bc_atm, day)
-        if fe0 is None or be0 is None:
-            book.skipped.append({"date": str(day), "reason": "no_entry_quote"})
+        if not found_pair:
+            book.skipped.append({"date": str(day), "reason": "no_quotable_pair"})
             continue
 
         dte1 = float((front - day).days)
@@ -746,12 +878,12 @@ def run_ff_book(
         put_strike: Optional[float] = None
         call_strike = float(atm)
         frames: Dict[str, pd.DataFrame] = {}
+        common = sorted(set(strike_cache[front]) & set(strike_cache[back]))
 
         if structure == "atm_call":
             frames["front_call"] = fc_atm
             frames["back_call"] = bc_atm
         else:
-            # +/- target_delta double calendar
             call_strike = strike_for_abs_delta(
                 spot=spot,
                 strikes=common,
@@ -814,8 +946,12 @@ def run_ff_book(
 
         entry_legs = _legs_on_day(frames, day, structure)
         if entry_legs is None:
-            book.skipped.append({"date": str(day), "reason": "no_entry_package"})
-            continue
+            # Build from fe0/be0 for atm_call when range missed entry but quote_on_day worked
+            if structure == "atm_call":
+                entry_legs = {"front_call": fe0, "back_call": be0}
+            else:
+                book.skipped.append({"date": str(day), "reason": "no_entry_package"})
+                continue
         entry_debit = package_debit(
             entry_legs, mark_mode=mark_mode, slip_frac=slip_frac, structure=structure
         )
@@ -837,7 +973,30 @@ def run_ff_book(
         closed = False
         for xd in path_days:
             legs = _legs_on_day(frames, xd, structure)
-            if legs is None:
+            if legs is None and structure == "atm_call":
+                # 15:45 fallback when EOD range lacks the day (common on weeklies)
+                fq = quote_on_day(
+                    client,
+                    symbol=symbol,
+                    expiration=front,
+                    strike=float(call_strike),
+                    right="call",
+                    day=xd,
+                    cache=cache,
+                )
+                bq = quote_on_day(
+                    client,
+                    symbol=symbol,
+                    expiration=back,
+                    strike=float(call_strike),
+                    right="call",
+                    day=xd,
+                    cache=cache,
+                )
+                if fq is None or bq is None:
+                    continue
+                legs = {"front_call": fq, "back_call": bq}
+            elif legs is None:
                 continue
             credit = package_credit(
                 legs, mark_mode=mark_mode, slip_frac=slip_frac, structure=structure
@@ -855,9 +1014,8 @@ def run_ff_book(
                 elif dte_left <= int(time_stop_dte):
                     reason = "time_stop"
                 elif float(ff) >= max(float(ff_exit) + 0.05, 0.10):
-                    # FF normalize only if entry was an elevated spike
-                    fe = eod_on(frames["front_call"], xd)
-                    be = eod_on(frames["back_call"], xd)
+                    fe = legs.get("front_call")
+                    be = legs.get("back_call")
                     spot_x = close_by_day.get(xd)
                     if fe and be and spot_x:
                         iv1x = estimate_iv(

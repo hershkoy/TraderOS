@@ -64,6 +64,14 @@ Short notes. Add as needed.
 
 **HA EMA channel (Animesh/Dhan)** — Daily swing claim-check: Heikin-Ashi signals, EMA(55) of High and Low as a band, MACD(12,26,9) on HA close, next-open fill, stop below EMA Low, 3R / Friday close / MACD-signal cross. Primary unique n=4047 E +0.23 PF 1.20; Friday exits 75% so median hold is 1 day; occ-15 Sharpe 0.51 vs SPY 0.67. No promote.
 
+**VRP (volatility risk premium)** — Implied volatility prices more movement than the index later realizes, so short premium has a structural tailwind on paper. A 45 DTE SPXW bull put (short ~22-delta put, long put 25 points lower) is one way to sell it. Monday mid ±$0.05, one at a time, 2022-01 to 2025-08: n=55 PF 0.88. No promote. See `docs/status_log/edge_hunt/2026-10-03_spx_bull_put_45dte.md`.
+
+**Bull put credit spread** — Sell a higher-strike put and buy a lower-strike put for a credit. Defined loss is the width minus the credit. The 45 DTE SPXW test takes profit at half the credit, stops when the buyback costs 2x the credit, and closes by 21 DTE.
+
+**VIX spike call credit spread** — Sell a VIX call and buy the call 10 points higher when cash VIX first closes at or above a panic level (default 32). Standard Wednesday monthly, 30–60 DTE, no stop, take profit when the debit is 40% of the credit. VIX options follow the future, so cash+10 and a parity-implied future+10 are different strikes. Claim-check 2016–2025-08: spot+10 mid slip $0.10 is n=8 all winners, average credit $1.11 (not 30–40% of the width); the forward book’s March 2020 hold is −$410. No promote. See `docs/status_log/edge_hunt/2026-10-03_vix_spike_call_claimcheck.md`.
+
+**SOQ** — Special opening quotation. VIX options and futures settle to this opening print on expiration morning. An end-of-day mark a few days earlier is not the SOQ.
+
 **TPV** — Trade P&L Viewer. Primary: Charts page (`charting_server.py` `/`) bottom pane — paste or load the HTML Export trades JSON/CSV once (no TV 4k cap). Green/red P&L % histogram on the loaded bars. Pine `indicators/pine/trade_pnl_viewer.pine` still exists but settings boxes cannot hold a full book. Not CTD and not CTF.
 
 

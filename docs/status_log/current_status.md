@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-10-02**
+Last updated: **2026-10-03**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -114,10 +114,26 @@ Status: [BS](edge_hunt/2026-09-30_qqq_leaps_gap_claimcheck.md), **[Theta listed]
 **Low-VIX hedges (2026-10-01):** H1 QQQ put debit / H2 VIX call debit / H3 collar × while_open/continuous/entry_day on mid/mid **max_open=10** (n=89 PnL $165k MDD $13.3k). Theta VIX options available. **No MDD lift on any combo**; H1/H2 small bleed (H2 entry_day mid +$140 flips to −$284 ask/bid); H3 0 fills (`no_nbbo` / debit&gt;$0.10). Gap entries rarely arm (VIX already elevated). **No promote.** HTML: `reports/research/qqq_leaps_gap/2026-10-01_hedge/qqq_leaps_gap_hedge_matrix.html`.
 **Live `/hot` Detector LG** (`timeframe=lg`; CronRunner `qqq_leaps_gap_live` 08:00–11:00 ET): soft HOT when gap est nears −0.7%/−1.5%; BUY NOW on confirmed open −1%/−2%. Telegram + browser. Docs: [qqq_leaps_gap_live](../features/qqq_leaps_gap_live.md).
 
-### Forward Factor calendars (Volatility Vibes) — 2026-10-02 Theta retest
+### 56 DTE Friday 2x1 put ratio (dtoptions / MES) — 2026-10-02
 
-Status: [2026-10-02](edge_hunt/2026-10-02_forward_factor_thetadata.md), [2026-10-01](edge_hunt/2026-10-01_forward_factor_claimcheck.md). YouTube 6ao3uXE5KhU (claim ATM 60/90 quarter-Kelly ~26.7% CAGR / Sharpe 2.4).
-Theta listed ATM call calendar 60/90: SPY ask/bid unfiltered **n=32 mean −8.3% PF 0.74**; panel mid unfiltered n=192 PF 0.76; mid FF≥0.20 **n=10 mean +12.3% PF 1.27 Sharpe~0.32**; **ask/bid FF≥0.20 n=9 mean −50% PF 0.31 Sharpe~−1.08**. Massive/Polygon Starter: NBBO quotes 403 + older option day-aggs 403 — cannot host. **No promote.** Code: `utils/research/forward_factor.py` / `claimcheck_forward_factor.py`.
+Status: [2026-10-02](edge_hunt/2026-10-02_mes_put_ratio_claimcheck.md). YouTube `_Vd7WKRSiV4` (claim 242 trades, 2 losses, 99% WR, no 2022 loss).
+SPXW proxy (no MES root on Theta), hold to expiry, listed 14Δ/10Δ: **n=233, 2 losses, WR 99.1%, PF 9.63**, 2022 entries **51 / 0 losses**. Both losses are April 2025 (**−$29.9k**, **−$9.7k** vs mean **+$1.5k**). Natural bid/ask **3 losses, PF 8.48**. SPAN buying-power return untested. **Win-rate claim replicates; not a Sharpe-vs-SPY promote.** HTML: `reports/research/mes_put_ratio/2026-10-02/mes_put_ratio.html`. Code: `claimcheck_mes_put_ratio.py`.
+
+### 45 DTE SPXW bull put (VRP vertical) — 2026-10-03
+
+Status: [2026-10-03](edge_hunt/2026-10-03_spx_bull_put_45dte.md). Monday ~22-delta put, 25-wide, TP 50% credit, SL debit>=2x credit, time-stop 21 DTE. Theta SPXW EOD, Yahoo `^GSPC` spot (Theta index history 403 on FREE).
+Spec mid ±$0.05, one at a time: **n=55 WR 67.3% mean RoR −1.21% med +9.46% PF 0.88** PnL −$1,173; 2022 PF **0.48**. Zero-slip mid PF **0.90**. Natural ask/bid PF **0.25** (median half-spread to cross both legs **$0.80**, p90 **$1.23**). No-stop PF **0.74**. Stack of 4: n=89 PF **1.24** Sharpe~ **0.43**, 2022 PF **0.70**. **No promote.** Code: `claimcheck_spx_bull_put.py`.
+
+### VIX spike call credit spread — 2026-10-03
+
+Status: [2026-10-03](edge_hunt/2026-10-03_vix_spike_call_claimcheck.md). Cash VIX cross (default 32), Wednesday monthly 30–60 DTE, short call +10 pts, 10-wide, TP at 40% of credit, no stop. Yahoo `^VIX` spot. Theta VIX EOD.
+Spot+10 mid ±$0.10: **n=8 /yr 1.9 WR 100% mean RoR +7.8% avg credit $1.11 PnL +$545**. Crash days (2018-02-05, 2020-03-05, 2025-04-04) never cleared the $0.80 credit. Forward+10 same slip: **n=11 WR 90.9% mean RoR +2.4% PF 1.57**; the 2020-03-05 hold is **−$410**. Trigger 35 forward **PF 0.72**. **No promote.** Code: `claimcheck_vix_spike_call.py`.
+
+### Forward Factor calendars (Volatility Vibes) — 2026-10-01 / v2 2026-10-02
+
+Status: [2026-10-01](edge_hunt/2026-10-01_forward_factor_claimcheck.md), [Theta retest](edge_hunt/2026-10-02_forward_factor_thetadata.md), **[v2 harness](edge_hunt/2026-10-02_forward_factor_v2.md)**. YouTube 6ao3uXE5KhU (claim ~26.7% CAGR / Sharpe 2.4).
+v1/retest: SPY ask/bid unfiltered PF 0.74; panel mid FF≥0.20 Sharpe~0.32; ask/bid FF≥0.20 Sharpe~−1.08.
+**v2** (Friday 30/60, earnings skip, dynamic TP/SL/FF/time, mid_slip): panel unfiltered **n=110 mean −11.9% PF 0.71 Sharpe~−1.4**; FF≥0.20 month-start **n=4 WR 0% mean −24% PF 0**; SPY double-cal FF≥0.20 **n=5 Sharpe~−1.51**. **No promote.** Code: `utils/research/forward_factor.py` / `claimcheck_forward_factor.py`.
 
 ### ROC Rebound SPY (research claim-check)
 

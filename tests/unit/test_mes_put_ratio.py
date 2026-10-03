@@ -7,9 +7,11 @@ import pandas as pd
 
 from utils.research.mes_put_ratio import (
     expiry_package_value,
+    overlapping_book_equity,
     package_value,
     pick_friday_expiry,
     pick_ratio_strikes,
+    realized_equity,
     simulate_trade,
     summarize_trades,
 )
@@ -150,6 +152,44 @@ def test_pick_friday_expiry_prefers_56():
     start = date(2024, 1, 19)
     exps = [start + timedelta(days=d) for d in (49, 56, 63)]
     assert pick_friday_expiry(exps, start, target_dte=56, tol=10) == start + timedelta(days=56)
+
+
+def test_overlapping_book_marks_the_open_drawdown():
+    day1 = date(2025, 3, 3)
+    day2 = date(2025, 3, 4)
+    day3 = date(2025, 3, 5)
+    stats = overlapping_book_equity(
+        [
+            {
+                "entry": date(2025, 3, 2),
+                "exit": day3,
+                "realized": 10.0,
+                "marks": [(day1, -100.0)],
+            },
+            {
+                "entry": day1,
+                "exit": day3,
+                "realized": 5.0,
+                "marks": [(day2, -50.0)],
+            },
+        ]
+    )
+    assert stats["max_dd"] == 150.0
+    assert stats["worst_open"] == -150.0
+    assert stats["worst_day"] == day2.isoformat()
+    assert stats["open_on_worst"] == 2
+
+
+def test_realized_equity_orders_by_exit_and_sums():
+    curve = realized_equity(
+        [
+            (date(2025, 4, 11), -100.0),
+            (date(2025, 4, 4), -50.0),
+            (date(2025, 4, 4), 20.0),
+        ]
+    )
+    assert [row["date"] for row in curve] == ["2025-04-04", "2025-04-04", "2025-04-11"]
+    assert curve[-1]["equity"] == -130.0
 
 
 def test_summarize_counts_2022_losses():

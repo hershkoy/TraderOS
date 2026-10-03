@@ -7,18 +7,14 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import requests
-
-USER_AGENT = "backTraderTest research hershkoy@gmail.com"
-TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
-FACTS_TMPL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept-Encoding": "gzip, deflate",
-    "Accept": "application/json",
-}
+from utils.api.sec.companyfacts_client import (
+    USER_AGENT,
+    CompanyfactsClient,
+    dedupe_by_end,
+    extract_series,
+)
 
 DEFAULT_CONCEPTS = [
     "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -38,41 +34,6 @@ DEFAULT_CONCEPTS = [
 ]
 
 
-def _get_json(url: str) -> Tuple[Dict[str, Any], int]:
-    resp = requests.get(url, headers=HEADERS, timeout=90)
-    resp.raise_for_status()
-    return resp.json(), len(resp.content)
-
-
-def resolve_cik(ticker: str) -> str:
-    raw, _ = _get_json(TICKERS_URL)
-    want = ticker.upper()
-    for row in raw.values():
-        if str(row.get("ticker") or "").upper() == want:
-            return f"{int(row['cik_str']):010d}"
-    raise SystemExit(f"Ticker {ticker} not found in SEC company_tickers.json")
-
-
-def _primary_unit(units: Dict[str, List[dict]]) -> Optional[str]:
-    for pref in ("USD", "USD/shares", "shares", "pure"):
-        if pref in units:
-            return pref
-    return next(iter(units), None)
-
-
-def _dedupe_by_end(rows: List[dict]) -> List[dict]:
-    by_end: Dict[str, dict] = {}
-    for x in rows:
-        end = x.get("end")
-        if not end:
-            continue
-        prev = by_end.get(end)
-        # Prefer later filed on same end date
-        if prev is None or str(x.get("filed") or "") >= str(prev.get("filed") or ""):
-            by_end[end] = x
-    return sorted(by_end.values(), key=lambda x: x.get("end") or "", reverse=True)
-
-
 def _fmt_val(val: Any, unit: str) -> str:
     if val is None:
         return ""
@@ -83,32 +44,6 @@ def _fmt_val(val: Any, unit: str) -> str:
             return f"{val:,.4f}".rstrip("0").rstrip(".")
         return f"{val:,.0f}"
     return html.escape(str(val))
-
-
-def extract_series(
-    facts: Dict[str, Any], concept: str, *, annual_only: bool = False, limit: int = 16
-) -> Optional[Dict[str, Any]]:
-    us = (facts.get("facts") or {}).get("us-gaap") or {}
-    node = us.get(concept)
-    if not node:
-        return None
-    units = node.get("units") or {}
-    unit = _primary_unit(units)
-    if not unit:
-        return None
-    rows = list(units.get(unit) or [])
-    if annual_only:
-        rows = [x for x in rows if x.get("fp") == "FY" or x.get("form") in ("10-K", "10-K/A")]
-    deduped = _dedupe_by_end(rows)[:limit]
-    return {
-        "concept": concept,
-        "label": node.get("label") or concept,
-        "description": node.get("description") or "",
-        "unit": unit,
-        "n_raw": len(units.get(unit) or []),
-        "n_unique_ends": len(_dedupe_by_end(list(units.get(unit) or []))),
-        "rows": deduped,
-    }
 
 
 def render_html(
@@ -304,10 +239,16 @@ def main() -> int:
     args = ap.parse_args()
 
     ticker = args.ticker.upper().strip()
+    client = CompanyfactsClient()
     print(f"Resolving CIK for {ticker}...")
-    cik = resolve_cik(ticker)
+    cik = client.resolve_cik(ticker)
     print(f"Fetching companyfacts CIK={cik}...")
-    payload, nbytes = _get_json(FACTS_TMPL.format(cik=cik))
+    payload = client.fetch_companyfacts(cik, use_resume=False)
+    if payload is None:
+        print(f"Failed to fetch companyfacts for {ticker}")
+        return 1
+    path = client.facts_dir / f"CIK{cik}.json"
+    nbytes = path.stat().st_size if path.exists() else 0
 
     annual: List[Dict[str, Any]] = []
     for concept in DEFAULT_CONCEPTS:
@@ -318,7 +259,7 @@ def main() -> int:
     quarterly_ni = None
     ni_node = ((payload.get("facts") or {}).get("us-gaap") or {}).get("NetIncomeLoss") or {}
     ni_usd = (ni_node.get("units") or {}).get("USD") or []
-    q_only = _dedupe_by_end(
+    q_only = dedupe_by_end(
         [x for x in ni_usd if x.get("fp") in ("Q1", "Q2", "Q3", "Q4")]
     )[: args.quarterly_limit]
     if q_only:
@@ -337,7 +278,6 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    # Small sidecar JSON for the selected annual series (not full 4MB dump)
     sidecar = {
         "ticker": ticker,
         "cik": cik,

@@ -502,6 +502,92 @@ def _round_pf(pf: Optional[float]) -> Optional[float]:
     return round(float(pf), 2)
 
 
+def overlapping_book_equity(
+    trades: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """End-of-day equity of overlapping packages.
+
+    Each trade dict has ``entry``, ``exit``, ``realized`` (booked on the exit
+    date), and ``marks`` as ``(day, mtm_dollars)`` for sessions still open.
+    A trade's last mark is carried forward until the day before exit.
+    """
+    if not trades:
+        return {"max_dd": 0.0, "worst_equity": 0.0, "worst_open": 0.0, "worst_day": None, "open_on_worst": 0}
+
+    days = set()
+    parsed = []
+    for trade in trades:
+        marks = {day: float(pnl) for day, pnl in trade.get("marks") or []}
+        parsed.append(
+            {
+                "entry": trade["entry"],
+                "exit": trade["exit"],
+                "realized": float(trade["realized"]),
+                "marks": marks,
+            }
+        )
+        days.add(trade["exit"])
+        days.update(marks)
+    ordered_days = sorted(days)
+    realized_cum = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    worst_equity = 0.0
+    worst_open = 0.0
+    worst_day: Optional[date] = None
+    open_on_worst = 0
+    for day in ordered_days:
+        realized_today = 0.0
+        open_sum = 0.0
+        open_n = 0
+        for trade in parsed:
+            if trade["exit"] == day:
+                realized_today += trade["realized"]
+                continue
+            if not (trade["entry"] < day < trade["exit"]):
+                continue
+            prior = [d for d in trade["marks"] if d <= day]
+            if not prior:
+                continue
+            open_sum += trade["marks"][max(prior)]
+            open_n += 1
+        realized_cum += realized_today
+        equity = realized_cum + open_sum
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd:
+            max_dd = dd
+            worst_equity = equity
+            worst_open = open_sum
+            worst_day = day
+            open_on_worst = open_n
+    return {
+        "max_dd": round(max_dd, 2),
+        "worst_equity": round(worst_equity, 2),
+        "worst_open": round(worst_open, 2),
+        "worst_day": None if worst_day is None else worst_day.isoformat(),
+        "open_on_worst": open_on_worst,
+    }
+
+
+def realized_equity(points: Sequence[Tuple[date, float]]) -> List[Dict[str, Any]]:
+    """Cumulative realized dollars, ordered by exit date. Same-day exits sum in input order."""
+    ordered = sorted(points, key=lambda item: item[0])
+    total = 0.0
+    out: List[Dict[str, Any]] = []
+    for day, pnl in ordered:
+        total += float(pnl)
+        out.append(
+            {
+                "date": day.isoformat(),
+                "pnl": round(float(pnl), 2),
+                "equity": round(total, 2),
+            }
+        )
+    return out
+
+
 def trades_to_frame(trades: Sequence[SimTrade]) -> pd.DataFrame:
     return pd.DataFrame([t.as_row() for t in trades])
 

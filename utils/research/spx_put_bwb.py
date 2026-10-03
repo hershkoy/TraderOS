@@ -137,6 +137,33 @@ class BookResult:
     skipped: List[Dict[str, Any]] = field(default_factory=list)
 
 
+def theta_csv_to_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """Theta index/stock EOD CSV rows -> daily OHLC.
+
+    Values must be taken as arrays. Passing the source Series into a DataFrame
+    with a new DatetimeIndex realigns on the old RangeIndex and wipes every close.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close"])
+    if "created" in df.columns:
+        ts = pd.to_datetime(df["created"], errors="coerce")
+    elif "last_trade" in df.columns:
+        ts = pd.to_datetime(df["last_trade"], errors="coerce")
+    else:
+        ts = pd.to_datetime(df.iloc[:, 0], errors="coerce")
+    out = pd.DataFrame(
+        {
+            "open": pd.to_numeric(df.get("open"), errors="coerce").to_numpy(),
+            "high": pd.to_numeric(df.get("high"), errors="coerce").to_numpy(),
+            "low": pd.to_numeric(df.get("low"), errors="coerce").to_numpy(),
+            "close": pd.to_numeric(df.get("close"), errors="coerce").to_numpy(),
+        },
+        index=pd.DatetimeIndex(ts.dt.normalize()),
+    )
+    out = out.dropna(subset=["close"]).sort_index()
+    return out[~out.index.duplicated(keep="last")]
+
+
 def load_index_eod(
     client: ThetaDataClient,
     symbol: str,
@@ -161,25 +188,12 @@ def load_index_eod(
     if r.status_code == 200 and r.content:
         df = pd.read_csv(StringIO(r.text))
         if not df.empty:
-            if "created" in df.columns:
-                ts = pd.to_datetime(df["created"], errors="coerce")
-            elif "last_trade" in df.columns:
-                ts = pd.to_datetime(df["last_trade"], errors="coerce")
-            else:
-                ts = pd.to_datetime(df.iloc[:, 0], errors="coerce")
-            out = pd.DataFrame(
-                {
-                    "open": pd.to_numeric(df.get("open"), errors="coerce"),
-                    "high": pd.to_numeric(df.get("high"), errors="coerce"),
-                    "low": pd.to_numeric(df.get("low"), errors="coerce"),
-                    "close": pd.to_numeric(df.get("close"), errors="coerce"),
-                },
-                index=pd.DatetimeIndex(ts.dt.normalize()),
-            )
-            out = out.dropna(subset=["close"]).sort_index()
-            out = out[~out.index.duplicated(keep="last")]
-            return out
-        LOG.warning("Theta EOD empty for %s; trying Yahoo fallback", sym)
+            out = theta_csv_to_ohlc(df)
+            if not out.empty:
+                return out
+            LOG.warning("Theta EOD parsed empty for %s; trying Yahoo fallback", sym)
+        else:
+            LOG.warning("Theta EOD empty for %s; trying Yahoo fallback", sym)
     else:
         LOG.warning(
             "Theta EOD %s -> %s; trying Yahoo/Timescale fallback (%s)",
