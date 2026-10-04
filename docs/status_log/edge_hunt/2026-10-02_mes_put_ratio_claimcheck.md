@@ -112,10 +112,36 @@ Banking 25% gets the 2025-03-21 trade out on 2025-03-24 (+$581, no drawdown). Th
 
 Sweep: `scripts/research/sweep_mes_put_ratio_tp.py`. JSON: `reports/research/mes_put_ratio/2026-10-02_tp/tp_sweep.json`.
 
+## Credit-multiple stop (2026-10-03)
+
+Stop means the first **daily close** whose loss is at least N times the entry credit (3.0 = a mark of −300% of the credit). The fill is that close, so a one-day gap exits worse than the line. Same 233 mid entries. The 50% take-profit is still on, and the stop is checked first.
+
+| Book | Stops | Closed losses | Total $ | Worst closed $ | Peak-to-trough |
+|------|------:|--------------:|--------:|---------------:|---------------:|
+| 50% only | 0 | 0 | +193,591 | +376 | $43,625 |
+| 50% + 2× credit | 19 | 19 | +95,886 | −13,659 | $46,182 |
+| 50% + 3× credit | 9 | 9 | +107,426 | −17,239 | $43,257 |
+| 50% + 4× credit | 8 | 8 | +112,526 | −17,239 | $43,257 |
+
+Every stop on the 50% book is a trade the 50% rule alone closed green. At 3×, those 9 entries locked **−$78,530** instead of **+$7,635**. Eight of the nine also expired green. The one hold-to-expiry loser in the set is 2025-02-14, and the 50% rule had already banked that one at +$1,386 on 2025-03-24.
+
+The March entries are not capped at the line. The first close through it is the crash close:
+
+| Entry | Credit $ | 3× line | Stop fill (2025-04-04) | Later 50% result |
+|-------|----------:|--------:|-----------------------:|-----------------:|
+| 2025-03-21 | 1,475 | −4,425 | **−17,239** | +821 after a −$21,725 mark |
+| 2025-03-28 | 1,545 | −4,635 | **−13,659** | +801 after a −$17,945 mark |
+
+The day before each of those fills was still inside the line, which is why the stop had not fired yet. The same gap shows up on 2024-08-05 (July packages fill −$8.0k to −$9.8k against lines near −$3.2k to −$3.8k). That cluster is why peak-to-trough stays about **$43k**.
+
+A 3× stop on the unmanaged hold book locks 19 trades for **−$208,054**. The same 19 entries, held, summed to **−$3,556**, because 17 of them expired green. 2025-02-07 is stopped on the expiry print itself at −$29,669 versus a hold of −$29,881. 2025-02-21 and 2025-02-28, which expired +$6,887 and +$8,767, are locked at −$25,404 and −$24,099.
+
+Sweep: `scripts/research/sweep_mes_put_ratio_stop.py`. JSON: `reports/research/mes_put_ratio/2026-10-03_stop/stop_sweep.json`. HTML: `reports/research/mes_put_ratio/2026-10-03_stop/mes_put_ratio_manage.html`. Daily MES account (session marks, contract slider, $500-to-$2,000 short-put buying-power model, not SPAN): `reports/research/mes_put_ratio/2026-10-03_stop/mes_put_ratio_account.html`. The 50% buy-to-close fills at the limit once the close bid/ask mid is through it. That cuts the SPX book from +$193,591 (fill at the better close) to +$167,634. Natural bid/ask entry plus the same limit is +$146,171. The open-book marks before the exit day are unchanged, so the August 2024 buying-power spike is the same.
+
 ## What this does not measure
 
 - MES or ES fills, and SPAN buying power. Percent return on a futures account can be much larger than these SPX dollars divided by a Reg-T naked-put margin, and it can also blow up when margin expands in a crash.
-- Intraday marks. Stops are absent; the path above is end-of-day.
+- Intraday marks. The credit stop above is the first daily close through the line, not a live stop order during the session.
 - A single-slot account. This book opens a new ratio every Friday, so about eight packages overlap.
 
 ## Reproduce
@@ -127,4 +153,8 @@ python scripts\pipeline\thetadata_terminal.py
 python scripts\research\claimcheck_mes_put_ratio.py --start 2021-10-01 --end 2026-10-01 --outdir reports\research\mes_put_ratio\2026-10-02
 python scripts\research\generate_mes_put_ratio_report.py --indir reports\research\mes_put_ratio\2026-10-02
 python scripts\research\sweep_mes_put_ratio_tp.py
+python scripts\research\sweep_mes_put_ratio_stop.py
+python scripts\research\generate_mes_put_ratio_manage_report.py
+python scripts\research\export_mes_put_ratio_daily.py
+python scripts\research\generate_mes_put_ratio_account_report.py
 ```

@@ -224,6 +224,8 @@ def run_variant(setups: Sequence[Dict[str, Any]], spot_by_day: Dict[date, float]
                 leg_slip=float(variant["leg_slip"]),
                 tp_frac=variant["tp_frac"],
                 exit_dte=variant["exit_dte"],
+                stop_credit_mult=variant.get("stop_credit_mult"),
+                tp_at_limit=bool(variant.get("tp_at_limit")),
             )
         )
     return trades

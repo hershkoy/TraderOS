@@ -70,6 +70,7 @@ RTH_YIELD_END = (16, 30)
 DEFAULT_LOCK = ROOT / "logs" / "data" / "ib_5m_universe.lock"
 DEFAULT_STOP = ROOT / "logs" / "data" / "ib_5m_universe.stop"
 DEFAULT_FAILED = ROOT / "logs" / "data" / "ib_5m_universe_failed.txt"
+DEFAULT_EMPTY_YEARS = ROOT / "logs" / "data" / "ib_5m_universe_empty_years.txt"
 DEFAULT_PROGRESS = ROOT / "logs" / "data" / "ib_5m_universe_progress.json"
 DEFAULT_INVENTORY = ROOT / "reports" / "ascending_channels" / "ib_5m_coverage.csv"
 DEFAULT_CLIENT_ID = 8823
@@ -78,6 +79,9 @@ BAR_MINUTES = 5
 DEFAULT_YEAR_FROM = 2025
 DEFAULT_YEAR_TO = 2020
 YEAR_SLACK_DAYS = 7
+DEFAULT_MAX_EMPTY_STREAK = 8
+DEFAULT_MAX_TIMEOUT_STREAK = 3
+DEFAULT_HIST_WAIT_SECS = 20.0
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -137,6 +141,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Symbols that failed qualify/empty; skipped until --reset-failed",
     )
     ap.add_argument(
+        "--empty-years-file",
+        type=Path,
+        default=DEFAULT_EMPTY_YEARS,
+        help="symbol+year prefix skips after empty streaks (not cleared by --reset-failed)",
+    )
+    ap.add_argument(
         "--progress-file",
         type=Path,
         default=DEFAULT_PROGRESS,
@@ -171,6 +181,29 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--reset-failed",
         action="store_true",
         help="Ignore and rewrite the failed-symbol skip list",
+    )
+    ap.add_argument(
+        "--reset-empty-years",
+        action="store_true",
+        help="Clear persisted empty-prefix year skips (not used by the hourly watchdog)",
+    )
+    ap.add_argument(
+        "--max-empty-streak",
+        type=int,
+        default=DEFAULT_MAX_EMPTY_STREAK,
+        help="Abort a year walk after this many consecutive genuine-empty 7d windows",
+    )
+    ap.add_argument(
+        "--max-timeout-streak",
+        type=int,
+        default=DEFAULT_MAX_TIMEOUT_STREAK,
+        help="Abort a year walk after this many consecutive IB hist timeouts",
+    )
+    ap.add_argument(
+        "--hist-timeout-secs",
+        type=float,
+        default=DEFAULT_HIST_WAIT_SECS,
+        help="Classify an empty IB window as timeout if it waited at least this long",
     )
     ap.add_argument(
         "--ib-port",
@@ -381,10 +414,13 @@ def year_fetch_start(
     first_15m: Optional[pd.Timestamp],
     overlap_bars: int,
     slack_days: int = YEAR_SLACK_DAYS,
+    skip_prefix: bool = False,
 ) -> datetime:
     """Resume inside the year, or restart from the window start if the front is missing."""
     start_bound = _window_start_bound(window_start, first_15m)
     last_ts = _as_utc(last_in)
+    if skip_prefix and last_ts is not None:
+        return rewind_start(last_ts, overlap_bars)
     if last_ts is None:
         return start_bound
     first_ts = _as_utc(first_in)
@@ -408,6 +444,7 @@ def symbol_year_job(
     now: datetime,
     overlap_bars: int,
     fresh_hours: float,
+    skip_prefix: bool = False,
 ) -> Optional[Tuple[str, int, datetime, datetime]]:
     """One (symbol, year) fetch job, or None if this window is skippable."""
     f15 = _as_utc(first_15m)
@@ -434,6 +471,7 @@ def symbol_year_job(
         window_start=window_start,
         first_15m=first_15m,
         overlap_bars=int(overlap_bars),
+        skip_prefix=bool(skip_prefix),
     )
     if start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=timezone.utc)
@@ -457,6 +495,59 @@ def append_skip_list(path: Path, symbol: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(str(symbol).upper() + "\n")
+
+
+def load_empty_years(path: Path) -> set:
+    """Persisted (SYMBOL, year) prefix skips. Not cleared by --reset-failed."""
+    if not path.exists():
+        return set()
+    out = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split()
+        if len(parts) != 2:
+            continue
+        try:
+            year = int(parts[1])
+        except ValueError:
+            continue
+        out.add((parts[0].upper(), year))
+    return out
+
+
+def append_empty_year(path: Path, symbol: str, year: int) -> None:
+    key = (str(symbol).upper(), int(year))
+    existing = load_empty_years(path)
+    if key in existing:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("%s %s\n" % (key[0], key[1]))
+
+
+def classify_hist_wait(elapsed_s: float, timeout_secs: float = DEFAULT_HIST_WAIT_SECS) -> str:
+    """IB timeout waits ~60s then returns empty; a true empty window returns quickly."""
+    if float(elapsed_s) >= float(timeout_secs):
+        return "timeout"
+    return "empty"
+
+
+def decide_year_walk_abort(
+    n_saved: int,
+    empty_streak: int,
+    timeout_streak: int,
+    *,
+    max_empty_streak: int = DEFAULT_MAX_EMPTY_STREAK,
+    max_timeout_streak: int = DEFAULT_MAX_TIMEOUT_STREAK,
+) -> Optional[str]:
+    """Status to abort the remaining year windows, or None to keep walking."""
+    if int(timeout_streak) >= int(max_timeout_streak) > 0:
+        return "hist_timeout"
+    if int(empty_streak) >= int(max_empty_streak) > 0:
+        return "ok" if int(n_saved) > 0 else "empty_prefix"
+    return None
 
 
 def load_symbol_5m_last(symbol: str) -> Optional[pd.Timestamp]:
@@ -717,6 +808,10 @@ def backfill_symbol_forward(
     dry_run: bool,
     should_stop: Callable[[], bool],
     on_progress: Optional[Callable[[str, int, str, str], None]] = None,
+    max_empty_streak: int = DEFAULT_MAX_EMPTY_STREAK,
+    max_timeout_streak: int = DEFAULT_MAX_TIMEOUT_STREAK,
+    hist_timeout_secs: float = DEFAULT_HIST_WAIT_SECS,
+    catchup_from: Optional[datetime] = None,
 ) -> Tuple[int, str]:
     """Fetch 5m forward from start_dt, upsert each window. Returns (bars, status)."""
     if start_dt.tzinfo is None:
@@ -750,6 +845,9 @@ def backfill_symbol_forward(
     cursor = start_dt
     n_saved = 0
     empty_streak = 0
+    timeout_streak = 0
+    jumped_catchup = False
+    pending_status = None
     step = timedelta(minutes=ib_step_back_minutes(TIMEFRAME))
 
     while cursor < end_dt:
@@ -766,6 +864,7 @@ def backfill_symbol_forward(
             window_end.strftime("%Y-%m-%d"),
             dur_unit,
         )
+        t_req = time.monotonic()
         raw = fetch_ib_historical_window(
             ib,
             contract,
@@ -773,18 +872,63 @@ def backfill_symbol_forward(
             end_dt=window_end,
             duration_str=dur_unit,
         )
+        elapsed = time.monotonic() - t_req
         if raw is None or raw.empty:
-            empty_streak += 1
-            logger.warning("%s: no 5m bars in window (empty_streak=%d)", symbol, empty_streak)
-            # IB 5m often starts later than 15m. Keep walking while we have saved nothing.
-            if n_saved > 0 and empty_streak >= 8:
-                logger.error("%s: too many empty 5m windows after data started", symbol)
-                return n_saved, "ok"
+            kind = classify_hist_wait(elapsed, hist_timeout_secs)
+            if kind == "timeout":
+                timeout_streak += 1
+                empty_streak = 0
+                logger.warning(
+                    "%s: IB 5m hist timeout (timeout_streak=%d elapsed=%.1fs)",
+                    symbol,
+                    timeout_streak,
+                    elapsed,
+                )
+            else:
+                empty_streak += 1
+                timeout_streak = 0
+                logger.warning(
+                    "%s: no 5m bars in window (empty_streak=%d)",
+                    symbol,
+                    empty_streak,
+                )
+            abort = decide_year_walk_abort(
+                n_saved,
+                empty_streak,
+                timeout_streak,
+                max_empty_streak=int(max_empty_streak),
+                max_timeout_streak=int(max_timeout_streak),
+            )
+            if abort:
+                catchup = catchup_from
+                if (
+                    n_saved == 0
+                    and catchup is not None
+                    and not jumped_catchup
+                    and cursor < catchup < end_dt
+                ):
+                    logger.warning(
+                        "%s: aborting prefix status=%s; jumping to catch-up %s",
+                        symbol,
+                        abort,
+                        catchup.isoformat(),
+                    )
+                    cursor = catchup
+                    jumped_catchup = True
+                    pending_status = abort
+                    empty_streak = 0
+                    timeout_streak = 0
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
+                    continue
+                logger.warning("%s: aborting year walk status=%s", symbol, abort)
+                return n_saved, abort
             cursor = window_end
             if sleep_s > 0:
                 time.sleep(sleep_s)
             continue
         empty_streak = 0
+        timeout_streak = 0
         raw = raw[raw["timestamp"] >= cursor]
         raw = raw[raw["timestamp"] <= window_end]
         if raw.empty:
@@ -811,6 +955,10 @@ def backfill_symbol_forward(
             cursor = cursor.replace(tzinfo=timezone.utc)
         if sleep_s > 0:
             time.sleep(sleep_s)
+    if pending_status:
+        return n_saved, pending_status
+    if n_saved <= 0:
+        return 0, "empty"
     return n_saved, "ok"
 
 
@@ -855,6 +1003,11 @@ def main(argv=None) -> int:
         args.failed_file.unlink()
         logger.info("Cleared failed file %s", args.failed_file)
     failed = load_skip_list(args.failed_file)
+    if args.reset_empty_years and args.empty_years_file.exists():
+        args.empty_years_file.unlink()
+        logger.info("Cleared empty-years file %s", args.empty_years_file)
+    empty_years = load_empty_years(args.empty_years_file)
+    catchup_from: Dict[Tuple[str, int], datetime] = {}
     last5_map = {}
     if not cov5.empty:
         last5_map = {
@@ -942,10 +1095,15 @@ def main(argv=None) -> int:
                     now=now,
                     overlap_bars=int(args.overlap_bars),
                     fresh_hours=float(args.fresh_hours),
+                    skip_prefix=(sym, int(year)) in empty_years,
                 )
                 if job is None:
                     skipped_year_done += 1
                     continue
+                if last_in is not None and not pd.isna(last_in):
+                    catchup_from[(sym, int(year))] = rewind_start(
+                        last_in, int(args.overlap_bars)
+                    )
                 todo.append(job)
             logger.info(
                 "Year %s queue +%d (total %d)",
@@ -1089,6 +1247,10 @@ def main(argv=None) -> int:
                     dry_run=bool(args.dry_run),
                     should_stop=should_stop,
                     on_progress=_progress,
+                    max_empty_streak=int(args.max_empty_streak),
+                    max_timeout_streak=int(args.max_timeout_streak),
+                    hist_timeout_secs=float(args.hist_timeout_secs),
+                    catchup_from=catchup_from.get((sym, int(year))) if year is not None else None,
                 )
             except StopRequested:
                 n_stopped = True
@@ -1108,6 +1270,24 @@ def main(argv=None) -> int:
             if status in {"ok", "caught_up"}:
                 n_ok += 1
                 logger.info("%s: done year=%s status=%s bars=%d", sym, year, status, n_bars)
+            elif status == "hist_timeout":
+                n_fail += 1
+                logger.warning(
+                    "%s: IB hist timeout year=%s bars=%d; not year-ok, not failed-list",
+                    sym,
+                    year,
+                    n_bars,
+                )
+            elif status == "empty_prefix":
+                n_ok += 1
+                if year is not None and not args.dry_run:
+                    append_empty_year(args.empty_years_file, sym, int(year))
+                logger.info(
+                    "%s: empty prefix year=%s; skip prefix on later runs bars=%d",
+                    sym,
+                    year,
+                    n_bars,
+                )
             elif status == "empty" and year is not None:
                 n_ok += 1
                 logger.info("%s: no IB 5m in %s; continuing other years", sym, year)

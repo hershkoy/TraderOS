@@ -6,7 +6,9 @@ from datetime import date, timedelta
 import pandas as pd
 
 from utils.research.mes_put_ratio import (
+    daily_book_path,
     expiry_package_value,
+    mes_package_margin,
     overlapping_book_equity,
     package_value,
     pick_friday_expiry,
@@ -106,6 +108,77 @@ def test_tp50_exits_before_expiry():
     assert trade.pnl_pts > 0
 
 
+def test_tp50_limit_fills_at_half_credit_not_the_better_close():
+    entry = date(2024, 1, 19)
+    exp = entry + timedelta(days=56)
+    day2 = entry + timedelta(days=7)
+    marks = [
+        _mark(entry, 21.7, 22.4, 15.5, 16.3),
+        _mark(day2, 4.0, 4.2, 3.0, 3.2),
+    ]
+    trade = simulate_trade(
+        entry_date=entry,
+        expiration=exp,
+        spot_entry=4800,
+        long_k=4570,
+        short_k=4480,
+        long_delta=-0.14,
+        short_delta=-0.10,
+        marks=marks,
+        settle_spot=4000,
+        tp_frac=0.5,
+        tp_at_limit=True,
+        comm_per_leg=0.0,
+    )
+    assert trade.exit_reason == "tp"
+    assert abs(trade.exit_value_pts - 0.5 * trade.credit_pts) < 1e-9
+    assert abs(trade.pnl_pts - 0.5 * trade.credit_pts) < 1e-9
+
+
+def test_stop_locks_a_dip_that_would_have_recovered():
+    entry = date(2024, 1, 19)
+    exp = entry + timedelta(days=56)
+    crash = entry + timedelta(days=7)
+    heal = entry + timedelta(days=14)
+    # Credit 9.75. A -300% mark is a 29.25 pt loss, close value 39.
+    # Crash package mid is 2*32.0 - 20.0 = 44, loss 34.25 pts.
+    marks = [
+        _mark(entry, 21.7, 22.4, 15.5, 16.3),
+        _mark(crash, 19.6, 20.4, 31.6, 32.4),
+        _mark(heal, 1.0, 1.2, 1.4, 1.6),
+    ]
+    stopped = simulate_trade(
+        entry_date=entry,
+        expiration=exp,
+        spot_entry=4800,
+        long_k=4570,
+        short_k=4480,
+        long_delta=-0.14,
+        short_delta=-0.10,
+        marks=marks,
+        settle_spot=4900,
+        stop_credit_mult=3.0,
+        comm_per_leg=0.0,
+    )
+    held = simulate_trade(
+        entry_date=entry,
+        expiration=exp,
+        spot_entry=4800,
+        long_k=4570,
+        short_k=4480,
+        long_delta=-0.14,
+        short_delta=-0.10,
+        marks=marks,
+        settle_spot=4900,
+        comm_per_leg=0.0,
+    )
+    assert stopped.exit_reason == "stop"
+    assert stopped.exit_date == crash
+    assert stopped.pnl_pts < -3.0 * stopped.credit_pts
+    assert held.exit_reason == "expiry"
+    assert held.pnl_pts > 0
+
+
 def test_dte21_exit():
     entry = date(2024, 1, 19)
     exp = date(2024, 3, 15)
@@ -178,6 +251,45 @@ def test_overlapping_book_marks_the_open_drawdown():
     assert stats["worst_open"] == -150.0
     assert stats["worst_day"] == day2.isoformat()
     assert stats["open_on_worst"] == 2
+    by_day = {row["date"]: row for row in stats["curve"]}
+    assert by_day[day2.isoformat()]["equity"] == -150.0
+    assert by_day[day3.isoformat()]["equity"] == 15.0
+    assert by_day[day3.isoformat()]["realized"] == 15.0
+
+
+def test_mes_package_margin_ramps_from_one_to_four_times_credit():
+    assert mes_package_margin(0.0, 1450.0) == 1000.0
+    assert mes_package_margin(-1450.0, 1450.0) == 1000.0
+    assert mes_package_margin(-5800.0, 1450.0) == 4000.0
+    assert mes_package_margin(-9000.0, 1450.0) == 4000.0
+    # 2.5x credit is halfway from 1x to 4x: $500 + $750 per short.
+    assert abs(mes_package_margin(-3625.0, 1450.0) - 2500.0) < 1e-9
+
+
+def test_daily_book_path_marks_open_inventory_and_margin():
+    entry = date(2025, 3, 21)
+    crash = date(2025, 4, 4)
+    exit_day = date(2025, 4, 28)
+    curve = daily_book_path(
+        [
+            {
+                "entry": entry,
+                "exit": exit_day,
+                "realized": 821.0,
+                "credit": 1475.0,
+                "marks": [(crash, -17239.0)],
+            }
+        ]
+    )
+    by_day = {row["date"]: row for row in curve}
+    assert by_day[entry.isoformat()]["n"] == 1
+    assert by_day[entry.isoformat()]["margin"] == 1000.0
+    assert by_day[entry.isoformat()]["open"] == 0.0
+    assert by_day[crash.isoformat()]["open"] == -17239.0
+    assert by_day[crash.isoformat()]["margin"] == 4000.0
+    assert by_day[exit_day.isoformat()]["n"] == 0
+    assert by_day[exit_day.isoformat()]["equity"] == 821.0
+    assert by_day[exit_day.isoformat()]["closed"] == 1
 
 
 def test_realized_equity_orders_by_exit_and_sums():

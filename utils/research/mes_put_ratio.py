@@ -51,6 +51,7 @@ DEFAULT_COMM_PER_LEG = 0.65
 EXIT_EXPIRY = "expiry"
 EXIT_TP = "tp"
 EXIT_DTE = "dte"
+EXIT_STOP = "stop"
 EXIT_OPEN = "open"
 
 
@@ -305,6 +306,8 @@ def simulate_trade(
     leg_slip: float = 0.0,
     tp_frac: Optional[float] = None,
     exit_dte: Optional[int] = None,
+    stop_credit_mult: Optional[float] = None,
+    tp_at_limit: bool = False,
     comm_per_leg: float = DEFAULT_COMM_PER_LEG,
     multiplier: float = DEFAULT_MULT,
 ) -> SimTrade:
@@ -360,8 +363,21 @@ def simulate_trade(
         close_val = package_value(long_c, short_c)
         path_pnl.append(credit - close_val)
         dte_left = (expiration - day).days
+        # Loss of N times the credit: close when pnl <= -N * credit.
+        # 3.0 is a mark of -300% of the credit received, not a debit-to-close of 3x.
+        if (
+            stop_credit_mult is not None
+            and credit > 0
+            and (credit - close_val) <= -float(stop_credit_mult) * credit
+        ):
+            exit_day, exit_value, reason = day, close_val, EXIT_STOP
+            break
         if tp_frac is not None and credit > 0 and close_val <= float(tp_frac) * credit:
-            exit_day, exit_value, reason = day, close_val, EXIT_TP
+            # A resting buy-to-close fills at the limit. The close mid only says
+            # the quote has traded through that limit. Booking the better close
+            # keeps profit the limit order never received.
+            fill = float(tp_frac) * credit if tp_at_limit else close_val
+            exit_day, exit_value, reason = day, fill, EXIT_TP
             break
         if exit_dte is not None and dte_left <= int(exit_dte):
             exit_day, exit_value, reason = day, close_val, EXIT_DTE
@@ -512,7 +528,14 @@ def overlapping_book_equity(
     A trade's last mark is carried forward until the day before exit.
     """
     if not trades:
-        return {"max_dd": 0.0, "worst_equity": 0.0, "worst_open": 0.0, "worst_day": None, "open_on_worst": 0}
+        return {
+            "max_dd": 0.0,
+            "worst_equity": 0.0,
+            "worst_open": 0.0,
+            "worst_day": None,
+            "open_on_worst": 0,
+            "curve": [],
+        }
 
     days = set()
     parsed = []
@@ -536,6 +559,7 @@ def overlapping_book_equity(
     worst_open = 0.0
     worst_day: Optional[date] = None
     open_on_worst = 0
+    curve: List[Dict[str, Any]] = []
     for day in ordered_days:
         realized_today = 0.0
         open_sum = 0.0
@@ -562,13 +586,114 @@ def overlapping_book_equity(
             worst_open = open_sum
             worst_day = day
             open_on_worst = open_n
+        curve.append(
+            {
+                "date": day.isoformat(),
+                "equity": round(equity, 2),
+                "realized": round(realized_cum, 2),
+                "open": round(open_sum, 2),
+            }
+        )
     return {
         "max_dd": round(max_dd, 2),
         "worst_equity": round(worst_equity, 2),
         "worst_open": round(worst_open, 2),
         "worst_day": None if worst_day is None else worst_day.isoformat(),
         "open_on_worst": open_on_worst,
+        "curve": curve,
     }
+
+
+def mes_package_margin(
+    mtm_spx_dollars: float,
+    credit_spx_dollars: float,
+    *,
+    calm_per_short: float = 500.0,
+    crash_per_short: float = 2000.0,
+    ramp_from: float = 1.0,
+    ramp_to: float = 4.0,
+) -> float:
+    """Assumed buying power for one MES 2x1, in dollars. Not a SPAN calculation.
+
+    Two short puts. Each short stays at ``calm_per_short`` while the package
+    loss is within 1x the credit, then rises linearly to ``crash_per_short``
+    at a 4x-credit loss. The loss multiple is the same in SPX or MES dollars.
+    """
+    credit = float(credit_spx_dollars)
+    loss_x = 0.0 if credit <= 1e-9 else max(0.0, -float(mtm_spx_dollars) / credit)
+    if loss_x <= ramp_from:
+        per_short = calm_per_short
+    elif loss_x >= ramp_to:
+        per_short = crash_per_short
+    else:
+        span = ramp_to - ramp_from
+        per_short = calm_per_short + (crash_per_short - calm_per_short) * (loss_x - ramp_from) / span
+    return 2.0 * float(per_short)
+
+
+def daily_book_path(trades: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Session path of overlapping packages, including the entry day at flat mark.
+
+    Each trade needs ``entry``, ``exit``, ``realized`` (SPX dollars, booked on
+    exit), ``credit`` (SPX dollars), and ``marks`` as ``(day, mtm_spx_dollars)``.
+    ``margin`` is the MES buying-power model for one copy of this book.
+    """
+    if not trades:
+        return []
+    parsed = []
+    days = set()
+    for trade in trades:
+        marks = {day: float(pnl) for day, pnl in trade.get("marks") or []}
+        parsed.append(
+            {
+                "entry": trade["entry"],
+                "exit": trade["exit"],
+                "realized": float(trade["realized"]),
+                "credit": float(trade["credit"]),
+                "marks": marks,
+            }
+        )
+        days.add(trade["entry"])
+        days.add(trade["exit"])
+        days.update(marks)
+    realized_cum = 0.0
+    closed = 0
+    curve: List[Dict[str, Any]] = []
+    for day in sorted(days):
+        realized_today = 0.0
+        open_sum = 0.0
+        open_n = 0
+        margin = 0.0
+        for trade in parsed:
+            if trade["exit"] == day:
+                realized_today += trade["realized"]
+                closed += 1
+                continue
+            if not (trade["entry"] <= day < trade["exit"]):
+                continue
+            if day == trade["entry"]:
+                mtm = 0.0
+            else:
+                prior = [d for d in trade["marks"] if d <= day]
+                if not prior:
+                    continue
+                mtm = trade["marks"][max(prior)]
+            open_sum += mtm
+            open_n += 1
+            margin += mes_package_margin(mtm, trade["credit"])
+        realized_cum += realized_today
+        curve.append(
+            {
+                "date": day.isoformat(),
+                "equity": round(realized_cum + open_sum, 2),
+                "realized": round(realized_cum, 2),
+                "open": round(open_sum, 2),
+                "n": open_n,
+                "closed": closed,
+                "margin": round(margin, 2),
+            }
+        )
+    return curve
 
 
 def realized_equity(points: Sequence[Tuple[date, float]]) -> List[Dict[str, Any]]:

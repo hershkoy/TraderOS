@@ -13,11 +13,17 @@ sys.path.insert(0, str(ROOT / "scripts" / "data"))
 
 from backfill_ib_5m_universe import (  # noqa: E402
     DEFAULT_CLIENT_ID,
+    DEFAULT_MAX_EMPTY_STREAK,
+    DEFAULT_MAX_TIMEOUT_STREAK,
     DEFAULT_YEAR_FROM,
     DEFAULT_YEAR_TO,
     PidLock,
+    append_empty_year,
+    classify_hist_wait,
+    decide_year_walk_abort,
     in_rth_yield_window,
     is_transient_ib_error,
+    load_empty_years,
     make_should_stop,
     needs_backfill,
     next_rth_yield_dt,
@@ -44,6 +50,9 @@ def test_default_client_id_is_distinct():
     assert args.year_to == DEFAULT_YEAR_TO == 2020
     assert args.no_year_slice is False
     assert args.no_through_now is False
+    assert args.max_empty_streak == DEFAULT_MAX_EMPTY_STREAK == 8
+    assert args.max_timeout_streak == DEFAULT_MAX_TIMEOUT_STREAK == 3
+    assert args.reset_empty_years is False
 
 
 def test_inventory_and_skip_if_job():
@@ -285,3 +294,63 @@ def test_symbol_year_job_skips_complete_and_pre_listing():
         fresh_hours=36.0,
     )
     assert complete is None
+
+
+def test_classify_hist_wait_timeout_vs_empty():
+    assert classify_hist_wait(3.0, 20.0) == "empty"
+    assert classify_hist_wait(20.0, 20.0) == "timeout"
+    assert classify_hist_wait(61.0, 20.0) == "timeout"
+
+
+def test_decide_year_walk_abort_timeout_not_empty_ok():
+    assert (
+        decide_year_walk_abort(0, 0, 3, max_empty_streak=8, max_timeout_streak=3)
+        == "hist_timeout"
+    )
+    assert (
+        decide_year_walk_abort(12, 0, 3, max_empty_streak=8, max_timeout_streak=3)
+        == "hist_timeout"
+    )
+    assert decide_year_walk_abort(0, 7, 0, max_empty_streak=8, max_timeout_streak=3) is None
+    assert (
+        decide_year_walk_abort(0, 8, 0, max_empty_streak=8, max_timeout_streak=3)
+        == "empty_prefix"
+    )
+    assert decide_year_walk_abort(5, 8, 0, max_empty_streak=8, max_timeout_streak=3) == "ok"
+
+
+def test_year_fetch_start_skip_prefix_uses_last():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    ystart, _yend = year_slice_bounds(2025, newest_year=2025, now=now, through_now=True)
+    first_15m = pd.Timestamp("2018-01-02T14:30:00Z")
+    last = pd.Timestamp("2026-09-03T20:00:00Z")
+    first_gap = pd.Timestamp("2026-03-18T13:30:00Z")
+    prefix = year_fetch_start(
+        last,
+        first_gap,
+        window_start=ystart,
+        first_15m=first_15m,
+        overlap_bars=2,
+    )
+    assert prefix == ystart
+    skipped = year_fetch_start(
+        last,
+        first_gap,
+        window_start=ystart,
+        first_15m=first_15m,
+        overlap_bars=2,
+        skip_prefix=True,
+    )
+    assert skipped == rewind_start(last, 2)
+
+
+def test_empty_years_file_roundtrip(tmp_path: Path):
+    path = tmp_path / "empty_years.txt"
+    assert load_empty_years(path) == set()
+    append_empty_year(path, "fubo", 2025)
+    append_empty_year(path, "FUBO", 2025)
+    append_empty_year(path, "LION", 2024)
+    assert load_empty_years(path) == {("FUBO", 2025), ("LION", 2024)}
+    args = parse_args(["--reset-empty-years", "--max-timeout-streak", "3"])
+    assert args.reset_empty_years is True
+    assert args.max_timeout_streak == 3
