@@ -116,10 +116,14 @@ def test_parse_channel_overlay_rejects_missing_rails():
 
 
 def test_charts_page_controls_and_overlay_api():
+    from pathlib import Path
+
     from charting_server import app
 
     client = app.test_client()
     html = client.get("/").get_data(as_text=True)
+    js_path = Path(__file__).resolve().parents[2] / "static" / "charts_page.js"
+    html = html + "\n" + js_path.read_text(encoding="utf-8")
     assert 'id="symbol-input"' in html
     assert "if (!seen[q] && starts.length === 0) starts.unshift(q);" in html
     assert 'id="goto-date"' in html
@@ -141,7 +145,10 @@ def test_charts_page_controls_and_overlay_api():
     assert "plot-crosshair" in html
     assert "bindAxisZoom" in html
     assert "axis-zoom-y" in html
-    assert "type: 'category'" in html
+    assert "lightweight-charts" in html
+    assert "createChart" in html
+    assert "setVisibleLogicalRange" in html
+    assert "bar-index / category" in html
     assert "VIEW_PAD = 50" in html
     assert "PRELOAD_PAD = 400" in html
     assert "nextWindowPads" in html
@@ -178,6 +185,7 @@ def test_charts_page_controls_and_overlay_api():
     assert "if (lastChartData) reloadChartKeepView();" in html
     assert "shape: 'hv'" not in html
     assert "yaxis: 'y'" in html
+    assert "CandlestickSeries" in html
     assert "Prior Close" in html
     assert "Golden pocket" in html
     assert 'id="ATRAnchoredRange-mode"' in html

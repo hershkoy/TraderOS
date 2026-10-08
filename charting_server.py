@@ -448,7 +448,7 @@ def api_goto_spec():
 
 @app.route("/api/channel-overlay", methods=["POST"])
 def api_channel_overlay():
-    """Normalize pasted /hot CTF Channel JSON for Plotly rails."""
+    """Normalize pasted /hot CTF Channel JSON for chart rails."""
     body = request.get_json(silent=True) or {}
     text = body.get("text")
     if text is None:
