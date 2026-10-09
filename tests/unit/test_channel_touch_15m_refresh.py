@@ -64,5 +64,5 @@ def test_probe_ib_connected_skips_start_loop(mock_get, mock_set, mock_cleanup):
     ib.isConnected.return_value = True
     mock_get.return_value = ib
     assert probe_ib_connected(client_id=8826) is True
-    mock_get.assert_called_once_with(port=4001, client_id=8826, start_loop=False)
+    mock_get.assert_called_once_with(port=None, client_id=8826, start_loop=False)
     mock_cleanup.assert_not_called()

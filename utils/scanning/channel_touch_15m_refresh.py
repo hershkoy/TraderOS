@@ -36,11 +36,13 @@ logger = logging.getLogger(__name__)
 
 LIVE_IB_CLIENT_ID = int(LIVE_15M_DEFAULTS["ib_client_id"])
 GATEWAY_HOST = "127.0.0.1"
+# Prefer live Gateway, then paper Gateway, then live/paper TWS.
 GATEWAY_PORT = 4001
+DEFAULT_IB_PORTS = (4001, 4002, 7496, 7497)
 
 
 def gateway_tcp_open(host: str = GATEWAY_HOST, port: int = GATEWAY_PORT, timeout: float = 1.0) -> bool:
-    """True if something is listening on the Gateway API port."""
+    """True if something is listening on the given IB API port."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(float(timeout))
     try:
@@ -56,16 +58,18 @@ def gateway_tcp_open(host: str = GATEWAY_HOST, port: int = GATEWAY_PORT, timeout
 
 
 def probe_ib_connected(*, client_id: int = LIVE_IB_CLIENT_ID) -> bool:
-    """Real IB connect only. Do not raw-TCP 4001 first (Gateway handshake hang).
+    """Real IB connect only. Do not raw-TCP first (Gateway handshake hang).
 
+    Tries Gateway then TWS via get_ib_connection (IB_PORT / last-good cache /
+    DEFAULT_IB_PORTS) with this client id. Does not use detect_ib_port client 98.
     Caller must cleanup_ib_connection().
     """
     set_ib_client_id(int(client_id))
     try:
-        # Pass 4001 so get_ib_connection skips detect_ib_port (extra client 98 handshake).
+        # port=None: auto-pick Gateway or TWS with this client id (no client-98 probe).
         # start_loop=False matches tests/utils/ib_conn.py (startLoop + connect times out).
         ib = get_ib_connection(
-            port=GATEWAY_PORT, client_id=int(client_id), start_loop=False
+            port=None, client_id=int(client_id), start_loop=False
         )
     except Exception:
         logger.exception("IB connect failed (client %s)", client_id)
@@ -176,7 +180,7 @@ def fetch_and_store_symbol_gap(
 
     Returns (n_completed_bars_saved, last_completed_ts_iso).
     """
-    ib = get_ib_connection(port=GATEWAY_PORT, start_loop=False)
+    ib = get_ib_connection(port=None, start_loop=False)
     if ib is None or not ib.isConnected():
         raise RuntimeError("IB not connected")
     contract = create_ib_contract_with_primary_exchange(symbol)
@@ -226,7 +230,7 @@ def refresh_ib_15m_symbols(
 ) -> List[str]:
     """Fetch+store completed 15m bars. Returns symbols that saved at least one bar.
 
-    Probes Gateway first. Cleans up the IB connection when finished unless
+    Probes Gateway/TWS first. Cleans up the IB connection when finished unless
     ``disconnect`` is False (keep the session for a following batch).
     """
     wanted = [str(s).upper() for s in symbols if str(s).strip()]
@@ -250,7 +254,8 @@ def refresh_ib_15m_symbols(
     saved: List[str] = []
     if not probe_ib_connected(client_id=int(client_id)):
         raise RuntimeError(
-            "IB API handshake failed (client %s)" % client_id
+            "IB API handshake failed (client %s; tried Gateway/TWS ports %s)"
+            % (client_id, ",".join(str(p) for p in DEFAULT_IB_PORTS))
         )
     try:
         for i, sym in enumerate(wanted, start=1):

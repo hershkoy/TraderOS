@@ -1,9 +1,10 @@
 @echo off
 REM 15m channel-touch research loop (H5 + overshoot 0.08 + vol>=2).
 REM Does NOT replace daily nightly H2 resist-break.
-REM Prerequisite: IB Gateway on 127.0.0.1:4001. Overnight universe backfill
-REM (8822) seeds the watchlist; this job pulls IB 15m on the armed/hot list
-REM (client 8823) at each RTH bar close so H5 BUY NOW can fire same bar.
+REM Prerequisite: IB Gateway (4001/4002) or TWS (7496/7497) on localhost.
+REM Auto-detects the API port (IB_PORT / last-good cache / defaults). Overnight
+REM universe backfill (8822) seeds the watchlist; this job pulls IB 15m on the
+REM armed/hot list (client 8826) at each RTH bar close so H5 BUY NOW can fire.
 
 cd /d %~dp0..
 if not exist logs\scanners mkdir logs\scanners

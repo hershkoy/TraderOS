@@ -13,11 +13,11 @@ from ib_insync import IB, util
 
 try:
     from ..db.timescaledb_client import get_timescaledb_client
-    from ..api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, detect_ib_port
+    from ..api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, ordered_ib_ports, remember_ib_port
 except ImportError:
     # Fallback for when running from utils directory
     from utils.db.timescaledb_client import get_timescaledb_client
-    from utils.api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, detect_ib_port
+    from utils.api.ib.ib_port_detector import CONNECT_TIMEOUT, DEFAULT_PORTS, ordered_ib_ports, remember_ib_port
 
 # ─────────────────────────────
 # CONFIG
@@ -62,41 +62,13 @@ _ib_client_id = 2  # Default client ID
 
 
 def _candidate_ib_ports(explicit_port):
-    """Build the list of ports to try when connecting to IB."""
-    ports_to_try = []
-    if explicit_port is not None:
-        ports_to_try.append(int(explicit_port))
-        return ports_to_try
+    """Build the list of ports to try when connecting to IB.
 
-    env_port = os.getenv("IB_PORT")
-    if env_port:
-        try:
-            env_port_int = int(env_port)
-            ports_to_try.append(env_port_int)
-        except ValueError:
-            logger.warning("Invalid IB_PORT environment value: %s", env_port)
-
-    # If no explicit port and no env var, try auto-detection
-    auto_detection_succeeded = False
-    if not ports_to_try:
-        try:
-            detected_port = detect_ib_port()
-            if detected_port is not None:
-                logger.info("Auto-detected IB port: %s", detected_port)
-                ports_to_try.append(detected_port)
-                # Set it in environment for future use
-                os.environ["IB_PORT"] = str(detected_port)
-                auto_detection_succeeded = True
-        except Exception as e:
-            logger.debug("Auto-detection failed: %s, falling back to default ports", e)
-
-    # Fall back to default ports ONLY if auto-detection didn't work
-    if not auto_detection_succeeded:
-        for default_port in DEFAULT_PORTS:
-            if default_port not in ports_to_try:
-                ports_to_try.append(default_port)
-
-    return ports_to_try
+    Prefer IB_PORT / last-good cache, then Gateway (4001/4002) and TWS
+    (7496/7497). Avoid detect_ib_port here: that uses client 98 and can
+    wedge Gateway when live jobs already hold another client id.
+    """
+    return ordered_ib_ports(explicit_port)
 
 def set_ib_client_id(client_id):
     """
@@ -172,6 +144,7 @@ def get_ib_connection(port=None, client_id=None, start_loop=False):
                     candidate,
                     effective_client_id,
                 )
+                remember_ib_port(candidate)
                 return _ib_connection
             except Exception as exc:  # noqa: BLE001
                 last_error = exc

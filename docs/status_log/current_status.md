@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-10-03**
+Last updated: **2026-10-09**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`).
 
@@ -138,6 +138,19 @@ Status: [2026-10-03](edge_hunt/2026-10-03_earnings_em_largecap.md). Same clocks,
 Status: [2026-10-03](edge_hunt/2026-10-03_vix_spike_call_claimcheck.md). Cash VIX cross (default 32), Wednesday monthly 30–60 DTE, short call +10 pts, 10-wide, TP at 40% of credit, no stop. Yahoo `^VIX` spot. Theta VIX EOD.
 Spot+10 mid ±$0.10: **n=8 /yr 1.9 WR 100% mean RoR +7.8% avg credit $1.11 PnL +$545**. Crash days (2018-02-05, 2020-03-05, 2025-04-04) never cleared the $0.80 credit. Forward+10 same slip: **n=11 WR 90.9% mean RoR +2.4% PF 1.57**; the 2020-03-05 hold is **−$410**. Trigger 35 forward **PF 0.72**. **No promote.** Code: `claimcheck_vix_spike_call.py`.
 
+### Vanna Rally overnight long call (Multi Strat Mark) — 2026-10-08
+
+Status: [2026-10-08](edge_hunt/2026-10-08_vanna_rally_claimcheck.md). YouTube `2GqrWos6sJw`. VIX gap-down + VIX −1% after open + SPY +0.5% from open → buy 7–10 DTE 2–3% OTM SPY call, risk 2.5%, sell next day, optional 8x TP.
+Listed mid (OptionsDX→Theta): **n=274 WR 33% PF 0.90 CAGR −2.6% Sharpe −0.17 MDD −31%**; 2022 **−9%** (claim +18% / 24.4% CAGR). Ask/bid and $0.05 slip worse. T-bill idle cash ~1.5–1.7% CAGR only. **No promote.** Code: `claimcheck_vanna_rally.py`.
+
+### SPY Wheel / Covered Strangle — 2026-10-07
+
+Status: [2026-10-07](edge_hunt/2026-10-07_spy_wheel_claimcheck.md). OptionsDX 2010–2023 mid: Wheel **~8.25% CAGR / Sharpe 0.71 / MDD −20%**; CS **~10.6% / 0.72 / −20%** vs book SPY 10.8% / 0.66 / −25%. Sharpe&lt;1 — **no hard promote** (soft vs SPY on-window). Code: `claimcheck_spy_wheel.py`.
+
+### Last-15m wheel instead of stock — 2026-10-09
+
+Status: [2026-10-09](edge_hunt/channel_touch/2026-10-09_last15m_wheel.md). One-cycle CSP→assign→CC on `current_best` last-15m fills (Theta EOD). Expanded n=500 → filled **359**: mid E/PF **+1.32 / 1.99** (2022 **+0.60 / 1.25**); ask/bid 2022 **−0.79 / 0.75**. Occupancy FCFS vs SPY (mark-at-cost): mid FULL **PASS** at max_open 1/4/8/15 (e.g. occ8 Sharpe **1.27** CAGR 8.1% MDD −8.3% vs SPY 0.66 / 11.2% / −24%); **2022 fails** Sharpe>1; **ask/bid FULL fails** every cap. **No promote.** Code: `claimcheck_last_15m_wheel.py` / `overlay_last_15m_wheel_occupancy.py`.
+
 ### Silent Flip 15m open-range (ProRealAlgos) — 2026-10-03
 
 Status: [2026-10-03](edge_hunt/2026-10-03_silent_flip_claimcheck.md). YouTube Q2QjB5jBTro. Prior-day range + flip session extremes; 3-candle open (tag, opposite silent candle, stop at silent extreme); stop beyond the line; target opposite inner range; day-trade flatten 15:45 ET.
@@ -179,7 +192,9 @@ Five short-term MR sleeves on **SPY** (S1 Band+IBS, S2 Turnaround Tuesday, S3 5-
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-09-23):** 3x MOC DCA on current_best last-15m (signal day + next 2 closes; pause below rail; ATR stop during scale-in). Allocated n=2295 E **+0.03** PF **1.01** geo **1.03** vs baseline +0.27 / 1.09 / 1.10; deployed E **−0.37**; 2022 still red. **No promote.** See [MOC DCA](edge_hunt/channel_touch/2026-09-23_last15m_moc_dca.md).
+**Latest (2026-10-09):** One-cycle wheel instead of stock on last-15m fills (Theta 30 DTE / 30Δ). Expanded n=500 → filled 359; occupancy mid FULL **PASS** vs SPY (occ8 Sharpe 1.27 / MDD −8.3% vs 0.66 / −24%) but **2022 fails** Sharpe>1 and **ask/bid FULL fails**. **No promote.** See [last-15m wheel](edge_hunt/channel_touch/2026-10-09_last15m_wheel.md).
+
+**Prior (2026-09-23):** 3x MOC DCA on current_best last-15m (signal day + next 2 closes; pause below rail; ATR stop during scale-in). Allocated n=2295 E **+0.03** PF **1.01** geo **1.03** vs baseline +0.27 / 1.09 / 1.10; deployed E **−0.37**; 2022 still red. **No promote.** See [MOC DCA](edge_hunt/channel_touch/2026-09-23_last15m_moc_dca.md).
 
 **Prior (2026-09-19):** Causal last-15m long ↔ short H3+ regime switch (WR/PF, TLT, UUP, SPY SMA). Same sensors as the L3 switch; WR leftover 2022 still red; PF20 greens 2022 only by becoming ~82% short; macros leave 2023 red or blunt 2020-21. **No promote.** See [short regime switch](edge_hunt/channel_touch/2026-09-19_last15m_short_regime_switch.md).
 

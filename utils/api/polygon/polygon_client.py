@@ -110,6 +110,10 @@ class PolygonClient:
                     logger.warning(f"Rate limit exceeded (429). Waiting {retry_after} seconds before retry...")
                     time.sleep(retry_after)
                     continue
+
+                # Permanent auth / plan / not-found — do not burn retries
+                if response.status_code in (401, 403, 404):
+                    response.raise_for_status()
                 
                 response.raise_for_status()
                 
@@ -128,13 +132,18 @@ class PolygonClient:
                 return data
                 
             except requests.RequestException as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                # Permanent failures — do not retry
+                if status in (401, 403, 404):
+                    logger.debug("Polygon permanent HTTP %s: %s", status, e)
+                    raise
                 if attempt == max_retries:
                     logger.error(f"Request failed after {max_retries + 1} attempts: {e}")
                     raise
                 
                 # Handle 429 errors with longer delays
-                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
-                    retry_after = int(e.response.headers.get('Retry-After', 60))
+                if status == 429:
+                    retry_after = int(e.response.headers.get("Retry-After", 60))
                     logger.warning(f"Rate limit exceeded (429). Waiting {retry_after} seconds before retry...")
                     time.sleep(retry_after)
                     continue
