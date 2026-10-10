@@ -339,6 +339,62 @@ def test_simulate_assign_then_liquidate():
     assert got.pnl_per_share == pytest.approx(8.3)
 
 
+def test_filter_wheel_by_liquidity_half_and_adv():
+    from utils.research.last_15m_wheel import filter_wheel_by_liquidity
+
+    mid = pd.DataFrame(
+        [
+            {
+                "stock": "AAA",
+                "put_entry_date": "2022-01-10",
+                "put_expiry": "2022-02-18",
+                "put_strike": 50.0,
+                "put_credit": 1.0,
+                "adv_20": 30e6,
+                "wheel_ok": True,
+                "buy_date": "2022-01-10",
+                "wheel_exit_date": "2022-02-18",
+                "gain_pct": 2.0,
+            },
+            {
+                "stock": "BBB",
+                "put_entry_date": "2022-01-11",
+                "put_expiry": "2022-02-18",
+                "put_strike": 20.0,
+                "put_credit": 1.0,
+                "adv_20": 5e6,
+                "wheel_ok": True,
+                "buy_date": "2022-01-11",
+                "wheel_exit_date": "2022-02-18",
+                "gain_pct": 1.0,
+            },
+            {
+                "stock": "CCC",
+                "put_entry_date": "2022-01-12",
+                "put_expiry": "2022-02-18",
+                "put_strike": 40.0,
+                "put_credit": 2.0,
+                "adv_20": 40e6,
+                "wheel_ok": True,
+                "buy_date": "2022-01-12",
+                "wheel_exit_date": "2022-02-18",
+                "gain_pct": 3.0,
+            },
+        ]
+    )
+    # AAA: half 10% of mid; BBB: half 40%; CCC: half 5%
+    ab = mid.copy()
+    ab["put_credit"] = [0.90, 0.60, 1.90]
+    ab["gain_pct"] = [1.8, 0.5, 2.8]
+    m2, a2, meta = filter_wheel_by_liquidity(
+        mid, ab, min_adv=25e6, max_half_pct_of_mid=15.0
+    )
+    assert meta["n_matched"] == 3
+    assert meta["n_kept"] == 2  # AAA + CCC
+    assert set(m2["stock"]) == {"AAA", "CCC"}
+    assert list(a2["put_credit"]) == [0.90, 1.90]
+
+
 def test_occupancy_fcfs_respects_max_open():
     trades = [
         {

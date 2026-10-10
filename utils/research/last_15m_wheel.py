@@ -1154,6 +1154,76 @@ def apply_wheel_book(
 # ---------------------------------------------------------------------------
 
 
+def wheel_contract_key(row: Any) -> str:
+    """Stable CSP identity: stock|put_entry|put_expiry|put_strike."""
+    get = row.get if hasattr(row, "get") else lambda k, d=None: getattr(row, k, d)
+    stock = str(get("stock") or "").upper()
+    entry = str(get("put_entry_date") or "")
+    expiry = str(get("put_expiry") or "")
+    strike = pd.to_numeric(get("put_strike"), errors="coerce")
+    strike_s = "" if pd.isna(strike) else ("%.4f" % float(strike))
+    return "%s|%s|%s|%s" % (stock, entry, expiry, strike_s)
+
+
+def filter_wheel_by_liquidity(
+    mid_df: pd.DataFrame,
+    askbid_df: pd.DataFrame,
+    *,
+    min_adv: Optional[float] = None,
+    max_half_pct_of_mid: Optional[float] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """Keep matched mid/ask_bid rows passing ADV and/or put half-spread gates.
+
+    Half-spread % of mid = 100 * (put_credit_mid - put_credit_askbid) / put_credit_mid.
+    Causal at entry (both quotes known before the sell).
+    """
+    mid = mid_df.copy()
+    ab = askbid_df.copy()
+    if "wheel_ok" in mid.columns:
+        mid = mid[mid["wheel_ok"] == True]  # noqa: E712
+    if "wheel_ok" in ab.columns:
+        ab = ab[ab["wheel_ok"] == True]  # noqa: E712
+    mid = mid.copy()
+    ab = ab.copy()
+    mid["_k"] = mid.apply(wheel_contract_key, axis=1)
+    ab["_k"] = ab.apply(wheel_contract_key, axis=1)
+    m = mid.drop_duplicates("_k", keep="first").set_index("_k")
+    a = ab.drop_duplicates("_k", keep="first").set_index("_k")
+    common = m.index.intersection(a.index)
+    m = m.loc[common]
+    a = a.loc[common]
+    put_mid = pd.to_numeric(m["put_credit"], errors="coerce")
+    put_ab = pd.to_numeric(a["put_credit"], errors="coerce")
+    half_pct = 100.0 * (put_mid - put_ab) / put_mid.replace(0, float("nan"))
+    adv = (
+        pd.to_numeric(m["adv_20"], errors="coerce")
+        if "adv_20" in m.columns
+        else pd.Series(float("nan"), index=m.index)
+    )
+    mask = pd.Series(True, index=m.index)
+    if min_adv is not None:
+        mask &= adv >= float(min_adv)
+    if max_half_pct_of_mid is not None:
+        mask &= half_pct <= float(max_half_pct_of_mid)
+    keep = m.index[mask]
+    meta = {
+        "n_matched": int(len(common)),
+        "n_kept": int(len(keep)),
+        "min_adv": min_adv,
+        "max_half_pct_of_mid": max_half_pct_of_mid,
+        "median_half_pct_kept": (
+            float(half_pct.loc[keep].median()) if len(keep) else None
+        ),
+    }
+    mid_out = m.loc[keep].reset_index(drop=True)
+    ab_out = a.loc[keep].reset_index(drop=True)
+    drop_cols = [c for c in mid_out.columns if c == "_k"]
+    if drop_cols:
+        mid_out = mid_out.drop(columns=drop_cols, errors="ignore")
+        ab_out = ab_out.drop(columns=drop_cols, errors="ignore")
+    return mid_out, ab_out, meta
+
+
 def filled_trades_to_occ_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Normalize claimcheck CSV rows for FCFS occupancy."""
     if df is None or df.empty:

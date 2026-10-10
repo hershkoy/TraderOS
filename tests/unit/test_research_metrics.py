@@ -52,6 +52,33 @@ def test_phase5_gates_pass() -> None:
     assert ok, msg
 
 
+def test_phase5_gates_2022_waives_sharpe_gt_1() -> None:
+    spy_s = perf_stats("SPY", pd.Series([1.0, 0.9], index=pd.bdate_range("2022-01-03", periods=2)))
+    st = perf_stats("S", pd.Series([1.0, 1.05], index=pd.bdate_range("2022-01-03", periods=2)))
+    st.sharpe = 0.75  # below 1.0 absolute
+    st.max_drawdown = -0.10
+    spy_s.sharpe = -0.77
+    spy_s.max_drawdown = -0.24
+    ok_default, msg_default = passes_phase5_gates(st, spy_s)
+    assert not ok_default
+    assert "Sharpe<=1.0" in msg_default
+    ok_2022, msg_2022 = passes_phase5_gates(st, spy_s, window="2022")
+    assert ok_2022, msg_2022
+    assert "waived" in msg_2022
+
+
+def test_phase5_gates_2022_still_requires_beat_spy() -> None:
+    spy_s = perf_stats("SPY", pd.Series([1.0, 0.9], index=pd.bdate_range("2022-01-03", periods=2)))
+    st = perf_stats("S", pd.Series([1.0, 0.8], index=pd.bdate_range("2022-01-03", periods=2)))
+    st.sharpe = -0.90
+    st.max_drawdown = -0.10
+    spy_s.sharpe = -0.77
+    spy_s.max_drawdown = -0.24
+    ok, msg = passes_phase5_gates(st, spy_s, window="2022")
+    assert not ok
+    assert "Sharpe<SPY" in msg
+
+
 def test_clip_and_window_rebase() -> None:
     idx = pd.bdate_range("2018-01-02", periods=400)
     eq = pd.Series(range(1, 401), index=idx, dtype=float)

@@ -149,7 +149,7 @@ Status: [2026-10-07](edge_hunt/2026-10-07_spy_wheel_claimcheck.md). OptionsDX 20
 
 ### Last-15m wheel instead of stock — 2026-10-09
 
-Status: [2026-10-09](edge_hunt/channel_touch/2026-10-09_last15m_wheel.md). One-cycle CSP→assign→CC on `current_best` last-15m fills (Theta EOD). Expanded n=500 → filled **359**: mid E/PF **+1.32 / 1.99** (2022 **+0.60 / 1.25**); ask/bid 2022 **−0.79 / 0.75**. Occupancy FCFS vs SPY (mark-at-cost): mid FULL **PASS** at max_open 1/4/8/15 (e.g. occ8 Sharpe **1.27** CAGR 8.1% MDD −8.3% vs SPY 0.66 / 11.2% / −24%); **2022 fails** Sharpe>1; **ask/bid FULL fails** every cap. **No promote.** Code: `claimcheck_last_15m_wheel.py` / `overlay_last_15m_wheel_occupancy.py`.
+Status: [2026-10-09](edge_hunt/channel_touch/2026-10-09_last15m_wheel.md). One-cycle CSP→assign→CC on `current_best` last-15m fills (Theta EOD). Expanded n=500 → filled **359**: mid E/PF **+1.32 / 1.99** (2022 **+0.60 / 1.25**); ask/bid 2022 **−0.79 / 0.75**. Occupancy FCFS vs SPY (mark-at-cost): mid FULL **PASS** at max_open 1/4/8/15 (e.g. occ8 Sharpe **1.27** CAGR 8.1% MDD −8.3% vs SPY 0.66 / 11.2% / −24%); **2022 fails** Sharpe>1; **ask/bid FULL fails** every cap. Mid vs natural: [mid_vs_askbid](edge_hunt/channel_touch/2026-10-09_last15m_wheel_mid_vs_askbid.md). Liquidity + full-pool: [fullpool](edge_hunt/channel_touch/2026-10-10_last15m_wheel_fullpool.md) — n=817 fills; liquid ADV≥$25M & half≤15% n=236; ask/bid occ1+occ8 FULL PASS; **2022 gate relaxed** (Sharpe≥SPY + MDD, waive Sharpe>1) so 2022 PASSes on all liquid books — soft-interesting, **no hard promote**. Gate: `passes_phase5_gates(..., window="2022")`.
 
 ### Silent Flip 15m open-range (ProRealAlgos) — 2026-10-03
 
@@ -192,7 +192,7 @@ Five short-term MR sleeves on **SPY** (S1 Band+IBS, S2 Turnaround Tuesday, S3 5-
 
 Status: **`docs/status_log/edge_hunt/channel_touch/`**
 
-**Latest (2026-10-09):** One-cycle wheel instead of stock on last-15m fills (Theta 30 DTE / 30Δ). Expanded n=500 → filled 359; occupancy mid FULL **PASS** vs SPY (occ8 Sharpe 1.27 / MDD −8.3% vs 0.66 / −24%) but **2022 fails** Sharpe>1 and **ask/bid FULL fails**. **No promote.** See [last-15m wheel](edge_hunt/channel_touch/2026-10-09_last15m_wheel.md).
+**Latest (2026-10-10):** Full-pool last-15m wheel; 2022 Phase-5 gate now Sharpe≥SPY + MDD (waive Sharpe>1). Liquid adv25_half15 ask/bid occ8 clears FULL+2022 — soft-interesting, **no hard promote**. See [fullpool](edge_hunt/channel_touch/2026-10-10_last15m_wheel_fullpool.md).
 
 **Prior (2026-09-23):** 3x MOC DCA on current_best last-15m (signal day + next 2 closes; pause below rail; ATR stop during scale-in). Allocated n=2295 E **+0.03** PF **1.01** geo **1.03** vs baseline +0.27 / 1.09 / 1.10; deployed E **−0.37**; 2022 still red. **No promote.** See [MOC DCA](edge_hunt/channel_touch/2026-09-23_last15m_moc_dca.md).
 

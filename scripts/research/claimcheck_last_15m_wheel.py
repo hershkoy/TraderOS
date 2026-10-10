@@ -66,6 +66,7 @@ def _row_key(stock: str, buy_date: Any, mark_mode: str) -> str:
 
 
 def _load_cache(path: Path) -> Dict[str, Dict[str, Any]]:
+    """Load jsonl cache. Prefer a successful fill over a later miss for the same key."""
     if not path.exists():
         return {}
     out: Dict[str, Dict[str, Any]] = {}
@@ -79,8 +80,16 @@ def _load_cache(path: Path) -> Dict[str, Dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             k = obj.get("key")
-            if k:
+            if not k:
+                continue
+            prev = out.get(k)
+            if prev is None:
                 out[k] = obj
+                continue
+            # Never let a no_put / miss clobber a prior fill.
+            if prev.get("wheel_ok") and not obj.get("wheel_ok"):
+                continue
+            out[k] = obj
     return out
 
 
@@ -352,6 +361,16 @@ def main() -> int:
         )
         rec = result_to_record(row, got)
         rec["key"] = key
+        # Do not persist a miss over an in-memory success (defensive; load_cache
+        # already prefers fills). Still record first-seen misses.
+        prev = cache.get(key)
+        if prev is not None and prev.get("wheel_ok") and not rec.get("wheel_ok"):
+            rec = dict(prev)
+            rec["gain_pct_stock"] = (
+                float(row["gain_pct"]) if pd.notna(row.get("gain_pct")) else None
+            )
+            rows.append(rec)
+            continue
         _append_cache(cache_path, rec)
         cache[key] = rec
         rows.append(rec)

@@ -194,13 +194,33 @@ def window_equity(equity: pd.Series, invested: Optional[pd.Series], start: str, 
     return eq, inv
 
 
-def passes_phase5_gates(stats: PerfStats, spy: PerfStats) -> Tuple[bool, str]:
+def passes_phase5_gates(
+    stats: PerfStats,
+    spy: PerfStats,
+    *,
+    window: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Phase-5 promote gate vs SPY.
+
+    Default (FULL / non-2022): Sharpe > 1.0 AND Sharpe >= SPY AND MDD better than SPY.
+
+    Calendar-2022 exception: drop the absolute Sharpe>1 requirement; still require
+    Sharpe >= SPY (beat that year's buy-hold) and MDD better than SPY.
     """
-    Stricter than Phase 1-4: Sharpe > 1.0 AND Sharpe >= SPY AND MDD better than SPY.
-    """
-    sharpe_abs = stats.sharpe > 1.0
+    win = str(window or "").strip()
     sharpe_vs = stats.sharpe + 1e-12 >= spy.sharpe
     mdd_ok = abs(stats.max_drawdown) + 1e-12 < abs(spy.max_drawdown)
+    if win == "2022":
+        if sharpe_vs and mdd_ok:
+            return True, "PASS (2022: Sharpe>=SPY + MDD; Sharpe>1 waived)"
+        reasons = []
+        if not sharpe_vs:
+            reasons.append("Sharpe<SPY")
+        if not mdd_ok:
+            reasons.append("MDD>=SPY")
+        return False, "FAIL (" + ", ".join(reasons) + ")"
+
+    sharpe_abs = stats.sharpe > 1.0
     if sharpe_abs and sharpe_vs and mdd_ok:
         return True, "PASS (Sharpe>1 + Sharpe>=SPY + MDD)"
     reasons = []

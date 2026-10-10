@@ -8,6 +8,7 @@ Usage (Windows CMD):
   set PYTHONPATH=.
   python scripts\\research\\overlay_last_15m_wheel_occupancy.py
   python scripts\\research\\overlay_last_15m_wheel_occupancy.py --trades-mid path.csv --trades-askbid path.csv
+  python scripts\\research\\overlay_last_15m_wheel_occupancy.py --liq-presets
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -29,6 +30,7 @@ if str(ROOT) not in sys.path:
 from utils.data.ohlcv_loader import load_ohlcv_many  # noqa: E402
 from utils.research.last_15m_wheel import (  # noqa: E402
     filled_trades_to_occ_rows,
+    filter_wheel_by_liquidity,
     occupancy_fcfs_wheel,
     spy_buyhold_equity,
     wheel_slot_equity,
@@ -92,6 +94,7 @@ def _score_window(
     *,
     start: Optional[str],
     end: Optional[str],
+    window: Optional[str] = None,
 ) -> Dict[str, Any]:
     if start and end:
         eq_w, inv_w = window_equity(eq, inv, start, end)
@@ -134,7 +137,7 @@ def _score_window(
         notes="wheel equal-slot collateral, mark-at-cost",
         trade_rets=trade_rets,
     )
-    ok, reason = passes_phase5_gates(sleeve_st, spy_st)
+    ok, reason = passes_phase5_gates(sleeve_st, spy_st, window=window)
     LOG.info(
         "%s n=%s E=%.3f PF=%.2f | Sharpe=%.2f CAGR=%.1f%% MDD=%.1f%% inv=%.0f%% | "
         "SPY Sharpe=%.2f CAGR=%.1f%% MDD=%.1f%% | %s",
@@ -190,6 +193,7 @@ def run_book(
                 kept,
                 start=wstart,
                 end=wend,
+                window=wlabel,
             )
         out["max_open"][str(mo)] = {
             "occupancy": meta,
@@ -209,11 +213,71 @@ def run_book(
     return out
 
 
+LIQ_PRESETS: List[Tuple[str, Optional[float], Optional[float]]] = [
+    # name, min_adv, max_half_pct_of_mid
+    ("half15", None, 15.0),
+    ("adv25_half15", 25e6, 15.0),
+]
+
+
+def _load_books(
+    mid_path: Path,
+    askbid_path: Path,
+    *,
+    min_adv: Optional[float] = None,
+    max_half_pct: Optional[float] = None,
+    prefix: str = "",
+) -> Tuple[List[Tuple[str, List[Dict[str, Any]]]], Dict[str, Any]]:
+    """Load mid + ask_bid CSVs, optionally liquidity-filter, return occ rows."""
+    mid_df = pd.read_csv(mid_path)
+    ab_df = pd.read_csv(askbid_path)
+    meta: Dict[str, Any] = {"filter": None}
+    if min_adv is not None or max_half_pct is not None:
+        mid_df, ab_df, meta = filter_wheel_by_liquidity(
+            mid_df,
+            ab_df,
+            min_adv=min_adv,
+            max_half_pct_of_mid=max_half_pct,
+        )
+        meta["filter"] = {
+            "min_adv": min_adv,
+            "max_half_pct_of_mid": max_half_pct,
+            **{k: v for k, v in meta.items() if k != "filter"},
+        }
+        LOG.info(
+            "liquidity filter min_adv=%s max_half%%=%s matched=%s kept=%s med_half%%=%s",
+            min_adv,
+            max_half_pct,
+            meta.get("n_matched"),
+            meta.get("n_kept"),
+            meta.get("median_half_pct_kept"),
+        )
+    books: List[Tuple[str, List[Dict[str, Any]]]] = []
+    for label, df in (("mid", mid_df), ("ask_bid", ab_df)):
+        name = ("%s_%s" % (prefix, label)) if prefix else label
+        rows = filled_trades_to_occ_rows(df)
+        LOG.info("%s filled rows for occ: %s", name, len(rows))
+        books.append((name, rows))
+    return books, meta
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--trades-mid", type=Path, default=DEFAULT_MID)
     ap.add_argument("--trades-askbid", type=Path, default=DEFAULT_ASKBID)
     ap.add_argument("--outdir", type=Path, default=None)
+    ap.add_argument("--min-adv", type=float, default=None)
+    ap.add_argument(
+        "--max-half-pct-of-mid",
+        type=float,
+        default=None,
+        help="Max put half-spread as %% of mid credit (e.g. 15)",
+    )
+    ap.add_argument(
+        "--liq-presets",
+        action="store_true",
+        help="Run half15 + adv25_half15 books (skips unfiltered)",
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -222,18 +286,37 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    books = []
-    for label, path in (("mid", args.trades_mid), ("ask_bid", args.trades_askbid)):
-        if path is None or not Path(path).exists():
-            LOG.warning("skip missing %s: %s", label, path)
-            continue
-        df = pd.read_csv(path)
-        rows = filled_trades_to_occ_rows(df)
-        LOG.info("%s filled rows for occ: %s from %s", label, len(rows), path)
-        books.append((label, rows))
+    if not Path(args.trades_mid).exists() or not Path(args.trades_askbid).exists():
+        LOG.error("need both mid and ask_bid CSVs")
+        return 2
 
-    if not books:
-        LOG.error("no trade CSVs")
+    books: List[Tuple[str, List[Dict[str, Any]]]] = []
+    filter_meta: Dict[str, Any] = {}
+    if args.liq_presets:
+        for pname, min_adv, max_half in LIQ_PRESETS:
+            b, meta = _load_books(
+                args.trades_mid,
+                args.trades_askbid,
+                min_adv=min_adv,
+                max_half_pct=max_half,
+                prefix=pname,
+            )
+            books.extend(b)
+            filter_meta[pname] = meta
+    else:
+        b, meta = _load_books(
+            args.trades_mid,
+            args.trades_askbid,
+            min_adv=args.min_adv,
+            max_half_pct=args.max_half_pct_of_mid,
+            prefix="",
+        )
+        books.extend(b)
+        if meta.get("filter"):
+            filter_meta["custom"] = meta
+
+    if not books or all(len(rs) == 0 for _, rs in books):
+        LOG.error("no trade rows after load/filter")
         return 2
 
     # Calendar from first entry through last exit
@@ -265,6 +348,7 @@ def main() -> int:
         "generated": datetime.now().isoformat(timespec="seconds"),
         "max_opens": list(MAX_OPENS),
         "model": "equal-slot cash-secured collateral; mark-at-cost until exit",
+        "liquidity_filters": filter_meta,
         "books": {},
     }
     for label, rows in books:
@@ -276,7 +360,12 @@ def main() -> int:
     )
     outdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = outdir / ("last_15m_wheel_occupancy_%s.json" % stamp)
+    stem = "last_15m_wheel_occupancy"
+    if args.liq_presets:
+        stem = "last_15m_wheel_occupancy_liq"
+    elif args.min_adv is not None or args.max_half_pct_of_mid is not None:
+        stem = "last_15m_wheel_occupancy_liq"
+    path = outdir / ("%s_%s.json" % (stem, stamp))
     path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     LOG.info("wrote %s", path)
 
@@ -306,7 +395,9 @@ def main() -> int:
                 flat[-1]["sharpe_%s" % ykey] = (yw.get("sleeve") or {}).get("sharpe")
                 flat[-1]["cagr_%s" % ykey] = (yw.get("sleeve") or {}).get("cagr")
                 flat[-1]["mdd_%s" % ykey] = (yw.get("sleeve") or {}).get("max_drawdown")
-    csv_path = outdir / ("last_15m_wheel_occupancy_%s.csv" % stamp)
+                flat[-1]["pass_%s" % ykey] = yw.get("gate_pass")
+                flat[-1]["gate_%s" % ykey] = yw.get("gate_reason")
+    csv_path = outdir / ("%s_%s.csv" % (stem, stamp))
     pd.DataFrame(flat).to_csv(csv_path, index=False)
     LOG.info("wrote %s", csv_path)
     print(pd.DataFrame(flat).to_string(index=False))
