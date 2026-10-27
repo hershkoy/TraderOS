@@ -53,7 +53,20 @@ Re-score: `last_15m_wheel_occupancy_liq_20261010_120853.csv` — **all** liquid 
 1. Full pool ~2× liquid n; ask/bid **occ8 FULL PASSes** (Sharpe 1.16).
 2. Under the 2022 exception, 2022 is no longer the binding fail — every liquid occ book beats SPY that year.
 3. Mid repair required (Theta `no_put_chain` overwrite); use repaired mid CSV.
-4. Soft-interesting (esp. adv25_half15 ask/bid occ8); **no hard promote** pending option-path MTM / live fill policy.
+4. Soft-interesting (esp. adv25_half15 ask/bid occ8); **no hard promote**.
+
+## Option-path MTM (2026-10-10) — binding fail
+
+Liquid ADV≥$25M & half≤15% ask/bid, FCFS `max_open=8` (kept 186). Theta EOD short marks (ask liability); hit rate **75%** (intrinsic fallback on misses). Runner: `overlay_last_15m_wheel_occupancy_mtm.py`.
+
+| Model | FULL Sharpe / CAGR / MDD | vs SPY FULL | 2022 Sharpe |
+|-------|-------------------------:|-------------|------------:|
+| mark-at-cost | **1.16 / 5.1% / −5.2%** | **PASS** | 0.08 (PASS waived) |
+| **option MTM** | **0.69 / 5.1% / −10.2%** | **FAIL Sharpe≤1** | −0.15 (PASS waived) |
+
+MTM keeps CAGR but **cuts Sharpe ~40%** and **doubles MDD** — daily short-option path is the promote blocker. Artifact: `last_15m_wheel_occupancy_mtm_20261010_122146.json`.
+
+HTML: `reports/ascending_channels/2026-10-09/last_15m_wheel_report.html` (`generate_last_15m_wheel_report.py`).
 
 ```bat
 venv\Scripts\activate

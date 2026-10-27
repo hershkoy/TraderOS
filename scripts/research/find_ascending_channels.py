@@ -627,6 +627,183 @@ def find_h2_l3_setups(
     return _dedupe_h2_setups(results)
 
 
+def find_l2_bounce_setups(
+    df: pd.DataFrame,
+    *,
+    pivot_len: int = 15,
+    error_pct: float = 1.2,
+    flat_pct: float = 0.04,
+    min_bars_apart: int = 15,
+    min_intervening_rally_pct: float = 4.0,
+    min_total_rise_pct: float = 3.0,
+    max_support_violation_frac: float = 0.08,
+    max_low_pivots: int = 16,
+) -> List[dict]:
+    """Arm at L2 pivot confirmation (L1-H1-L2), before H2 exists.
+
+    Causal buy path: once L2 is a confirmed swing low (bar ``L2 + pivot_len``),
+    the L1-L2 support line is known without waiting for a parallel H2.
+    Provisional channel width is the peak intervening high above support (H1).
+    Requiring H2 before filling L2 would look ahead past the bounce.
+    """
+    if df is None or df.empty or len(df) < pivot_len * 4 + 40:
+        return []
+    if (
+        isinstance(df.index, pd.DatetimeIndex)
+        and df.index.tz is None
+        and bool(df.index.is_monotonic_increasing)
+        and all(c in df.columns for c in ("high", "low", "close"))
+    ):
+        out = df
+    else:
+        out = df.copy()
+        if not isinstance(out.index, pd.DatetimeIndex):
+            out.index = pd.DatetimeIndex(out.index)
+        if out.index.tz is not None:
+            out.index = out.index.tz_convert(None)
+        out = out.sort_index()
+
+    high = out["high"].to_numpy(dtype=float)
+    low = out["low"].to_numpy(dtype=float)
+    close = out["close"].to_numpy(dtype=float)
+    dates = out.index
+    high_piv, low_piv = _pivots(high, low, pivot_len)
+    if len(low_piv) < 2:
+        return []
+    cap = max(2, int(max_low_pivots))
+    n = len(out)
+    results: List[dict] = []
+    nL = len(low_piv)
+
+    for c in range(1, nL):
+        a_lo = max(0, c - cap + 1)
+        for a in range(a_lo, c):
+            i1 = low_piv[a]
+            in_ = low_piv[c]
+            if in_ - i1 < min_bars_apart:
+                continue
+            confirm_i = int(in_) + int(pivot_len)
+            if confirm_i >= n:
+                continue
+            y1 = float(low[i1])
+            yn = float(low[in_])
+            if y1 <= 0 or yn <= 0 or not np.isfinite(y1) or not np.isfinite(yn):
+                continue
+            slope = (yn - y1) / float(in_ - i1)
+            total_rise_pct = (yn - y1) / y1 * 100.0
+            if slope <= 0 or (slope / y1 * 100.0) < flat_pct or total_rise_pct < float(min_total_rise_pct):
+                continue
+            if not _touch_ok(_line_at(y1, i1, slope, in_), yn, error_pct):
+                continue
+            if yn < y1 * 0.995:
+                continue
+            if not _intervening_rally_ok(high, i1, in_, y1, min_intervening_rally_pct):
+                continue
+
+            inside_highs = [h for h in high_piv if i1 < h < in_]
+            if inside_highs:
+                h1 = max(inside_highs, key=lambda h: float(high[h]))
+            else:
+                seg = high[i1 + 1 : in_]
+                if len(seg) <= 0:
+                    continue
+                h1 = int(i1 + 1 + int(np.argmax(seg)))
+            width = float(high[h1]) - _line_at(y1, i1, slope, h1)
+            if not np.isfinite(width) or width <= 0:
+                continue
+
+            viol = 0
+            total = 0
+            for i in range(i1, in_ + 1):
+                total += 1
+                sup = _line_at(y1, i1, slope, i)
+                if float(close[i]) < sup * (1.0 - error_pct / 100.0):
+                    viol += 1
+            if total <= 0 or (viol / total) > max_support_violation_frac:
+                continue
+
+            broken = False
+            for i in range(int(in_) + 1, confirm_i + 1):
+                sup = _line_at(y1, i1, slope, i)
+                if float(close[i]) < sup * (1.0 - error_pct / 100.0):
+                    broken = True
+                    break
+            if broken:
+                continue
+
+            results.append(
+                {
+                    "start_date": dates[i1].strftime("%Y-%m-%d"),
+                    "end_date": dates[in_].strftime("%Y-%m-%d"),
+                    "h2_date": dates[confirm_i].strftime("%Y-%m-%d"),
+                    "bottom_touches": 2,
+                    "top_touches": 1,
+                    "touch_dates": "|".join(dates[i].strftime("%Y-%m-%d") for i in (i1, in_)),
+                    "touch_prices": "|".join(str(round(float(low[i]), 4)) for i in (i1, in_)),
+                    "touch_indices": [int(i1), int(in_)],
+                    "upper_touch_dates": dates[h1].strftime("%Y-%m-%d"),
+                    "support_x0": int(i1),
+                    "support_y0": float(y1),
+                    "support_slope": float(slope),
+                    "channel_width": float(width),
+                    "slope_pct_per_bar": round(slope / y1 * 100.0, 4),
+                    "total_rise_pct": round((yn - y1) / y1 * 100.0, 2),
+                    "channel_width_pct": round(width / y1 * 100.0, 2),
+                    "support_violation_frac": round(viol / total, 3),
+                    "bars_span": int(confirm_i - i1),
+                    "pivot_len": int(pivot_len),
+                    "l1_idx": int(i1),
+                    "l2_idx": int(in_),
+                    "h1_idx": int(h1),
+                    "h2_idx": int(in_),
+                    "confirm_idx": int(confirm_i),
+                }
+            )
+
+    return _dedupe_l2_bounce_setups(results)
+
+
+def _dedupe_l2_bounce_setups(results: Sequence[dict]) -> List[dict]:
+    """Keep one L1-H1 pair per L2 bar (earliest L1, then tightest width)."""
+    leftover: List[dict] = []
+    best: Dict[int, dict] = {}
+    order: List[int] = []
+    for ch in results:
+        try:
+            l2 = int(ch.get("l2_idx", -1))
+        except (TypeError, ValueError):
+            leftover.append(ch)
+            continue
+        if l2 < 0:
+            leftover.append(ch)
+            continue
+        try:
+            l1 = int(ch.get("l1_idx", ch.get("support_x0", -1)))
+            width = float(ch.get("channel_width") or 0.0)
+        except (TypeError, ValueError):
+            leftover.append(ch)
+            continue
+        prev = best.get(l2)
+        if prev is None:
+            best[l2] = ch
+            order.append(l2)
+            continue
+        try:
+            pl1 = int(prev.get("l1_idx", prev.get("support_x0", -1)))
+            pw = float(prev.get("channel_width") or 0.0)
+        except (TypeError, ValueError):
+            best[l2] = ch
+            continue
+        # Prefer earlier L1 (longer support), then tighter width.
+        cand = (-l1, -width)
+        old = (-pl1, -pw)
+        if cand > old:
+            best[l2] = ch
+    out = leftover + [best[k] for k in order]
+    out.sort(key=lambda c: (int(c.get("support_x0", 0) or 0), int(c.get("l2_idx", 0) or 0)))
+    return out
+
+
 def _dedupe_h2_setups(results: Sequence[dict]) -> List[dict]:
     """Keep one L1-L2 pair per H2 bar (classical: one structure completes at H2).
 
@@ -635,6 +812,7 @@ def _dedupe_h2_setups(results: Sequence[dict]) -> List[dict]:
     armed four pairs at 2021-06-11; the earlier L2 filled Sept 9 and occupancy
     skipped the later pair's first close-above.
     """
+
     leftover: List[dict] = []
     best: Dict[int, dict] = {}
     order: List[int] = []
@@ -677,7 +855,7 @@ def _dedupe_h2_setups(results: Sequence[dict]) -> List[dict]:
 
 def _remap_setup_indices(ch: dict, offset: int) -> dict:
     mapped = dict(ch)
-    for k in ("support_x0", "h2_idx", "l1_idx", "l2_idx"):
+    for k in ("support_x0", "h2_idx", "l1_idx", "l2_idx", "h1_idx", "confirm_idx"):
         if k in mapped and mapped[k] is not None:
             mapped[k] = int(mapped[k]) + int(offset)
     if mapped.get("touch_indices"):
@@ -757,6 +935,24 @@ def find_h2_l3_setups_windowed(
     return _dedupe_h2_setups(
         _windowed_finder(
             df, find_h2_l3_setups, window_bars=window_bars, step_bars=step_bars, **kwargs
+        )
+    )
+
+
+def find_l2_bounce_setups_windowed(
+    df: pd.DataFrame,
+    *,
+    window_bars: int,
+    step_bars: int,
+    **kwargs,
+) -> List[dict]:
+    return _dedupe_l2_bounce_setups(
+        _windowed_finder(
+            df,
+            find_l2_bounce_setups,
+            window_bars=window_bars,
+            step_bars=step_bars,
+            **kwargs,
         )
     )
 

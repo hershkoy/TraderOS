@@ -112,6 +112,41 @@ def test_same_setup_requires_stock_and_h2():
     assert not same_setup({"stock": "A", "h2_time": "t1"}, {"stock": "B", "h2_time": "t1"})
 
 
+def test_merge_keeps_sleeve_notify_tag():
+    tagged = {
+        "stock": "QQQ",
+        "timeframe": "lg",
+        "h2_time": "",
+        "status": "waiting",
+        "hot_notified_on": "2026-10-23:approach",
+        "resist": 706.0,
+        "last_price": 703.75,
+        "hot": True,
+    }
+    fresh = merge_preserved_live_fields([tagged], {}, below_pct=0.0)
+    assert fresh[0]["hot_notified_on"] == "2026-10-23:approach"
+    assert fresh[0]["hot"] is True
+    upgraded = merge_preserved_live_fields(
+        [{**tagged, "hot_notified_on": "2026-10-23:arm", "status": "armed"}],
+        {"QQQ|lg": {**tagged, "stock": "QQQ", "timeframe": "lg"}},
+        below_pct=0.0,
+    )
+    assert upgraded[0]["hot_notified_on"] == "2026-10-23:arm"
+    assert upgraded[0]["hot"] is True
+
+
+def test_row_to_db_tuple_keeps_notify_suffix():
+    tup = row_to_db_tuple(
+        {
+            "stock": "QQQ",
+            "timeframe": "lg",
+            "status": "waiting",
+            "hot_notified_on": "2026-10-23:approach",
+        }
+    )
+    assert tup[CANDIDATE_COLUMNS.index("hot_notified_on")] == "2026-10-23:approach"
+
+
 def test_row_to_db_tuple_length_matches_columns():
     tup = row_to_db_tuple({"stock": "aaa", "status": "armed", "hot": 1, "wait_bars": "12"})
     assert len(tup) == len(CANDIDATE_COLUMNS)

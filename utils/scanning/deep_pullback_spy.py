@@ -130,10 +130,9 @@ def moc_price_buy_ok(last: float, target: Dict[str, Any]) -> bool:
 
 def session_moc_watching(prev_notify: str, today_iso: str) -> bool:
     """True if approaching/arm already fired for this ET session."""
-    tag = str(prev_notify or "")
-    if not tag.startswith("%s:" % today_iso):
-        return False
-    return tag.endswith(":approach") or tag.endswith(":arm")
+    from utils.scanning.channel_touch_candidates_store import approach_already_notified
+
+    return approach_already_notified(prev_notify, today_iso)
 
 
 def moc_entry_target(completed_closes: np.ndarray) -> Dict[str, Any]:
@@ -342,7 +341,7 @@ def evaluate_live(
             and not buy_now_window
             and target.get("ok")
             and target.get("viable")
-            and prev_notify not in (approach_key, arm_key)
+            and not session_moc_watching(prev_notify, today_iso)
             and (feat["approaching"] or feat["full_signal"])
         ):
             mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)

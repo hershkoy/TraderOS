@@ -49,6 +49,8 @@ from find_ascending_channels import (
     find_channels_windowed,
     find_h2_l3_setups,
     find_h2_l3_setups_windowed,
+    find_l2_bounce_setups,
+    find_l2_bounce_setups_windowed,
     list_symbols_fast,
 )
 from utils.data.ohlcv_loader import load_ohlcv_many
@@ -2487,7 +2489,41 @@ def trades_for_symbol(
             )
 
     pending: List[tuple] = []
-    if mode == "l3_touch":
+    if mode == "l2_touch":
+        l2_kw = {
+            k: v
+            for k, v in channel_kwargs.items()
+            if k
+            in (
+                "error_pct",
+                "flat_pct",
+                "min_bars_apart",
+                "min_intervening_rally_pct",
+                "min_total_rise_pct",
+                "max_support_violation_frac",
+                "max_low_pivots",
+            )
+        }
+        setups = (
+            find_l2_bounce_setups_windowed(
+                out,
+                window_bars=int(window_bars),
+                step_bars=int(window_step_bars or window_bars),
+                pivot_len=pivot_len,
+                **l2_kw,
+            )
+            if window_bars and int(window_bars) > 0
+            else find_l2_bounce_setups(out, pivot_len=pivot_len, **l2_kw)
+        )
+        for ch in setups:
+            confirm_i = int(ch.get("confirm_idx", -1))
+            l2_i = int(ch.get("l2_idx", -1))
+            if confirm_i < 0 or l2_i < 0 or confirm_i >= n:
+                continue
+            pending.append(
+                (ch, int(confirm_i), None, 2, int(l2_i), int(confirm_i), False, False)
+            )
+    elif mode == "l3_touch":
         setups = (
             find_h2_l3_setups_windowed(
                 out,
@@ -4124,7 +4160,8 @@ def main() -> int:
         type=int,
         default=3,
         help="First bottom-touch number to buy (pivot: detector touches; "
-        "l3_touch: 3=L3 after H2, 4=L4 after L3 leaves the rail)",
+        "l3_touch: 3=L3 after H2, 4=L4 after L3 leaves the rail; "
+        "l2_touch ignores this and always buys touch 2)",
     )
     ap.add_argument("--stop-pct", type=float, default=0.03)
     ap.add_argument(
@@ -4301,9 +4338,10 @@ def main() -> int:
     )
     ap.add_argument(
         "--entry-mode",
-        choices=("pivot", "reclaim", "l3_touch"),
+        choices=("pivot", "reclaim", "l3_touch", "l2_touch"),
         default="pivot",
-        help="pivot=buy at touch+pivot_len close; l3_touch=arm at H2, buy Nth support tag via --entry-touch (+slip)",
+        help="pivot=buy at touch+pivot_len close; l3_touch=arm at H2, buy Nth support tag via "
+        "--entry-touch (+slip); l2_touch=buy L2 bounce at L2+pivot_len close (no H2 wait)",
     )
     ap.add_argument(
         "--entry-slip-pct",

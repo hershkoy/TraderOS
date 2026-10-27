@@ -260,7 +260,7 @@ def evaluate_live(
             and not buy_now_window
             and signal
             and target is not None
-            and prev_notify not in (approach_key, arm_key)
+            and not session_moc_watching(prev_notify, today_iso)
         ):
             mins_txt = "?" if mins_left is None else ("%.0f" % mins_left)
             sname = STRATEGY_NAMES.get(sid or "", sid or "?")

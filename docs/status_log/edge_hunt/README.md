@@ -4,6 +4,8 @@ Working notes for finding strategies that beat SPY buy-and-hold.
 
 | Date | Doc |
 |------|-----|
+| 2026-10-26 | [Tachun long book — 20-year daily window and backtest todo](2026-10-26_tachun_long_book_todo.md) |
+| 2026-10-24 | [QQQ 0-DTE 9:45 short put (claim replicates on mids)](2026-10-24_qqq_0dte_put_claimcheck.md) |
 | 2026-09-25 | [Cup & Handle swing claim-check (no promote)](2026-09-25_cup_handle.md) |
 | 2026-09-22 | [SPY 7d ROC rebound claim-check](2026-09-22_roc_rebound_spy.md) |
 | 2026-09-22 | [ROC rebound 50-name ETF/large/small sample](2026-09-22_roc_rebound_universe.md) |

@@ -265,6 +265,9 @@ class TimescaleDBClient:
             
             logger.info(f"Committing transaction...")
             fresh_connection.commit()
+            if total_inserted <= 0:
+                logger.error(f"Inserted 0 records for {symbol} {timeframe}")
+                return False
             logger.info(f"Successfully inserted {total_inserted} records for {symbol} {timeframe}")
             return True
             

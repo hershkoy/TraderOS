@@ -27,6 +27,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from utils.scanning.channel_touch_candidates_store import approach_already_notified
+
 logger = logging.getLogger(__name__)
 
 TIMEFRAME_LG = "lg"
@@ -323,9 +325,8 @@ def evaluate_live(
     prev_notify = str((prev_row or {}).get("hot_notified_on") or "")
     approach_key = "%s:approach" % today_iso
     arm_key = "%s:arm" % today_iso
-    watching = prev_notify.startswith(today_iso + ":") and (
-        prev_notify.endswith(":approach") or prev_notify.endswith(":arm")
-    )
+    watching = approach_already_notified(prev_notify, today_iso)
+    approach_sent = watching
     sticky = watching and in_watch_window(now)
 
     status = "idle"
@@ -350,26 +351,41 @@ def evaluate_live(
             hot = bool(soft.get("approaching") or soft.get("full_signal"))
             buy_ok = bool(soft.get("full_signal"))
 
-        # Approaching / hot: once per session while soft near trigger
+        # Approaching / hot: once per session while soft near trigger.
+        # A premarket print already through -1%/-2% is still "watch the open",
+        # not BUY NOW — the official open is the arm.
+        full_preopen = bool(soft.get("full_signal") and not opened)
+        if approach_sent and prev_notify == today_iso:
+            notify_tag = approach_key
         if (
             in_watch_window(now)
-            and prev_notify not in (approach_key, arm_key)
-            and (soft.get("approaching") or (soft.get("full_signal") and not opened))
+            and not approach_sent
+            and (soft.get("approaching") or full_preopen)
         ):
             mode = soft.get("active_mode") or "?"
             need = GAP_STRAT2_PCT if mode == "strat2" else GAP_STRAT1_PCT
             sma_txt = "prior>SMA100" if above_sma else "SMA100 FAIL (strat1 blocked)"
+            gap_txt = "%+.2f" % float(gap_live or 0)
+            if full_preopen:
+                lead = (
+                    "QQQ LEAPS gap HOT — %s already at gap_est=%s%% "
+                    "(trigger <= -%.1f%%) before the open."
+                    % (mode, gap_txt, need)
+                )
+            else:
+                lead = (
+                    "QQQ LEAPS gap HOT — approaching %s (need gap <= -%.1f%%). "
+                    "gap_est=%s%%."
+                    % (mode, need, gap_txt)
+                )
             alerts.append(
                 {
                     "kind": "approach",
                     "text": (
-                        "QQQ LEAPS gap HOT — approaching %s (need gap <= -%.1f%%). "
-                        "gap_est=%+.2f%% last=%.2f prior=%.2f target_open=%.2f. %s. "
+                        "%s last=%.2f prior=%.2f target_open=%.2f. %s. "
                         "Watch for official open; strat1=1ct strat2=2ct ~60d LEAPS TP50."
                         % (
-                            mode,
-                            need,
-                            float(gap_live or 0),
+                            lead,
                             float(live_px or 0),
                             prior_close,
                             t2 if mode == "strat2" else t1,

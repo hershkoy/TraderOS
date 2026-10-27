@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
     last_price_ts TIMESTAMPTZ,
     dist_live_pct DOUBLE PRECISION,
     hot BOOLEAN NOT NULL DEFAULT FALSE,
-    hot_notified_on DATE,
+    hot_notified_on TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (stock, timeframe)
 );

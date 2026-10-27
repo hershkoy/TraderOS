@@ -70,6 +70,56 @@ def test_evaluate_approach_premarket():
     assert any(a["kind"] == "approach" for a in alerts)
 
 
+def test_evaluate_approach_once_then_silent():
+    df = _daily_above_sma(160, last_close=500.0)
+    now = datetime(2025, 6, 3, 9, 0, tzinfo=ET)
+    df.loc[df.index[-1], "ts"] = pd.Timestamp("2025-06-02 20:00", tz="UTC")
+    prior = float(df.iloc[-1]["close"])
+    last = prior * (1.0 - 0.008)
+    row, alerts = evaluate_live(df, last_price=last, session_open=None, now=now)
+    assert len([a for a in alerts if a["kind"] == "approach"]) == 1
+    assert row["hot_notified_on"] == "2025-06-03:approach"
+    later = datetime(2025, 6, 3, 9, 1, tzinfo=ET)
+    _, again = evaluate_live(
+        df,
+        last_price=last,
+        session_open=None,
+        now=later,
+        prev_row={"hot_notified_on": row["hot_notified_on"], "status": "waiting"},
+    )
+    assert again == []
+
+
+def test_legacy_date_stamp_does_not_repeat_approach():
+    """DATE column used to store YYYY-MM-DD and the suffix was lost."""
+    df = _daily_above_sma(160, last_close=500.0)
+    now = datetime(2025, 6, 3, 8, 5, tzinfo=ET)
+    df.loc[df.index[-1], "ts"] = pd.Timestamp("2025-06-02 20:00", tz="UTC")
+    prior = float(df.iloc[-1]["close"])
+    last = prior * (1.0 - 0.0136)  # already through -1%
+    row, alerts = evaluate_live(
+        df,
+        last_price=last,
+        session_open=None,
+        now=now,
+        prev_row={"hot_notified_on": "2025-06-03", "status": "waiting"},
+    )
+    assert alerts == []
+    assert row["hot_notified_on"] == "2025-06-03:approach"
+
+
+def test_preopen_full_gap_says_already_there():
+    df = _daily_above_sma(160, last_close=713.44)
+    now = datetime(2026, 10, 23, 8, 5, tzinfo=ET)
+    df.loc[df.index[-1], "ts"] = pd.Timestamp("2026-10-22 20:00", tz="UTC")
+    _, alerts = evaluate_live(df, last_price=703.75, session_open=None, now=now)
+    assert len(alerts) == 1
+    text = alerts[0]["text"]
+    assert "already at gap_est=" in text
+    assert "before the open" in text
+    assert "approaching" not in text
+
+
 def test_evaluate_arm_after_open():
     df = _daily_above_sma(160, last_close=500.0)
     df.loc[df.index[-1], "ts"] = pd.Timestamp("2025-06-02 20:00", tz="UTC")
@@ -86,3 +136,12 @@ def test_evaluate_arm_after_open():
     assert row["status"] == "armed"
     assert any(a["kind"] == "arm" for a in alerts)
     assert row["wait_ok"]
+    assert row["hot_notified_on"] == "2025-06-03:arm"
+    _, again = evaluate_live(
+        df,
+        last_price=open_px,
+        session_open=open_px,
+        now=datetime(2025, 6, 3, 9, 46, tzinfo=ET),
+        prev_row={"hot_notified_on": row["hot_notified_on"], "status": "armed"},
+    )
+    assert again == []

@@ -33,6 +33,7 @@ INIT_SQL_PATHS = (
     ROOT / "init-scripts" / "16-channel-touch-display-timezone.sql",
     ROOT / "init-scripts" / "17-channel-touch-bought-trades.sql",
     ROOT / "init-scripts" / "18-channel-touch-notify-prefs.sql",
+    ROOT / "init-scripts" / "19-channel-touch-hot-notified-text.sql",
 )
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -365,13 +366,19 @@ def merge_preserved_live_fields(
         stock = str(item.get("stock", "")).upper()
         item["stock"] = stock
         item["timeframe"] = str(item.get("timeframe") or "15m")
+        # Sleeve rows set YYYY-MM-DD:approach / :arm themselves. Keep that tag.
+        # Only fill from the previous row when this rebuild omitted the field
+        # (15m hot notify). A new H2 with no tag still clears it.
+        incoming_notify = item.get("hot_notified_on")
+        has_incoming_notify = incoming_notify not in (None, "")
         prev = existing_by_stock.get(_row_key(item)) or existing_by_stock.get(stock)
         if prev and same_setup(prev, item):
             if item.get("last_price") is None:
                 item["last_price"] = prev.get("last_price")
                 item["last_price_ts"] = prev.get("last_price_ts")
                 item["dist_live_pct"] = prev.get("dist_live_pct")
-            item["hot_notified_on"] = prev.get("hot_notified_on")
+            if not has_incoming_notify:
+                item["hot_notified_on"] = prev.get("hot_notified_on")
             px = item.get("last_price")
             resist = item.get("resist")
             if px is not None and resist is not None:
@@ -382,17 +389,55 @@ def merge_preserved_live_fields(
                     px_f = None
                     lvl = None
                 if px_f is not None and lvl is not None and lvl > 0:
-                    item["dist_live_pct"] = round((px_f - lvl) / lvl * 100.0, 4)
-                    item["hot"] = is_hot_proximity(px_f, lvl, below_pct=float(below_pct))
+                    # 15m hot = last at/above resist. dp/qs/lg use the other
+                    # side (gap-down or MOC ceiling); their own hot flag stands.
+                    if item["timeframe"] not in ("dp", "qs", "lg"):
+                        item["dist_live_pct"] = round((px_f - lvl) / lvl * 100.0, 4)
+                        item["hot"] = is_hot_proximity(
+                            px_f, lvl, below_pct=float(below_pct)
+                        )
         else:
             item.setdefault("last_price", None)
             item.setdefault("last_price_ts", None)
             item.setdefault("dist_live_pct", None)
             item.setdefault("hot", False)
-            item["hot_notified_on"] = None
+            if not has_incoming_notify:
+                item["hot_notified_on"] = None
         item["hot"] = bool(item.get("hot"))
         out.append(item)
     return out
+
+
+def format_hot_notified_on(val: Any) -> Optional[str]:
+    """Store a notify stamp as text.
+
+    15m hot uses YYYY-MM-DD. Sleeve detectors append :approach or :arm.
+    A DATE column (and a 10-char slice) dropped that suffix, so the same
+    Telegram fired on every minute tick.
+    """
+    if val in (None, ""):
+        return None
+    if isinstance(val, datetime):
+        text = val.date().isoformat()
+    elif isinstance(val, date):
+        text = val.isoformat()
+    else:
+        text = str(val).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text[:40]
+
+
+def approach_already_notified(prev_notify: Any, today_iso: str) -> bool:
+    """True when this session already sent approaching, or the later BUY."""
+    tag = format_hot_notified_on(prev_notify) or ""
+    day = str(today_iso or "")[:10]
+    if not tag or not day:
+        return False
+    if tag in ("%s:approach" % day, "%s:arm" % day):
+        return True
+    # Legacy DATE values survived as YYYY-MM-DD only.
+    return tag == day
 
 
 def row_to_db_tuple(row: dict) -> tuple:
@@ -409,8 +454,8 @@ def row_to_db_tuple(row: dict) -> tuple:
             val = _as_int(val)
         elif col in _FLOAT_KEYS:
             val = _as_float(val)
-        elif col == "hot_notified_on" and val not in (None, ""):
-            val = str(val)[:10]
+        elif col == "hot_notified_on":
+            val = format_hot_notified_on(val)
         elif val is not None and not isinstance(val, (str, int, float, bool)):
             val = _jsonish(val)
         vals.append(val)
@@ -953,7 +998,7 @@ CREATE TABLE IF NOT EXISTS channel_touch_15m_candidates (
     last_price_ts TIMESTAMPTZ,
     dist_live_pct DOUBLE PRECISION,
     hot BOOLEAN NOT NULL DEFAULT FALSE,
-    hot_notified_on DATE,
+    hot_notified_on TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (stock, timeframe)
 );

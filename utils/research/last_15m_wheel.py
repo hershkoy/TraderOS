@@ -45,7 +45,7 @@ from utils.research.short_put_polygon_spotcheck import (
 
 # Theta Standard stock option history is sparse / 403 before ~2024.
 THETA_EQUITY_START = date(2024, 1, 2)
-from utils.research.spy_wheel import entry_credit, pick_contract
+from utils.research.spy_wheel import entry_credit, mtm_mark, pick_contract
 
 LOG = logging.getLogger(__name__)
 
@@ -820,43 +820,149 @@ class ThetaEquitySource:
         right: str,
         day: date,
     ) -> Optional[Dict[str, Any]]:
-        sym = str(symbol).upper()
-        right_s = "call" if str(right).upper().startswith("C") else "put"
-        key = (sym, expiration, float(strike), right_s[0].upper(), day)
-        if key in self._quote_cache:
-            return dict(self._quote_cache[key]) if self._quote_cache[key] else None
-        r = self.client.session.get(
-            f"{self.client.base_url}/v3/option/history/eod",
-            params={
-                "symbol": sym,
-                "expiration": expiration.isoformat(),
-                "strike": f"{float(strike):.3f}",
-                "right": right_s,
-                "start_date": day.isoformat(),
-                "end_date": day.isoformat(),
-            },
-            timeout=60,
-        )
-        if r.status_code != 200 or not r.content or b"No data" in r.content[:80]:
-            self._quote_cache[key] = None
+        path = self.quote_path(symbol, expiration, strike, right, day, day)
+        if path is None or path.empty:
             return None
-        raw = pd.read_csv(StringIO(r.text))
-        if raw.empty:
-            self._quote_cache[key] = None
-            return None
-        bid = float(pd.to_numeric(raw.get("bid"), errors="coerce").iloc[-1])
-        ask = float(pd.to_numeric(raw.get("ask"), errors="coerce").iloc[-1])
-        if not (bid > 0 and ask > 0):
-            self._quote_cache[key] = None
-            return None
-        out = {
-            "bid": bid,
-            "ask": ask,
-            "mid": 0.5 * (bid + ask),
+        row = path.iloc[-1]
+        return {
+            "bid": float(row["bid"]),
+            "ask": float(row["ask"]),
+            "mid": float(row["mid"]),
             "source": "theta",
         }
-        self._quote_cache[key] = out
-        return dict(out)
+
+    def quote_path(
+        self,
+        symbol: str,
+        expiration: date,
+        strike: float,
+        right: str,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        """EOD bid/ask path ``start``..``end`` (inclusive). Columns: session_date, bid, ask, mid."""
+        sym = str(symbol).upper()
+        right_s = "call" if str(right).upper().startswith("C") else "put"
+        start_d = _as_date(start)
+        end_d = _as_date(end)
+        exp_d = _as_date(expiration)
+        if start_d is None or end_d is None or exp_d is None or end_d < start_d:
+            return pd.DataFrame(columns=["session_date", "bid", "ask", "mid"])
+        cache_key = (
+            sym,
+            exp_d,
+            round(float(strike), 4),
+            right_s[0].upper(),
+            start_d,
+            end_d,
+        )
+        if cache_key in self._quote_cache and isinstance(
+            self._quote_cache[cache_key], pd.DataFrame
+        ):
+            return self._quote_cache[cache_key].copy()
+
+        path = None
+        if self.cache_dir is not None:
+            path = (
+                self.cache_dir
+                / (
+                    "path_%s_%s_%.3f_%s_%s_%s.csv"
+                    % (
+                        sym,
+                        exp_d.isoformat(),
+                        float(strike),
+                        right_s[0].upper(),
+                        start_d.isoformat(),
+                        end_d.isoformat(),
+                    )
+                )
+            )
+            if path.exists():
+                try:
+                    cached = pd.read_csv(path)
+                    if not cached.empty:
+                        cached["session_date"] = pd.to_datetime(
+                            cached["session_date"]
+                        ).dt.date
+                        self._quote_cache[cache_key] = cached
+                        return cached.copy()
+                except Exception:  # noqa: BLE001
+                    path.unlink(missing_ok=True)
+
+        empty = pd.DataFrame(columns=["session_date", "bid", "ask", "mid"])
+        try:
+            r = self.client.session.get(
+                f"{self.client.base_url}/v3/option/history/eod",
+                params={
+                    "symbol": sym,
+                    "expiration": exp_d.isoformat(),
+                    "strike": f"{float(strike):.3f}",
+                    "right": right_s,
+                    "start_date": start_d.isoformat(),
+                    "end_date": end_d.isoformat(),
+                },
+                timeout=90,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("theta quote_path %s failed: %s", sym, exc)
+            self._quote_cache[cache_key] = empty
+            return empty.copy()
+
+        if r.status_code in (403, 472) or not r.content or b"No data" in r.content[:80]:
+            if path is not None:
+                empty.to_csv(path, index=False)
+            self._quote_cache[cache_key] = empty
+            return empty.copy()
+        if r.status_code != 200:
+            self._quote_cache[cache_key] = empty
+            return empty.copy()
+
+        raw = pd.read_csv(StringIO(r.text))
+        if raw.empty:
+            if path is not None:
+                empty.to_csv(path, index=False)
+            self._quote_cache[cache_key] = empty
+            return empty.copy()
+
+        # Theta EOD often has created / date column
+        date_col = None
+        for c in ("created", "date", "timestamp", "datetime"):
+            if c in raw.columns:
+                date_col = c
+                break
+        rows = []
+        for _, row in raw.iterrows():
+            try:
+                bid = float(row["bid"]) if "bid" in raw.columns else float("nan")
+                ask = float(row["ask"]) if "ask" in raw.columns else float("nan")
+            except (TypeError, ValueError):
+                continue
+            if not (bid > 0 and ask > 0):
+                continue
+            if date_col is None:
+                continue
+            sd = _as_date(row[date_col])
+            if sd is None:
+                continue
+            rows.append(
+                {
+                    "session_date": sd,
+                    "bid": bid,
+                    "ask": ask,
+                    "mid": 0.5 * (bid + ask),
+                }
+            )
+        df = pd.DataFrame(rows) if rows else empty
+        if not df.empty:
+            df = (
+                df.sort_values("session_date")
+                .drop_duplicates("session_date", keep="last")
+                .reset_index(drop=True)
+            )
+        if path is not None:
+            df.to_csv(path, index=False)
+        self._quote_cache[cache_key] = df
+        return df.copy()
 
 
 # ---------------------------------------------------------------------------
@@ -1407,3 +1513,379 @@ def spy_buyhold_equity(close: pd.Series, calendar: pd.DatetimeIndex) -> pd.Serie
     if out.empty or float(out.iloc[0]) <= 0:
         return pd.Series(dtype=float)
     return out / float(out.iloc[0])
+
+
+def filled_trades_to_mtm_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Occupancy rows plus put/call fields needed for option-path MTM."""
+    base = filled_trades_to_occ_rows(df)
+    if not base or df is None or df.empty:
+        return base
+    work = df.copy()
+    if "wheel_ok" in work.columns:
+        work = work[work["wheel_ok"] == True]  # noqa: E712
+    by_key: Dict[Tuple[Any, ...], pd.Series] = {}
+    for _, r in work.iterrows():
+        entry = r.get("put_entry_date") or r.get("buy_date")
+        exit_ = r.get("wheel_exit_date") or r.get("put_expiry")
+        sym = str(r.get("stock") or r.get("symbol") or "").upper()
+        if entry is None or exit_ is None:
+            continue
+        k = (
+            sym,
+            pd.Timestamp(entry).normalize(),
+            pd.Timestamp(exit_).normalize(),
+            float(r["put_strike"]) if pd.notna(r.get("put_strike")) else None,
+        )
+        by_key[k] = r
+    out: List[Dict[str, Any]] = []
+    for row in base:
+        k = (
+            row["symbol"],
+            pd.Timestamp(row["entry_date"]).normalize(),
+            pd.Timestamp(row["exit_date"]).normalize(),
+            row.get("put_strike"),
+        )
+        src = by_key.get(k)
+        if src is None:
+            out.append(row)
+            continue
+        enriched = dict(row)
+        enriched["put_credit"] = (
+            float(src["put_credit"]) if pd.notna(src.get("put_credit")) else None
+        )
+        enriched["put_expiry"] = (
+            pd.Timestamp(src["put_expiry"]).normalize()
+            if pd.notna(src.get("put_expiry"))
+            else None
+        )
+        enriched["put_entry_date"] = (
+            pd.Timestamp(src["put_entry_date"]).normalize()
+            if pd.notna(src.get("put_entry_date"))
+            else row["entry_date"]
+        )
+        enriched["assigned"] = bool(src.get("wheel_assigned"))
+        enriched["call_strike"] = (
+            float(src["call_strike"]) if pd.notna(src.get("call_strike")) else None
+        )
+        enriched["call_credit"] = (
+            float(src["call_credit"]) if pd.notna(src.get("call_credit")) else None
+        )
+        enriched["call_expiry"] = (
+            pd.Timestamp(src["call_expiry"]).normalize()
+            if pd.notna(src.get("call_expiry"))
+            else None
+        )
+        enriched["call_entry_date"] = (
+            pd.Timestamp(src["call_entry_date"]).normalize()
+            if pd.notna(src.get("call_entry_date"))
+            else None
+        )
+        out.append(enriched)
+    return out
+
+
+def _mark_map_from_path(
+    path: Optional[pd.DataFrame], mark_mode: str
+) -> Dict[date, float]:
+    out: Dict[date, float] = {}
+    if path is None or path.empty:
+        return out
+    for _, r in path.iterrows():
+        sd = _as_date(r.get("session_date"))
+        if sd is None:
+            continue
+        try:
+            bid = float(r["bid"])
+            ask = float(r["ask"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not (bid > 0 and ask > 0):
+            continue
+        out[sd] = float(mtm_mark(bid, ask, mark_mode))
+    return out
+
+
+def wheel_unrealized_cs_frac(
+    day: date,
+    *,
+    put_strike: float,
+    put_credit: float,
+    put_expiry: date,
+    put_mark: Optional[float],
+    assigned: bool,
+    spot: Optional[float],
+    call_credit: float = 0.0,
+    call_strike: Optional[float] = None,
+    call_mark: Optional[float] = None,
+    call_active: bool = False,
+) -> float:
+    """Unrealized cash-secured fraction (1.0 = +100% of strike collateral)."""
+    k = float(put_strike)
+    if k <= 0:
+        return 0.0
+    d = _as_date(day)
+    pe = _as_date(put_expiry)
+    if d is None or pe is None:
+        return 0.0
+
+    # Still in CSP phase (before put expiry, or OTM expiry day with no assignment).
+    if d < pe or (d >= pe and not assigned):
+        if d >= pe and not assigned:
+            return float(put_credit) / k
+        if put_mark is not None and math.isfinite(float(put_mark)):
+            mark = float(put_mark)
+        elif spot is not None and math.isfinite(float(spot)):
+            mark = max(k - float(spot), 0.0)
+        else:
+            mark = float(put_credit)  # flat vs entry if no mark
+        return (float(put_credit) - mark) / k
+
+    # Assigned: long shares vs put strike + optional short call.
+    if spot is None or not math.isfinite(float(spot)):
+        return 0.0
+    cc = float(call_credit) if call_active else 0.0
+    if call_active:
+        if call_mark is not None and math.isfinite(float(call_mark)):
+            cm = float(call_mark)
+        elif call_strike is not None:
+            cm = max(float(spot) - float(call_strike), 0.0)
+        else:
+            cm = 0.0
+    else:
+        cm = 0.0
+    return (float(put_credit) - k + float(spot) + cc - cm) / k
+
+
+def load_option_mark_paths(
+    trades: Sequence[Dict[str, Any]],
+    source: Any,
+    *,
+    mark_mode: str = "ask_bid",
+) -> Dict[int, Dict[str, Dict[date, float]]]:
+    """Fetch put/call EOD mark maps keyed by trade index in ``trades``."""
+    out: Dict[int, Dict[str, Dict[date, float]]] = {}
+    for i, tr in enumerate(trades):
+        sym = str(tr.get("symbol") or "").upper()
+        put_exp = _as_date(tr.get("put_expiry") or tr.get("exit_date"))
+        put_strike = tr.get("put_strike")
+        put_entry = _as_date(tr.get("put_entry_date") or tr.get("entry_date"))
+        if not sym or put_exp is None or put_strike is None or put_entry is None:
+            out[i] = {"put": {}, "call": {}}
+            continue
+        end_put = put_exp
+        try:
+            put_path = source.quote_path(
+                sym, put_exp, float(put_strike), "P", put_entry, end_put
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("put path %s failed: %s", sym, exc)
+            put_path = None
+        put_map = _mark_map_from_path(put_path, mark_mode)
+        call_map: Dict[date, float] = {}
+        if tr.get("assigned") and tr.get("call_strike") is not None:
+            call_exp = _as_date(tr.get("call_expiry") or tr.get("exit_date"))
+            call_entry = _as_date(tr.get("call_entry_date") or put_exp)
+            if call_exp is not None and call_entry is not None:
+                try:
+                    call_path = source.quote_path(
+                        sym,
+                        call_exp,
+                        float(tr["call_strike"]),
+                        "C",
+                        call_entry,
+                        call_exp,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    LOG.debug("call path %s failed: %s", sym, exc)
+                    call_path = None
+                call_map = _mark_map_from_path(call_path, mark_mode)
+        out[i] = {"put": put_map, "call": call_map}
+        if (i + 1) % 20 == 0 or i + 1 == len(trades):
+            LOG.info(
+                "option mark paths %s/%s put_days=%s call_days=%s",
+                i + 1,
+                len(trades),
+                len(put_map),
+                len(call_map),
+            )
+    return out
+
+
+def wheel_slot_equity_mtm(
+    trades: Sequence[Dict[str, Any]],
+    calendar: pd.DatetimeIndex,
+    *,
+    max_open: int = 8,
+    mark_mode: str = "ask_bid",
+    spot_panels: Optional[Dict[str, pd.DataFrame]] = None,
+    mark_paths: Optional[Dict[int, Dict[str, Dict[date, float]]]] = None,
+) -> Tuple[pd.Series, pd.Series, Dict[str, Any]]:
+    """Equal-slot equity with daily short-option MTM (cash-secured fraction).
+
+    Slot value = capital * (1 + unrealized_cs_frac). Exit day uses realized
+    ``gain_pct``. Missing option prints fall back to intrinsic vs spot, then
+    flat-to-entry credit.
+    """
+    cal = pd.DatetimeIndex(pd.to_datetime(calendar)).tz_localize(None).normalize()
+    cal = cal[~cal.duplicated(keep="first")].sort_values()
+    meta: Dict[str, Any] = {
+        "model": "equal-slot option-path MTM",
+        "mark_mode": mark_mode,
+        "n_trades": len(trades),
+        "max_open": int(max_open),
+    }
+    if cal.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float), meta
+
+    slots = max(1, int(max_open))
+    alloc = 1.0 / float(slots)
+    paths = mark_paths or {}
+
+    # Spot series per symbol (daily close)
+    spot_by_sym: Dict[str, pd.Series] = {}
+    for sym, panel in (spot_panels or {}).items():
+        if panel is None or panel.empty or "close" not in panel.columns:
+            continue
+        s = panel["close"].astype(float).copy()
+        s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        spot_by_sym[str(sym).upper()] = s
+
+    def _spot(sym: str, dtn: pd.Timestamp) -> Optional[float]:
+        s = spot_by_sym.get(str(sym).upper())
+        if s is None or s.empty:
+            return None
+        if dtn in s.index:
+            return float(s.loc[dtn])
+        # prior close
+        prior = s.loc[:dtn]
+        if prior.empty:
+            return None
+        return float(prior.iloc[-1])
+
+    tdf = pd.DataFrame(list(trades)) if trades else pd.DataFrame()
+    by_buy: Dict[pd.Timestamp, List[Tuple[int, Dict[str, Any]]]] = {}
+    if not tdf.empty:
+        tdf = tdf.copy()
+        tdf["_buy"] = pd.to_datetime(tdf["entry_date"]).dt.tz_localize(None).dt.normalize()
+        tdf["_sell"] = pd.to_datetime(tdf["exit_date"]).dt.tz_localize(None).dt.normalize()
+        tdf["gain_pct"] = pd.to_numeric(tdf["gain_pct"], errors="coerce")
+        tdf = tdf.dropna(subset=["_buy", "_sell", "gain_pct"])
+        tdf = tdf.reset_index(drop=True)
+        for i, row in tdf.iterrows():
+            by_buy.setdefault(pd.Timestamp(row["_buy"]), []).append((int(i), row.to_dict()))
+
+    cash = 1.0
+    open_pos: List[Dict[str, Any]] = []
+    eq_pts: List[float] = []
+    inv_pts: List[float] = []
+    n_mark_hit = 0
+    n_mark_miss = 0
+
+    def _pos_value(pos: Dict[str, Any], dtn: pd.Timestamp) -> float:
+        nonlocal n_mark_hit, n_mark_miss
+        cap = float(pos["capital"])
+        sell = pd.Timestamp(pos["sell"]).normalize()
+        if dtn >= sell:
+            return cap * (1.0 + float(pos["r"]))
+        tr = pos["tr"]
+        ti = int(pos["ti"])
+        k = float(tr.get("put_strike") or 0.0)
+        credit = float(tr.get("put_credit") or 0.0)
+        if k <= 0:
+            return cap
+        put_exp = _as_date(tr.get("put_expiry") or tr.get("exit_date"))
+        d = dtn.date()
+        pmap = (paths.get(ti) or {}).get("put") or {}
+        cmap = (paths.get(ti) or {}).get("call") or {}
+        put_mark = pmap.get(d)
+        if put_mark is not None:
+            n_mark_hit += 1
+        else:
+            n_mark_miss += 1
+        assigned = bool(tr.get("assigned")) and put_exp is not None and d >= put_exp
+        call_entry = _as_date(tr.get("call_entry_date") or put_exp)
+        call_active = (
+            assigned
+            and tr.get("call_strike") is not None
+            and call_entry is not None
+            and d >= call_entry
+        )
+        call_mark = cmap.get(d) if call_active else None
+        if call_active and call_mark is not None:
+            n_mark_hit += 1
+        elif call_active:
+            n_mark_miss += 1
+        frac = wheel_unrealized_cs_frac(
+            d,
+            put_strike=k,
+            put_credit=credit,
+            put_expiry=put_exp or d,
+            put_mark=put_mark,
+            assigned=assigned,
+            spot=_spot(str(pos["sym"]), dtn),
+            call_credit=float(tr.get("call_credit") or 0.0),
+            call_strike=(
+                float(tr["call_strike"]) if tr.get("call_strike") is not None else None
+            ),
+            call_mark=call_mark,
+            call_active=call_active,
+        )
+        return cap * (1.0 + float(frac))
+
+    def _mark(dtn: pd.Timestamp) -> float:
+        return cash + sum(_pos_value(p, dtn) for p in open_pos)
+
+    for dt in cal:
+        dtn = pd.Timestamp(dt).normalize()
+        still: List[Dict[str, Any]] = []
+        for pos in open_pos:
+            if pd.Timestamp(pos["sell"]) < dtn:
+                cash += float(pos["capital"]) * (1.0 + float(pos["r"]))
+            else:
+                still.append(pos)
+        open_pos = still
+
+        for ti, row in by_buy.get(dtn, []):
+            if len(open_pos) >= slots:
+                break
+            sym = str(row.get("symbol") or "").upper()
+            if any(p["sym"] == sym for p in open_pos):
+                continue
+            eq_now = _mark(dtn)
+            spend = min(eq_now * alloc, cash)
+            if spend <= 1e-12:
+                continue
+            cash -= spend
+            open_pos.append(
+                {
+                    "sym": sym,
+                    "sell": pd.Timestamp(row["_sell"]).normalize(),
+                    "capital": spend,
+                    "r": float(row["gain_pct"]) / 100.0,
+                    "tr": row,
+                    "ti": ti,
+                }
+            )
+
+        still = []
+        for pos in open_pos:
+            if pd.Timestamp(pos["sell"]) <= dtn:
+                cash += float(pos["capital"]) * (1.0 + float(pos["r"]))
+            else:
+                still.append(pos)
+        open_pos = still
+
+        eq_pts.append(_mark(dtn))
+        inv_pts.append(len(open_pos) / float(slots))
+
+    eq = pd.Series(eq_pts, index=cal, dtype=float)
+    inv = pd.Series(inv_pts, index=cal, dtype=float)
+    if float(eq.iloc[0]) > 0:
+        eq = eq / float(eq.iloc[0])
+    meta["mark_hits"] = int(n_mark_hit)
+    meta["mark_misses"] = int(n_mark_miss)
+    meta["mark_hit_rate"] = (
+        round(n_mark_hit / max(n_mark_hit + n_mark_miss, 1), 4)
+    )
+    return eq, inv, meta

@@ -18,6 +18,8 @@ from utils.research.last_15m_wheel import (
     select_contract,
     simulate_one_cycle_wheel,
     wheel_slot_equity,
+    wheel_slot_equity_mtm,
+    wheel_unrealized_cs_frac,
 )
 
 
@@ -440,3 +442,82 @@ def test_wheel_slot_equity_compounds_exit():
     # Fully invested one slot; exit returns +10%
     assert float(eq.iloc[-1]) == pytest.approx(1.10)
     assert float(inv.max()) == pytest.approx(1.0)
+
+
+def test_wheel_unrealized_cs_frac_put_and_assign():
+    # Short put: credit 2, mark 1, strike 100 -> +1%
+    assert wheel_unrealized_cs_frac(
+        date(2022, 1, 5),
+        put_strike=100.0,
+        put_credit=2.0,
+        put_expiry=date(2022, 2, 18),
+        put_mark=1.0,
+        assigned=False,
+        spot=105.0,
+    ) == pytest.approx(0.01)
+    # OTM expiry: credit kept
+    assert wheel_unrealized_cs_frac(
+        date(2022, 2, 18),
+        put_strike=100.0,
+        put_credit=2.0,
+        put_expiry=date(2022, 2, 18),
+        put_mark=0.5,
+        assigned=False,
+        spot=105.0,
+    ) == pytest.approx(0.02)
+    # Assigned + short call: put_cred - K + spot + call_cred - call_mark
+    # 2 - 100 + 95 + 1.5 - 0.5 = -2 -> -2%
+    assert wheel_unrealized_cs_frac(
+        date(2022, 3, 1),
+        put_strike=100.0,
+        put_credit=2.0,
+        put_expiry=date(2022, 2, 18),
+        put_mark=None,
+        assigned=True,
+        spot=95.0,
+        call_credit=1.5,
+        call_strike=100.0,
+        call_mark=0.5,
+        call_active=True,
+    ) == pytest.approx(-0.02)
+
+
+def test_wheel_slot_equity_mtm_marks_underwater_put():
+    trades = [
+        {
+            "symbol": "AAA",
+            "entry_date": date(2022, 1, 3),
+            "exit_date": date(2022, 1, 10),
+            "gain_pct": 2.0,  # final: credit kept / 100
+            "put_strike": 100.0,
+            "put_credit": 2.0,
+            "put_expiry": date(2022, 1, 10),
+            "put_entry_date": date(2022, 1, 3),
+            "assigned": False,
+        }
+    ]
+    cal = pd.bdate_range("2022-01-03", "2022-01-12")
+    # Mid-hold mark jumps to 5 (underwater vs 2 credit) -> cs frac = (2-5)/100 = -0.03
+    mark_paths = {
+        0: {
+            "put": {
+                date(2022, 1, 4): 5.0,
+                date(2022, 1, 5): 5.0,
+                date(2022, 1, 6): 5.0,
+                date(2022, 1, 7): 5.0,
+            },
+            "call": {},
+        }
+    }
+    eq_mtm, inv, meta = wheel_slot_equity_mtm(
+        trades, cal, max_open=1, mark_paths=mark_paths
+    )
+    assert float(eq_mtm.iloc[0]) == pytest.approx(1.0)
+    # First open day is 1/3 — no mark map -> flat to credit mark fallback = 0 unrealized?
+    # put_mark None -> intrinsic with no spot -> mark=put_credit -> frac 0
+    # On 1/4 underwater: 0.97
+    assert float(eq_mtm.loc[pd.Timestamp("2022-01-04")]) == pytest.approx(0.97)
+    # Exit 1/10 realizes +2%
+    assert float(eq_mtm.iloc[-1]) == pytest.approx(1.02)
+    assert meta["mark_hits"] >= 1
+
