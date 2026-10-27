@@ -1,6 +1,6 @@
 # Tachun long book — 20-year daily window and backtest todo
 
-Date: 2026-10-26. Not started as a backtest. The daily prefix is running on the overnight cron (client 8827) and is writing bars back to 2006.
+Date: 2026-10-27. Not started as a backtest. The daily prefix main pass finished 2026-10-27 06:47 Israel (1,575 symbols, 3,925,333 bars). Seven names are still short of 2006; the hourly job keeps retrying them. Roll-up: `docs/status_log/current_status.md`.
 
 The course book is the long-only screen plus a 20-year discounted-cash-flow band (no derivatives). Two later runs are listed below. Both stay survivor-biased and estimate-free until a delisted price feed and point-in-time EPS estimates exist.
 
@@ -26,7 +26,9 @@ python scripts\data\backfill_ib_daily_prefix.py --start 2006-01-01 --limit 5 --s
 python scripts\data\backfill_ib_daily_prefix.py --start 2006-01-01 --sleep 1
 ```
 
-`--dry-run` only lists symbols. `--limit 5` is the Gateway smoke test. A full pass is about one request per name that still starts after 2006, plus a 1 second pause (a second dated request only when the first reply stops short of 2006). Resume is the same command: names whose earliest bar has reached 2006-01-01 drop out, and `logs/data/ib_prefix_no_gap_symbols.txt` skips names IB cannot extend. Live run started 2026-10-26 23:44 Israel time; log `logs/data/ib_1d_prefix_backfill_20261026_234449.log`. First saves included SPY 1006 bars (2006-01-03 to 2009-12-31) and A 3230 bars (2006-01-03 to 2018-10-31).
+`--dry-run` only lists symbols. `--limit 5` is the Gateway smoke test. A full pass is about one request per name that still starts after 2006, plus a 1 second pause (a second dated request only when the first reply stops short of 2006). A name whose earliest bar is within 10 days of `--start` is done, because 2006-01-01 was a Sunday and the first session was 2006-01-03. `logs/data/ib_prefix_no_gap_symbols.txt` skips names IB cannot extend, including 130 symbols with no IB contract (added 2026-10-27).
+
+**2026-10-27 result.** Main log `logs/data/ib_1d_prefix_backfill_20261026_234449.log`: saved 1,575, failed 549, 3,925,333 bars. SPY and A are stored from 2006-01-03. The 07:40 pass found 757 still short: 620 no-gap, 130 no contract. As of the 10:42 pass, seven remain: SCCO 2008-01-03 (dated request missed), BSAC 2008-12-10, OLED 2010-05-18, TILE stuck at 2012-05-15, SATS stuck at 2022-07-25, CLBK Error 162 (no history), UVXY unadjusted prices overflow the column (not stored; IB min still 2018-11-01). Gateway was down at 10:00 Israel and up again by 10:35 (port 4001).
 
 Research loads must pass `start=2006-01-01` (or `--complete-history`) with `fallback_provider="IB"` and `merge_mode="prefix"`. `start=None` does not stitch a prefix onto names that already have Alpaca bars.
 
