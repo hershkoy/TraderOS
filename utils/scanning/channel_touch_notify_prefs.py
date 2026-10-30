@@ -1,6 +1,6 @@
 """Per-detector Telegram / browser notification preferences for /hot.
 
-Matrix: detector (15m | 1d | dp | qs | lg) x event (hot | armed | approaching | fill | sell)
+Matrix: detector (15m | 1d | dp | qs | lg | if) x event (hot | armed | approaching | fill | sell)
 x channel (telegram | browser).
 
 Legacy flat flags (telegram_on_fill / telegram_on_hot / telegram_on_sell /
@@ -12,7 +12,7 @@ import copy
 import json
 from typing import Any, Dict, Optional
 
-NOTIFY_DETECTORS = ("15m", "1d", "dp", "qs", "lg")
+NOTIFY_DETECTORS = ("15m", "1d", "dp", "qs", "lg", "if")
 NOTIFY_EVENTS = ("hot", "armed", "approaching", "fill", "sell")
 NOTIFY_CHANNELS = ("telegram", "browser")
 
@@ -47,6 +47,14 @@ NOTIFY_APPLICABLE: Dict[str, Dict[str, bool]] = {
         "sell": True,
     },
     "lg": {
+        "hot": True,
+        "armed": True,
+        "approaching": True,
+        "fill": False,
+        "sell": False,
+    },
+    "if": {
+        # SPXW 0DTE iron fly: approaching 13:30, ENTER/armed 13:45; L5 sit uses approaching
         "hot": True,
         "armed": True,
         "approaching": True,
@@ -88,6 +96,14 @@ DEFAULT_NOTIFY_PREFS: Dict[str, Dict[str, Dict[str, bool]]] = {
     },
     "lg": {
         # Default on: soft gap near -1%/-2% (hot/approaching) + confirmed open BUY
+        "hot": {"telegram": True, "browser": True},
+        "armed": {"telegram": True, "browser": True},
+        "approaching": {"telegram": True, "browser": True},
+        "fill": {"telegram": False, "browser": False},
+        "sell": {"telegram": False, "browser": False},
+    },
+    "if": {
+        # Default on: 13:30 approach + 13:45 ENTER (+ L5 sit notice via approaching)
         "hot": {"telegram": True, "browser": True},
         "armed": {"telegram": True, "browser": True},
         "approaching": {"telegram": True, "browser": True},

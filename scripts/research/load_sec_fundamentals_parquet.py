@@ -27,6 +27,12 @@ from utils.db.timescaledb_client import get_timescaledb_client
 from utils.research.sec_fundamentals import FundamentalRow, attach_mkt_caps, compute_ratios
 
 
+def _opt_float(rec: dict, key: str):
+    if key not in rec or pd.isna(rec.get(key)):
+        return None
+    return float(rec[key])
+
+
 def df_to_rows(df: pd.DataFrame) -> list:
     rows = []
     for rec in df.to_dict(orient="records"):
@@ -59,6 +65,28 @@ def df_to_rows(df: pd.DataFrame) -> list:
             tag_ocf=str(rec["tag_ocf"]) if pd.notna(rec.get("tag_ocf")) else None,
             tag_capex=str(rec["tag_capex"]) if pd.notna(rec.get("tag_capex")) else None,
             tag_debt=str(rec["tag_debt"]) if pd.notna(rec.get("tag_debt")) else None,
+            revenue=_opt_float(rec, "revenue"),
+            gross_profit=_opt_float(rec, "gross_profit"),
+            operating_income=_opt_float(rec, "operating_income"),
+            net_income=_opt_float(rec, "net_income"),
+            pretax_income=_opt_float(rec, "pretax_income"),
+            interest_expense=_opt_float(rec, "interest_expense"),
+            interest_income=_opt_float(rec, "interest_income"),
+            current_assets=_opt_float(rec, "current_assets"),
+            current_liabilities=_opt_float(rec, "current_liabilities"),
+            equity=_opt_float(rec, "equity"),
+            diluted_shares=_opt_float(rec, "diluted_shares"),
+            diluted_eps=_opt_float(rec, "diluted_eps"),
+            depreciation=_opt_float(rec, "depreciation"),
+            ebitda=_opt_float(rec, "ebitda"),
+            gross_margin=_opt_float(rec, "gross_margin"),
+            operating_margin=_opt_float(rec, "operating_margin"),
+            net_margin=_opt_float(rec, "net_margin"),
+            roe=_opt_float(rec, "roe"),
+            current_ratio=_opt_float(rec, "current_ratio"),
+            debt_to_ebitda=_opt_float(rec, "debt_to_ebitda"),
+            net_interest=_opt_float(rec, "net_interest"),
+            interest_to_ocf=_opt_float(rec, "interest_to_ocf"),
         )
         compute_ratios(row)
         rows.append(row)

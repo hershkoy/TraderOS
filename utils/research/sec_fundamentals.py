@@ -1,13 +1,20 @@
-"""Parse SEC companyfacts into cash-flow fundamentals panel rows.
+"""Parse SEC companyfacts into fundamentals panel rows.
 
-Supports the four-filter screen:
+Cash-flow four-filter screen:
   1. OCF / total_debt > 0.30
   2. CapEx / OCF < 0.35
   3. net buybacks TTM / mkt_cap > 0.02
   4. FCF / assets > 0.12
+
+Long-book statement fields (revenue through diluted EPS) are on the same row.
+Quarterly flow amounts are trailing-twelve-month sums of single quarters.
+A 10-Q year-to-date fact is differenced against the prior fiscal quarter before
+that sum. FY rows keep the reported year. Balance-sheet fields are the
+period-end stock. As-of date stays ``filed``.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -37,6 +44,64 @@ SHARES_TAGS = (
     "CommonStockSharesOutstanding",
     "EntityCommonStockSharesOutstanding",
 )
+REVENUE_TAGS = (
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet",
+)
+GROSS_PROFIT_TAGS = ("GrossProfit",)
+OPERATING_INCOME_TAGS = ("OperatingIncomeLoss",)
+NET_INCOME_TAGS = (
+    "NetIncomeLoss",
+    "ProfitLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+)
+PRETAX_TAGS = (
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxes",
+)
+INTEREST_EXPENSE_TAGS = (
+    "InterestExpense",
+    "InterestExpenseDebt",
+    "InterestAndDebtExpense",
+)
+INTEREST_INCOME_TAGS = (
+    "InterestIncome",
+    "InvestmentIncomeInterest",
+)
+CURRENT_ASSETS_TAGS = ("AssetsCurrent",)
+CURRENT_LIABILITIES_TAGS = ("LiabilitiesCurrent",)
+EQUITY_TAGS = (
+    "StockholdersEquity",
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+)
+DILUTED_SHARES_TAGS = (
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+)
+DILUTED_EPS_TAGS = (
+    "EarningsPerShareDiluted",
+    "EarningsPerShareBasic",
+)
+DEPRECIATION_TAGS = (
+    "DepreciationDepletionAndAmortization",
+    "DepreciationAndAmortization",
+    "Depreciation",
+)
+
+# Duration bands for flow facts. 4-4-5 calendars land inside these.
+_FLOW_BANDS = (
+    ("q", 70, 115),
+    ("h", 150, 210),
+    ("m9", 230, 310),
+    ("fy", 330, 400),
+)
+_FRAME_QUARTER = re.compile(r"Q[1-4]$")
+_FRAME_INSTANT = re.compile(r"Q[1-4]I$")
 
 # Debt: compose from available pieces (prefer noncurrent + current + ST)
 DEBT_LONG_TAGS = ("LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations")
@@ -70,6 +135,28 @@ class FundamentalRow:
     capex_to_ocf: Optional[float] = None
     net_buyback_pct: Optional[float] = None
     fcf_roa: Optional[float] = None
+    revenue: Optional[float] = None
+    gross_profit: Optional[float] = None
+    operating_income: Optional[float] = None
+    net_income: Optional[float] = None
+    pretax_income: Optional[float] = None
+    interest_expense: Optional[float] = None
+    interest_income: Optional[float] = None
+    current_assets: Optional[float] = None
+    current_liabilities: Optional[float] = None
+    equity: Optional[float] = None
+    diluted_shares: Optional[float] = None
+    diluted_eps: Optional[float] = None
+    depreciation: Optional[float] = None
+    ebitda: Optional[float] = None
+    gross_margin: Optional[float] = None
+    operating_margin: Optional[float] = None
+    net_margin: Optional[float] = None
+    roe: Optional[float] = None
+    current_ratio: Optional[float] = None
+    debt_to_ebitda: Optional[float] = None
+    net_interest: Optional[float] = None
+    interest_to_ocf: Optional[float] = None
     sic: Optional[str] = None
     sic_desc: Optional[str] = None
     exclude_sector: bool = False
@@ -109,7 +196,7 @@ def _us_gaap(facts: Dict[str, Any]) -> Dict[str, Any]:
     return _taxonomy(facts, "us-gaap")
 
 
-def concept_rows(
+def _concept_unit_rows(
     facts: Dict[str, Any],
     concept: str,
     *,
@@ -133,7 +220,19 @@ def concept_rows(
         unit = next(iter(units), None)
     if not unit:
         return []
-    return dedupe_by_end(list(units.get(unit) or []))
+    return list(units.get(unit) or [])
+
+
+def concept_rows(
+    facts: Dict[str, Any],
+    concept: str,
+    *,
+    unit_pref: Sequence[str] = ("USD", "shares", "USD/shares"),
+    taxonomies: Sequence[str] = ("us-gaap",),
+) -> List[dict]:
+    return dedupe_by_end(
+        _concept_unit_rows(facts, concept, unit_pref=unit_pref, taxonomies=taxonomies)
+    )
 
 
 def first_tag_series(
@@ -320,6 +419,292 @@ def ttm_sum(
     return float(sum(v for _, v in take))
 
 
+def duration_days(row: dict) -> Optional[int]:
+    start = parse_date(row.get("start"))
+    end = parse_date(row.get("end"))
+    if start is None or end is None:
+        return None
+    return (end - start).days
+
+
+def duration_bucket(row: dict) -> str:
+    """Classify a flow fact as one quarter, year-to-date, or a full year."""
+    frame = str(row.get("frame") or "")
+    if _FRAME_INSTANT.search(frame):
+        return "instant"
+    if _FRAME_QUARTER.search(frame):
+        return "q"
+    days = duration_days(row)
+    if days is None:
+        return "na"
+    if days <= 5:
+        return "instant"
+    for name, lo, hi in _FLOW_BANDS:
+        if lo <= days <= hi:
+            return name
+    return "other"
+
+
+def _period_key(row: dict) -> Optional[Tuple[str, str]]:
+    end = str(row.get("end") or "")[:10]
+    fp = str(row.get("fp") or "")
+    if not end or fp not in KEEP_FPS:
+        return None
+    return end, fp
+
+
+def _fy_label(row: dict, end: str) -> str:
+    fy = row.get("fy")
+    if fy is None or fy == "":
+        return end[:4]
+    try:
+        return str(int(fy))
+    except (TypeError, ValueError):
+        return str(fy)
+
+
+def merge_raw_rows(
+    facts: Dict[str, Any],
+    tags: Sequence[str],
+    *,
+    unit_pref: Sequence[str] = ("USD",),
+    taxonomies: Sequence[str] = ("us-gaap",),
+) -> List[dict]:
+    """One fact per (end, fp, duration bucket).
+
+    The first tag that has that bucket wins. A later tag does not cover a
+    period the earlier tag already filled. Within a tag, the latest ``filed``
+    wins.
+    """
+    best: Dict[Tuple[str, str, str], Tuple[int, str, dict]] = {}
+    for priority, tag in enumerate(tags):
+        for row in _concept_unit_rows(
+            facts, tag, unit_pref=unit_pref, taxonomies=taxonomies
+        ):
+            key_pf = _period_key(row)
+            if key_pf is None:
+                continue
+            bucket = duration_bucket(row)
+            key = (key_pf[0], key_pf[1], bucket)
+            filed = str(row.get("filed") or "")
+            prev = best.get(key)
+            if prev is None or priority < prev[0] or (priority == prev[0] and filed >= prev[1]):
+                best[key] = (priority, filed, row)
+    return [item[2] for item in best.values()]
+
+
+def single_period_flows(raw_rows: List[dict]) -> Dict[Tuple[str, str], float]:
+    """Map (end, fp) to a single-period flow.
+
+    Q1–Q4 are one quarter. A year-to-date Q2/Q3 fact is the cumulative number
+    minus the prior fiscal quarters. Q4 is the reported quarter when one
+    exists, otherwise full year minus the nine-month year-to-date. FY is the
+    reported year, not the fourth quarter.
+    """
+    slots: Dict[Tuple[str, str], Dict[str, dict]] = {}
+    for row in raw_rows:
+        key_pf = _period_key(row)
+        if key_pf is None:
+            continue
+        bucket = duration_bucket(row)
+        prev = slots.setdefault(key_pf, {}).get(bucket)
+        if prev is None or str(row.get("filed") or "") >= str(prev.get("filed") or ""):
+            slots[key_pf][bucket] = row
+
+    by_fy: Dict[str, List[Tuple[str, str]]] = {}
+    for (end, fp), buckets in slots.items():
+        sample = next(iter(buckets.values()))
+        by_fy.setdefault(_fy_label(sample, end), []).append((end, fp))
+
+    result: Dict[Tuple[str, str], float] = {}
+
+    def _from(buckets: Dict[str, dict], *order: str) -> Optional[float]:
+        for name in order:
+            if name in buckets:
+                return _val(buckets[name])
+        return None
+
+    for keys in by_fy.values():
+        q_ends: Dict[str, Tuple[str, Dict[str, dict]]] = {}
+        fy_slot: Optional[Tuple[str, Dict[str, dict]]] = None
+        for end, fp in sorted(keys):
+            if fp in QUARTER_FPS:
+                q_ends[fp] = (end, slots[(end, fp)])
+            elif fp == "FY":
+                fy_slot = (end, slots[(end, fp)])
+
+        def q_amount(fp: str) -> Optional[float]:
+            if fp not in q_ends:
+                return None
+            _end, buckets = q_ends[fp]
+            quarter = _from(buckets, "q")
+            if quarter is not None:
+                return quarter
+            if fp == "Q1":
+                return _from(buckets, "h", "m9", "fy", "other", "na")
+            if fp == "Q2" and "h" in buckets:
+                q1 = q_amount("Q1")
+                h = _val(buckets["h"])
+                if q1 is None or h is None:
+                    return None
+                return h - q1
+            if fp == "Q3" and "m9" in buckets:
+                m9 = _val(buckets["m9"])
+                if m9 is None:
+                    return None
+                if "Q2" in q_ends and "h" in q_ends["Q2"][1]:
+                    h = _val(q_ends["Q2"][1]["h"])
+                    if h is None:
+                        return None
+                    return m9 - h
+                q1 = q_amount("Q1")
+                q2 = q_amount("Q2")
+                if q1 is None or q2 is None:
+                    return None
+                return m9 - q1 - q2
+            if fp == "Q4":
+                annual = _from(buckets, "fy")
+                if annual is None and fy_slot is not None:
+                    annual = _from(fy_slot[1], "fy", "other", "na")
+                if annual is None:
+                    return _from(buckets, "other", "na")
+                if "Q3" in q_ends and "m9" in q_ends["Q3"][1]:
+                    m9 = _val(q_ends["Q3"][1]["m9"])
+                    if m9 is None:
+                        return None
+                    return annual - m9
+                q1 = q_amount("Q1")
+                q2 = q_amount("Q2")
+                q3 = q_amount("Q3")
+                if None in (q1, q2, q3):
+                    return None
+                return annual - (q1 + q2 + q3)
+            return _from(buckets, "other", "na")
+
+        for fp in ("Q1", "Q2", "Q3", "Q4"):
+            if fp not in q_ends:
+                continue
+            amount = q_amount(fp)
+            if amount is None:
+                continue
+            result[(q_ends[fp][0], fp)] = amount
+
+        annual = None
+        fy_end = None
+        if fy_slot is not None:
+            fy_end = fy_slot[0]
+            annual = _from(fy_slot[1], "fy", "other", "na")
+        if annual is None and "Q4" in q_ends and "fy" in q_ends["Q4"][1]:
+            fy_end = q_ends["Q4"][0]
+            annual = _val(q_ends["Q4"][1]["fy"])
+        if annual is not None and fy_end is not None:
+            result[(fy_end, "FY")] = annual
+            if ("Q4" not in q_ends) and (fy_end, "Q4") not in result:
+                m9 = None
+                if "Q3" in q_ends and "m9" in q_ends["Q3"][1]:
+                    m9 = _val(q_ends["Q3"][1]["m9"])
+                if m9 is not None:
+                    result[(fy_end, "Q4")] = annual - m9
+
+    return result
+
+
+def snapshot_by_period(
+    raw_rows: List[dict],
+    *,
+    bucket_order: Sequence[str] = ("q", "instant", "h", "m9", "fy", "other", "na"),
+) -> Dict[Tuple[str, str], float]:
+    """Period level as reported. Year-to-date share counts are not differenced."""
+    grouped: Dict[Tuple[str, str], Dict[str, dict]] = {}
+    for row in raw_rows:
+        key_pf = _period_key(row)
+        if key_pf is None:
+            continue
+        bucket = duration_bucket(row)
+        prev = grouped.setdefault(key_pf, {}).get(bucket)
+        if prev is None or str(row.get("filed") or "") >= str(prev.get("filed") or ""):
+            grouped[key_pf][bucket] = row
+    out: Dict[Tuple[str, str], float] = {}
+    for key, buckets in grouped.items():
+        for name in bucket_order:
+            if name not in buckets:
+                continue
+            value = _val(buckets[name])
+            if value is not None:
+                out[key] = value
+                break
+    return out
+
+
+def point_values(
+    facts: Dict[str, Any],
+    tags: Sequence[str],
+    *,
+    unit_pref: Sequence[str] = ("USD",),
+    taxonomies: Sequence[str] = ("us-gaap",),
+) -> Dict[Tuple[str, str], float]:
+    """Latest balance-sheet value per (end, fp). First tag with that period wins."""
+    best: Dict[Tuple[str, str], Tuple[int, str, float]] = {}
+    for priority, tag in enumerate(tags):
+        for row in _concept_unit_rows(
+            facts, tag, unit_pref=unit_pref, taxonomies=taxonomies
+        ):
+            key = _period_key(row)
+            value = _val(row)
+            if key is None or value is None:
+                continue
+            filed = str(row.get("filed") or "")
+            prev = best.get(key)
+            if prev is None or priority < prev[0] or (priority == prev[0] and filed >= prev[1]):
+                best[key] = (priority, filed, value)
+    return {key: item[2] for key, item in best.items()}
+
+
+def _abs_map(values: Dict[Tuple[str, str], float]) -> Dict[Tuple[str, str], float]:
+    return {key: abs(float(value)) for key, value in values.items()}
+
+
+def _quarter_series(period_map: Dict[Tuple[str, str], float]) -> List[Tuple[date, Optional[float]]]:
+    by_end: Dict[date, float] = {}
+    for (end_s, fp), value in period_map.items():
+        if fp not in QUARTER_FPS or value is None:
+            continue
+        end = parse_date(end_s)
+        if end is None:
+            continue
+        by_end[end] = float(value)
+    return sorted(by_end.items())
+
+
+def _flow_on_row(
+    period_map: Dict[Tuple[str, str], float],
+    quarter_series: List[Tuple[date, Optional[float]]],
+    end_s: str,
+    fp: str,
+    end_d: date,
+) -> Optional[float]:
+    """TTM of single quarters on a 10-Q row; reported year on an FY row."""
+    if fp in QUARTER_FPS:
+        return ttm_sum(quarter_series, end_d, 4)
+    return period_map.get((end_s, fp))
+
+
+def _filed_index(raw_rows: List[dict]) -> Dict[Tuple[str, str], date]:
+    out: Dict[Tuple[str, str], date] = {}
+    for row in raw_rows:
+        key = _period_key(row)
+        filed = parse_date(row.get("filed"))
+        if key is None or filed is None:
+            continue
+        prev = out.get(key)
+        if prev is None or filed >= prev:
+            out[key] = filed
+    for (end, fp), filed in list(out.items()):
+        if fp == "FY" and (end, "Q4") not in out:
+            out[(end, "Q4")] = filed
+    return out
+
+
 def compute_ratios(row: FundamentalRow) -> None:
     """Fill derived ratio fields in-place."""
     if row.ocf is not None and row.capex is not None:
@@ -343,6 +728,53 @@ def compute_ratios(row: FundamentalRow) -> None:
 
     if row.fcf is not None and row.assets is not None and row.assets > 0:
         row.fcf_roa = float(row.fcf) / float(row.assets)
+
+    def _margin(part: Optional[float]) -> Optional[float]:
+        if part is None or row.revenue is None or row.revenue == 0:
+            return None
+        return float(part) / float(row.revenue)
+
+    row.gross_margin = _margin(row.gross_profit)
+    row.operating_margin = _margin(row.operating_income)
+    row.net_margin = _margin(row.net_income)
+
+    if row.net_income is not None and row.equity is not None and row.equity > 0:
+        row.roe = float(row.net_income) / float(row.equity)
+    else:
+        row.roe = None
+
+    if (
+        row.current_assets is not None
+        and row.current_liabilities is not None
+        and row.current_liabilities > 0
+    ):
+        row.current_ratio = float(row.current_assets) / float(row.current_liabilities)
+    else:
+        row.current_ratio = None
+
+    ebitda: Optional[float] = None
+    if row.operating_income is not None and row.depreciation is not None:
+        ebitda = float(row.operating_income) + float(row.depreciation)
+    elif row.pretax_income is not None and row.interest_expense is not None:
+        ebitda = float(row.pretax_income) + float(row.interest_expense)
+        if row.interest_income is not None:
+            ebitda -= float(row.interest_income)
+        if row.depreciation is not None:
+            ebitda += float(row.depreciation)
+    row.ebitda = ebitda
+    if ebitda is not None and ebitda > 0 and row.total_debt is not None:
+        row.debt_to_ebitda = float(row.total_debt) / ebitda
+    else:
+        row.debt_to_ebitda = None
+
+    if row.interest_expense is not None or row.interest_income is not None:
+        row.net_interest = float(row.interest_expense or 0.0) - float(row.interest_income or 0.0)
+    else:
+        row.net_interest = None
+    if row.net_interest is not None and row.ocf not in (None, 0):
+        row.interest_to_ocf = float(row.net_interest) / float(row.ocf)
+    else:
+        row.interest_to_ocf = None
 
 
 def passes_four_filters(row: FundamentalRow) -> Dict[str, Optional[bool]]:
@@ -400,12 +832,63 @@ def build_fundamental_rows(
     shares_idx = index_by_end_fp(shares_rows)
     debt_indexes = build_debt_indexes(facts)
 
+    revenue_rows = merge_raw_rows(facts, REVENUE_TAGS)
+    gross_rows = merge_raw_rows(facts, GROSS_PROFIT_TAGS)
+    opinc_rows = merge_raw_rows(facts, OPERATING_INCOME_TAGS)
+    ni_rows = merge_raw_rows(facts, NET_INCOME_TAGS)
+    pretax_rows = merge_raw_rows(facts, PRETAX_TAGS)
+    int_exp_rows = merge_raw_rows(facts, INTEREST_EXPENSE_TAGS)
+    int_inc_rows = merge_raw_rows(facts, INTEREST_INCOME_TAGS)
+    eps_rows = merge_raw_rows(
+        facts, DILUTED_EPS_TAGS, unit_pref=("USD/shares", "USD", "pure")
+    )
+    dil_rows = merge_raw_rows(
+        facts,
+        DILUTED_SHARES_TAGS,
+        unit_pref=("shares",),
+    )
+    dep_rows = merge_raw_rows(facts, DEPRECIATION_TAGS)
+    revenue_map = single_period_flows(revenue_rows)
+    gross_map = single_period_flows(gross_rows)
+    opinc_map = single_period_flows(opinc_rows)
+    ni_map = single_period_flows(ni_rows)
+    pretax_map = single_period_flows(pretax_rows)
+    int_exp_map = _abs_map(single_period_flows(int_exp_rows))
+    int_inc_map = single_period_flows(int_inc_rows)
+    eps_map = single_period_flows(eps_rows)
+    dep_map = _abs_map(single_period_flows(dep_rows))
+    dil_map = snapshot_by_period(dil_rows)
+    current_assets_map = point_values(facts, CURRENT_ASSETS_TAGS)
+    current_liab_map = point_values(facts, CURRENT_LIABILITIES_TAGS)
+    equity_map = point_values(facts, EQUITY_TAGS)
+    flow_maps = (
+        revenue_map,
+        gross_map,
+        opinc_map,
+        ni_map,
+        pretax_map,
+        int_exp_map,
+        int_inc_map,
+        eps_map,
+        dep_map,
+        dil_map,
+        current_assets_map,
+        current_liab_map,
+        equity_map,
+    )
+    flow_series = {id(m): _quarter_series(m) for m in flow_maps}
+    stmt_filed = _filed_index(
+        revenue_rows + gross_rows + opinc_rows + ni_rows + pretax_rows + dep_rows
+    )
+
     # Union of period keys from flow + BS concepts
     keys: set = set()
     for idx in (ocf_idx, capex_idx, assets_idx, shares_idx, buy_idx, iss_idx):
         keys.update(idx.keys())
     for idx in debt_indexes.values():
         keys.update(idx.keys())
+    for period_map in flow_maps:
+        keys.update(period_map.keys())
 
     # Sort chronologically for TTM
     keyed = sorted(keys, key=lambda k: (k[0], k[1]))
@@ -452,8 +935,8 @@ def build_fundamental_rows(
             or shares_idx.get((end_s, fp))
         )
         filed_d = parse_date(filed_src.get("filed") if filed_src else None)
-        if not filed_d:
-            filed_d = end_d
+        if filed_d is None:
+            filed_d = stmt_filed.get((end_s, fp)) or end_d
 
         fy_raw = filed_src.get("fy") if filed_src else None
         try:
@@ -509,6 +992,23 @@ def build_fundamental_rows(
             tag_ocf=ocf_tag,
             tag_capex=capex_tag,
             tag_debt=debt_tag,
+            revenue=_flow_on_row(revenue_map, flow_series[id(revenue_map)], end_s, fp, end_d),
+            gross_profit=_flow_on_row(gross_map, flow_series[id(gross_map)], end_s, fp, end_d),
+            operating_income=_flow_on_row(opinc_map, flow_series[id(opinc_map)], end_s, fp, end_d),
+            net_income=_flow_on_row(ni_map, flow_series[id(ni_map)], end_s, fp, end_d),
+            pretax_income=_flow_on_row(pretax_map, flow_series[id(pretax_map)], end_s, fp, end_d),
+            interest_expense=_flow_on_row(
+                int_exp_map, flow_series[id(int_exp_map)], end_s, fp, end_d
+            ),
+            interest_income=_flow_on_row(
+                int_inc_map, flow_series[id(int_inc_map)], end_s, fp, end_d
+            ),
+            depreciation=_flow_on_row(dep_map, flow_series[id(dep_map)], end_s, fp, end_d),
+            diluted_eps=_flow_on_row(eps_map, flow_series[id(eps_map)], end_s, fp, end_d),
+            diluted_shares=dil_map.get((end_s, fp)),
+            current_assets=current_assets_map.get((end_s, fp)),
+            current_liabilities=current_liab_map.get((end_s, fp)),
+            equity=equity_map.get((end_s, fp)),
             _buybacks_q=buy_period,
             _issuance_q=iss_period,
         )

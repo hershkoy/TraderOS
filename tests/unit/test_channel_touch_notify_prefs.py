@@ -72,8 +72,11 @@ def test_apply_settings_patch_syncs_legacy_flags():
 def test_qs_prefs_round_trip_and_fill_missing_detector():
     s = normalize_settings({"notify_prefs": {"dp": {"approaching": {"telegram": True}}}})
     assert "qs" in s["notify_prefs"]
+    assert "if" in s["notify_prefs"]
     assert s["notify_applicable"]["qs"]["approaching"] is True
+    assert s["notify_applicable"]["if"]["armed"] is True
     assert s["notify_prefs"]["qs"]["armed"]["telegram"] is True
+    assert s["notify_prefs"]["if"]["approaching"]["telegram"] is True
     patched = apply_settings_patch(
         s,
         {"notify_prefs": {"qs": {"approaching": {"telegram": True, "browser": True}}}},

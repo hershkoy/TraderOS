@@ -12,6 +12,7 @@ from utils.research.sec_fundamentals import (
     compute_ratios,
     is_excluded_sic,
     passes_four_filters,
+    single_period_flows,
     ttm_sum,
 )
 
@@ -207,3 +208,119 @@ class TestMktCap:
         closes = {date(2024, 4, 30): 20.0}
         attach_mkt_caps([row], closes)
         assert row.mkt_cap == pytest.approx(1000.0)
+
+
+def _flow(end, fp, val, start, filed="2024-02-15", fy=2023):
+    return {
+        "end": end,
+        "start": start,
+        "fp": fp,
+        "val": val,
+        "filed": filed,
+        "fy": fy,
+        "form": "10-Q",
+    }
+
+
+class TestYtdDifference:
+    def test_year_to_date_becomes_single_quarters(self):
+        rows = [
+            _flow("2023-03-31", "Q1", 100, "2023-01-01"),
+            _flow("2023-06-30", "Q2", 250, "2023-01-01"),
+            _flow("2023-09-30", "Q3", 400, "2023-01-01"),
+            _flow("2023-12-31", "FY", 600, "2023-01-01", filed="2024-02-15"),
+        ]
+        got = single_period_flows(rows)
+        assert got[("2023-03-31", "Q1")] == pytest.approx(100)
+        assert got[("2023-06-30", "Q2")] == pytest.approx(150)
+        assert got[("2023-09-30", "Q3")] == pytest.approx(150)
+        assert got[("2023-12-31", "Q4")] == pytest.approx(200)
+        assert got[("2023-12-31", "FY")] == pytest.approx(600)
+
+    def test_discrete_quarter_wins_over_ytd(self):
+        rows = [
+            _flow("2023-03-31", "Q1", 100, "2023-01-01"),
+            _flow("2023-06-30", "Q2", 250, "2023-01-01"),
+            _flow("2023-06-30", "Q2", 40, "2023-04-01"),
+        ]
+        got = single_period_flows(rows)
+        assert got[("2023-06-30", "Q2")] == pytest.approx(40)
+
+
+class TestStatementFields:
+    def test_ttm_margins_and_balance_sheet(self):
+        facts = _facts_payload()
+        gaap = facts["facts"]["us-gaap"]
+        # Five discrete quarters. Durations are one quarter, so no YTD diff.
+        bounds = [
+            ("2023-01-01", "2023-03-31"),
+            ("2023-04-01", "2023-06-30"),
+            ("2023-07-01", "2023-09-30"),
+            ("2023-10-01", "2023-12-31"),
+            ("2024-01-01", "2024-03-31"),
+        ]
+        q = [
+            ("2023-03-31", "Q1", "2023-05-01", 2023),
+            ("2023-06-30", "Q2", "2023-08-01", 2023),
+            ("2023-09-30", "Q3", "2023-11-01", 2023),
+            ("2023-12-31", "Q4", "2024-02-01", 2023),
+            ("2024-03-31", "Q1", "2024-05-01", 2024),
+        ]
+
+        def series(vals, unit="USD"):
+            return {
+                "units": {
+                    unit: [
+                        {
+                            "end": end,
+                            "start": start,
+                            "fp": fp,
+                            "val": v,
+                            "filed": filed,
+                            "fy": fy,
+                            "form": "10-Q",
+                        }
+                        for (start, end), (end, fp, filed, fy), v in zip(bounds, q, vals)
+                    ]
+                }
+            }
+
+        gaap["Revenues"] = series([100, 100, 100, 100, 100])
+        gaap["GrossProfit"] = series([50, 50, 50, 50, 50])
+        gaap["OperatingIncomeLoss"] = series([30, 30, 30, 30, 30])
+        gaap["NetIncomeLoss"] = series([20, 20, 20, 20, 20])
+        gaap["IncomeLossFromContinuingOperationsBeforeIncomeTaxes"] = series(
+            [25, 25, 25, 25, 25]
+        )
+        gaap["InterestExpense"] = series([4, 4, 4, 4, 4])
+        gaap["InterestIncome"] = series([1, 1, 1, 1, 1])
+        gaap["DepreciationAndAmortization"] = series([5, 5, 5, 5, 5])
+        gaap["AssetsCurrent"] = series([300, 300, 300, 300, 300])
+        gaap["LiabilitiesCurrent"] = series([100, 100, 100, 100, 100])
+        gaap["StockholdersEquity"] = series([400, 400, 400, 400, 400])
+        gaap["WeightedAverageNumberOfDilutedSharesOutstanding"] = series(
+            [10, 10, 10, 10, 10], unit="shares"
+        )
+        gaap["EarningsPerShareDiluted"] = series(
+            [2, 2, 2, 2, 2], unit="USD/shares"
+        )
+
+        rows = build_fundamental_rows("TEST", "123", facts, sic="3571")
+        last = [r for r in rows if r.fp == "Q1" and r.period_end == date(2024, 3, 31)][0]
+        assert last.revenue == pytest.approx(400)
+        assert last.gross_profit == pytest.approx(200)
+        assert last.operating_income == pytest.approx(120)
+        assert last.net_income == pytest.approx(80)
+        assert last.diluted_eps == pytest.approx(8)
+        assert last.diluted_shares == pytest.approx(10)
+        assert last.gross_margin == pytest.approx(0.5)
+        assert last.operating_margin == pytest.approx(0.3)
+        assert last.net_margin == pytest.approx(0.2)
+        assert last.current_ratio == pytest.approx(3)
+        assert last.roe == pytest.approx(80 / 400)
+        # EBITDA = operating income + depreciation = 120 + 20
+        assert last.ebitda == pytest.approx(140)
+        assert last.debt_to_ebitda == pytest.approx(200 / 140)
+        assert last.net_interest == pytest.approx(12)  # (4-1) * 4
+        assert last.interest_to_ocf == pytest.approx(12 / last.ocf)
+        assert last.filed == date(2024, 5, 1)

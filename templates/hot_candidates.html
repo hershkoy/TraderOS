@@ -278,6 +278,7 @@
         .pill.tf-dp { background: #faf089; color: #744210; }
         .pill.tf-qs { background: #c3dafe; color: #2a4365; }
         .pill.tf-lg { background: #e9d8fd; color: #553c9a; }
+        .pill.tf-if { background: #c6f6d5; color: #22543d; }
         .pos { color: #276749; font-weight: 600; }
         .neg { color: #c53030; font-weight: 600; }
         .empty { text-align: center; color: #718096; padding: 32px; }
@@ -445,6 +446,7 @@
                             <label><input type="checkbox" value="dp" data-short="DP" checked> DP (SPY pullback)</label>
                             <label><input type="checkbox" value="qs" data-short="QS" checked> QS (SPY five-swing)</label>
                             <label><input type="checkbox" value="lg" data-short="LG" checked> LG (QQQ LEAPS gap)</label>
+                            <label><input type="checkbox" value="if" data-short="IF" checked> IF (SPXW iron fly)</label>
                         </div>
                     </div>
                 </div>
@@ -493,6 +495,7 @@
                 <div class="notify-hint">
                     TG = Telegram, Br = browser beep + notification.
                     15m Fill = H5 buy-now; DP/QS Approaching = 15:45+; Last = current/target (green=buy-ok); BUY NOW at 15:57 if still below target.
+                    IF = SPXW 0DTE iron fly (VIX&lt;20, skip Wed, L5/S3/P2 sit); Approaching 13:30 ET, ENTER at 13:45.
                 </div>
                 <span id="save-status" style="color:#718096;font-size:12px;"></span>
             </div>
@@ -559,17 +562,19 @@
         const APPROACH_SEEN_KEY = 'hotCandidates.seenApproach';
         const CTF_COPIED_KEY = 'hotCandidates.ctfCopied';
         const FETCH_OPTS = { cache: 'no-store' };
-        const NOTIFY_DETECTORS = ['15m', '1d', 'dp', 'qs', 'lg'];
+        const NOTIFY_DETECTORS = ['15m', '1d', 'dp', 'qs', 'lg', 'if'];
         const NOTIFY_EVENTS = ['hot', 'armed', 'approaching', 'fill', 'sell'];
         const NOTIFY_LABELS = {
-            '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)', 'qs': 'QS (SPY)', 'lg': 'LG (QQQ gap)'
+            '15m': '15m', '1d': '1d', 'dp': 'DP (SPY)', 'qs': 'QS (SPY)',
+            'lg': 'LG (QQQ gap)', 'if': 'IF (SPXW fly)'
         };
         const DEFAULT_NOTIFY_APPLICABLE = {
             '15m': { hot: true, armed: true, approaching: false, fill: true, sell: true },
             '1d': { hot: true, armed: true, approaching: false, fill: true, sell: true },
             'dp': { hot: false, armed: true, approaching: true, fill: false, sell: true },
             'qs': { hot: false, armed: true, approaching: true, fill: false, sell: true },
-            'lg': { hot: true, armed: true, approaching: true, fill: false, sell: false }
+            'lg': { hot: true, armed: true, approaching: true, fill: false, sell: false },
+            'if': { hot: true, armed: true, approaching: true, fill: false, sell: false }
         };
         const DEFAULT_NOTIFY_PREFS = {
             '15m': {
@@ -601,6 +606,13 @@
                 sell: { telegram: true, browser: true }
             },
             'lg': {
+                hot: { telegram: true, browser: true },
+                armed: { telegram: true, browser: true },
+                approaching: { telegram: true, browser: true },
+                fill: { telegram: false, browser: false },
+                sell: { telegram: false, browser: false }
+            },
+            'if': {
                 hot: { telegram: true, browser: true },
                 armed: { telegram: true, browser: true },
                 approaching: { telegram: true, browser: true },
@@ -1291,28 +1303,34 @@
                 const st = r.status || '';
                 const dist = r.dist_live_pct;
                 const tf = r.timeframe || '15m';
-                const chartTf = (tf === '1d' || tf === 'dp' || tf === 'qs' || tf === 'lg') ? '1d' : '15m';
+                const chartTf = (tf === '1d' || tf === 'dp' || tf === 'qs' || tf === 'lg' || tf === 'if') ? '1d' : '15m';
                 const tfClass = tf === '1d' ? 'tf-1d'
                     : (tf === 'dp' ? 'tf-dp'
                     : (tf === 'qs' ? 'tf-qs'
-                    : (tf === 'lg' ? 'tf-lg' : 'tf-15m')));
-                const tfLabel = tf === 'dp' ? 'DP' : (tf === 'qs' ? 'QS' : (tf === 'lg' ? 'LG' : tf));
+                    : (tf === 'lg' ? 'tf-lg'
+                    : (tf === 'if' ? 'tf-if' : 'tf-15m'))));
+                const tfLabel = tf === 'dp' ? 'DP' : (tf === 'qs' ? 'QS' : (tf === 'lg' ? 'LG' : (tf === 'if' ? 'IF' : tf)));
                 const stock = r.stock || '';
                 const boughtCell = r.bought
                     ? '<span class="pill owned">bought</span>'
                     : '<button type="button" class="btn-bought" data-bought-stock="' + stock +
                         '" data-bought-tf="' + tf + '">Bought</button>';
                 let lastCell = fmtNum(r.last_price, 2);
-                if (tf === 'dp' || tf === 'qs' || tf === 'lg') {
+                if (tf === 'dp' || tf === 'qs' || tf === 'lg' || tf === 'if') {
                     const ok = !!r.wait_ok;
                     const cur = fmtNum(r.last_price, 2);
                     const tgt = fmtNum(r.resist, 2);
-                    const tip = tf === 'lg'
-                        ? 'current / gap-trigger open (green = gap already meets rule)'
-                        : 'current / MOC target (green = still buy-ok)';
+                    let tip = 'current / MOC target (green = still buy-ok)';
+                    if (tf === 'lg') tip = 'current / gap-trigger open (green = gap already meets rule)';
+                    if (tf === 'if') {
+                        tip = 'SPX last / VIX open (green = ENTER 13:45 + L5 take; Resist col = VIX)';
+                        lastCell = '<span class="' + (ok ? 'moc-buy-ok' : 'moc-buy-bad') +
+                            '" title="' + tip + '">' + cur + ' / VIX ' + tgt + '</span>';
+                    } else {
                     lastCell = '<span class="' + (ok ? 'moc-buy-ok' : 'moc-buy-bad') +
                         '" title="' + tip + '">' +
                         cur + ' / ' + tgt + '</span>';
+                    }
                 }
                 return '<tr>' +
                     '<td><a class="sym" href="/?symbol=' + encodeURIComponent(stock) + '&timeframe=' + encodeURIComponent(chartTf) + '">' + stock + '</a></td>' +

@@ -1,6 +1,6 @@
 # Research & data — current status
 
-Last updated: **2026-10-27**
+Last updated: **2026-10-28**
 
 Working notes live under `docs/status_log/` (`edge_hunt/`, `edge_hunt/channel_touch/`, `weekly_bigvol/`, `daily/`). Daily digests stop at [2026-09-19](daily/2026-09-19.md); later work is in `edge_hunt/` (no new daily digest yet).
 
@@ -77,7 +77,11 @@ OptionsDX EOD (bid/ask/last/IV/greeks). Snapshot `eod`. 120-day quote retention 
 
 ---
 
-## Research status (2026-10-27)
+## Research status (2026-10-28)
+
+### SPY Friday 7 DTE put credit spread (Nathan / optionsforall) — 2026-10-28
+
+Status: [2026-10-28_spy_friday_pcs_claimcheck](edge_hunt/2026-10-28_spy_friday_pcs_claimcheck.md). Fri open, 7 DTE, ~40Δ / $5 wide, TP25 or TP50, SL 300% of credit, mid, $0 commission, capital = peak defined risk × 1.5. OptionsDX through 2023 + Theta 2024+. Spot = **IB SPY only** (Alpaca+IB prefix omitted all of 2019). Mid TP50 n=486 WR 82.3% CAGR 29.1% MDD 30.4% Sharpe 1.22 **Phase-5 PASS** — **soft-promote research sleeve** (tiny ~$697 margin base; EOD). Mid±$0.05 / ±$0.10 package slip (NBBO-clamped) still PASS FULL (Sharpe 1.06 / 1.01; 2022 MDD fails). Mid TP25 fails MDD vs SPY. Natural TP25/TP50 **no promote**. Live analogue of slip books: combo limit near mid−nickel, skip if unfilled.
 
 ### Edge hunt (SPY-beating portfolio sleeves)
 
@@ -104,7 +108,7 @@ IB 1d prefix (`backfill_ib_daily_prefix.py`, client **8827**) as of **2026-10-27
 - Hourly walk of the rest, ~180 bars per dated request: 09:00 Israel left SCCO at 2008-01-03, BSAC at 2009-08-27, OLED at 2011-02-01. 10:00 Israel died because Gateway refused every API port. Gateway was back by 10:35 (handshake on **4001**). The 10:36 pass saved BSAC to **2008-12-10** and OLED to **2010-05-18** (358 bars). SCCO’s dated request missed. TILE stays at 2012-05-15. SATS stays at 2022-07-25 (reply is a few October 2026 bars). CLBK is Error 162 (no historical data). UVXY bars from 2011 exist at IB but **numeric overflow** on unadjusted reverse-split prices, so they are not stored (IB min still 2018-11-01).
 - Still **7** candidates. Next hourly try **11:00 Israel / 05:00 ET**, then through **08:00 ET**. Stop **09:15 ET**. 5m universe fill stays paused.
 
-Research loads need `start=2006-01-01` / `--complete-history` with IB `merge_mode="prefix"`. Backtest todos (SEC row extend → trailing screen → DCF → EW≤15) stay survivor-biased / estimate-free until a delisted feed exists.
+Research loads need `start=2006-01-01` / `--complete-history` with IB `merge_mode="prefix"`. SEC parser now fills statement fields on each row (TTM of single quarters; FY keeps the reported year; YTD 10-Q facts are differenced first). Schema is applied (51 columns). The 2026-10-27 `--parse-only` reload finished in 9271s: 2,090 CIKs, 247,572 rows upserted, 1,792 symbols with revenue (184,374 rows). Four names had no cached facts (IBN, OZK, PFBC, SPY) so the process exited 4. Screen, DCF, and the equal-weight book are not started. Survivor-biased and estimate-free until a delisted feed exists.
 
 ### HA + 55 EMA + MACD swing (Animesh / Dhan)
 
@@ -175,6 +179,14 @@ Status: [BS](edge_hunt/2026-09-30_qqq_leaps_gap_claimcheck.md), **[Theta listed]
 
 Status: [2026-10-24](edge_hunt/2026-10-24_qqq_0dte_put_claimcheck.md). YouTube `7S-mGV4D-fI`. Sell the ~30-delta 0-DTE QQQ put at 09:45 ET, keep 95% of the credit, stop at a 200% loss (buy back at 3x), flatten 15:45. Theta 1m NBBO, 2022-05-02 → 2026-10-23.
 No-slippage **n=1074 WR 72.9%** (video 1067 / 73.3%). Take-profit fills average **+$84.59** and stops **−$173** (video +$85 / −$174). One contract **+$16,431**. Reg-T margin averages **$9,398**; compounding it turns $100k into **$651k** (CAGR 51.9%, DD 14.4%, Sharpe 2.21) against the video's $656k / 52% / 13%. Bid/ask Reg-T is **+$258k**, CAGR 32.9%, DD 17.4%, Sharpe 1.48 vs SPY 0.97 / 18.8% DD. Flat $10k bid/ask DD 19.6% loses to SPY on drawdown. **Claim replicates on mids. Headline account does not survive the spread. Not wired.** Code: `claimcheck_qqq_0dte_put.py`.
+
+### SPXW 0DTE 13:45 short iron fly (Rutschel) — 2026-10-27
+
+Status: [claim](edge_hunt/2026-10-27_spxw_0dte_iron_fly_claimcheck.md), **[path+Phase-5](edge_hunt/2026-10-27_spxw_0dte_iron_fly_path_phase5.md)**, **[expand 2022-05-11→now](edge_hunt/2026-10-27_spxw_0dte_iron_fly_from_20220511.md)**, **[loss-streak/VIX overlay](edge_hunt/2026-10-27_spxw_iron_fly_loss_streak.md)**. Sell 50d put / 40d call + 15-pt wings at 13:45 ET, VIX open <20, skip Wed, hold to SPX close. Claim ~2y sample replicates: **natural n=311 WR 57.2% E +$93 PF 1.45**; Phase-5 **PASS** → **soft-promote (2y only)**. Full window **natural n=611** Phase-5 **FAIL MDD** 26.7% vs SPY 19.0%. Locked loss-streak (L5/S3/P2, dollar −$1500) + VIX&lt;18/16: MDD improves at best to ~20.9% — still FAIL; exploratory L4 PASSes (MDD 15.9%) but **no promote** (L-fished). Same reject class as last-15m loss-streak. Live **/hot Detector IF** + Telegram/browser (defaults on): CronRunner `spxw_iron_fly_live` 13:20–14:05 ET; L5/S3/P2 sit-out; approaching 13:30 / ENTER 13:45. Combo: `scripts/trading/spxw_iron_fly_combo.py` (`--place` paper; `--live-en --account U*` live). Playbook: [spxw_iron_fly_live](../features/spxw_iron_fly_live.md). Soft-promote research; **not auto-placed**. Code: `claimcheck_spxw_0dte_iron_fly.py`, `overlay_spxw_iron_fly_loss_streak.py`, `spxw_iron_fly_live.py`, `spxw_iron_fly_combo.py`.
+
+### SPXW 0DTE morning long RIC (Rutschel) — 2026-10-27
+
+Status: [2026-10-27](edge_hunt/2026-10-27_spxw_0dte_long_ric_claimcheck.md). Same interview. Skip Mon; VIX gap-down then ≥0.5% off open by 11:00; buy ~$6/30-wide put + ~$3/30-wide call; settle. Claim n=338 WR~49% avgW/L ~$1400/$739 CAGR 36.7% MDD 15%. Honest Yahoo-1h VIX trigger (~2y): **mid n=140 WR 37.9% E +$69 PF 1.15 CAGR 18.2% MDD 33%**. Timing-optimistic eod_low (~4y): **n=329 WR 42.9% E +$59 PF 1.13 CAGR 13.8% MDD 33%** (natural CAGR 9.1%). Trade count/payoff shape soft-match; **CAGR/WR/DD do not replicate. No promote / not wired.** Code: `claimcheck_spxw_0dte_long_ric.py`.
 
 ### Weekly Precision Candle (PCE) QQQ vs SPY — 2026-10-07
 

@@ -85,6 +85,18 @@ jobs:
     BUY NOW when official open confirms. DB QQQ 1d + Alpaca last/open. Dense 08:00-10:30
     ET then every 5m to 11:00.
   timezone: America/New_York
+- name: spxw_iron_fly_live
+  enabled: true
+  schedule:
+  - 20-59 13 * * 1-5
+  - 0-5 14 * * 1-5
+  command: crons\spxw_iron_fly_live.bat
+  description: SPXW 0DTE iron fly for /hot (timeframe=if). Skip Wed; VIX open <20;
+    L5/S3/P2 sit-out. Approaching from 13:30 ET; ENTER at 13:45. Telegram + browser
+    via notify matrix. Dense every minute 13:20-14:05 ET. Fridays on ENTER NOW
+    auto-park paper BAG (--place --no-transmit; Transmit in TWS). Other days
+    combo place is manual (scripts/trading/spxw_iron_fly_combo.py --place [--live-en]).
+  timezone: America/New_York
 - name: backfill_ib_15m_universe
   enabled: false
   schedule: 30 2 * * *
