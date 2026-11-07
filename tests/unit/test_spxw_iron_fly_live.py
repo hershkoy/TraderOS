@@ -47,20 +47,15 @@ def test_friday_park_failed_is_retryable(tmp_path: Path):
     assert should_auto_park_friday(day=fri, buy_ok=True, path=marker) is True
 
 
-def test_friday_park_in_progress_stale_retryable(tmp_path: Path, monkeypatch):
+def test_friday_park_in_progress_stale_retryable(tmp_path: Path):
+    import json
+
     marker = tmp_path / "park.json"
     fri = date(2026, 10, 30)
     write_friday_park_marker(fri, status="in_progress", path=marker)
     assert friday_park_already_done(fri, path=marker) is True
 
     stale = datetime.now(ET) - timedelta(minutes=11)
-
-    def _stale_now():
-        return stale + timedelta(minutes=11)
-
-    # Rewrite marker with old ts
-    import json
-
     payload = json.loads(marker.read_text(encoding="utf-8"))
     payload["ts"] = stale.isoformat()
     marker.write_text(json.dumps(payload), encoding="utf-8")

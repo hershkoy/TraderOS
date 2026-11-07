@@ -696,8 +696,123 @@ class ThetaEquitySource:
         self._exps[sym] = exps
         return exps
 
+    def _list_strikes(self, symbol: str, exp: date) -> List[float]:
+        sym = str(symbol).upper()
+        try:
+            r = self.client.session.get(
+                f"{self.client.base_url}/v3/option/list/strikes",
+                params={"symbol": sym, "expiration": exp.isoformat()},
+                timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("theta list/strikes %s %s failed: %s", sym, exp, exc)
+            return []
+        if r.status_code != 200 or not r.content:
+            return []
+        try:
+            raw = pd.read_csv(StringIO(r.text))
+        except Exception:  # noqa: BLE001
+            return []
+        if raw.empty or "strike" not in raw.columns:
+            return []
+        out: List[float] = []
+        for v in raw["strike"].tolist():
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(f) and f > 0:
+                out.append(f)
+        return sorted(set(out))
+
+    def _eod_quote_row(
+        self, symbol: str, exp: date, strike: float, right_s: str, day: date
+    ) -> Optional[Dict[str, float]]:
+        """Single-contract EOD bid/ask (Value-plan compatible)."""
+        try:
+            r = self.client.session.get(
+                f"{self.client.base_url}/v3/option/history/eod",
+                params={
+                    "symbol": str(symbol).upper(),
+                    "expiration": exp.isoformat(),
+                    "strike": float(strike),
+                    "right": right_s,
+                    "start_date": day.isoformat(),
+                    "end_date": day.isoformat(),
+                },
+                timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("theta eod %s %s %s failed: %s", symbol, exp, strike, exc)
+            return None
+        if r.status_code != 200 or not r.content:
+            return None
+        try:
+            raw = pd.read_csv(StringIO(r.text))
+        except Exception:  # noqa: BLE001
+            return None
+        if raw.empty:
+            return None
+        row = raw.iloc[-1]
+        try:
+            bid = float(row["bid"])
+            ask = float(row["ask"])
+        except (TypeError, ValueError, KeyError):
+            return None
+        if not (math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask > 0):
+            return None
+        return {"bid": bid, "ask": ask}
+
+    def _fetch_chain_exp_value(
+        self,
+        symbol: str,
+        day: date,
+        right: str,
+        exp: date,
+        *,
+        spot_hint: Optional[float] = None,
+        max_strikes: int = 8,
+    ) -> pd.DataFrame:
+        """Build a mini chain via list/strikes + history/eod (Options VALUE)."""
+        empty = pd.DataFrame(columns=["expiration", "strike", "bid", "ask", "delta"])
+        right_s = "call" if str(right).upper().startswith("C") else "put"
+        strikes = self._list_strikes(symbol, exp)
+        if not strikes:
+            return empty.copy()
+        spot = float(spot_hint) if spot_hint and spot_hint > 0 else float(strikes[len(strikes) // 2])
+        # Keep strikes near spot: puts below/near, calls above/near.
+        if right_s == "call":
+            band = [k for k in strikes if 0.95 * spot <= k <= 1.20 * spot]
+        else:
+            band = [k for k in strikes if 0.80 * spot <= k <= 1.05 * spot]
+        if not band:
+            band = sorted(strikes, key=lambda k: abs(k - spot))[:max_strikes]
+        else:
+            band = sorted(band, key=lambda k: abs(k - spot))[:max_strikes]
+        rows = []
+        for k in band:
+            q = self._eod_quote_row(symbol, exp, float(k), right_s, day)
+            if q is None:
+                continue
+            rows.append(
+                {
+                    "expiration": exp,
+                    "strike": float(k),
+                    "bid": float(q["bid"]),
+                    "ask": float(q["ask"]),
+                    "delta": float("nan"),
+                }
+            )
+        return pd.DataFrame(rows) if rows else empty.copy()
+
     def _fetch_chain_exp(
-        self, symbol: str, day: date, right: str, exp: date
+        self,
+        symbol: str,
+        day: date,
+        right: str,
+        exp: date,
+        *,
+        spot_hint: Optional[float] = None,
     ) -> pd.DataFrame:
         sym = str(symbol).upper()
         right_s = "call" if str(right).upper().startswith("C") else "put"
@@ -717,10 +832,13 @@ class ThetaEquitySource:
                         cached["expiration"] = pd.to_datetime(
                             cached["expiration"]
                         ).dt.date
-                    self._chain_cache[key] = cached
-                    return cached.copy()
+                        # Prefer nonempty cached greeks/eod chains.
+                        if cached["bid"].notna().any():
+                            self._chain_cache[key] = cached
+                            return cached.copy()
                 except Exception:  # noqa: BLE001
                     path.unlink(missing_ok=True)
+        empty = pd.DataFrame(columns=["expiration", "strike", "bid", "ask", "delta"])
         r = self.client.session.get(
             f"{self.client.base_url}/v3/option/history/greeks/eod",
             params={
@@ -732,10 +850,17 @@ class ThetaEquitySource:
             },
             timeout=90,
         )
-        empty = pd.DataFrame(columns=["expiration", "strike", "bid", "ask", "delta"])
-        if r.status_code in (403, 472) or not r.content:
-            if path is not None:
-                empty.to_csv(path, index=False)
+        if r.status_code == 403:
+            # Options VALUE: no greeks/eod — build from strikes + EOD quotes.
+            df = self._fetch_chain_exp_value(
+                sym, day, right, exp, spot_hint=spot_hint
+            )
+            if path is not None and not df.empty:
+                df.to_csv(path, index=False)
+            self._chain_cache[key] = df
+            return df.copy()
+        if r.status_code in (472,) or not r.content:
+            # Do not clobber a prior nonempty on-disk chain with an empty miss.
             self._chain_cache[key] = empty
             return empty.copy()
         if r.status_code != 200:
@@ -751,8 +876,6 @@ class ThetaEquitySource:
             return empty.copy()
         raw = pd.read_csv(StringIO(r.text))
         if raw.empty:
-            if path is not None:
-                empty.to_csv(path, index=False)
             self._chain_cache[key] = empty
             return empty.copy()
         strike_col = "strike" if "strike" in raw.columns else raw.columns[0]
@@ -782,6 +905,28 @@ class ThetaEquitySource:
         self._chain_cache[key] = df
         return df.copy()
 
+    def _cached_exps_for_day(self, symbol: str, day: date, right: str) -> List[date]:
+        """Discover expirations from on-disk chain_*.csv when live list is empty."""
+        if self.cache_dir is None:
+            return []
+        sym = str(symbol).upper()
+        right_c = "c" if str(right).upper().startswith("C") else "p"
+        # chain_{SYM}_{EXP}_{DAY}_{c|p}.csv
+        out: List[date] = []
+        for path in self.cache_dir.glob(
+            "chain_%s_*_%s_%s.csv" % (sym, day.isoformat(), right_c)
+        ):
+            parts = path.stem.split("_")
+            # stem: chain, SYM, EXP, DAY, right — SYM has no underscores
+            if len(parts) < 5:
+                continue
+            try:
+                exp = date.fromisoformat(parts[2])
+            except ValueError:
+                continue
+            out.append(exp)
+        return sorted(set(out))
+
     def chain_on_day(
         self,
         symbol: str,
@@ -792,10 +937,12 @@ class ThetaEquitySource:
         *,
         spot_hint: Optional[float] = None,
     ) -> pd.DataFrame:
-        del spot_hint  # Theta returns full chain; spot used at pick time
+        live = list(self.expirations(symbol))
+        cached = self._cached_exps_for_day(symbol, day, right)
+        pool = sorted(set(live) | set(cached))
         cands = [
             e
-            for e in self.expirations(symbol)
+            for e in pool
             if int(dte_lo) <= (e - day).days <= int(dte_hi)
         ]
         if not cands:
@@ -803,9 +950,22 @@ class ThetaEquitySource:
                 columns=["expiration", "strike", "bid", "ask", "delta"]
             )
         mid = 0.5 * (float(dte_lo) + float(dte_hi))
-        cands = sorted(cands, key=lambda e: abs((e - day).days - mid))[:4]
-        frames = [self._fetch_chain_exp(symbol, day, right, e) for e in cands]
-        frames = [f for f in frames if f is not None and not f.empty]
+        cached_set = set(cached)
+
+        def _cand_key(e: date) -> tuple:
+            # Prefer on-disk chains first (live FREE often returns empty),
+            # then closest to target DTE.
+            return (0 if e in cached_set else 1, abs((e - day).days - mid))
+
+        cands = sorted(cands, key=_cand_key)[:4]
+        frames = []
+        for e in cands:
+            got = self._fetch_chain_exp(symbol, day, right, e, spot_hint=spot_hint)
+            if got is not None and not got.empty:
+                frames.append(got)
+                # Value path is strike-by-strike; one good expiry is enough.
+                if got["delta"].isna().all():
+                    break
         if not frames:
             return pd.DataFrame(
                 columns=["expiration", "strike", "bid", "ask", "delta"]

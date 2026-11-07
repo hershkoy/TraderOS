@@ -28,3 +28,5 @@ failed.txt
 /tools/thetadata/*.toml 
 /tools/thetadata/creds.txt 
 /tools/thetadata/_probe* 
+tools/thetadata/telemetry-spool/*
+

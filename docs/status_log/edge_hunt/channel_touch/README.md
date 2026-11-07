@@ -4,6 +4,9 @@ Ascending-channel / channel-touch research and nightly productionization.
 
 | Date | Doc |
 |------|-----|
+| 2026-11-04 | [Listed buy-write mid±slip occupancy + MTM](2026-11-04_last15m_buywrite_slip_occupancy.md) |
+| 2026-11-03 | [Listed buy-write (Theta VALUE) + earn](2026-11-03_last15m_buywrite_listed.md) |
+| 2026-11-03 | [Buy-write vs wheel + earnings flatten≤10](2026-11-03_last15m_cc_earnings.md) |
 | 2026-10-26 | [Last-15m earnings / biotech event filters](2026-10-26_last15m_earnings_event_filters.md) |
 | 2026-10-18 | [Last-15m prior-session option filters (SPY / sector / name)](2026-10-18_last15m_option_filters.md) |
 | 2026-10-10 | [Full-unique L3 feature hunt (price + SEC fund)](2026-10-10_l3_full_unique_feature_hunt.md) |
@@ -97,6 +100,9 @@ Related: [current status](../../current_status.md), [edge hunt](../README.md), [
 
 Stable HTML: **`current_best/`** is live-executable causal books even if fragile — `1d_last_15m.html` / `1d_channel_touch.html` (last-15m-open-mid + 15m N+1 mid **n=2297 E +0.27 PF 1.09**, fric0.25 E +0.02 PF 1.01 — the 1d number to beat; 2022-23 fails; **not a promote**), `15m_channel_touch.html` (wait-12 L3 signal-close **n=1744 E +0.13 PF 1.22**), plus realistic 15m H2/H5 (losing/flat). **Clip / clip-exit 1d** in `reports/ascending_channels/1d_unrealistic/` (`1d_h2_resist_break.html` nightly H2 + shakeout, `1d_hot_cross.html` lerp85 occupancy-sell n=4079 E −0.19 PF 0.94, `1d_l3_touch.html` retired L3). Write-up: `current_best/README.md`, `1d_unrealistic/README.md`, [realistic purchasing](../../../features/realistic_purchasing.md), [slot swap](2026-09-12_channel_touch_1d_hot_cross_out_of_current_best.md).
 
+- **Listed buy-write mid±slip + occ/MTM (2026-11-04):** Raw mid occ15 mark-at-cost scrapes FULL PASS (Sharpe 1.00); **$0.05/$0.10 slip fails all FULL caps**; slip$0.05 occ8 **MTM Sharpe 0.28** (worse than cost). **No promote.** See [slip occ](2026-11-04_last15m_buywrite_slip_occupancy.md).
+- **Listed buy-write Theta VALUE (2026-11-03):** ATM + EOD bid/ask. Mid n=802 E +1.10 PF 1.48; ask/bid E +0.45. **No promote.** See [listed BW](2026-11-03_last15m_buywrite_listed.md).
+- **Buy-write vs wheel + earn flatten≤10 (2026-11-03):** BW BS mid+earn n=1103 E +2.22 PF 2.20 was **all BS** (hit rate 0 listed). Superseded by listed pass above. See [cc earnings](2026-11-03_last15m_cc_earnings.md).
 - **Earnings / biotech event filters (2026-10-26):** Flatten-before-print ≤10 sess n=2256 E +0.38 PF 1.13 (AMPL −21%→−0.7%; VST −19%→−1.7%); **2022 still −2.24**. Entry AMC/BMO skip blunt; biotech sleeve wash; EM>stop no-op (n_drop=12). **No promote** — live hygiene only. See [earnings event](2026-10-26_last15m_earnings_event_filters.md).
 - **Last-15m + short H3+ blend (2026-09-19):** Portfolio occupancy overlay of current_best last-15m long + 15m short H3+. Concat flattens 2022 only via short n-weight (117 long / 1031 short). Equalized fric0.25 keeps 2022 red (UNIFIED 15 E −0.17). **No promote.** See [blend](2026-09-19_last15m_resist_short_blend.md).
 - **Short H3+ resistance fade (2026-09-16):** After causal H2, short from-below resist tags (H3/H4+), cover at support + ATR k=2. Daily unique span365 **n=250 E +0.06 PF 1.02** — **no promote**. 15m unique span10 **n=7004 E +0.21 PF 1.47** geo 1.45 (all years +; drop-top-50 holds; fric0.25 E +0.06) — research-interesting, **not a hard promote** / do not wire. See [resist short H3](2026-09-16_resist_short_h3.md).

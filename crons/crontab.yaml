@@ -102,46 +102,45 @@ jobs:
   schedule: 30 2 * * *
   command: crons\backfill_ib_15m_universe.bat
   description: Overnight catch-up of the FULL IB 15m universe (~1478 names, client
-    8822). Disabled 2026-09-04; after_rth_ib_backfill at 16:30 ET does 15m then the 1d prefix (5m paused).
+    8822). Disabled 2026-09-04; after_rth_ib_backfill at 16:30 ET does 15m catch-up, then 5m (8823) owns the window.
     Keep for manual `cron_manager.py run`. Live 15m is channel_touch_15m (client 8826).
 - name: after_rth_ib_backfill
   enabled: true
   schedule: 30 16 * * 1-5
   command: crons\after_rth_ib_backfill.bat
-  description: After US cash close (16:30 ET) catch up IB 15m (client 8822) then the
-    IB 1d prefix to 2006-01-01 (client 8827) until the next weekday 09:15 ET. Friday
-    runs through the weekend. Hourly backfill_ib_1d_prefix restarts 1d if this job
-    died. 5m universe fill is paused until the 1d prefix is done. 1d Alpaca is
-    channel_touch_nightly (17:00 ET). Do not run during RTH.
+  description: After US cash close (16:30 ET) catch up IB 15m (client 8822). 5m
+    universe fill (8823) owns the backfill window again as of 2026-11-06. Hourly
+    backfill_ib_5m_universe restarts 5m if this job died. 1d prefix watchdog stays
+    off (7 names IB will not extend). 1d Alpaca is channel_touch_nightly (17:00 ET).
+    Do not run during RTH.
   timezone: America/New_York
 - name: backfill_ib_5m_universe
-  enabled: false
+  enabled: true
   schedule:
   - 0 17-23 * * 1-5
   - 0 0-8 * * 1-5
   - 0 * * * 0,6
   command: crons\backfill_ib_5m_universe.bat --skip-if-job-running after_rth_ib_backfill
     --reset-failed
-  description: PAUSED 2026-10-26 while the 1d prefix to 2006 runs. Hourly 5m watchdog
-    (client 8823) during backfill windows (weekends all hours; Mon-Fri 17:00-08:00 ET).
-    Re-enable after ib_1d prefix dry-run reports no symbols left.
+  description: Hourly 5m watchdog (client 8823) during backfill windows (weekends
+    all hours; Mon-Fri 17:00-08:00 ET). Re-enabled 2026-11-06. Skips while
+    after_rth_ib_backfill holds its lock. Stops itself at the next weekday 09:15 ET.
   timezone: America/New_York
 - name: backfill_ib_1d_prefix
-  enabled: true
+  enabled: false
   schedule:
   - 0 17-23 * * 1-5
   - 0 0-8 * * 1-5
   - 0 * * * 0,6
   command: crons\backfill_ib_1d_prefix.bat --skip-if-job-running after_rth_ib_backfill
-  description: Hourly 1d prefix watchdog (client 8827, target 2006-01-01) during the
-    same windows as the paused 5m job (weekends all hours; Mon-Fri 17:00-08:00 ET).
-    Restarts if the 16:30 after_rth 1d process died. Skips if that job is still
-    running or if the 1d pid lock is held. Stops itself at the next weekday 09:15 ET.
+  description: PAUSED 2026-11-06 so 5m (8823) owns Gateway. Was the hourly 1d
+    prefix watchdog (client 8827). The remaining 7 names (BSAC, OLED, SCCO, TILE,
+    UVXY, CLBK, SATS) do not extend on IB. Do not re-enable beside a live 5m fill.
   timezone: America/New_York
 - name: stop_ib_5m_backfill
   enabled: true
   schedule: 15 9 * * 1-5
   command: crons\stop_ib_5m_backfill.bat
-  description: 09:15 ET Mon-Fri cooperative stop of the overnight IB fill (1d prefix
-    now; 5m if it is still up) so live channel_touch_15m (client 8826) owns Gateway.
+  description: 09:15 ET Mon-Fri cooperative stop of the overnight IB fill (5m
+    client 8823) so live channel_touch_15m (client 8826) owns Gateway.
   timezone: America/New_York
